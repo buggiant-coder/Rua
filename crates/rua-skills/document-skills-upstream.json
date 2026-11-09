@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/anthropics/skills",
+  "commit": "2c5958ecac7cee2b583967a2c4981d0f4a75c579",
+  "archive_url": "https://codeload.github.com/anthropics/skills/tar.gz/2c5958ecac7cee2b583967a2c4981d0f4a75c579",
+  "archive_sha256": "3783fe4e778029522bf3da866948353cc0c86204a6139c812907f5aebdaf78ef",
+  "license": "Apache-2.0",
+  "builtin_skill_version": "2.0",
+  "skills": {
+    "docx": {
+      "source_path": "skills/docx",
+      "modified_files": [
+        "SKILL.md",
+        "scripts/accept_changes.py",
+        "scripts/comment.py",
+        "scripts/merge_runs.py",
+        "scripts/office/helpers/pptx_theme.py",
+        "scripts/office/soffice.py",
+        "scripts/office/validate.py",
+        "scripts/office/validators/base.py",
+        "scripts/office/validators/docx.py",
+        "scripts/office/validators/pptx.py",
+        "scripts/office/validators/redlining.py"
+      ],
+      "added_files": [
+        "NOTICE.md"
+      ]
+    },
+    "pdf": {
+      "source_path": "skills/pdf",
+      "modified_files": [
+        "SKILL.md",
+        "reference.md",
+        "scripts/convert_pdf_to_images.py",
+        "scripts/create_validation_image.py",
+        "scripts/extract_form_field_info.py",
+        "scripts/fill_fillable_fields.py",
+        "scripts/fill_pdf_form_with_annotations.py"
+      ],
+      "added_files": [
+        "NOTICE.md"
+      ]
+    },
+    "pptx": {
+      "source_path": "skills/pptx",
+      "modified_files": [
+        "SKILL.md",
+        "scripts/office/helpers/pptx_theme.py",
+        "scripts/office/soffice.py",
+        "scripts/office/validate.py",
+        "scripts/office/validators/base.py",
+        "scripts/office/validators/docx.py",
+        "scripts/office/validators/pptx.py",
+        "scripts/office/validators/redlining.py",
+        "scripts/thumbnail.py"
+      ],
+      "added_files": [
+        "NOTICE.md"
+      ]
+    },
+    "xlsx": {
+      "source_path": "skills/xlsx",
+      "modified_files": [
+        "SKILL.md",
+        "scripts/office/helpers/pptx_theme.py",
+        "scripts/office/soffice.py",
+        "scripts/office/validate.py",
+        "scripts/office/validators/base.py",
+        "scripts/office/validators/docx.py",
+        "scripts/office/validators/pptx.py",
+        "scripts/office/validators/redlining.py",
+        "scripts/recalc.py"
+      ],
+      "added_files": [
+        "NOTICE.md"
+      ]
+    }
+  }
+}

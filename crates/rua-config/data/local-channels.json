@@ -1,0 +1,328 @@
+{
+  "channels": {
+    "console": {
+      "omit": [
+        "bot_prefix",
+        "show_tool_calls",
+        "show_tool_results",
+        "tool_call_max_length",
+        "tool_result_max_length",
+        "show_thinking",
+        "dm_policy",
+        "group_policy",
+        "allow_from",
+        "deny_message",
+        "require_mention",
+        "no_text_debounce",
+        "access_control_dm",
+        "access_control_group",
+        "dm_disabled",
+        "group_disabled",
+        "show_tool_details",
+        "deny_from",
+        "media_dir"
+      ]
+    },
+    "dingtalk": {
+      "fields": {
+        "ai_card_enabled": {
+          "default": false,
+          "kind": "toggle"
+        },
+        "bot_id": {},
+        "bot_name": {},
+        "enable_ws": {
+          "default": true,
+          "kind": "toggle"
+        },
+        "message_type": {
+          "kind": "select",
+          "options": [
+            "markdown",
+            "card"
+          ]
+        }
+      },
+      "omit": []
+    },
+    "discord": {
+      "fields": {
+        "bot_user_id": {},
+        "webhook_url": {
+          "kind": "url"
+        }
+      }
+    },
+    "feishu": {
+      "fields": {
+        "bot_open_id": {},
+        "secret": {
+          "kind": "password",
+          "secret": true
+        },
+        "webhook_url": {
+          "kind": "url"
+        }
+      },
+      "omit": [
+        "encrypt_key",
+        "verification_token"
+      ]
+    },
+    "imessage": {
+      "fields": {
+        "allowed_senders": {
+          "default": [],
+          "kind": "tags"
+        },
+        "input_prefix": {
+          "default": "",
+          "kind": "text"
+        }
+      }
+    },
+    "matrix": {
+      "fields": {
+        "default_room_id": {},
+        "store_path": {
+          "kind": "path"
+        },
+        "device_name": {
+          "default": "rua-bot"
+        }
+      }
+    },
+    "mattermost": {
+      "omit": []
+    },
+    "mqtt": {
+      "fields": {
+        "client_id": {},
+        "host": {
+          "default": "localhost"
+        },
+        "keep_alive_secs": {
+          "default": 30,
+          "kind": "number"
+        },
+        "port": {
+          "default": 1883
+        },
+        "publish_topic": {
+          "default": "rua/outbound"
+        },
+        "qos": {
+          "default": 2
+        },
+        "subscribe_topic": {
+          "default": "rua/inbound"
+        },
+        "transport": {
+          "default": "tcp",
+          "kind": "select",
+          "options": [
+            "tcp",
+            "websockets"
+          ]
+        }
+      }
+    },
+    "onebot": {
+      "fields": {
+        "http_url": {
+          "kind": "url"
+        }
+      },
+      "omit": []
+    },
+    "qq": {
+      "fields": {
+        "media_dir": {
+          "kind": "path"
+        },
+        "sandbox": {
+          "default": false,
+          "kind": "toggle"
+        }
+      },
+      "omit": []
+    },
+    "sip": {
+      "fields": {
+        "bind_addr": {
+          "default": ""
+        },
+        "domain": {},
+        "max_call_secs": {
+          "default": 300,
+          "kind": "number"
+        },
+        "media_dir": {
+          "kind": "path"
+        },
+        "public_addr": {},
+        "rtp_bind_addr": {
+          "default": ""
+        },
+        "username": {
+          "default": "rua"
+        },
+        "sip_mode": {
+          "default": "dev",
+          "options": [
+            "dev",
+            "livekit",
+            "native"
+          ]
+        },
+        "welcome_greeting": {
+          "default": "你好，我是Rua"
+        }
+      },
+      "omit": [
+        "bot_prefix",
+        "show_tool_calls",
+        "show_tool_results",
+        "tool_call_max_length",
+        "tool_result_max_length",
+        "show_thinking",
+        "dm_policy",
+        "group_policy",
+        "allow_from",
+        "deny_message",
+        "require_mention",
+        "no_text_debounce",
+        "access_control_dm",
+        "access_control_group",
+        "dm_disabled",
+        "group_disabled",
+        "show_tool_details",
+        "deny_from",
+        "livekit_sip_trunk_id"
+      ]
+    },
+    "slack": {
+      "fields": {
+        "api_base": {
+          "default": "https://slack.com/api",
+          "kind": "url"
+        },
+        "bot_user_id": {}
+      },
+      "omit": [
+        "signing_secret",
+        "thread_follow_without_mention"
+      ]
+    },
+    "telegram": {
+      "fields": {
+        "allowed_users": {
+          "default": [],
+          "kind": "tags"
+        },
+        "bot_username": {},
+        "chat_id": {},
+        "media_dir": {
+          "kind": "path"
+        }
+      }
+    },
+    "voice": {
+      "fields": {
+        "public_url": {
+          "default": "",
+          "kind": "url"
+        },
+        "welcome_greeting": {
+          "default": "Hi! This is Rua. How can I help you?"
+        }
+      },
+      "omit": [
+        "bot_prefix",
+        "show_tool_calls",
+        "show_tool_results",
+        "tool_call_max_length",
+        "tool_result_max_length",
+        "show_thinking",
+        "no_text_debounce",
+        "access_control_dm",
+        "access_control_group",
+        "group_policy",
+        "group_disabled",
+        "require_mention",
+        "filter_tool_messages",
+        "filter_thinking",
+        "show_tool_details",
+        "media_dir",
+        "deny_message"
+      ]
+    },
+    "wechat": {
+      "omit": []
+    },
+    "wecom": {
+      "omit": []
+    },
+    "xiaoyi": {
+      "fields": {
+        "backup_ws_url": {
+          "kind": "url"
+        },
+        "media_dir": {
+          "kind": "path"
+        }
+      },
+      "rename": {
+        "ak": "access_key",
+        "sk": "secret_key"
+      },
+      "omit": [
+        "task_timeout_ms"
+      ]
+    },
+    "yuanbao": {
+      "omit": []
+    }
+  },
+  "common": {
+    "deny_from": {
+      "default": [],
+      "kind": "tags"
+    },
+    "filter_thinking": {
+      "default": false,
+      "hidden": true,
+      "kind": "toggle"
+    },
+    "filter_tool_messages": {
+      "default": false,
+      "hidden": true,
+      "kind": "toggle"
+    },
+    "show_tool_details": {
+      "default": true,
+      "kind": "toggle"
+    }
+  },
+  "common_omit": [],
+  "order": [
+    "console",
+    "dingtalk",
+    "discord",
+    "feishu",
+    "imessage",
+    "matrix",
+    "mattermost",
+    "mqtt",
+    "onebot",
+    "qq",
+    "sip",
+    "slack",
+    "telegram",
+    "voice",
+    "wecom",
+    "wechat",
+    "xiaoyi",
+    "yuanbao"
+  ]
+}

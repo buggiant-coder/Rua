@@ -1,0 +1,533 @@
+name: Release CI
+
+on:
+  workflow_call:
+    inputs:
+      signed:
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      signed:
+        description: Build and publish production-signed installers
+        type: boolean
+        default: true
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  RUSTC_WRAPPER: ""
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTUP_MAX_RETRIES: 10
+  CARGO_NET_RETRY: 10
+  CARGO_INCREMENTAL: 0
+  RUST_TOOLCHAIN: "1.91.0"
+
+jobs:
+
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: ./.github/actions/setup-protoc
+      - run: cargo clippy --workspace -- -D warnings
+
+  check:
+    name: Check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: ./.github/actions/setup-protoc
+      - run: cargo check --workspace
+
+  test-suites:
+    name: Test (${{ matrix.suite }})
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        suite: [smoke, workspace, server-contracts, server-product-hooks, server-endpoints, server-infra, server-terminal, server-sync, docs]
+    env:
+      TEST_SUITE: ${{ matrix.suite }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: rust-tests-${{ matrix.suite }}
+      - uses: ./.github/actions/setup-protoc
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: npm ci
+        working-directory: console
+      - uses: taiki-e/install-action@v2
+        if: matrix.suite == 'workspace'
+        with:
+          tool: nextest@0.9.133
+      - name: Prepare Linux network simulation tests
+        if: matrix.suite == 'workspace'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y iproute2 nftables
+          # Patchbay requires unprivileged user namespaces on this ephemeral runner.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Compile smoke test programs
+        if: matrix.suite == 'smoke'
+        run: cargo test -p rua-server --features rua-sync/test-util --test contract_chats_http --test integration_server --test endpoints --no-run --message-format=json > test-build.jsonl
+      - name: Check first-input shutdown and Task input in isolation
+        if: matrix.suite == 'smoke'
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          artifacts = [json.loads(line) for line in Path("test-build.jsonl").read_text().splitlines()]
+          binary = next(item["executable"] for item in artifacts
+                        if item.get("reason") == "compiler-artifact"
+                        and item.get("target", {}).get("name") == "contract_chats_http"
+                        and item.get("executable"))
+          for test in (
+              "chats_lifecycle::first_input_without_model_uses_default_after_missing_put_is_rejected",
+              "tasks::task_input_http_routes_by_chat_and_preserves_submission_identity",
+          ):
+              subprocess.run([binary, test, "--exact"], check=True)
+          startup = next(item["executable"] for item in artifacts
+                         if item.get("reason") == "compiler-artifact"
+                         and item.get("target", {}).get("name") == "integration_server"
+                         and item.get("executable"))
+          subprocess.run([startup, "desktop_startup::"], check=True)
+          PYTHON
+      - name: Check MCP application and sync completion in isolation
+        if: matrix.suite == 'smoke'
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          artifacts = [json.loads(line) for line in Path("test-build.jsonl").read_text().splitlines()]
+          binary = next(item["executable"] for item in artifacts
+                        if item.get("reason") == "compiler-artifact"
+                        and item.get("target", {}).get("name") == "endpoints"
+                        and item.get("executable"))
+          for test in (
+              "agent_mcp_persistence_e2e::applying_saved_mcp_defers_unloaded_agents_and_preserves_loaded_runtime",
+              "shared_mcp_persistence_e2e::shared_catalog_write_does_not_apply_to_the_active_agent",
+              "full_export_v4_regression::ordinary_prompt_sync_acceptance_reports_canonical_visibility_latency",
+              "sync_enable_endpoints::sync_now_reports_local_inbox_drain_failure",
+          ):
+              subprocess.run([binary, test, "--exact"], check=True)
+          PYTHON
+      - name: Run workspace tests with process isolation
+        if: matrix.suite == 'workspace'
+        run: cargo nextest run --workspace --features rua-sync/test-util --exclude rua-server --no-fail-fast --retries 0
+      - name: Run server tests with bounded fixture concurrency
+        if: startsWith(matrix.suite, 'server-')
+        run: bash scripts/tests/cargo-test-rua-server.sh --suite "${TEST_SUITE#server-}"
+      - name: Run workspace documentation tests
+        if: matrix.suite == 'docs'
+        run: cargo test --workspace --doc --no-fail-fast
+
+  test:
+    name: Test
+    if: always()
+    needs: [test-suites]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every test group to pass
+        env:
+          RESULT: ${{ needs.test-suites.result }}
+        run: test "$RESULT" = success
+
+  android-release-contract:
+    name: Android Release Contract
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/tests/check-android-release-contract.py
+
+  desktop-signing-contract:
+    name: Desktop Signing Contract
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/tests/check-desktop-release-contract.py
+      - run: python3 scripts/tests/check-ci-test-contract.py
+      - run: bash scripts/release/check-desktop-signing-config.sh
+
+
+
+  release-gate:
+    name: Release Gate
+    if: ${{ !inputs.signed }}
+    needs: [fmt, clippy, check, test, android-release-contract, desktop-signing-contract]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: ./.github/actions/setup-protoc
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: npm ci
+        working-directory: console
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.133
+      - run: bash scripts/tests/release-gate.sh --ref origin/main --report release-gate-report.txt
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: release-gate-report
+          path: release-gate-report.txt
+          retention-days: 7
+
+
+
+  desktop-signing-preflight:
+    name: Desktop Signing Preflight
+    if: inputs.signed && startsWith(github.ref, 'refs/tags/v')
+    needs: [fmt, clippy, check, test, desktop-signing-contract, android-release-contract]
+    runs-on: ubuntu-24.04
+    environment: desktop-release
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: npm ci
+        working-directory: console
+      - run: bash scripts/release/check-desktop-signing-config.sh --require-secrets
+
+  build-release:
+    name: Build (${{ matrix.target }})
+    if: inputs.signed && startsWith(github.ref, 'refs/tags/v')
+    needs: [fmt, clippy, check, test, desktop-signing-preflight]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+          cache-on-failure: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: ./.github/actions/setup-protoc
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo ln -s /usr/bin/aarch64-linux-gnu-gcc /usr/local/bin/aarch64-unknown-linux-gnu-gcc
+      - name: Build release
+        run: bash scripts/ci/build-release.sh "${{ matrix.target }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rua-${{ matrix.target }}
+          path: target/dist/*
+          retention-days: 30
+
+  build-desktop-macos:
+    name: Desktop macOS (${{ matrix.target }})
+    if: inputs.signed && startsWith(github.ref, 'refs/tags/v')
+    needs: [desktop-signing-preflight]
+    runs-on: ${{ matrix.os }}
+    environment: desktop-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-${{ matrix.target }}
+          cache-on-failure: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: npm ci
+        working-directory: console
+      - name: Import Apple signing identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          CERTIFICATE_PATH="$RUNNER_TEMP/rua-desktop.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/rua-desktop.keychain-db"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          printf 'RUA_RELEASE_KEYCHAIN=%s\n' "$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+      - name: Write notarization API key
+        shell: bash
+        run: |
+          set -euo pipefail
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "$APPLE_API_KEY_CONTENT" > "$API_KEY_PATH"
+          chmod 600 "$API_KEY_PATH"
+          printf 'APPLE_API_KEY_PATH=%s\n' "$API_KEY_PATH" >> "$GITHUB_ENV"
+      - name: Build signed and notarized Desktop application
+        run: bash scripts/ci/build-desktop.sh "${{ matrix.target }}"
+      - name: Verify packaged application
+        run: bash scripts/tests/verify-macos-desktop-bundle.sh "${{ matrix.target }}" --signed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rua-desktop-${{ matrix.target }}
+          path: target/dist/desktop/${{ matrix.target }}/*
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-acceptance-${{ matrix.target }}
+          path: target/desktop-acceptance/${{ matrix.target }}/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove temporary keychain
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${RUA_RELEASE_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$RUA_RELEASE_KEYCHAIN" || true
+          fi
+
+  build-desktop-windows:
+    name: Desktop Windows x64
+    if: inputs.signed && startsWith(github.ref, 'refs/tags/v')
+    needs: [desktop-signing-preflight]
+    runs-on: windows-2025
+    environment: desktop-release
+    env:
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-x86_64-pc-windows-msvc
+          cache-on-failure: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: npm ci
+        working-directory: console
+      - name: Import Windows signing identity
+        shell: pwsh
+        run: |
+          $certificatePath = Join-Path $env:RUNNER_TEMP "rua-desktop.pfx"
+          [IO.File]::WriteAllBytes(
+            $certificatePath,
+            [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+          )
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate `
+            -FilePath $certificatePath `
+            -CertStoreLocation Cert:\CurrentUser\My `
+            -Password $password
+          if (-not $certificate.Thumbprint.Equals(
+            $env:WINDOWS_CERTIFICATE_THUMBPRINT,
+            [StringComparison]::OrdinalIgnoreCase
+          )) {
+            throw "Imported certificate thumbprint does not match WINDOWS_CERTIFICATE_THUMBPRINT"
+          }
+      - name: Build signed NSIS installer
+        shell: bash
+        run: bash scripts/ci/build-desktop.sh x86_64-pc-windows-msvc
+      - name: Verify installer signatures
+        shell: pwsh
+        run: |
+          Get-ChildItem target\dist\desktop\x86_64-pc-windows-msvc -Filter *.exe |
+            ForEach-Object {
+              $signature = Get-AuthenticodeSignature $_.FullName
+              if ($signature.Status -ne "Valid") {
+                throw "Invalid Authenticode signature: $($_.FullName) ($($signature.Status))"
+              }
+            }
+      - name: Verify installed application
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem target\dist\desktop\x86_64-pc-windows-msvc -Filter *-setup.exe |
+            Select-Object -First 1
+          if (-not $installer) { throw "NSIS installer not found" }
+          & scripts/tests/verify-windows-desktop-installer.ps1 -Installer $installer.FullName
+      - name: Capture failed Windows desktop state
+        if: failure()
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName System.Drawing
+          $out = "target\desktop-acceptance\windows\desktop-failure.png"
+          New-Item -ItemType Directory -Force -Path (Split-Path $out) | Out-Null
+          $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+          try {
+            $graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bounds.Size)
+            $bitmap.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
+          } finally {
+            $graphics.Dispose()
+            $bitmap.Dispose()
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rua-desktop-x86_64-pc-windows-msvc
+          path: target/dist/desktop/x86_64-pc-windows-msvc/*
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-acceptance-windows
+          path: target/desktop-acceptance/windows/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  publish-release:
+    name: Publish Release
+    if: inputs.signed && startsWith(github.ref, 'refs/tags/v')
+    needs: [build-release, build-desktop-macos, build-desktop-windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rua-*
+          path: artifacts/
+          merge-multiple: true
+      - name: List artifacts
+        run: find artifacts/ -type f | sort
+      - name: Generate Tauri updater manifest
+        run: |
+          python3 scripts/release/generate-tauri-update-manifest.py \
+            --artifacts artifacts \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$GITHUB_REF_NAME" \
+            --output artifacts/latest.json
+      - name: Add release metadata and checksums
+        run: |
+          cp LICENSE LICENSES.md NOTICE THIRD_PARTY_NOTICES.md artifacts/
+          (
+            cd artifacts
+            find . -type f ! -name SHA256SUMS -print0 |
+              sort -z |
+              xargs -0 sha256sum > SHA256SUMS
+          )
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

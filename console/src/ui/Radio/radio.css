@@ -1,0 +1,67 @@
+.rua-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.rua-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+.rua-radio-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.rua-radio-circle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  transition: border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.rua-radio-circle::after {
+  content: "";
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--primary-fill);
+  transform: scale(0);
+  transition: transform 0.15s;
+}
+
+.rua-radio-input:checked + .rua-radio-circle {
+  border-color: var(--primary);
+}
+
+.rua-radio-input:checked + .rua-radio-circle::after {
+  transform: scale(1);
+}
+
+.rua-radio-input:focus-visible + .rua-radio-circle {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.rua-radio-label {
+  font-size: var(--font-md);
+  color: var(--text);
+  user-select: none;
+}
+
+.rua-radio--disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}

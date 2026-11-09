@@ -1,0 +1,66 @@
+[package]
+name = "rua-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Configuration loading and management for rua"
+publish = false
+autotests = false
+
+[dependencies]
+rua-command = { path = "../rua-command" }
+rua-core.workspace = true
+rua-json-repair.workspace = true
+chacha20poly1305 = "0.10"
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+iana-time-zone = "0.1"
+
+[dev-dependencies]
+serial_test = "3"
+tempfile = "3"
+
+[[test]]
+name = "contract_channel_catalog"
+path = "tests/contract_channel_catalog.rs"
+
+[[test]]
+name = "templates"
+path = "tests/templates.rs"
+
+[[test]]
+name = "store"
+path = "tests/store.rs"
+
+[[test]]
+name = "migrations"
+path = "tests/migrations.rs"
+
+[[test]]
+name = "acp_config"
+path = "tests/acp_config.rs"
+
+[[test]]
+name = "unit_agent_id"
+path = "tests/unit_agent_id.rs"
+
+[[test]]
+name = "unit_agents_config"
+path = "tests/unit_agents_config.rs"
+
+[[test]]
+name = "unit_security_config"
+path = "tests/unit_security_config.rs"
+
+[[test]]
+name = "unit_cron_config"
+path = "tests/unit_cron_config.rs"
+
+[[test]]
+name = "task_runtime_config"
+path = "tests/task_runtime_config.rs"

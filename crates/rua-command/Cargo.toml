@@ -1,0 +1,36 @@
+[package]
+name = "rua-command"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+autotests = false
+
+[dependencies]
+agent-types = { path = "../../libs/agent-types" }
+rua-core = { path = "../../libs/rua-core" }
+rua-i18n.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[[test]]
+name = "dispatcher"
+path = "tests/dispatcher.rs"
+
+[[test]]
+name = "unit_commands"
+path = "tests/unit_commands.rs"
+
+[[test]]
+name = "input_window"
+path = "tests/input_window.rs"
+
+[[test]]
+name = "total_command_count"
+path = "tests/total_command_count.rs"

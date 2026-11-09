@@ -1,0 +1,66 @@
+[package]
+name = "rua-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Rua unified CLI"
+publish = false
+autotests = false
+
+[features]
+default = []
+sip-livekit = ["rua-server/sip-livekit"]
+mobile-default = ["rua-server/mobile-default"]
+
+[[bin]]
+name = "rua"
+path = "src/main.rs"
+
+[dependencies]
+agent-client-protocol = "1.3.0"
+async-trait.workspace = true
+bytes = "1"
+clap = { version = "4", features = ["derive", "string"] }
+rua-acp.workspace = true
+rua-core.workspace = true
+rua-http.workspace = true
+rua-contract.workspace = true
+rua-plugin-runtime.workspace = true
+rua-server.workspace = true
+rua-skills-hub.workspace = true
+rua-config.workspace = true
+rua-mcp.workspace = true
+rua-provider.workspace = true
+rua-security.workspace = true
+rua-sync.workspace = true
+rua-observability.workspace = true
+rua-local-model.workspace = true
+rua-doctor.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+reqwest.workspace = true
+futures.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true
+indicatif = "0.17"
+rpassword = "5"
+dialoguer = "0.11"
+chrono = { workspace = true }
+chrono-tz = "0.10"
+iana-time-zone = "0.1"
+sysinfo = { workspace = true }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"
+
+[[test]]
+name = "unit_cli"
+path = "tests/unit_cli.rs"

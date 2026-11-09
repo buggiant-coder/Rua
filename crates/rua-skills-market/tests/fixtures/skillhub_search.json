@@ -1,0 +1,48 @@
+{
+  "code": 0,
+  "data": {
+    "skills": [
+      {
+        "slug": "humanize-ai-text",
+        "name": "Humanize AI text",
+        "description": "Transform AI-generated content into natural human writing",
+        "description_zh": "将AI生成的内容转换为自然的人类写作",
+        "ownerName": "moltbro",
+        "version": "1.0.1",
+        "iconUrl": "https://api.skillhub.cn/icons/humanize.png",
+        "homepage": "https://api.skillhub.cn/moltbro/humanize-ai-text",
+        "source": "clawhub",
+        "category": "content-creation",
+        "downloads": 69793,
+        "installs": 11876,
+        "stars": 206,
+        "labels": ["ai", "writing"],
+        "updated_at": "2025-03-15T10:00:00Z"
+      },
+      {
+        "slug": "code-reviewer",
+        "name": "Code Reviewer",
+        "description": "Automated code review assistant",
+        "description_zh": "自动化代码审查助手",
+        "ownerName": "devtools",
+        "version": "2.3.0",
+        "iconUrl": null,
+        "homepage": "https://api.skillhub.cn/devtools/code-reviewer",
+        "source": "clawhub",
+        "category": "development",
+        "downloads": 45000,
+        "installs": 8200,
+        "stars": 312,
+        "labels": ["code", "review"],
+        "updated_at": "2025-04-01T08:30:00Z"
+      },
+      {
+        "name": "No Slug Skill",
+        "description": "This skill has no slug and should be dropped",
+        "ownerName": "ghost"
+      }
+    ],
+    "total": 27413
+  },
+  "message": "success"
+}

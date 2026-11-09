@@ -1,0 +1,139 @@
+/target
+**/*.rs.bk
+*.swp
+*.swo
+.DS_Store
+.ralph-progress.md
+.code-nav/
+.codegraph/
+.claude/
+.vscode/
+docs.zip
+npm-cache/
+
+# Frontend
+console/node_modules/
+console/dist/
+console/dist-desktop-bootstrap/
+console/logs/
+
+# pde
+.pde/
+
+# opencode/oh-my-opencode runtime state (per-session continuation, transient)
+.omo/
+
+# Local agent skill packages and workflow documentation.
+.agents/
+/docs/agents/
+
+# Local development tasks, sprint archives and validation evidence.
+/.scratch/
+/docs/tasks/
+/docs/archive/
+/docs/research/
+/docs/dev-guides/
+/docs/testing/
+/docs/mobile/
+
+# Python bytecode caches (test fixtures + plugin SDK)
+__pycache__/
+*.py[cod]
+
+# Generated Android bootstrap staging directory
+mobile/bootstrap-staging/
+
+# Local Android bootstrap transfer bundle (large caches/artifacts for machine migration)
+bootstrap-transfer-kit/
+bootstrap-transfer-kit.zip
+
+# Root Android build/cache output; Android source lives under mobile/mobile-shell.
+/android/
+
+# Server runtime logs
+*.log
+.playwright-mcp/
+/tmp.txt
+
+# Local git worktrees for parallel agent development
+.worktree/
+.codex/config.toml
+
+# Private runtime configuration and release credentials (keep public examples).
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.p12
+*.pfx
+*.keystore
+*.jks
+*.key
+*.pem
+*.p8
+.rua-release/
+signing.env
+signing.env.*
+android-signing.properties
+# Deliberately public Android development identity, required by test builds.
+!/mobile/mobile-shell/app/testkey_untrusted.jks
+
+# Maintainer-local deployment, validation, credentials and release preparation.
+/docs/local-prod-dev-isolation.md
+/docs/sync-v4-e2e-smoke.md
+/docs/android-sync-*.md
+/docs/desktop-release*.md
+/docs/open-source-readiness.zh-CN.md
+
+# Public installation prerequisites, packaging, and release dependencies only.
+/scripts/*
+!/scripts/INDEX.md
+!/scripts/install-protoc.ps1
+!/scripts/install-protoc.sh
+!/scripts/package-mobile-apk.sh
+!/scripts/with-console-build-lock.py
+!/scripts/android/
+/scripts/android/*
+!/scripts/android/build-android-native-runtime.sh
+!/scripts/android/prepare-runtime-offline.py
+!/scripts/android/report-native-apk.py
+!/scripts/android/stage-native-payload.py
+!/scripts/ci/
+/scripts/ci/*
+!/scripts/ci/build-desktop.sh
+!/scripts/ci/build-release.sh
+!/scripts/ci/prepare-desktop-bundle.sh
+!/scripts/ci/stage-desktop-automation.py
+!/scripts/release/
+/scripts/release/*
+!/scripts/release/package-notices.py
+!/scripts/release/package-native-sources.py
+!/scripts/release/check-desktop-signing-config.sh
+!/scripts/release/generate-tauri-update-manifest.py
+!/scripts/release/sign-windows.ps1
+!/scripts/release/windows-path.ps1
+!/scripts/release/windows-update.ps1
+!/scripts/tests/
+/scripts/tests/*
+!/scripts/tests/android-native-runtime-e2e.py
+!/scripts/tests/android-native-runtime-model.py
+!/scripts/tests/android-runtime-acp-registry.py
+!/scripts/tests/android-runtime-recovery.py
+!/scripts/tests/android-runtime-skills.py
+!/scripts/tests/prepare-android-webview.py
+!/scripts/tests/cargo-test-rua-server.sh
+!/scripts/tests/check-android-release-contract.py
+!/scripts/tests/check-ci-test-contract.py
+!/scripts/tests/check-config-roundtrip.sh
+!/scripts/tests/check-desktop-automation-staging.py
+!/scripts/tests/check-desktop-release-contract.py
+!/scripts/tests/check-feature-flags.sh
+!/scripts/tests/check-threat-model-coverage.sh
+!/scripts/tests/clippy-touched.sh
+!/scripts/tests/release-gate.sh
+!/scripts/tests/verify-linux-desktop-installer.sh
+!/scripts/tests/verify-macos-desktop-bundle.sh
+!/scripts/tests/verify-windows-desktop-installer.ps1
+
+# Checks of maintainer-only device harnesses.
+/console/src/terminal/androidEvidence.test.ts

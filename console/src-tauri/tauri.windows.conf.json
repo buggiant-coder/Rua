@@ -1,0 +1,25 @@
+{
+  "bundle": {
+    "targets": [
+      "nsis"
+    ],
+    "windows": {
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com",
+      "signCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/release/sign-windows.ps1 %1",
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "installerHooks": "nsis-hooks.nsh"
+      }
+    },
+    "resources": {
+      "../../scripts/release/windows-path.ps1": "windows-path.ps1",
+      "../../scripts/release/windows-update.ps1": "windows-update.ps1"
+    }
+  }
+}

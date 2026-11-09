@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/rua-symbol.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <style>
+      html,
+      body {
+        background: #ffffff;
+      }
+      html.dark-mode,
+      html.dark-mode body {
+        background: #1f1f1f;
+      }
+    </style>
+    <script>
+      try {
+        const theme = localStorage.getItem("rua-theme") || "system";
+        const dark =
+          theme === "dark" ||
+          (theme === "system" &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.classList.toggle("dark-mode", dark);
+      } catch {
+        // The stylesheet defaults to the light background when storage is unavailable.
+      }
+    </script>
+    <title>Rua Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Lato:wght@400;700&family=Newsreader:ital,wght@0,400;0,500;1,400&display=swap"
+      media="print"
+      onload="this.media='all'"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

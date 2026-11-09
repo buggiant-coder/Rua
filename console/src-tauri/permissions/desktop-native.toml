@@ -1,0 +1,10 @@
+[[permission]]
+identifier = "desktop-native"
+description = "Allows user-mediated file export, vetted external-link opening, and validated debug capture directory opening."
+commands.allow = [
+  "save_desktop_file",
+  "open_external_link",
+  "open_llm_debug_capture_directory",
+  "open_project_resource_directory",
+  "show_user_notification",
+]

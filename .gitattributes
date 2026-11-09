@@ -1,0 +1,54 @@
+# Keep source files portable across macOS, Linux, and Windows Git Bash.
+# Shell scripts must stay LF-only; CRLF breaks shebang execution in Bash.
+# Keep every auto-detected text file LF by default; override Windows-native
+# launchers below.
+* text=auto eol=lf
+
+# Source and config files.
+*.rs text eol=lf
+*.toml text eol=lf
+*.lock text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.sql text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+*.zsh text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.css text eol=lf
+*.less text eol=lf
+*.html text eol=lf
+*.xml text eol=lf
+*.gradle text eol=lf
+*.properties text eol=lf
+
+# Windows-native scripts.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets and archives.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.jar binary
+*.zip binary
+*.gz binary
+*.tgz binary
+*.tar binary
+*.xz binary
+*.7z binary
+*.pdf binary
+*.docx binary
+*.pptx binary
+*.xlsx binary

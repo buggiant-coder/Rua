@@ -1,0 +1,220 @@
+name: E2E Integration
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/_console-e2e-job.yml"
+      - ".github/workflows/e2e-integration.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/rua-server/**"
+      - "crates/rua-workspace/**"
+      - "crates/rua-config/**"
+      - "libs/rua-core/**"
+      - "libs/rua-contract/**"
+      - "console/**"
+  schedule:
+
+    - cron: "17 18 * * *"
+  workflow_dispatch:
+    inputs:
+      spec:
+        description: "Playwright spec to run"
+        required: false
+        default: "e2e/baseline.spec.ts"
+      auth_enabled:
+        description: "Run server with authentication enabled"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-integration-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  console-e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        spec:
+          - "e2e/baseline.spec.ts"
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.spec || matrix.spec }}
+      artifact_name: console-e2e-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'baseline' }}
+      auth_enabled: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.auth_enabled == 'true' }}
+
+  console-login-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/login.spec.ts"
+      artifact_name: console-e2e-login
+      auth_enabled: true
+
+  console-debug-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/debug.spec.ts"
+      artifact_name: console-e2e-debug
+
+  console-chat-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/chat.spec.ts"
+      artifact_name: console-e2e-chat
+
+  console-token-usage-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/token-usage.spec.ts"
+      artifact_name: console-e2e-token-usage
+      seed_token_usage: true
+
+  console-cron-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/cron.spec.ts"
+      artifact_name: console-e2e-cron
+
+  console-heartbeat-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/heartbeat.spec.ts"
+      artifact_name: console-e2e-heartbeat
+
+  console-chat-runtime-controls-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/chat-runtime-controls.spec.ts"
+      artifact_name: console-e2e-chat-runtime-controls
+
+  console-tools-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/tools.spec.ts"
+      artifact_name: console-e2e-tools
+
+  console-channels-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/channels.spec.ts"
+      artifact_name: console-e2e-channels
+
+  console-acp-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/acp.spec.ts"
+      artifact_name: console-e2e-acp
+
+  console-agents-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/agents.spec.ts"
+      artifact_name: console-e2e-agents
+
+  console-security-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/security.spec.ts"
+      artifact_name: console-e2e-security
+
+  console-voice-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/voice.spec.ts"
+      artifact_name: console-e2e-voice
+
+  console-skills-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/skills.spec.ts"
+      artifact_name: console-e2e-skills
+
+  console-market-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/market.spec.ts"
+      artifact_name: console-e2e-market
+
+  console-models-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/models.spec.ts"
+      artifact_name: console-e2e-models
+
+  console-mcp-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/mcp.spec.ts"
+      artifact_name: console-e2e-mcp
+
+  console-local-models-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/local-models.spec.ts"
+      artifact_name: console-e2e-local-models
+
+  console-environments-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/environments.spec.ts"
+      artifact_name: console-e2e-environments
+
+  console-workspace-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/workspace.spec.ts"
+      artifact_name: console-e2e-workspace
+
+  console-prompt-library-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/prompt-library.spec.ts"
+      artifact_name: console-e2e-prompt-library
+
+  console-runtime-config-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/runtime-config.spec.ts"
+      artifact_name: console-e2e-runtime-config
+
+  console-sessions-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/sessions.spec.ts"
+      artifact_name: console-e2e-sessions
+
+  console-sync-power-policy-e2e:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/_console-e2e-job.yml
+    with:
+      spec: "e2e/sync-power-policy.spec.ts"
+      artifact_name: console-e2e-sync-power-policy

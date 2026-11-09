@@ -1,0 +1,37 @@
+[package]
+name = "rua-prompts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Prompt library (file-based + archive) for rua"
+publish = false
+autotests = false
+
+[dependencies]
+async-trait.workspace = true
+sha2.workspace = true
+rua-core.workspace = true
+rua-config.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+bytes = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+walkdir = "2"
+tempfile = "3"
+dirs = "6"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"
+
+[[test]]
+name = "unit_agent_files"
+path = "tests/unit_agent_files.rs"

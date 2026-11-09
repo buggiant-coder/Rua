@@ -1,0 +1,31 @@
+{
+  "data": [
+    {
+      "skillName": "weather-query",
+      "displayName": "Weather Query",
+      "description": "Get real-time weather information for any city",
+      "installCount": 1234,
+      "likeCount": 56,
+      "categoryName": "Tools",
+      "subCategoryName": "Information",
+      "updatedAt": "2026-05-20T10:30:00Z"
+    },
+    {
+      "skillName": "code-review",
+      "displayName": "Code Review Assistant",
+      "description": "AI-powered code review for multiple languages",
+      "installCount": 5678,
+      "likeCount": 200,
+      "categoryName": "Development",
+      "subCategoryName": "Code Quality",
+      "updatedAt": "2026-06-01T08:00:00Z"
+    },
+    {
+      "skillName": "",
+      "displayName": "",
+      "description": "This item should be skipped (no slug)"
+    }
+  ],
+  "nextToken": "abc123",
+  "totalCount": 42
+}

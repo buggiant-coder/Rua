@@ -1,0 +1,262 @@
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px 0;
+}
+
+.searchInput {
+  flex: 1 1 auto;
+  min-width: 80px;
+  max-width: 280px;
+}
+
+.sortOrderBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  font-size: 16px;
+  transition: all 0.2s;
+
+  &:hover {
+    color: var(--text);
+    background: var(--card-hover);
+  }
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 16px;
+  background: var(--surface);
+}
+
+.listItem {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  background: var(--surface);
+  transition: background 0.15s ease;
+}
+
+.listItemName {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  padding-right: 168px;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+}
+
+.listItemActions {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 1;
+}
+
+.listItemMeta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.5;
+
+  padding-right: 180px;
+}
+
+.listItemMetaCron {
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.listItemMetaSeparator {
+  color: var(--text-mute);
+}
+
+.listItemMetaNext {
+  color: var(--text-2);
+}
+
+.listItemMetaNextLabel {
+  color: var(--text-3);
+}
+
+.listItemMetaTz {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.listItemSummary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-2);
+
+  min-height: 22px;
+}
+
+.listItemTag {
+  flex-shrink: 0;
+  margin: 0;
+
+  border-radius: var(--radius-md);
+  line-height: 18px;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.listItemSummaryText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: break-all;
+}
+
+.listEmpty {
+  padding: 64px 16px;
+  text-align: center;
+}
+
+.listCompact {
+  .listItem {
+    padding: 12px 14px;
+    gap: 4px;
+  }
+
+  .listItemName {
+    font-size: 16px;
+
+    padding-right: 196px;
+  }
+
+  .listItemMeta {
+    padding-right: 196px;
+  }
+
+  .listItemActions {
+    top: 8px;
+    right: 10px;
+    gap: 8px;
+
+    :global(.rua-btn) {
+      width: 32px;
+      height: 32px;
+    }
+  }
+}
+
+.formGroup {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 16px 16px 4px;
+  margin-bottom: 12px;
+  border-radius: var(--radius-md);
+}
+
+.formGroupTitle {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cronTypeRadio {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+
+  :global(.rua-radio-button-wrapper) {
+    border-radius: var(--radius-md) !important;
+  }
+}
+
+.formCollapse {
+  margin-bottom: 12px;
+}
+
+.collapseLabel {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.collapseLabelHint {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-3);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.formActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.formExtraText {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.formHelperLink {
+  color: var(--primary);
+}
+
+:global(.dark-mode) {
+  .formHelperLink {
+    color: var(--link) !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .list {
+    margin: 12px;
+  }
+
+  .listItem {
+    padding: 12px 14px;
+  }
+
+  .listItemName {
+    font-size: 16px;
+    padding-right: 168px;
+  }
+
+  .listItemMeta {
+    font-size: 11px;
+    padding-right: 168px;
+  }
+}

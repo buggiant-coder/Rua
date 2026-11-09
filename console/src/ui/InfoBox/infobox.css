@@ -1,0 +1,76 @@
+.rua-infobox {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border-left: 3px solid;
+  font-size: var(--font-sm);
+  line-height: 1.5;
+}
+
+.rua-infobox--info {
+  background: var(--primary-bg);
+  border-left-color: var(--primary);
+  color: var(--text-1);
+}
+
+.rua-infobox--warning {
+  background: var(--warning-bg);
+  border-left-color: var(--warning-fg);
+  color: var(--text-1);
+}
+
+.rua-infobox--success {
+  background: var(--success-bg);
+  border-left-color: var(--success-fg);
+  color: var(--text-1);
+}
+
+.rua-infobox--error {
+  background: var(--danger-bg);
+  border-left-color: var(--danger-fg);
+  color: var(--text-1);
+}
+
+.rua-infobox__icon {
+  flex-shrink: 0;
+  font-size: 16px;
+  line-height: inherit;
+  display: flex;
+  align-items: center;
+  height: calc(var(--font-sm, 14px) * 1.5);
+}
+
+.rua-infobox--info .rua-infobox__icon {
+  color: var(--primary);
+}
+
+.rua-infobox--warning .rua-infobox__icon {
+  color: var(--warning-fg);
+}
+
+.rua-infobox--success .rua-infobox__icon {
+  color: var(--success-fg);
+}
+
+.rua-infobox--error .rua-infobox__icon {
+  color: var(--danger-fg);
+}
+
+.rua-infobox__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.rua-infobox__title {
+  font-weight: 500;
+}
+
+.rua-infobox__title + .rua-infobox__content {
+  margin-top: var(--space-1);
+}
+
+.rua-infobox__content {
+  color: var(--text-2);
+}

@@ -1,0 +1,729 @@
+@font-face {
+  font-family: "Rua Mono";
+  src: url("../assets/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+:root {
+  --page-header-height: 56px;
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f1f3f5;
+
+  --border: #dee2e6;
+  --border-soft: #e9ecef;
+
+  --primary: #228be6;
+  --primary-fill: #228be6;
+  --primary-bg: rgba(34, 139, 230, 0.08);
+  --primary-hov: rgba(34, 139, 230, 0.16);
+  --on-primary: #ffffff;
+  --link: #228be6;
+  --nav-active-bg: var(--primary-fill);
+  --nav-active-fg: var(--on-primary);
+  --nav-active-hover-bg: color-mix(in srgb, var(--primary-fill) 90%, #000 10%);
+  --nav-active-hover-ring: color-mix(
+    in srgb,
+    var(--on-primary) 30%,
+    transparent
+  );
+
+  --text: #0c0f12;
+  --text-2: #2c3034;
+  --text-3: #595f66;
+  --text-mute: #8b9197;
+
+  --danger-fg: #fa5252;
+  --danger-bg: rgba(250, 82, 82, 0.1);
+  --danger-fill: #fa5252;
+  --danger-hov: rgba(250, 82, 82, 0.16);
+
+  --success-fg: #12b886;
+  --success-bg: rgba(18, 184, 134, 0.1);
+
+  --warning-fg: #fab005;
+  --warning-bg: rgba(250, 176, 5, 0.1);
+
+  --highlight-bg: rgba(250, 211, 5, 0.45);
+
+  --bg-disabled: #e9ecef;
+  --text-disabled: #adb5bd;
+
+  --table-head: #f1f3f5;
+  --row-hover: rgba(34, 139, 230, 0.14);
+
+  --card-hover: #eef0f2;
+  --tooltip-bg: #303030;
+  --tooltip-fg: #ffffff;
+  --app-bg-image: none;
+  --app-bg-size: cover;
+  --app-bg-position: center;
+  --app-bg-repeat: no-repeat;
+  --app-bg-overlay: transparent;
+
+  --chat-user-bg: rgba(34, 139, 230, 0.12);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(34, 139, 230, 0.18);
+  --chat-agent-bg: var(--surface);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(178, 212, 242, 0.9);
+  --chat-thinking-bg: rgba(34, 139, 230, 0.08);
+  --chat-code-bg: rgba(231, 245, 255, 0.86);
+  --chat-table-head-bg: rgba(231, 245, 255, 0.86);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.72);
+  --chat-table-row-alt-bg: rgba(248, 251, 255, 0.86);
+  --chat-table-row-hover-bg: rgba(34, 139, 230, 0.08);
+  --chat-table-border: rgba(165, 216, 255, 0.86);
+  --chat-strong-fg: var(--text);
+  --chat-muted-fg: var(--text-3);
+  --chat-structure-bg: transparent;
+  --chat-structure-header-bg: transparent;
+  --chat-structure-border: var(--chat-table-border);
+  --chat-control-hover-bg: var(--row-hover);
+  --chat-cursor-bg: var(--text-2);
+  --chat-agent-shadow: var(--shadow-sm);
+  --chat-markdown-line-height: 1.82;
+  --chat-paragraph-spacing: 10px;
+  --chat-floating-action-size: 20px;
+  --chat-bubble-radius: var(--radius-md);
+  --chat-structure-radius: var(--radius-sm);
+  --chat-inline-radius: var(--radius-xs);
+  --chat-control-radius: var(--radius-xs);
+  --chat-media-radius: var(--radius-sm);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "Rua Mono", "JetBrains Mono", "Fira Code", monospace;
+
+  --font-xs: 12px;
+  --font-sm: 13px;
+  --font-md: 14px;
+  --font-lg: 16px;
+  --font-xl: 20px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --radius-none: 0;
+  --radius-sm: 2px;
+  --radius-md: 6px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  --height-sm: 28px;
+  --height-md: 32px;
+  --height-lg: 44px;
+
+  --shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.1);
+  --shadow-xl: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-2xl: 0 8px 32px rgba(0, 0, 0, 0.16);
+}
+
+html.dark-mode {
+  --bg: #1f1f1f;
+  --surface: #242424;
+  --surface-2: #3b3b3b;
+
+  --border: #495057;
+  --border-soft: #343a40;
+
+  --primary: #74c0fc;
+  --primary-fill: #228be6;
+  --primary-bg: rgba(116, 192, 252, 0.18);
+  --primary-hov: rgba(116, 192, 252, 0.28);
+  --on-primary: #ffffff;
+  --link: #74c0fc;
+  --nav-active-bg: var(--primary-fill);
+  --nav-active-fg: var(--on-primary);
+  --nav-active-hover-bg: color-mix(in srgb, var(--primary-fill) 86%, #fff 14%);
+  --nav-active-hover-ring: color-mix(
+    in srgb,
+    var(--on-primary) 34%,
+    transparent
+  );
+
+  --text: #e9ecef;
+  --text-2: #e9ecef;
+  --text-3: #d4d8dd;
+  --text-mute: #b8bcc2;
+
+  --danger-fg: #ff6b6b;
+  --danger-bg: rgba(250, 82, 82, 0.15);
+  --danger-fill: #c92a2a;
+  --danger-hov: rgba(250, 82, 82, 0.22);
+
+  --success-fg: #63e6be;
+  --success-bg: rgba(18, 184, 134, 0.15);
+
+  --warning-fg: #ffe066;
+  --warning-bg: rgba(250, 176, 5, 0.15);
+
+  --highlight-bg: rgba(255, 224, 102, 0.85);
+
+  --bg-disabled: #2e2e2e;
+  --text-disabled: #909aa4;
+
+  --table-head: #3b3b3b;
+
+  --row-hover: rgba(34, 139, 230, 0.2);
+
+  --card-hover: #505050;
+  --tooltip-bg: #303030;
+  --tooltip-fg: #ffffff;
+
+  --chat-user-bg: rgba(34, 139, 230, 0.26);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(77, 171, 247, 0.42);
+  --chat-agent-bg: var(--bg);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(77, 171, 247, 0.36);
+  --chat-thinking-bg: rgba(34, 139, 230, 0.14);
+  --chat-code-bg: rgba(12, 74, 110, 0.34);
+  --chat-table-head-bg: rgba(34, 139, 230, 0.22);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.025);
+  --chat-table-row-alt-bg: rgba(34, 139, 230, 0.07);
+  --chat-table-row-hover-bg: rgba(34, 139, 230, 0.16);
+  --chat-table-border: rgba(77, 171, 247, 0.5);
+  --chat-strong-fg: var(--text);
+  --chat-muted-fg: var(--text-3);
+  --chat-structure-bg: transparent;
+  --chat-structure-header-bg: transparent;
+  --chat-structure-border: var(--chat-table-border);
+  --chat-control-hover-bg: rgba(34, 139, 230, 0.2);
+  --chat-cursor-bg: var(--text-2);
+  --chat-agent-shadow: 0 14px 34px rgba(0, 0, 0, 0.16);
+  --chat-markdown-line-height: 1.84;
+  --chat-paragraph-spacing: 11px;
+  --chat-floating-action-size: 20px;
+
+  --shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --shadow-xl: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-2xl: 0 8px 32px rgba(0, 0, 0, 0.55);
+}
+
+html[data-color-scheme="blue"] {
+  --primary: #228be6;
+  --primary-fill: #228be6;
+  --primary-bg: rgba(34, 139, 230, 0.08);
+  --primary-hov: rgba(34, 139, 230, 0.16);
+  --on-primary: #ffffff;
+  --link: #228be6;
+
+  --row-hover: rgba(34, 139, 230, 0.14);
+
+  --chat-user-bg: rgba(34, 139, 230, 0.12);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(34, 139, 230, 0.18);
+  --chat-agent-bg: var(--surface);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(178, 212, 242, 0.9);
+  --chat-thinking-bg: rgba(34, 139, 230, 0.08);
+  --chat-code-bg: rgba(231, 245, 255, 0.86);
+  --chat-table-head-bg: rgba(231, 245, 255, 0.86);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.72);
+  --chat-table-row-alt-bg: rgba(248, 251, 255, 0.86);
+  --chat-table-row-hover-bg: rgba(34, 139, 230, 0.08);
+  --chat-table-border: rgba(165, 216, 255, 0.86);
+  --chat-control-hover-bg: var(--row-hover);
+}
+
+html.dark-mode[data-color-scheme="blue"] {
+  --primary: #74c0fc;
+  --primary-fill: #228be6;
+  --primary-bg: rgba(116, 192, 252, 0.18);
+  --primary-hov: rgba(116, 192, 252, 0.28);
+  --on-primary: #ffffff;
+  --link: #74c0fc;
+
+  --row-hover: rgba(34, 139, 230, 0.2);
+
+  --chat-user-bg: rgba(34, 139, 230, 0.26);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(77, 171, 247, 0.42);
+  --chat-agent-bg: var(--bg);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(77, 171, 247, 0.36);
+  --chat-thinking-bg: rgba(34, 139, 230, 0.14);
+  --chat-code-bg: rgba(12, 74, 110, 0.34);
+  --chat-table-head-bg: rgba(34, 139, 230, 0.22);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.025);
+  --chat-table-row-alt-bg: rgba(34, 139, 230, 0.07);
+  --chat-table-row-hover-bg: rgba(34, 139, 230, 0.16);
+  --chat-table-border: rgba(77, 171, 247, 0.5);
+  --chat-control-hover-bg: rgba(34, 139, 230, 0.2);
+}
+
+html[data-color-scheme="red"] {
+  --primary: #f03e3e;
+  --primary-fill: #e03131;
+  --primary-bg: rgba(240, 62, 62, 0.1);
+  --primary-hov: rgba(240, 62, 62, 0.18);
+  --on-primary: #ffffff;
+  --link: #e03131;
+
+  --row-hover: rgba(240, 62, 62, 0.14);
+
+  --chat-user-bg: rgba(240, 62, 62, 0.12);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(240, 62, 62, 0.2);
+  --chat-agent-bg: var(--surface);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(240, 62, 62, 0.22);
+  --chat-thinking-bg: rgba(240, 62, 62, 0.08);
+  --chat-code-bg: rgba(255, 245, 245, 0.82);
+  --chat-table-head-bg: rgba(255, 245, 245, 0.86);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.72);
+  --chat-table-row-alt-bg: rgba(255, 250, 250, 0.88);
+  --chat-table-row-hover-bg: rgba(240, 62, 62, 0.08);
+  --chat-table-border: rgba(255, 201, 201, 0.82);
+  --chat-control-hover-bg: var(--row-hover);
+}
+
+html.dark-mode[data-color-scheme="red"] {
+  --primary: #ff8787;
+  --primary-fill: #e03131;
+  --primary-bg: rgba(255, 135, 135, 0.2);
+  --primary-hov: rgba(255, 135, 135, 0.28);
+  --on-primary: #ffffff;
+  --link: #ff8787;
+
+  --row-hover: rgba(255, 135, 135, 0.13);
+
+  --chat-user-bg: rgba(255, 135, 135, 0.16);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(255, 135, 135, 0.28);
+  --chat-agent-bg: var(--bg);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(255, 135, 135, 0.24);
+  --chat-thinking-bg: rgba(255, 135, 135, 0.08);
+  --chat-code-bg: rgba(35, 25, 25, 0.78);
+  --chat-table-head-bg: rgba(255, 135, 135, 0.08);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.025);
+  --chat-table-row-alt-bg: rgba(255, 135, 135, 0.035);
+  --chat-table-row-hover-bg: rgba(255, 135, 135, 0.09);
+  --chat-table-border: rgba(255, 135, 135, 0.2);
+  --chat-control-hover-bg: var(--row-hover);
+}
+
+html[data-color-scheme="orange"] {
+  --primary: #f76707;
+  --primary-fill: #e8590c;
+  --primary-bg: rgba(247, 103, 7, 0.1);
+  --primary-hov: rgba(247, 103, 7, 0.18);
+  --on-primary: #ffffff;
+  --link: #e8590c;
+
+  --row-hover: rgba(247, 103, 7, 0.16);
+
+  --chat-user-bg: rgba(247, 103, 7, 0.12);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(247, 103, 7, 0.2);
+  --chat-agent-bg: var(--surface);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(247, 103, 7, 0.22);
+  --chat-thinking-bg: rgba(247, 103, 7, 0.08);
+  --chat-code-bg: rgba(255, 244, 230, 0.82);
+  --chat-table-head-bg: rgba(255, 244, 230, 0.86);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.72);
+  --chat-table-row-alt-bg: rgba(255, 248, 241, 0.88);
+  --chat-table-row-hover-bg: rgba(247, 103, 7, 0.08);
+  --chat-table-border: rgba(244, 190, 146, 0.82);
+  --chat-control-hover-bg: var(--row-hover);
+}
+
+html.dark-mode[data-color-scheme="orange"] {
+  --primary: #ff922b;
+  --primary-fill: #f76707;
+  --primary-bg: rgba(255, 146, 43, 0.2);
+  --primary-hov: rgba(255, 146, 43, 0.3);
+  --on-primary: #1f1f1f;
+  --link: #ff922b;
+
+  --row-hover: rgba(255, 146, 43, 0.14);
+
+  --chat-user-bg: rgba(255, 146, 43, 0.16);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(255, 146, 43, 0.28);
+  --chat-agent-bg: var(--bg);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(255, 146, 43, 0.24);
+  --chat-thinking-bg: rgba(255, 146, 43, 0.08);
+  --chat-code-bg: rgba(35, 31, 25, 0.78);
+  --chat-table-head-bg: rgba(255, 146, 43, 0.08);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.025);
+  --chat-table-row-alt-bg: rgba(255, 146, 43, 0.035);
+  --chat-table-row-hover-bg: rgba(255, 146, 43, 0.09);
+  --chat-table-border: rgba(255, 146, 43, 0.2);
+  --chat-control-hover-bg: var(--row-hover);
+}
+
+html[data-color-scheme="yellow"] {
+  --primary: #ffd43b;
+  --primary-fill: #fcc419;
+  --primary-bg: rgba(255, 212, 59, 0.18);
+  --primary-hov: rgba(255, 212, 59, 0.28);
+  --on-primary: #1f1f1f;
+  --link: #b77900;
+
+  --row-hover: rgba(255, 212, 59, 0.2);
+
+  --chat-user-bg: rgba(255, 212, 59, 0.18);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(255, 212, 59, 0.32);
+  --chat-agent-bg: var(--surface);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(255, 212, 59, 0.32);
+  --chat-thinking-bg: rgba(255, 212, 59, 0.12);
+  --chat-code-bg: rgba(255, 249, 219, 0.82);
+  --chat-table-head-bg: rgba(255, 249, 219, 0.86);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.72);
+  --chat-table-row-alt-bg: rgba(255, 252, 235, 0.88);
+  --chat-table-row-hover-bg: rgba(255, 212, 59, 0.11);
+  --chat-table-border: rgba(229, 190, 44, 0.78);
+  --chat-control-hover-bg: var(--row-hover);
+}
+
+html.dark-mode[data-color-scheme="yellow"] {
+  --primary: #ffe066;
+  --primary-fill: #fcc419;
+  --primary-bg: rgba(255, 224, 102, 0.2);
+  --primary-hov: rgba(255, 224, 102, 0.3);
+  --on-primary: #1f1f1f;
+  --link: #ffe066;
+
+  --row-hover: rgba(255, 224, 102, 0.14);
+
+  --chat-user-bg: rgba(255, 224, 102, 0.16);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(255, 224, 102, 0.28);
+  --chat-agent-bg: var(--bg);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(255, 224, 102, 0.24);
+  --chat-thinking-bg: rgba(255, 224, 102, 0.08);
+  --chat-code-bg: rgba(35, 32, 24, 0.78);
+  --chat-table-head-bg: rgba(255, 224, 102, 0.08);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.025);
+  --chat-table-row-alt-bg: rgba(255, 224, 102, 0.035);
+  --chat-table-row-hover-bg: rgba(255, 224, 102, 0.09);
+  --chat-table-border: rgba(255, 224, 102, 0.2);
+  --chat-control-hover-bg: var(--row-hover);
+}
+
+html[data-color-scheme="green"] {
+  --primary: #37b24d;
+  --primary-fill: #2f9e44;
+  --primary-bg: rgba(55, 178, 77, 0.1);
+  --primary-hov: rgba(55, 178, 77, 0.18);
+  --on-primary: #ffffff;
+  --link: #2b8a3e;
+
+  --row-hover: rgba(55, 178, 77, 0.14);
+
+  --chat-user-bg: rgba(55, 178, 77, 0.12);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(55, 178, 77, 0.2);
+  --chat-agent-bg: var(--surface);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(55, 178, 77, 0.22);
+  --chat-thinking-bg: rgba(55, 178, 77, 0.08);
+  --chat-code-bg: rgba(235, 251, 238, 0.82);
+  --chat-table-head-bg: rgba(235, 251, 238, 0.86);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.72);
+  --chat-table-row-alt-bg: rgba(248, 255, 249, 0.88);
+  --chat-table-row-hover-bg: rgba(55, 178, 77, 0.08);
+  --chat-table-border: rgba(184, 224, 192, 0.82);
+  --chat-control-hover-bg: var(--row-hover);
+}
+
+html.dark-mode[data-color-scheme="green"] {
+  --primary: #69db7c;
+  --primary-fill: #2f9e44;
+  --primary-bg: rgba(105, 219, 124, 0.18);
+  --primary-hov: rgba(105, 219, 124, 0.26);
+  --on-primary: #ffffff;
+  --link: #69db7c;
+
+  --row-hover: rgba(105, 219, 124, 0.13);
+
+  --chat-user-bg: rgba(105, 219, 124, 0.15);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(105, 219, 124, 0.26);
+  --chat-agent-bg: var(--bg);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(105, 219, 124, 0.22);
+  --chat-thinking-bg: rgba(105, 219, 124, 0.08);
+  --chat-code-bg: rgba(24, 34, 27, 0.78);
+  --chat-table-head-bg: rgba(105, 219, 124, 0.08);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.025);
+  --chat-table-row-alt-bg: rgba(105, 219, 124, 0.032);
+  --chat-table-row-hover-bg: rgba(105, 219, 124, 0.085);
+  --chat-table-border: rgba(105, 219, 124, 0.19);
+  --chat-control-hover-bg: var(--row-hover);
+}
+
+html[data-color-scheme="cyan"] {
+  --primary: #15aabf;
+  --primary-fill: #1098ad;
+  --primary-bg: rgba(21, 170, 191, 0.1);
+  --primary-hov: rgba(21, 170, 191, 0.18);
+  --on-primary: #ffffff;
+  --link: #0b8793;
+
+  --row-hover: rgba(21, 170, 191, 0.14);
+
+  --chat-user-bg: rgba(21, 170, 191, 0.12);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(21, 170, 191, 0.2);
+  --chat-agent-bg: var(--surface);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(21, 170, 191, 0.22);
+  --chat-thinking-bg: rgba(21, 170, 191, 0.08);
+  --chat-code-bg: rgba(227, 250, 252, 0.82);
+  --chat-table-head-bg: rgba(227, 250, 252, 0.86);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.72);
+  --chat-table-row-alt-bg: rgba(245, 253, 254, 0.88);
+  --chat-table-row-hover-bg: rgba(21, 170, 191, 0.08);
+  --chat-table-border: rgba(171, 223, 229, 0.82);
+  --chat-control-hover-bg: var(--row-hover);
+}
+
+html.dark-mode[data-color-scheme="cyan"] {
+  --primary: #66d9e8;
+  --primary-fill: #1098ad;
+  --primary-bg: rgba(102, 217, 232, 0.18);
+  --primary-hov: rgba(102, 217, 232, 0.26);
+  --on-primary: #ffffff;
+  --link: #66d9e8;
+
+  --row-hover: rgba(102, 217, 232, 0.13);
+
+  --chat-user-bg: rgba(102, 217, 232, 0.15);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(102, 217, 232, 0.26);
+  --chat-agent-bg: var(--bg);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(102, 217, 232, 0.22);
+  --chat-thinking-bg: rgba(102, 217, 232, 0.08);
+  --chat-code-bg: rgba(22, 33, 35, 0.78);
+  --chat-table-head-bg: rgba(102, 217, 232, 0.08);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.025);
+  --chat-table-row-alt-bg: rgba(102, 217, 232, 0.032);
+  --chat-table-row-hover-bg: rgba(102, 217, 232, 0.085);
+  --chat-table-border: rgba(102, 217, 232, 0.19);
+  --chat-control-hover-bg: var(--row-hover);
+}
+
+html[data-color-scheme="purple"] {
+  --primary: #7950f2;
+  --primary-fill: #6741d9;
+  --primary-bg: rgba(121, 80, 242, 0.1);
+  --primary-hov: rgba(121, 80, 242, 0.18);
+  --on-primary: #ffffff;
+  --link: #6741d9;
+
+  --row-hover: rgba(121, 80, 242, 0.14);
+
+  --chat-user-bg: rgba(121, 80, 242, 0.15);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(121, 80, 242, 0.28);
+  --chat-agent-bg: var(--surface);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(121, 80, 242, 0.22);
+  --chat-thinking-bg: rgba(121, 80, 242, 0.08);
+  --chat-code-bg: rgba(243, 240, 255, 0.82);
+  --chat-table-head-bg: rgba(243, 240, 255, 0.86);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.72);
+  --chat-table-row-alt-bg: rgba(250, 248, 255, 0.88);
+  --chat-table-row-hover-bg: rgba(121, 80, 242, 0.08);
+  --chat-table-border: rgba(211, 201, 242, 0.82);
+  --chat-control-hover-bg: var(--row-hover);
+}
+
+html.dark-mode[data-color-scheme="purple"] {
+  --primary: #b197fc;
+  --primary-fill: #6741d9;
+  --primary-bg: rgba(177, 151, 252, 0.18);
+  --primary-hov: rgba(177, 151, 252, 0.26);
+  --on-primary: #ffffff;
+  --link: #b197fc;
+
+  --row-hover: rgba(177, 151, 252, 0.13);
+
+  --chat-user-bg: rgba(121, 80, 242, 0.46);
+  --chat-user-fg: #ffffff;
+  --chat-user-border: rgba(177, 151, 252, 0.58);
+  --chat-agent-bg: var(--bg);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(177, 151, 252, 0.22);
+  --chat-thinking-bg: rgba(177, 151, 252, 0.08);
+  --chat-code-bg: rgba(30, 26, 40, 0.78);
+  --chat-table-head-bg: rgba(177, 151, 252, 0.08);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.025);
+  --chat-table-row-alt-bg: rgba(177, 151, 252, 0.032);
+  --chat-table-row-hover-bg: rgba(177, 151, 252, 0.085);
+  --chat-table-border: rgba(177, 151, 252, 0.19);
+  --chat-control-hover-bg: var(--row-hover);
+}
+
+html[data-color-scheme="mono"] {
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f4f4f5;
+
+  --border: #d4d4d8;
+  --border-soft: #e4e4e7;
+
+  --primary: #111111;
+  --primary-fill: #111111;
+  --primary-bg: rgba(17, 17, 17, 0.08);
+  --primary-hov: rgba(17, 17, 17, 0.14);
+  --on-primary: #ffffff;
+  --link: #111111;
+
+  --text: #111111;
+  --text-2: #3f3f46;
+  --text-3: #71717a;
+  --text-mute: #a1a1aa;
+
+  --table-head: #f4f4f5;
+  --row-hover: rgba(17, 17, 17, 0.08);
+  --card-hover: #f4f4f5;
+  --tooltip-bg: #111111;
+  --tooltip-fg: #ffffff;
+
+  --chat-user-bg: rgba(17, 17, 17, 0.08);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(17, 17, 17, 0.16);
+  --chat-agent-bg: var(--surface);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: #d4d4d8;
+  --chat-thinking-bg: rgba(17, 17, 17, 0.06);
+  --chat-code-bg: rgba(244, 244, 245, 0.9);
+  --chat-table-head-bg: rgba(244, 244, 245, 0.92);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.72);
+  --chat-table-row-alt-bg: rgba(250, 250, 250, 0.9);
+  --chat-table-row-hover-bg: rgba(17, 17, 17, 0.06);
+  --chat-table-border: rgba(212, 212, 216, 0.92);
+  --chat-control-hover-bg: var(--row-hover);
+}
+
+html.dark-mode[data-color-scheme="mono"] {
+  --bg: #1f1f1f;
+  --surface: #242424;
+  --surface-2: #3b3b3b;
+
+  --border: #3f3f46;
+  --border-soft: #27272a;
+
+  --primary: #f5f5f5;
+  --primary-fill: #f5f5f5;
+  --primary-bg: rgba(255, 255, 255, 0.12);
+  --primary-hov: rgba(255, 255, 255, 0.18);
+  --on-primary: #0a0a0a;
+  --link: #f5f5f5;
+
+  --text: #f5f5f5;
+  --text-2: #e4e4e7;
+  --text-3: #d4d4d8;
+  --text-mute: #b8bcc2;
+
+  --table-head: #1f1f1f;
+  --row-hover: rgba(255, 255, 255, 0.2);
+  --card-hover: #343434;
+  --tooltip-bg: #f5f5f5;
+  --tooltip-fg: #0a0a0a;
+
+  --chat-user-bg: rgba(255, 255, 255, 0.1);
+  --chat-user-fg: var(--text);
+  --chat-user-border: rgba(255, 255, 255, 0.18);
+  --chat-agent-bg: var(--bg);
+  --chat-agent-fg: var(--text);
+  --chat-agent-border: rgba(255, 255, 255, 0.16);
+  --chat-thinking-bg: rgba(255, 255, 255, 0.06);
+  --chat-code-bg: rgba(17, 17, 17, 0.82);
+  --chat-table-head-bg: rgba(255, 255, 255, 0.08);
+  --chat-table-row-bg: rgba(255, 255, 255, 0.025);
+  --chat-table-row-alt-bg: rgba(255, 255, 255, 0.045);
+  --chat-table-row-hover-bg: rgba(255, 255, 255, 0.1);
+  --chat-table-border: rgba(255, 255, 255, 0.18);
+  --chat-control-hover-bg: var(--row-hover);
+}
+
+:root,
+html:not(.dark-mode)[data-color-scheme] {
+  --chat-user-fg: var(--text);
+  --chat-user-border: color-mix(in srgb, var(--primary-fill) 28%, var(--bg));
+  --chat-agent-bg: var(--bg);
+  --chat-thinking-bg: var(--bg);
+  --chat-code-bg: var(--bg);
+  --chat-input-bg: var(--bg);
+  --chat-table-head-bg: var(--bg);
+  --chat-table-row-bg: var(--bg);
+  --chat-table-row-alt-bg: var(--bg);
+  --chat-table-row-hover-bg: var(--bg);
+  --chat-structure-bg: var(--bg);
+  --chat-structure-header-bg: var(--bg);
+}
+
+html.dark-mode,
+html.dark-mode[data-color-scheme] {
+  --chat-user-fg: var(--text);
+  --chat-user-border: color-mix(in srgb, var(--primary-fill) 82%, var(--bg));
+  --chat-agent-bg: var(--bg);
+  --chat-thinking-bg: var(--bg);
+  --chat-code-bg: var(--bg);
+  --chat-input-bg: var(--bg);
+  --chat-table-head-bg: var(--bg);
+  --chat-table-row-bg: var(--bg);
+  --chat-table-row-alt-bg: var(--bg);
+  --chat-table-row-hover-bg: var(--bg);
+  --chat-structure-bg: var(--bg);
+  --chat-structure-header-bg: var(--bg);
+}
+
+/* Drawers portal to body, outside the desktop layout subtree. */
+html.mobile-mode,
+:root:has(.desktop-mobile-shell) {
+  --page-header-height: 48px;
+}
+
+html.mobile-mode {
+  --space-4: 12px;
+}
+
+:where(svg.lucide) {
+  width: 16px;
+  height: 16px;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-mute);
+}

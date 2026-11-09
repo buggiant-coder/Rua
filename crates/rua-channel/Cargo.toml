@@ -1,0 +1,196 @@
+[package]
+name = "rua-channel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Consolidated rua channel crate: trait, manager, content models, and all channel implementations (DingTalk / Feishu / Telegram / Discord / OneBot / QQ / MQTT / Matrix / Mattermost / iMessage)"
+publish = false
+autotests = false
+
+[features]
+default = ["dingtalk", "feishu", "telegram", "discord", "onebot", "qq", "mattermost", "wechat", "xiaoyi", "wecom", "yuanbao", "slack", "sip"]
+
+
+
+
+
+
+dingtalk = ["dep:mime_guess", "dep:once_cell", "dep:tokio-tungstenite", "dep:futures-util", "reqwest/multipart"]
+feishu = ["dep:tokio-tungstenite", "dep:futures-util", "dep:url"]
+telegram = []
+discord = ["dep:tokio-tungstenite", "dep:futures-util"]
+onebot = ["dep:tokio-tungstenite", "dep:futures-util", "dep:url"]
+qq = ["dep:tokio-tungstenite", "dep:futures-util"]
+mqtt = ["dep:rumqttc"]
+mattermost = ["dep:tokio-tungstenite", "dep:futures-util"]
+slack = ["reqwest/multipart", "dep:tokio-tungstenite", "dep:futures-util"]
+sip = ["dep:tokio-tungstenite", "dep:futures-util"]
+sip-livekit = ["sip", "dep:livekit", "dep:livekit-token"]
+wecom = ["dep:tokio-tungstenite", "dep:futures-util"]
+matrix = ["dep:matrix-sdk", "dep:url"]
+xiaoyi = ["dep:tokio-tungstenite", "dep:futures-util"]
+yuanbao = ["dep:tokio-tungstenite", "dep:futures-util", "dep:hex"]
+imessage = []
+wechat = []
+
+[dependencies]
+rua-core.workspace = true
+rua-http.workspace = true
+rua-command = { path = "../rua-command" }
+rua-contract.workspace = true
+rua-tool.workspace = true
+agent-types.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+reqwest.workspace = true
+
+hmac = "0.12"
+sha2 = "0.10"
+sha1 = "0.10"
+md-5.workspace = true
+base64 = "0.22"
+regex = "1"
+aes = "0.8"
+cbc = "0.1"
+rand = "0.8"
+quick-xml = { version = "0.37", features = ["serialize"] }
+prost.workspace = true
+
+hex = { version = "0.4", optional = true }
+mime_guess = { version = "2", optional = true }
+once_cell = { version = "1", optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+rumqttc = { workspace = true, optional = true, features = ["use-rustls", "websocket"] }
+livekit = { version = "0.9.1", features = ["rustls-tls-native-roots"], optional = true }
+livekit-token = { version = "0.1.2", optional = true }
+matrix-sdk = { version = "0.17", default-features = false, features = ["sqlite", "e2e-encryption"], optional = true }
+url = { version = "2", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["full"] }
+axum = { workspace = true, features = ["ws"] }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+
+[build-dependencies]
+prost-build.workspace = true
+
+[[test]]
+name = "integration_channel_lifecycle"
+path = "tests/integration_channel_lifecycle.rs"
+
+[[test]]
+name = "core_pipeline"
+path = "tests/core_pipeline.rs"
+
+[[test]]
+name = "contract_channels"
+path = "tests/contract_channels.rs"
+
+[[test]]
+name = "unit_dingtalk"
+path = "tests/unit_dingtalk.rs"
+
+[[test]]
+name = "unit_channel_core"
+path = "tests/unit_channel_core.rs"
+
+[[test]]
+name = "core_broadcast"
+path = "tests/core_broadcast.rs"
+
+[[test]]
+name = "core_handlers"
+path = "tests/core_handlers.rs"
+
+[[test]]
+name = "core_token_lifecycle"
+path = "tests/core_token_lifecycle.rs"
+
+[[test]]
+name = "core_weixin_wecom"
+path = "tests/core_weixin_wecom.rs"
+
+[[test]]
+name = "dingtalk_group_p2p_routing"
+path = "tests/dingtalk_group_p2p_routing.rs"
+
+[[test]]
+name = "dingtalk_ai_card"
+path = "tests/dingtalk_ai_card.rs"
+
+[[test]]
+name = "discord_discord_channel_send"
+path = "tests/discord_discord_channel_send.rs"
+
+[[test]]
+name = "feishu_all"
+path = "tests/feishu_all.rs"
+
+[[test]]
+name = "imessage_channel_basics"
+path = "tests/imessage_channel_basics.rs"
+required-features = ["imessage"]
+
+[[test]]
+name = "matrix_matrix_channel"
+path = "tests/matrix_matrix_channel.rs"
+required-features = ["matrix"]
+
+[[test]]
+name = "mattermost_channel_test"
+path = "tests/mattermost_channel_test.rs"
+
+[[test]]
+name = "slack_channel_test"
+path = "tests/slack_channel_test.rs"
+
+[[test]]
+name = "sip_channel_test"
+path = "tests/sip_channel_test.rs"
+
+[[test]]
+name = "mqtt_mqtt_channel_test"
+path = "tests/mqtt_mqtt_channel_test.rs"
+required-features = ["mqtt"]
+
+[[test]]
+name = "onebot_all"
+path = "tests/onebot_all.rs"
+
+[[test]]
+name = "core_media"
+path = "tests/core_media.rs"
+
+[[test]]
+name = "qq_all"
+path = "tests/qq_all.rs"
+
+[[test]]
+name = "telegram_all"
+path = "tests/telegram_all.rs"
+
+[[test]]
+name = "xiaoyi_a2a"
+path = "tests/xiaoyi_a2a.rs"
+required-features = ["xiaoyi"]
+
+[[test]]
+name = "yuanbao_codec"
+path = "tests/yuanbao_codec.rs"
+required-features = ["yuanbao"]

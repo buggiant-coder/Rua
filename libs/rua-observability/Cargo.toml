@@ -1,0 +1,31 @@
+[package]
+name = "rua-observability"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Observability utilities (tracing, metrics) for rua"
+publish = false
+autotests = false
+
+[features]
+default = []
+metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
+
+[dependencies]
+rua-core.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender = "0.2"
+chrono.workspace = true
+serde.workspace = true
+metrics = { workspace = true, optional = true }
+metrics-exporter-prometheus = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+serde_json.workspace = true
+
+[[test]]
+name = "unit_logging"
+path = "tests/unit_logging.rs"

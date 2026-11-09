@@ -1,0 +1,196 @@
+.configPage {
+  width: 100%;
+
+  :global {
+    .rua-slider-track {
+      background-color: var(--primary-fill);
+    }
+
+    .rua-slider .rua-slider-handle::after {
+      box-shadow: 0 0 0 2px var(--primary);
+    }
+  }
+}
+
+.pageHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: relative;
+  padding: 20px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0;
+}
+
+.breadcrumbHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  flex: 1;
+}
+
+.breadcrumbParent {
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+.breadcrumbSeparator {
+  color: var(--text-mute);
+  margin: 0 4px;
+}
+
+.breadcrumbCurrent {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 20px;
+}
+
+.formCard {
+  width: 100%;
+}
+
+.form {
+  flex: 1;
+  min-height: 0;
+}
+
+.configField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+
+.configFieldLabel {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.configFieldRequired::after {
+  content: " *";
+  color: var(--danger-fg);
+}
+
+.configFieldTooltip {
+  margin-left: 4px;
+  color: var(--text-3);
+  font-size: 12px;
+  cursor: help;
+}
+
+.configFieldError {
+  font-size: 12px;
+  color: var(--danger-fg);
+}
+
+.reactAgentRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+
+  :global(html.mobile-mode) & {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+}
+
+.reactAgentField {
+  margin-bottom: 0 !important;
+
+  :global(html.mobile-mode) & {
+    margin-bottom: 8px !important;
+  }
+}
+
+.llmRetryRow {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+
+  :global(html.mobile-mode) & {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+}
+
+.llmRetryField {
+  margin-bottom: 0 !important;
+
+  :global(html.mobile-mode) & {
+    margin-bottom: 8px !important;
+  }
+}
+
+.formContainer {
+  padding: 16px 24px 32px;
+
+  :global(html.mobile-mode) & {
+    padding: 8px;
+  }
+}
+
+.sliderCurrentMark {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.fixedStartRangeSlider :global(.rua-slider-handle-1) {
+  display: none !important;
+}
+
+.buttonGroup {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 32px;
+  margin-bottom: 0;
+}
+
+.centerState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 400px;
+  gap: 16px;
+}
+
+.stateText {
+  font-size: 14px;
+  color: var(--text-2);
+}
+
+.stateTextError {
+  font-size: 14px;
+  color: var(--danger-fg);
+}
+
+:global(.dark-mode) {
+  .pageHeader {
+    border-bottom-color: var(--border-soft);
+  }
+
+  .breadcrumbSeparator {
+    color: var(--border);
+  }
+
+  .sliderValue {
+    color: var(--text);
+  }
+}
+
+.configPage {
+  :global(html.mobile-mode) & {
+    .formCard {
+      gap: 6px;
+      margin-top: 0 !important;
+    }
+
+    .formCard > div:first-child span:first-child {
+      font-size: 14px;
+    }
+  }
+}

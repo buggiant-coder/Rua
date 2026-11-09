@@ -1,0 +1,67 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Rua",
+  "version": "0.8.0",
+  "identifier": "io.agentscope.rua.desktop",
+  "build": {
+    "frontendDist": "../dist-desktop-bootstrap",
+    "devUrl": "http://127.0.0.1:5174",
+    "beforeDevCommand": "npm run desktop:before-dev",
+    "beforeBuildCommand": "npm run build && npm run build:desktop-bootstrap"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "url": "desktop-bootstrap.html",
+        "title": "Rua",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "connect-src": "'self' http://127.0.0.1:* ws://127.0.0.1:* ipc: http://ipc.localhost",
+        "img-src": "'self' data:",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "externalBin": [
+      "binaries/rua",
+      "binaries/agent-browser",
+      "binaries/cua-driver"
+    ],
+    "resources": {
+      "../dist": "console",
+      "binaries/automation": "automation"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVFQjY3QUIyN0MxMzZEN0QKUldSOWJSTjhzbnEyN3I3cUZra0RDS0JKd093Nno1ZEhMYTh4aDVrM2toY2xIZG12L2taVERwcFcK",
+      "endpoints": [
+        "https://github.com/buggiant-coder/Rua/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

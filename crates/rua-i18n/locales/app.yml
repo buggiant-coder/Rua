@@ -1,0 +1,1013 @@
+_version: 2
+
+command.clear.body:
+  zh: |
+    **历史已清除！**
+
+    - 此时间点之前的消息不会发送给智能体
+    - 完整历史已保存在磁盘上
+  en: |
+    **History Cleared!**
+
+    - Messages before this point will not be sent to the agent
+    - Full history is preserved on disk
+  ja: |
+    **履歴がクリアされました！**
+
+    - この時点より前のメッセージはエージェントに送信されません
+    - 完全な履歴はディスクに保存されています
+  ru: |
+    **История очищена!**
+
+    - Сообщения до этого момента не будут отправлены агенту
+    - Полная история сохранена на диске
+
+command.common.session_not_available:
+  zh: |
+    会话不可用。
+  en: |
+    Session not available.
+  ja: |
+    セッションが利用できません。
+  ru: |
+    Сессия недоступна.
+
+command.common.load_messages_error:
+  zh: |
+    消息加载失败：{error}
+  en: |
+    Failed to load messages: {error}
+  ja: |
+    メッセージの読み込みに失敗しました：{error}
+  ru: |
+    Не удалось загрузить сообщения: {error}
+
+command.common.no_agent_context:
+  zh: |
+    **没有智能体上下文。**
+  en: |
+    **No agent context.**
+  ja: |
+    **エージェントコンテキストがありません。**
+  ru: |
+    **Нет контекста агента.**
+
+command.compact.no_messages:
+  zh: |
+    **没有消息可压缩。**
+
+    - 当前上下文为空
+    - 未执行任何操作
+  en: |
+    **No messages to compact.**
+
+    - Current context is empty
+    - No action taken
+  ja: |
+    **圧縮するメッセージがありません。**
+
+    - 現在のコンテキストは空です
+    - 操作は行われませんでした
+  ru: |
+    **Нет сообщений для сжатия.**
+
+    - Текущий контекст пуст
+    - Действие не выполнено
+
+command.compact.disabled:
+  zh: |
+    **上下文管理器已禁用**
+
+    - 上下文压缩功能不可用
+    - 启用上下文管理器以使用此功能
+  en: |
+    **Context Manager Disabled**
+
+    - Context compaction is not available
+    - Enable context manager to use this feature
+  ja: |
+    **コンテキストマネージャーが無効です**
+
+    - コンテキスト圧縮は利用できません
+    - この機能を使用するにはコンテキストマネージャーを有効にしてください
+  ru: |
+    **Менеджер контекста отключён**
+
+    - Сжатие контекста недоступно
+    - Включите менеджер контекста для использования этой функции
+
+command.compact.no_window:
+  zh: |
+    **没有消息可压缩。**
+
+    - 当前窗口为空
+    - 未执行任何操作
+  en: |
+    **No messages to compact.**
+
+    - Current window is empty
+    - No action taken
+  ja: |
+    **圧縮するメッセージがありません。**
+
+    - 現在のウィンドウは空です
+    - 操作は行われませんでした
+  ru: |
+    **Нет сообщений для сжатия.**
+
+    - Текущее окно пусто
+    - Действие не выполнено
+
+command.compact.failed:
+  zh: |
+    **压缩失败！**
+
+    - 上下文压缩返回空结果
+    - 请检查日志了解详情
+    - 如果上下文超出最大长度，请使用 `/new` 或 `/clear` 清除上下文
+  en: |
+    **Compact Failed!**
+
+    - Context compaction returned empty result
+    - Please check the logs for details
+    - If context exceeds max length, please use `/new` or `/clear` to clear the context
+  ja: |
+    **圧縮に失敗しました！**
+
+    - コンテキスト圧縮が空の結果を返しました
+    - 詳細はログを確認してください
+    - コンテキストが最大長を超えた場合は `/new` または `/clear` でコンテキストをクリアしてください
+  ru: |
+    **Сжатие не удалось!**
+
+    - Сжатие контекста вернуло пустой результат
+    - Проверьте логи для подробностей
+    - Если контекст превышает максимальную длину, используйте `/new` или `/clear` для очистки контекста
+
+command.compact.error:
+  zh: |
+    压缩错误：{error}
+  en: |
+    Compaction error: {error}
+  ja: |
+    圧縮エラー：{error}
+  ru: |
+    Ошибка сжатия: {error}
+
+command.compact.done:
+  zh: |
+    **压缩完成！**
+
+    - 已压缩消息数：{count}
+    **压缩摘要：**
+    {summary}
+    - 摘要任务已在后台启动
+  en: |
+    **Compact Complete!**
+
+    - Messages compacted: {count}
+    **Compressed Summary:**
+    {summary}
+    - Summary task started in background
+  ja: |
+    **圧縮完了！**
+
+    - 圧縮されたメッセージ数：{count}
+    **圧縮サマリー：**
+    {summary}
+    - サマリータスクがバックグラウンドで開始されました
+  ru: |
+    **Сжатие завершено!**
+
+    - Сжато сообщений: {count}
+    **Сжатая сводка:**
+    {summary}
+    - Задача сводки запущена в фоне
+
+command.compact.set_summary_error:
+  zh: |
+    设置摘要失败：{error}
+  en: |
+    Failed to set summary: {error}
+  ja: |
+    サマリーの設定に失敗しました：{error}
+  ru: |
+    Не удалось установить сводку: {error}
+
+command.new.no_messages:
+  zh: |
+    **没有消息可总结。**
+
+    - 当前上下文为空
+    - 压缩摘要已清除
+    - 未执行任何操作
+  en: |
+    **No messages to summarize.**
+
+    - Current context is empty
+    - Compressed summary is clear
+    - No action taken
+  ja: |
+    **要約するメッセージがありません。**
+
+    - 現在のコンテキストは空です
+    - 圧縮サマリーはクリアされています
+    - 操作は行われませんでした
+  ru: |
+    **Нет сообщений для обобщения.**
+
+    - Текущий контекст пуст
+    - Сжатая сводка очищена
+    - Действие не выполнено
+
+command.new.disabled:
+  zh: |
+    **上下文管理器已禁用**
+
+    - 无法启动带摘要的新对话
+    - 启用上下文管理器以使用此功能
+  en: |
+    **Context Manager Disabled**
+
+    - Cannot start new conversation with summary
+    - Enable context manager to use this feature
+  ja: |
+    **コンテキストマネージャーが無効です**
+
+    - サマリー付きの新しい会話を開始できません
+    - この機能を使用するにはコンテキストマネージャーを有効にしてください
+  ru: |
+    **Менеджер контекста отключён**
+
+    - Невозможно начать новый разговор со сводкой
+    - Включите менеджер памяти для использования этой функции
+
+command.new.done:
+  zh: |
+    **新对话已开始！**
+
+    - 摘要任务已在后台启动
+    - 准备开始新对话
+  en: |
+    **New Conversation Started!**
+
+    - Summary task started in background
+    - Ready for new conversation
+  ja: |
+    **新しい会話を開始しました！**
+
+    - サマリータスクがバックグラウンドで開始されました
+    - 新しい会話の準備ができました
+  ru: |
+    **Новый разговор начат!**
+
+    - Задача сводки запущена в фоне
+    - Готов к новому разговору
+
+command.history.empty:
+  zh: |
+    **历史**
+
+    - 当前会话没有消息
+  en: |
+    **History**
+
+    - No messages in current session
+  ja: |
+    **履歴**
+
+    - 現在のセッションにメッセージがありません
+  ru: |
+    **История**
+
+    - В текущей сессии нет сообщений
+
+command.history.header:
+  zh: |
+    **历史（{count} 条消息）**
+  en: |
+    **History ({count} messages)**
+  ja: |
+    **履歴（{count} 件のメッセージ）**
+  ru: |
+    **История ({count} сообщений)**
+
+command.history.footer:
+  zh: |
+
+    ---
+
+    - 使用 /message <索引> 查看完整消息内容
+  en: |
+
+    ---
+
+    - Use /message <index> to view full message content
+  ja: |
+
+    ---
+
+    - /message <インデックス> でメッセージの全内容を表示
+  ru: |
+
+    ---
+
+    - Используйте /message <индекс> для просмотра полного содержания сообщения
+
+command.history.footer_compact:
+  zh: |
+    - 使用 /compact_str 查看完整压缩摘要
+  en: |
+    - Use /compact_str to view full compact summary
+  ja: |
+    - /compact_str で完全な圧縮サマリーを表示
+  ru: |
+    - Используйте /compact_str для просмотра полной сжатой сводки
+
+command.compact_str.has_summary:
+  zh: |
+    **压缩摘要**
+  en: |
+    **Compressed Summary**
+  ja: |
+    **圧縮サマリー**
+  ru: |
+    **Сжатая сводка**
+
+command.compact_str.no_summary:
+  zh: |
+    **无压缩摘要**
+
+    - 尚未生成摘要
+    - 使用 /compact 或等待自动压缩
+  en: |
+    **No Compressed Summary**
+
+    - No summary has been generated yet
+    - Use /compact or wait for auto-compaction
+  ja: |
+    **圧縮サマリーなし**
+
+    - サマリーはまだ生成されていません
+    - /compact を使用するか自動圧縮を待ってください
+  ru: |
+    **Нет сжатой сводки**
+
+    - Сводка ещё не была сгенерирована
+    - Используйте /compact или дождитесь автоматического сжатия
+
+command.message.usage:
+  zh: |
+    **用法：/message <索引>**
+
+    - 示例：/message 1（显示第一条消息）
+    - 可用消息：1 到 {count}
+  en: |
+    **Usage: /message <index>**
+
+    - Example: /message 1 (show first message)
+    - Available messages: 1 to {count}
+  ja: |
+    **使用法：/message <インデックス>**
+
+    - 例：/message 1（最初のメッセージを表示）
+    - 利用可能なメッセージ：1 から {count}
+  ru: |
+    **Использование: /message <индекс>**
+
+    - Пример: /message 1 (показать первое сообщение)
+    - Доступные сообщения: от 1 до {count}
+
+command.message.invalid_index:
+  zh: |
+    **无效索引：'{index}'**
+
+    - 索引必须是数字
+    - 示例：/message 1
+  en: |
+    **Invalid Index: '{index}'**
+
+    - Index must be a number
+    - Example: /message 1
+  ja: |
+    **無効なインデックス：'{index}'**
+
+    - インデックスは数字でなければなりません
+    - 例：/message 1
+  ru: |
+    **Недопустимый индекс: '{index}'**
+
+    - Индекс должен быть числом
+    - Пример: /message 1
+
+command.message.no_messages:
+  zh: |
+    **没有可用消息**
+
+    - 当前上下文为空
+  en: |
+    **No Messages Available**
+
+    - Current context is empty
+  ja: |
+    **利用可能なメッセージがありません**
+
+    - 現在のコンテキストは空です
+  ru: |
+    **Нет доступных сообщений**
+
+    - Текущий контекст пуст
+
+command.message.out_of_range:
+  zh: |
+    **索引超出范围：{index}**
+
+    - 可用范围：1 到 {count}
+    - 示例：/message 1
+  en: |
+    **Index Out of Range: {index}**
+
+    - Available range: 1 to {count}
+    - Example: /message 1
+  ja: |
+    **インデックスが範囲外：{index}**
+
+    - 利用可能な範囲：1 から {count}
+    - 例：/message 1
+  ru: |
+    **Индекс вне диапазона: {index}**
+
+    - Доступный диапазон: от 1 до {count}
+    - Пример: /message 1
+
+command.message.header:
+  zh: |
+    **消息 {index}/{total}**
+
+    - **角色：** {role}
+    - **内容：**
+  en: |
+    **Message {index}/{total}**
+
+    - **Role:** {role}
+    - **Content:**
+  ja: |
+    **メッセージ {index}/{total}**
+
+    - **ロール：** {role}
+    - **内容：**
+  ru: |
+    **Сообщение {index}/{total}**
+
+    - **Роль:** {role}
+    - **Содержание:**
+
+command.message.truncated:
+  zh: |
+
+    - 内容已截断，使用 /dump_history 查看完整内容
+  en: |
+
+    - Content truncated, use /dump_history to view full content
+  ja: |
+
+    - 内容が切り詰められました。完全な内容を表示するには /dump_history を使用してください
+  ru: |
+
+    - Содержание обрезано, используйте /dump_history для просмотра полного содержания
+
+command.dump_history.no_workspace:
+  zh: |
+    **导出失败**
+
+    - 错误：workspace_dir 未配置
+  en: |
+    **Dump Failed**
+
+    - Error: workspace_dir not configured
+  ja: |
+    **ダンプ失敗**
+
+    - エラー：workspace_dir が設定されていません
+  ru: |
+    **Дамп не удался**
+
+    - Ошибка: workspace_dir не настроен
+
+command.dump_history.serialization_error:
+  zh: |
+    **导出失败**
+
+    - 序列化错误
+  en: |
+    **Dump Failed**
+
+    - Serialization error
+  ja: |
+    **ダンプ失敗**
+
+    - シリアライズエラー
+  ru: |
+    **Дамп не удался**
+
+    - Ошибка сериализации
+
+command.dump_history.write_error:
+  zh: |
+    **导出失败**
+
+    - 写入错误
+  en: |
+    **Dump Failed**
+
+    - Write error
+  ja: |
+    **ダンプ失敗**
+
+    - 書き込みエラー
+  ru: |
+    **Дамп не удался**
+
+    - Ошибка записи
+
+command.dump_history.done:
+  zh: |
+    **历史已导出！**
+
+    - 已保存消息数：{count}
+    - 包含摘要：{has_summary}
+    - 文件：`{path}`
+  en: |
+    **History Dumped!**
+
+    - Messages saved: {count}
+    - Has summary: {has_summary}
+    - File: `{path}`
+  ja: |
+    **履歴をダンプしました！**
+
+    - 保存されたメッセージ数：{count}
+    - サマリーあり：{has_summary}
+    - ファイル：`{path}`
+  ru: |
+    **История выгружена!**
+
+    - Сохранено сообщений: {count}
+    - Есть сводка: {has_summary}
+    - Файл: `{path}`
+
+command.dump_history.error:
+  zh: |
+    **导出失败**
+
+    - 错误：{error}
+  en: |
+    **Dump Failed**
+
+    - Error: {error}
+  ja: |
+    **ダンプ失敗**
+
+    - エラー：{error}
+  ru: |
+    **Дамп не удался**
+
+    - Ошибка: {error}
+
+command.long_term_memory.not_configured:
+  zh: |
+    **长期记忆不可用**
+
+    - 此智能体未配置长期记忆
+  en: |
+    **Long-Term Memory Not Available**
+
+    - Long-term memory is not configured for this agent
+  ja: |
+    **長期メモリが利用できません**
+
+    - このエージェントには長期メモリが設定されていません
+  ru: |
+    **Долговременная память недоступна**
+
+    - Долговременная память не настроена для этого агента
+
+command.long_term_memory.not_available:
+  zh: |
+    **长期记忆不可用**
+
+    - 此记忆实例不存在 `_long_term_memory` 属性
+    - 此功能需要兼容 ReMeInMemoryMemory 的记忆后端
+  en: |
+    **Long-Term Memory Not Available**
+
+    - `_long_term_memory` attribute does not exist on this memory instance
+    - This feature requires a ReMeInMemoryMemory-compatible memory backend
+  ja: |
+    **長期メモリが利用できません**
+
+    - このメモリインスタンスに `_long_term_memory` 属性が存在しません
+    - この機能には ReMeInMemoryMemory 互換のメモリバックエンドが必要です
+  ru: |
+    **Долговременная память недоступна**
+
+    - Атрибут `_long_term_memory` не существует в этом экземпляре памяти
+    - Эта функция требует совместимый с ReMeInMemoryMemory бэкенд памяти
+
+command.long_term_memory.empty:
+  zh: |
+    **长期记忆为空**
+
+    - `_long_term_memory` 已存在但尚无内容
+  en: |
+    **Long-Term Memory Empty**
+
+    - `_long_term_memory` exists but contains no content yet
+  ja: |
+    **長期メモリは空です**
+
+    - `_long_term_memory` は存在しますがまだ内容がありません
+  ru: |
+    **Долговременная память пуста**
+
+    - `_long_term_memory` существует, но пока не содержит данных
+
+command.long_term_memory.header:
+  zh: |
+    **长期记忆**
+  en: |
+    **Long-Term Memory**
+  ja: |
+    **長期メモリ**
+  ru: |
+    **Долговременная память**
+
+command.prompts.not_available:
+  zh: |
+    **提示词管理不可用**
+  en: |
+    **Prompt management not available**
+  ja: |
+    **プロンプト管理は利用できません**
+  ru: |
+    **Управление промптами недоступно**
+
+command.prompts.empty:
+  zh: |
+    **活跃提示词文件**
+
+    - （无 — 空白提示词）
+
+    使用 `/prompt add <文件>` 添加，`/prompt reset` 恢复默认。
+  en: |
+    **Active Prompt Files**
+
+    - (none — blank prompt)
+
+    Use `/prompt add <file>` to add, `/prompt reset` to restore defaults.
+  ja: |
+    **アクティブなプロンプトファイル**
+
+    - （なし — 空白プロンプト）
+
+    `/prompt add <ファイル>` で追加、`/prompt reset` でデフォルトに戻します。
+  ru: |
+    **Активные файлы промптов**
+
+    - (нет — пустой промпт)
+
+    Используйте `/prompt add <файл>` для добавления, `/prompt reset` для восстановления значений по умолчанию.
+
+command.prompts.list:
+  zh: |
+    **活跃提示词文件**
+
+    {items}
+    使用 `/prompt add <文件>` 或 `/prompt remove <文件>` 修改。
+  en: |
+    **Active Prompt Files**
+
+    {items}
+    Use `/prompt add <file>` or `/prompt remove <file>` to modify.
+  ja: |
+    **アクティブなプロンプトファイル**
+
+    {items}
+    `/prompt add <ファイル>` または `/prompt remove <ファイル>` で変更できます。
+  ru: |
+    **Активные файлы промптов**
+
+    {items}
+    Используйте `/prompt add <файл>` или `/prompt remove <файл>` для изменения.
+
+command.prompt.added:
+  zh: |
+    **已添加提示词：** `{target}`
+  en: |
+    **Prompt added:** `{target}`
+  ja: |
+    **プロンプトを追加しました：** `{target}`
+  ru: |
+    **Промпт добавлен:** `{target}`
+
+command.prompt.already_active:
+  zh: |
+    **已处于活跃状态：** `{target}`
+  en: |
+    **Already active:** `{target}`
+  ja: |
+    **すでにアクティブです：** `{target}`
+  ru: |
+    **Уже активен:** `{target}`
+
+command.prompt.removed:
+  zh: |
+    **已移除提示词：** `{target}`
+  en: |
+    **Prompt removed:** `{target}`
+  ja: |
+    **プロンプトを削除しました：** `{target}`
+  ru: |
+    **Промпт удалён:** `{target}`
+
+command.prompt.not_active:
+  zh: |
+    **未处于活跃状态：** `{target}`
+  en: |
+    **Not active:** `{target}`
+  ja: |
+    **アクティブではありません：** `{target}`
+  ru: |
+    **Не активен:** `{target}`
+
+command.prompt.reset:
+  zh: |
+    **提示词文件已重置为智能体默认值。**
+  en: |
+    **Prompt files reset to agent defaults.**
+  ja: |
+    **プロンプトファイルをエージェントのデフォルトにリセットしました。**
+  ru: |
+    **Файлы промптов сброшены к значениям агента по умолчанию.**
+
+command.prompt.usage:
+  zh: |
+    **用法：**
+    - `/prompt add <文件>` — 添加提示词文件
+    - `/prompt remove <文件>` — 移除提示词文件
+    - `/prompt reset` — 恢复智能体默认值
+  en: |
+    **Usage:**
+    - `/prompt add <file>` — add a prompt file
+    - `/prompt remove <file>` — remove a prompt file
+    - `/prompt reset` — restore agent defaults
+  ja: |
+    **使用法：**
+    - `/prompt add <ファイル>` — プロンプトファイルを追加
+    - `/prompt remove <ファイル>` — プロンプトファイルを削除
+    - `/prompt reset` — エージェントのデフォルトに戻す
+  ru: |
+    **Использование:**
+    - `/prompt add <файл>` — добавить файл промпта
+    - `/prompt remove <файл>` — удалить файл промпта
+    - `/prompt reset` — восстановить значения агента по умолчанию
+
+skills.error.no_workspace:
+  zh: |
+    **错误**：工作区未初始化。
+  en: |
+    **Error**: Workspace not initialized.
+  ja: |
+    **エラー**：ワークスペースが初期化されていません。
+  ru: |
+    **Ошибка**: Рабочая область не инициализирована.
+
+skills.none_enabled:
+  zh: |
+    当前频道未启用任何技能。
+  en: |
+    No skills are currently enabled for this channel.
+  ja: |
+    このチャンネルで有効なスキルはありません。
+  ru: |
+    В этом канале нет включённых навыков.
+
+skills.footer_hint:
+  zh: |
+
+    ---
+    *使用 `/<skill_name>` 查看详情，`/<skill_name> <input>` 调用。也可以使用 `/[skill_name]`。*
+  en: |
+
+    ---
+    *Use `/<skill_name>` for details, `/<skill_name> <input>` to invoke. `/[skill_name]` also works.*
+  ja: |
+
+    ---
+    *`/<skill_name>` で詳細を表示、`/<skill_name> <input>` で実行。`/[skill_name]` も使えます。*
+  ru: |
+
+    ---
+    *Используйте `/<skill_name>` для подробностей, `/<skill_name> <input>` для вызова. `/[skill_name]` тоже работает.*
+
+command.stop.stopped:
+  zh: |
+    任务已停止
+  en: |
+    Task Stopped
+  ja: |
+    タスクを停止しました
+  ru: |
+    Задача остановлена
+
+command.stop.no_active:
+  zh: |
+    没有正在进行的生成可停止。
+  en: |
+    No active generation to stop.
+  ja: |
+    停止するアクティブな生成はありません。
+  ru: |
+    Нет активной генерации для остановки.
+
+command.acp.usage:
+  zh: |
+    用法：/acp <runner> [工作目录]
+  en: |
+    Usage: /acp <runner> [cwd]
+  ja: |
+    使用法：/acp <runner> [作業ディレクトリ]
+  ru: |
+    Использование: /acp <runner> [рабочий_каталог]
+
+command.acpr.usage:
+  zh: |
+    用法：/acpr <runner> [工作目录] <会话ID>
+  en: |
+    Usage: /acpr <runner> [cwd] <session_id>
+  ja: |
+    使用法：/acpr <runner> [作業ディレクトリ] <セッションID>
+  ru: |
+    Использование: /acpr <runner> [рабочий_каталог] <идентификатор_сессии>
+
+daemon.status.body:
+  zh: |
+    守护进程状态
+    pid: {pid}
+    运行时间: {uptime}
+    版本: {version}
+  en: |
+    Daemon Status
+    pid: {pid}
+    uptime: {uptime}
+    version: {version}
+  ja: |
+    デーモンステータス
+    pid: {pid}
+    稼働時間: {uptime}
+    バージョン: {version}
+  ru: |
+    Статус демона
+    pid: {pid}
+    время работы: {uptime}
+    версия: {version}
+
+daemon.restart.body:
+  zh: |
+    正在重启...
+  en: |
+    Restarting...
+  ja: |
+    再起動中...
+  ru: |
+    Перезапуск...
+
+daemon.reload.ok:
+  zh: |
+    配置已重新加载
+  en: |
+    Configuration reloaded
+  ja: |
+    設定を再読み込みしました
+  ru: |
+    Конфигурация перезагружена
+
+daemon.reload.fail:
+  zh: |
+    配置重新加载失败：{error}
+  en: |
+    Failed to reload configuration: {error}
+  ja: |
+    設定の再読み込みに失敗しました：{error}
+  ru: |
+    Не удалось перезагрузить конфигурацию: {error}
+
+daemon.logs.not_found:
+  zh: |
+    日志文件未找到
+  en: |
+    Log file not found
+  ja: |
+    ログファイルが見つかりません
+  ru: |
+    Файл журнала не найден
+
+daemon.logs.read_fail:
+  zh: |
+    读取日志失败：{error}
+  en: |
+    Failed to read logs: {error}
+  ja: |
+    ログの読み取りに失敗しました：{error}
+  ru: |
+    Не удалось прочитать журнал: {error}
+
+daemon.approve.approved:
+  zh: |
+    已批准待处理请求
+  en: |
+    Pending request approved
+  ja: |
+    保留中のリクエストを承認しました
+  ru: |
+    Ожидающий запрос одобрен
+
+daemon.approve.no_pending:
+  zh: |
+    当前没有待批准的请求
+  en: |
+    No pending requests to approve
+  ja: |
+    承認する保留中のリクエストはありません
+  ru: |
+    Нет ожидающих запросов для одобрения
+
+daemon.deny.rejected:
+  zh: |
+    已拒绝待处理请求
+  en: |
+    Pending request rejected
+  ja: |
+    保留中のリクエストを拒否しました
+  ru: |
+    Ожидающий запрос отклонён
+
+daemon.router.usage:
+  zh: |
+    用法：/daemon <status|restart|reload-config|version|logs|approve|deny>
+  en: |
+    Usage: /daemon <status|restart|reload-config|version|logs|approve|deny>
+  ja: |
+    使用法：/daemon <status|restart|reload-config|version|logs|approve|deny>
+  ru: |
+    Использование: /daemon <status|restart|reload-config|version|logs|approve|deny>
+
+daemon.router.unknown:
+  zh: |
+    未知子命令：/daemon {sub}
+  en: |
+    Unknown subcommand: /daemon {sub}
+  ja: |
+    不明なサブコマンド：/daemon {sub}
+  ru: |
+    Неизвестная подкоманда: /daemon {sub}
+
+command.yes.confirmed:
+  zh: |
+    **已确认：** {prompt}
+  en: |
+    **Confirmed:** {prompt}
+  ja: |
+    **確認済み：** {prompt}
+  ru: |
+    **Подтверждено:** {prompt}
+
+command.yes.no_pending:
+  zh: |
+    **没有待确认的操作。**
+  en: |
+    **No pending action to confirm.**
+  ja: |
+    **確認する保留中のアクションがありません。**
+  ru: |
+    **Нет ожидающих действий для подтверждения.**
+
+command.no.rejected:
+  zh: |
+    **已拒绝：** {prompt}
+  en: |
+    **Rejected:** {prompt}
+  ja: |
+    **拒否済み：** {prompt}
+  ru: |
+    **Отклонено:** {prompt}
+
+command.no.no_pending:
+  zh: |
+    **没有待拒绝的操作。**
+  en: |
+    **No pending action to reject.**
+  ja: |
+    **拒否する保留中のアクションがありません。**
+  ru: |
+    **Нет ожидающих действий для отклонения.**

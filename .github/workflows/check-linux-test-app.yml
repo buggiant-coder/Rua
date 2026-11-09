@@ -1,0 +1,48 @@
+name: Check an existing Linux preview installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run:
+        description: Build test applications run containing the Linux installer
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  installed-startup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate the installer build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.build_run }}
+        run: |
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > build-run.json
+          python3 - <<'PYTHON'
+          import json, os, pathlib
+          run = json.loads(pathlib.Path('build-run.json').read_text())
+          assert run['repository']['full_name'] == os.environ['GITHUB_REPOSITORY']
+          assert run['path'] == '.github/workflows/build-test-apps.yml'
+          print('Testing installer built from:', run['head_sha'])
+          PYTHON
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.build_run }}
+          name: test-app-x86_64-unknown-linux-gnu
+          path: target/dist/desktop/x86_64-unknown-linux-gnu
+      - name: Check installed Desktop and Runtime startup
+        run: scripts/tests/verify-linux-desktop-installer.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-installed-startup-log
+          path: target/linux-desktop-startup.log
+          if-no-files-found: warn

@@ -1,0 +1,21 @@
+{
+  "id": "a",
+  "name": "Agent A",
+  "running": {
+    "embedding_config": {
+      "base_url": "http://localhost:11434",
+      "model_name": "nomic-embed-text",
+      "dimensions": 768
+    }
+  },
+  "mcp": {
+    "clients": {
+      "fs": {
+        "name": "fs",
+        "transport": "stdio",
+        "command": "echo",
+        "args": ["A"]
+      }
+    }
+  }
+}

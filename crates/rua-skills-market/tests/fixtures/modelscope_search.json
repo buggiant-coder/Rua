@@ -1,0 +1,34 @@
+{
+  "success": true,
+  "data": {
+    "total": 42,
+    "skills": [
+      {
+        "id": "@acme/data-wrangler",
+        "display_name": "Data Wrangler",
+        "description": "default english blurb",
+        "developer": "",
+        "owner": "acme-team",
+        "version": "2.1.0",
+        "logo_url": "https://modelscope.cn/logos/data-wrangler.png",
+        "downloads": 1280,
+        "view_count": "5400",
+        "category": "default-category",
+        "locales": {
+          "en": { "description": "Wrangle messy data fast", "category": "Data Tools" },
+          "zh": { "description": "快速整理杂乱数据", "category": "数据工具" }
+        }
+      },
+      {
+        "id": "solo-skill",
+        "display_name": "",
+        "owner": "lone-dev",
+        "downloads": 7
+      },
+      {
+        "display_name": "no id, dropped",
+        "owner": "ghost"
+      }
+    ]
+  }
+}

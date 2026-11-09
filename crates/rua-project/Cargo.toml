@@ -1,0 +1,26 @@
+[package]
+name = "rua-project"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Project catalog and device-local resource binding domain"
+publish = false
+autotests = false
+
+[dependencies]
+chrono.workspace = true
+rua-config.workspace = true
+rua-core.workspace = true
+dirs = "6"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "unit_project"
+path = "tests/unit_project.rs"

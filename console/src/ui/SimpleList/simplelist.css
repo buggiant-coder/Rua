@@ -1,0 +1,20 @@
+.rua-ui-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rua-ui-list-item {
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.rua-ui-list-item:last-child {
+  border-bottom: none;
+}
+
+.rua-ui-list--empty {
+  padding: var(--space-8) 0;
+  text-align: center;
+  color: var(--text-3);
+}

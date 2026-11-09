@@ -1,0 +1,22 @@
+Rua
+Copyright 2026 The Rua Authors
+
+Portions of the early Rua web console, provider/model and channel catalogs,
+discovery policies, and selected compatibility modules incorporate or are
+derived from QwenPaw:
+
+  Copyright 2025 The QwenPaw Authors
+  Licensed under the Apache License, Version 2.0.
+
+Those portions have been substantially modified by the Rua authors. The
+Rua backend is an independent Rust implementation. Rua is not affiliated
+with or endorsed by the QwenPaw project or its maintainers.
+
+The Feishu WebSocket protocol adapter also draws on lark-oapi 1.5.3:
+
+  Copyright (c) 2023 Lark Technologies Pte. Ltd.
+  Licensed under the MIT License; see THIRD_PARTY_NOTICES.md.
+
+The current Android host under mobile/mobile-shell is licensed under
+Apache License 2.0. Bundled PRoot and native dependencies retain their own
+licenses; see mobile/runtime/licenses/.

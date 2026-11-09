@@ -1,0 +1,1152 @@
+.rua-owned-chat-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--font-md);
+  line-height: 22px;
+}
+
+.rua-owned-chat-header {
+  --chat-scope-gap: 4px;
+  --chat-scope-padding: 4px;
+  --chat-scope-mark-size: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  height: var(--page-header-height);
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+.rua-owned-chat-header-main {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.rua-owned-chat-header-scope {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  width: max-content;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.rua-owned-chat-header-scope > .rua-ui-popover-trigger {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.rua-owned-chat-header-scope > .rua-ui-popover-trigger > button {
+  max-width: 100%;
+}
+
+.rua-owned-chat-header-scope
+  > .rua-ui-popover-trigger:first-child
+  > button {
+  padding-left: 0;
+}
+
+.rua-owned-chat-header-scope .rua-owned-chat-title {
+  max-width: 200px;
+}
+
+.rua-owned-chat-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.57143;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rua-owned-chat-session-id {
+  display: none;
+}
+
+.rua-owned-chat-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.rua-owned-chat-header-actions .rua-btn {
+  flex: 0 0 auto;
+}
+
+.rua-owned-chat-header-actions .rua-ui-dropdown-trigger {
+  display: inline-flex;
+}
+
+.rua-owned-chat-more-dropdown {
+  min-width: 260px;
+}
+
+.rua-owned-chat-more-dropdown .rua-ui-dropdown-item-label {
+  white-space: normal;
+}
+
+.rua-llm-debug-menu {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.rua-llm-debug-menu-heading,
+.rua-llm-debug-menu-title,
+.rua-llm-debug-menu-open {
+  display: flex;
+  align-items: center;
+}
+
+.rua-llm-debug-menu-heading {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rua-llm-debug-menu-title,
+.rua-llm-debug-menu-open {
+  gap: 7px;
+}
+
+.rua-llm-debug-menu-title {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.rua-llm-debug-menu.is-active .rua-llm-debug-menu-title {
+  color: var(--primary);
+}
+
+.rua-llm-debug-menu-details {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.rua-llm-debug-menu-capture-id,
+.rua-llm-debug-menu-path {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rua-llm-debug-menu-open {
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  cursor: pointer;
+}
+
+.rua-llm-debug-menu-open:hover {
+  background: var(--accent);
+}
+
+.rua-llm-debug-menu-open:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.rua-owned-chat-menu-option {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.rua-owned-chat-menu-option-status {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: var(--font-xs);
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rua-owned-chat-options-modal .rua-ui-modal {
+  max-width: calc(100vw - 24px);
+}
+
+.rua-owned-chat-options-modal .rua-ui-modal-body {
+  max-height: min(680px, calc(100vh - 180px));
+  overflow-y: auto;
+}
+
+.rua-owned-chat-options-segmented {
+  display: inline-flex;
+  align-items: center;
+  width: 100%;
+  justify-self: end;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.rua-owned-chat-options-segmented button {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 26px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: transparent;
+  color: var(--text-mute);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-xs);
+  font-weight: 600;
+  line-height: 1;
+}
+
+.rua-owned-chat-options-segmented button.is-selected {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+
+.rua-owned-chat-options-loading,
+.rua-owned-chat-options-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 96px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-mute);
+}
+
+.rua-owned-chat-options-error {
+  color: var(--danger-fg);
+}
+
+.rua-owned-authority-placement-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rua-owned-authority-placement-current {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+}
+
+.rua-owned-authority-placement-hint {
+  border-radius: var(--radius-md);
+  background: var(--warning-bg);
+  color: var(--text-2);
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.rua-owned-authority-placement-options {
+  gap: 8px;
+}
+
+.rua-owned-authority-placement-option {
+  width: 100%;
+  align-items: flex-start;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 10px 12px;
+}
+
+.rua-owned-authority-placement-option:has(.rua-radio-input:checked) {
+  border-color: var(--primary);
+  background: var(--primary-bg);
+}
+
+.rua-owned-authority-placement-option-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.rua-owned-authority-placement-option-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.rua-owned-authority-placement-option-desc {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rua-owned-authority-placement-list-label {
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  padding: 2px 2px 0;
+}
+
+.rua-owned-authority-placement-empty {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-mute);
+  padding: 14px 12px;
+  text-align: center;
+}
+
+.rua-owned-device-switch-notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-width: min(520px, 80vw);
+}
+
+.rua-owned-device-switch-cache-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.rua-owned-device-switch-cache-notice button {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: currentColor;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.rua-owned-chat-list-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 24px;
+}
+
+.rua-owned-chat-list-meta,
+.rua-owned-chat-search-meta {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rua-owned-chat-list-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+  flex-shrink: 0;
+  padding-right: 2px;
+}
+
+.rua-owned-chat-empty-list {
+  padding: var(--space-4);
+  color: var(--text-mute);
+  text-align: center;
+}
+
+.rua-owned-chat-search-results,
+.rua-owned-chat-list-wrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0;
+  scrollbar-width: none;
+}
+
+.rua-owned-chat-search-results::-webkit-scrollbar,
+.rua-owned-chat-list-wrap::-webkit-scrollbar {
+  display: none;
+}
+
+.rua-owned-chat-search-result {
+  display: block;
+  width: 100%;
+  margin-bottom: 4px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  padding: 10px 12px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.rua-owned-chat-search-result:hover {
+  background: var(--card-hover);
+}
+
+.rua-owned-chat-search-count {
+  padding: 4px 4px 8px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.rua-owned-chat-search-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.rua-owned-chat-search-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rua-owned-chat-search-snippet {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.rua-owned-search-mark {
+  border-radius: 3px;
+  background: var(--highlight-bg);
+  color: inherit;
+  padding: 0;
+}
+
+.rua-owned-chat-search-spinner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 0;
+}
+
+.rua-owned-chat-drawer-tools {
+  display: flex;
+  flex-shrink: 0;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding-bottom: 8px;
+}
+
+.rua-owned-chat-search-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.rua-owned-chat-search-input-icon {
+  position: absolute;
+  left: 8px;
+  color: var(--text-mute);
+  pointer-events: none;
+}
+
+.rua-owned-chat-search-input {
+  width: 100%;
+  padding-left: 28px !important;
+  border-radius: var(--radius-md);
+}
+
+.rua-owned-chat-sort-button {
+  position: relative;
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.rua-owned-chat-sort-button:hover:not(:disabled) {
+  background: var(--card-hover);
+  color: var(--text);
+}
+
+.rua-owned-chat-sort-button:focus-visible {
+  outline: 2px solid var(--primary-fill);
+  outline-offset: 2px;
+}
+
+.rua-owned-chat-sort-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.rua-owned-chat-filter-dropdown {
+  width: min(300px, calc(100vw - 24px));
+}
+
+.rua-owned-chat-filter-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.rua-owned-chat-filter-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rua-owned-chat-filter-label {
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.rua-owned-chat-filter-options,
+.rua-owned-chat-tag-filter-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.rua-owned-chat-filter-option {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: transparent;
+  padding: 4px 10px;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.rua-owned-chat-filter-option:hover {
+  background: var(--card-hover);
+  color: var(--text);
+}
+
+.rua-owned-chat-filter-option[data-selected="true"] {
+  border-color: var(--primary-fill);
+  background: var(--primary-bg);
+  color: var(--text);
+}
+
+.rua-owned-chat-filter-option .rua-owned-chat-tag-dot {
+  width: 12px;
+  height: 12px;
+}
+
+.rua-owned-chat-filter-divider {
+  height: 1px;
+  background: var(--border-soft);
+}
+
+.rua-owned-chat-filter-indicator {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--text-3);
+  border-radius: 50%;
+  background: transparent;
+}
+
+.rua-owned-chat-drawer-controls {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-bottom: var(--space-3);
+}
+
+.rua-owned-chat-view-tabs {
+  --tabs-gap: 0;
+}
+
+.rua-owned-chat-view-tabs .rua-ui-tabs-nav {
+  width: 100%;
+}
+
+.rua-owned-chat-view-tabs .rua-ui-tabs-tab {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  justify-content: center;
+  padding: var(--space-2) var(--space-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rua-owned-chat-view-tabs .rua-ui-tabs-panel {
+  display: none;
+}
+
+.rua-owned-chat-collaboration-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 4px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.rua-owned-chat-collaboration-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.rua-owned-chat-collaboration-filters > :last-child {
+  width: 100%;
+}
+
+@media (max-width: 380px) {
+  .rua-owned-chat-collaboration-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rua-owned-chat-collaboration-filters > :last-child {
+    grid-column: auto;
+  }
+}
+
+.rua-owned-chat-create-button {
+  width: 100%;
+}
+
+.rua-owned-chat-load-more {
+  display: flex;
+  justify-content: center;
+  padding: 0;
+}
+
+.rua-owned-chat-load-more-button {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.rua-owned-chat-load-more-button:hover:not(:disabled) {
+  background: var(--row-hover);
+}
+
+.rua-owned-chat-load-more-button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.rua-owned-chat-list-item {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  grid-template-rows: 24px 24px;
+  flex-shrink: 0;
+  column-gap: 2px;
+  row-gap: 2px;
+  min-height: 68px;
+  width: 100%;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 10px 6px 6px;
+  color: var(--text);
+  text-align: left;
+  transition: background-color 0.2s;
+  cursor: pointer;
+}
+
+.rua-owned-chat-list-item:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.rua-owned-chat-side-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  padding: 12px;
+  overflow: hidden;
+}
+
+.rua-owned-chat-stage {
+  --project-drawer-width: 0px;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--project-drawer-width);
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.rua-owned-chat-list-item.rua-owned-chat-list-item--standard {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.rua-owned-chat-list-item.rua-owned-chat-list-item--standard
+  > .rua-owned-chat-list-item-main {
+  grid-column: 1 / -1;
+}
+
+.rua-owned-chat-list-item.rua-owned-chat-list-item--standard
+  > .rua-owned-chat-list-meta {
+  grid-column: 1;
+}
+
+.rua-owned-chat-list-item.rua-owned-chat-list-item--standard
+  > .rua-owned-chat-list-actions {
+  grid-column: 2;
+  gap: 2px;
+}
+
+.rua-owned-chat-list-item:hover {
+  background: var(--primary-bg);
+}
+
+.rua-owned-chat-list-item--active {
+  border-left: 3px solid var(--primary);
+  background: transparent;
+}
+
+.rua-owned-collaboration-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto;
+  min-height: 72px;
+  padding: var(--space-3);
+}
+
+.rua-owned-collaboration-row > .rua-owned-chat-list-item-main {
+  grid-column: 1;
+  grid-row: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: 0;
+}
+
+.rua-owned-chat-list-item.rua-owned-collaboration-row
+  > .rua-owned-chat-list-actions {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+}
+
+.rua-owned-collaboration-meta {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--space-2);
+  color: var(--text-3);
+  font-size: var(--font-xs);
+  line-height: 1.5;
+}
+
+.rua-owned-collaboration-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.rua-owned-collaboration-status::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+  content: "";
+}
+
+.rua-owned-collaboration-status.is-running::before {
+  background: var(--primary);
+}
+
+.rua-owned-collaboration-meta .is-unavailable {
+  color: var(--danger-fg);
+}
+
+.rua-owned-chat-list-item-main {
+  display: flex;
+  grid-column: 2 / 4;
+  grid-row: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  align-items: center;
+  padding: 0 4px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rua-owned-chat-list-item > .rua-owned-chat-list-meta {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  padding: 0 4px;
+  line-height: 24px;
+}
+
+.rua-owned-chat-list-item > .rua-owned-chat-list-actions {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.rua-owned-chat-channel-tag {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 4px;
+  max-width: 112px;
+  min-width: 0;
+  padding: 1px 5px 1px 3px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
+}
+
+.rua-owned-chat-tag-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+
+.rua-owned-chat-row-action.rua-btn {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+}
+
+.rua-owned-chat-tag-action + .rua-owned-chat-row-action,
+.rua-owned-chat-row-action + .rua-owned-chat-row-action {
+  margin-left: -4px;
+}
+
+.rua-owned-chat-tag-action:hover:not(:disabled),
+.rua-owned-chat-row-action.rua-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.rua-owned-chat-tag-dot {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--text-3);
+  border-radius: 50%;
+  background: transparent;
+}
+
+.rua-owned-chat-tag-dot--red {
+  border-color: var(--danger-fg);
+  background: var(--danger-fg);
+}
+
+.rua-owned-chat-tag-dot--yellow {
+  border-color: var(--warning-fg);
+  background: var(--warning-fg);
+}
+
+.rua-owned-chat-tag-dot--green {
+  border-color: #34a853;
+  background: #34a853;
+}
+
+.rua-owned-chat-channel-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm);
+  object-fit: contain;
+}
+
+.rua-owned-chat-channel-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rua-owned-chat-delete-action {
+  color: var(--danger-fg);
+}
+
+.rua-owned-chat-pinned-divider {
+  height: 1px;
+  margin: 0;
+  background: var(--border-soft);
+}
+
+.rua-owned-chat-pinned-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rua-owned-session-drawer {
+  background: transparent;
+}
+
+.rua-owned-session-drawer .rua-ui-drawer {
+  box-shadow: none;
+}
+
+.rua-owned-session-drawer .rua-ui-drawer-body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--surface);
+  padding: 12px 16px 0;
+}
+
+html.dark-mode .rua-owned-chat-list-item:hover {
+  background: var(--card-hover);
+}
+
+html.dark-mode .rua-owned-chat-channel-tag {
+  background: var(--border-soft);
+  color: var(--text-2);
+}
+
+@media (max-width: 480px) {
+  .rua-owned-chat-channel-tag {
+    padding: 2px 5px;
+  }
+
+  .rua-owned-chat-channel-text {
+    display: none;
+  }
+}
+
+@media (max-width: 700px) {
+  .rua-owned-chat-header {
+    padding: 0 8px;
+  }
+
+  .rua-owned-chat-title {
+    display: none;
+  }
+}
+
+html.mobile-mode .rua-owned-chat-page {
+  height: var(--rua-chat-visual-height, 100dvh);
+  width: 100vw;
+  max-width: 100vw;
+  overflow: hidden;
+}
+
+html.mobile-mode .rua-owned-chat-header,
+.desktop-mobile-shell .rua-owned-chat-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+  /* Keep the first selector adjacent to the outer navigation hit area. */
+  padding: 0 8px 0 36px;
+}
+
+html.mobile-mode .rua-owned-chat-header-main,
+.desktop-mobile-shell .rua-owned-chat-header-main {
+  min-width: 0;
+  overflow: hidden;
+}
+
+html.mobile-mode .rua-owned-chat-title,
+.desktop-mobile-shell .rua-owned-chat-title {
+  display: none;
+}
+
+html.mobile-mode .rua-owned-chat-header-actions,
+.desktop-mobile-shell .rua-owned-chat-header-actions {
+  width: auto;
+  min-width: 0;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+
+html.mobile-mode .rua-owned-chat-header-actions .rua-btn {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  padding: 0;
+}
+
+.desktop-mobile-shell .rua-owned-chat-header-actions .rua-btn {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  padding: 0;
+}
+
+html.mobile-mode .rua-owned-chat-options-modal .rua-ui-modal {
+  width: 100vw !important;
+  height: var(--rua-chat-visual-height, 100dvh);
+  max-width: 100vw;
+  max-height: var(--rua-chat-visual-height, 100dvh);
+  border-radius: 0;
+}
+
+html.mobile-mode .rua-owned-chat-options-modal .rua-ui-modal-body {
+  max-height: none;
+}
+
+html.mobile-mode .rua-owned-surface-messages::-webkit-scrollbar,
+html.mobile-mode
+  .rua-owned-chat-options-modal
+  .rua-ui-modal-body::-webkit-scrollbar {
+  width: 4px;
+}
+
+html.mobile-mode .rua-owned-surface-messages {
+  scrollbar-width: thin;
+}
+
+.rua-owned-chat-acp-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  background: var(--warning-bg);
+  border-bottom: 1px solid var(--warning-bg);
+  font-size: var(--font-sm);
+  color: var(--warning-fg);
+  flex-shrink: 0;
+}
+.rua-owned-chat-acp-banner-icon {
+  display: inline-flex;
+  align-items: center;
+}
+.rua-owned-chat-acp-banner-label {
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.rua-owned-chat-acp-banner-divider {
+  opacity: 0.5;
+}
+.rua-owned-chat-acp-banner-runner {
+  font-weight: 600;
+}
+.rua-owned-chat-acp-banner-cwd {
+  color: var(--text);
+  opacity: 0.75;
+  font-family: var(--font-mono);
+  font-size: var(--font-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+.rua-owned-chat-acp-banner-exit {
+  margin-left: auto;
+  padding: 3px var(--space-3);
+  background: transparent;
+  border: 1px solid currentColor;
+  color: var(--warning-fg);
+  border-radius: var(--radius-md);
+  font-size: var(--font-xs);
+  cursor: pointer;
+  flex: none;
+  line-height: 1.4;
+  font-family: inherit;
+}
+.rua-owned-chat-acp-banner-exit:hover {
+  background: var(--warning-bg);
+  filter: brightness(1.05);
+}
+
+@media (max-width: 700px) {
+  .rua-owned-chat-acp-banner {
+    padding: 5px var(--space-3);
+    font-size: var(--font-xs);
+  }
+}

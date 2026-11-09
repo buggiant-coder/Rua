@@ -1,0 +1,45 @@
+.rua-ui-tabs-nav {
+  position: relative;
+  display: flex;
+  gap: var(--tabs-gap, var(--space-3));
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.rua-ui-tabs-tab {
+  all: unset;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-sm);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: color 0.2s;
+  white-space: nowrap;
+}
+
+.rua-ui-tabs-tab:hover {
+  color: var(--primary);
+}
+
+.rua-ui-tabs-tab--active {
+  color: var(--primary);
+  font-weight: 500;
+}
+
+.rua-ui-tabs-tab:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+
+.rua-ui-tabs-ink {
+  position: absolute;
+  bottom: 0;
+  height: 2px;
+  background: var(--primary);
+  transition:
+    left 0.25s ease,
+    width 0.25s ease;
+}
+
+.rua-ui-tabs-panel[hidden] {
+  display: none;
+}

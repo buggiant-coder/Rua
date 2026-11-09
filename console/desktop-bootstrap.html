@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/rua-symbol.svg" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <title>Rua</title>
+  </head>
+  <body>
+    <main class="bootstrap" aria-live="polite">
+      <img class="bootstrap__logo" src="/rua-symbol.svg" alt="Rua" />
+      <div class="bootstrap__spinner" id="spinner" aria-hidden="true"></div>
+      <div class="bootstrap__failure" id="failureIcon" aria-hidden="true">
+        !
+      </div>
+      <h1 id="statusTitle">正在启动 Rua</h1>
+      <p id="statusMessage">正在连接本地运行时...</p>
+      <pre id="errorDetails" hidden></pre>
+      <div class="bootstrap__actions" id="failureActions" hidden>
+        <button id="retryButton" type="button">重试</button>
+        <button id="ruaRootButton" type="button" class="secondary">
+          选择 Rua 根目录
+        </button>
+      </div>
+    </main>
+    <script type="module" src="/src/desktop/bootstrap.ts"></script>
+  </body>
+</html>

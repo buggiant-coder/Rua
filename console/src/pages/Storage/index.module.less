@@ -1,0 +1,247 @@
+.page {
+  height: 100%;
+}
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px;
+}
+.hero {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+}
+.hero h1 {
+  margin: 0;
+  color: var(--text);
+  font-size: 28px;
+  line-height: 1.2;
+}
+.hero p {
+  margin: 8px 0 0;
+  color: var(--text-2);
+}
+.filters {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+.ageFilter {
+  width: 176px;
+  min-width: 176px;
+  flex: 0 0 176px;
+}
+.sortFilter {
+  width: 188px;
+  min-width: 188px;
+  flex: 0 0 188px;
+}
+.actionButton {
+  min-width: 88px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.metricCard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 92px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.metricCard svg {
+  width: 22px;
+  height: 22px;
+  color: var(--primary);
+}
+.metricCard div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.metricCard span {
+  color: var(--text-2);
+  font-size: 13px;
+}
+.metricCard strong {
+  color: var(--text);
+  font-size: 22px;
+}
+.center {
+  display: grid;
+  min-height: 220px;
+  place-items: center;
+}
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.chatCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.selected {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--primary);
+  background: var(--primary-bg);
+}
+.icon svg {
+  width: 20px;
+  height: 20px;
+}
+.titleBlock {
+  min-width: 0;
+}
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.titleRow h2 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.titleBlock p,
+.titleBlock time {
+  display: block;
+  margin: 3px 0 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.breakdown {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(82px, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+.breakdown div {
+  padding: 8px 12px;
+  border-radius: 9px;
+  background: var(--bg-2);
+}
+.breakdown dt {
+  color: var(--text-2);
+  font-size: 11px;
+}
+.breakdown dd {
+  margin: 3px 0 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.breakdown .total {
+  background: var(--primary-bg);
+}
+.deleteBody {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.warning {
+  margin: 0;
+  color: var(--danger-fg);
+  line-height: 1.55;
+}
+.deleteSummary {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 8px;
+  margin: 0;
+}
+.deleteSummary div {
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+}
+.deleteSummary dt {
+  color: var(--text-2);
+  font-size: 11px;
+}
+.deleteSummary dd {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.preserved {
+  margin: 0;
+  color: var(--warning-fg);
+}
+@media (max-width: 760px) {
+  .body {
+    padding: 16px;
+  }
+  .hero {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .filters {
+    min-width: 0;
+    flex-direction: column;
+  }
+  .ageFilter,
+  .sortFilter,
+  .actionButton {
+    width: 100%;
+    min-width: 0;
+    flex-basis: auto;
+  }
+  .metrics {
+    grid-template-columns: 1fr;
+  }
+  .chatCard {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .breakdown {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .deleteSummary {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 430px) {
+  .breakdown {
+    grid-template-columns: 1fr;
+  }
+}

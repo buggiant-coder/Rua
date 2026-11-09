@@ -1,0 +1,188 @@
+.summary {
+  border-bottom: 1px solid var(--border);
+  padding: 8px var(--space-3) var(--space-3);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.summaryLine {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: var(--text-2);
+}
+
+.arrow {
+  color: var(--text-3, var(--text-2));
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  max-width: 100%;
+  padding: 0 9px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 700;
+}
+
+.summaryActions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0;
+  align-items: stretch;
+  min-height: 520px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel {
+  min-width: 0;
+}
+
+.panel + .panel {
+  border-left: 1px solid var(--border);
+}
+
+.panelTop {
+  padding: 12px var(--space-3) 8px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.roleTitle {
+  font-weight: 700;
+}
+
+.roleHint {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.deviceRow {
+  padding: 10px var(--space-3);
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.select {
+  min-width: 0;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  padding: 0 10px;
+}
+
+.list {
+  max-height: 430px;
+  overflow: auto;
+}
+
+.row {
+  min-height: 44px;
+  padding: 7px var(--space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  display: grid;
+  grid-template-columns: 22px 26px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.rowNoCheck {
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+}
+
+.rowSelected {
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+}
+
+.iconBox {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-2);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.name {
+  font-weight: 700;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.meta {
+  margin-top: 2px;
+  color: var(--text-2);
+  font-size: 12px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.queue {
+  padding: 10px var(--space-3) 0;
+}
+
+.queueHeader,
+.jobRow {
+  padding: 8px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+
+.queueHeader {
+  font-weight: 700;
+}
+
+.jobRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.error {
+  color: var(--danger);
+}
+
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .summary {
+    grid-template-columns: 1fr;
+  }
+
+  .summaryActions {
+    justify-content: flex-start;
+  }
+
+  .panel + .panel {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+}

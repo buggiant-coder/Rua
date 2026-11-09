@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "agent_browser": {
+    "version": "0.39.4",
+    "repository": "https://github.com/vercel-labs/agent-browser",
+    "commit": "04ba5264dade678062c3cdcce0f4f293e748249f",
+    "license": "Apache-2.0",
+    "artifacts": {
+      "aarch64-apple-darwin": {
+        "build": "cargo --locked --profile ci"
+      },
+      "x86_64-apple-darwin": {
+        "build": "cargo --locked --profile ci"
+      },
+      "x86_64-pc-windows-msvc": {
+        "build": "cargo --locked --profile ci"
+      },
+      "x86_64-unknown-linux-gnu": {
+        "build": "cargo --locked --profile ci"
+      }
+    },
+    "license_sha256": "014bb31e83d5c2e76aea1cc6e82217346ab41362f32cb355ad0f5c10aa0aeaff",
+    "source": {
+      "archive_url": "https://codeload.github.com/vercel-labs/agent-browser/tar.gz/04ba5264dade678062c3cdcce0f4f293e748249f",
+      "archive_sha256": "557fef43247eec52a32271c07756180816d76069429bd4f194556dd1e7ae3220",
+      "lock_sha256": "33c48b2f377608ec05f2be6b0528c2ea2f6e778058cf5fe73708e778a265eefb"
+    },
+    "adapter": {
+      "patch": "agent-browser-rua.patch",
+      "sha256": "1207981b54a44cf2578f6c6ffa0f4a4815fef82cde427910bbb10d0facca8073",
+      "contract": "rua-agent-browser/1"
+    }
+  },
+  "cua_driver": {
+    "version": "0.38.0",
+    "repository": "https://github.com/trycua/cua",
+    "commit": "85e2b1318bd77ccf3cfa88ccdf875a4bb7eaed19",
+    "license": "MIT",
+    "license_sha256": "c0779290c1d4783169aa3dbfb55feb505e563ef8a004bbf55298ceffcfbda8d9",
+    "artifacts": {
+      "aarch64-apple-darwin": {
+        "archive_url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.38.0/cua-driver-rs-0.38.0-darwin-universal-binary.tar.gz",
+        "archive_sha256": "2bb8dc4a7e69185ffd04c4a9c0eab590bd2c54b72c2c1be13ab675be4f487732",
+        "member": "cua-driver",
+        "sha256": "92067848d0eeb9de76929fbd06a137af801b0ff6caedbb3109bd7a6cc84a1f9f"
+      },
+      "x86_64-apple-darwin": {
+        "archive_url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.38.0/cua-driver-rs-0.38.0-darwin-universal-binary.tar.gz",
+        "archive_sha256": "2bb8dc4a7e69185ffd04c4a9c0eab590bd2c54b72c2c1be13ab675be4f487732",
+        "member": "cua-driver",
+        "sha256": "92067848d0eeb9de76929fbd06a137af801b0ff6caedbb3109bd7a6cc84a1f9f"
+      },
+      "x86_64-pc-windows-msvc": {
+        "archive_url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.38.0/cua-driver-rs-0.38.0-windows-x86_64-binary.zip",
+        "archive_sha256": "5edaa74d0afa1b55a9668dbc4f32736507bd2bd4d75b18ca1dc8881bb12402b5",
+        "member": "cua-driver.exe",
+        "sha256": "ffa58d88779ee219304b0c307f4cfa970fe822f830c6ecf9254eda5c29e22bf2"
+      },
+      "x86_64-unknown-linux-gnu": {
+        "archive_url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.38.0/cua-driver-rs-0.38.0-linux-x86_64-binary.tar.gz",
+        "archive_sha256": "31ab9709dd91ce73677e49b9f3e75c6f0d3e4d9625c286c9e58262bfbea698dd",
+        "member": "cua-driver",
+        "sha256": "bf57b2f3778a0a7daa9388e241f20ce948b32a7a2f4dd102e497f34e54137934"
+      }
+    },
+    "host_sources": {
+      "../../crates/rua-server/src/desktop_automation/cua_host/embedded.rs": {
+        "upstream_path": "libs/cua-driver/rust/crates/cua-driver-sdk/src/embedded.rs",
+        "upstream_sha256": "73422769879a0768d58b27284b50f77e2e84a990b409f108049f6342dfac267b",
+        "sha256": "3af57c6a0ca7c26611d551a2353bdd647177755cec3ab5156286fea373fee3c6"
+      },
+      "../../crates/rua-server/src/desktop_automation/cua_host.rs": {
+        "upstream_path": "libs/cua-driver/rust/crates/cua-driver-sdk/src/lib.rs",
+        "upstream_sha256": "a85793257abcada029292ac73995ffe26aa78de94c58c5626943a588ea09ae90",
+        "sha256": "048047411925405d7d577fc7c04020beb25cc6b8ec38cff00fec9c02b7c3f05f"
+      }
+    }
+  }
+}

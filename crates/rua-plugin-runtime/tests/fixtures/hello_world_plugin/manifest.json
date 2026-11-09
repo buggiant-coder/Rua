@@ -1,0 +1,39 @@
+{
+  "id": "hello_world",
+  "name": "Hello World (Python Plugin Demo)",
+  "version": "1.0.0",
+  "description": "Python plugin demo and Rust E2E fixture demonstrating tools, hooks, skills, and CLI commands",
+  "entry_point": "hello_world",
+  "capabilities": ["tools", "hooks", "skills", "cli"],
+  "meta": {
+    "tools": [
+      {
+        "name": "say_hi",
+        "description": "Say hi to someone",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" }
+          }
+        }
+      }
+    ],
+    "hooks": [
+      {
+        "hook_point": "after_tool_call",
+        "hook_name": "post_tool_call_log",
+        "callback": "on_post_tool_call"
+      }
+    ],
+    "cli_commands": [
+      {
+        "name": "hi",
+        "description": "Say hi from CLI",
+        "callback": "cli_hi",
+        "args": [
+          { "name": "name", "description": "Name to greet", "required": true }
+        ]
+      }
+    ]
+  }
+}

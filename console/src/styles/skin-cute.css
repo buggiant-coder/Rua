@@ -1,0 +1,10 @@
+[data-skin="cute"] {
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --chat-inline-radius: var(--radius-xs);
+  --chat-control-radius: var(--radius-xs);
+  --chat-structure-radius: var(--radius-sm);
+  --chat-media-radius: var(--radius-sm);
+}

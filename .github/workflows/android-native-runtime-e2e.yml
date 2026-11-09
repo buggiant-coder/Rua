@@ -1,0 +1,114 @@
+name: Android Native Runtime E2E
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-native-runtime-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  RUSTC_WRAPPER: ""
+  ANDROID_NDK_VERSION: "29.0.14206865"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: android-actions/setup-android@v3
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - name: Prepare build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf protobuf-compiler
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;${ANDROID_NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          cargo install cargo-ndk --locked
+      - name: Build native APK and device acceptance probe
+        run: |
+          python3 scripts/tests/check-android-release-contract.py
+          scripts/package-mobile-apk.sh --debug --clean
+          mobile/mobile-shell/gradlew -p mobile/mobile-shell :app:testDebugUnitTest
+          cargo ndk -t arm64-v8a build -p rua-tool --example native_runtime_probe
+          mobile/mobile-shell/gradlew -p mobile/mobile-shell :app:assembleDebugAndroidTest
+          cargo ndk -t x86_64 check -p rua-cli --features mobile-default
+          python3 scripts/android/prepare-runtime-offline.py
+          python3 scripts/tests/prepare-android-webview.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-native-acceptance-inputs
+          path: |
+            target/mobile-apk/
+            target/debian-runtime-offline.zip
+            target/android-system-images/aosp-webview.apk
+            target/android-system-images/testkey.pk8
+            target/android-system-images/testkey.x509.pem
+            target/android-system-images/webview-evidence.json
+            mobile/mobile-shell/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          retention-days: 7
+  device:
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - api: 26
+            target: default
+          - api: 28
+            target: default
+          - api: 34
+            target: google_apis
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-native-acceptance-inputs
+          path: .
+      - name: Prepare SDK test provider tooling
+        run: sdkmanager "build-tools;36.0.0"
+      - name: Run declared Android version matrix
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          arch: arm64-v8a
+          avd-name: rua_native_e2e
+          target: ${{ matrix.target }}
+          disk-size: 12G
+          ram-size: 3072M
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
+          script: |
+            if [ "${{ matrix.api }}" -lt 30 ]; then python3 scripts/tests/prepare-android-webview.py --serial emulator-5554; fi
+            python3 scripts/tests/android-native-runtime-e2e.py --serial emulator-5554 --reset-owned --logs target/android-native-runtime-e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-native-api-${{ matrix.api }}-evidence
+          path: |
+            target/android-native-runtime-e2e/
+            target/android-system-images/webview-evidence.json
+          retention-days: 7

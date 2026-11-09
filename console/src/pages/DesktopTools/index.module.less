@@ -1,0 +1,142 @@
+@import "../../styles/settings-page.less";
+
+.capabilityGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: var(--space-4);
+}
+
+.metadata {
+  color: var(--text-mute);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.browserSelection {
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+}
+.selectionLabel {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  color: var(--text-3);
+  font-size: var(--font-xs);
+}
+.browserExecutable {
+  display: block;
+  font-family: var(--font-mono);
+  color: var(--text-2);
+  font-size: var(--font-xs);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.notice {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--warning-fg) 25%, var(--border));
+  border-radius: var(--radius-md);
+  background: var(--warning-bg);
+  color: var(--text-2);
+}
+.notice > svg {
+  margin-top: 3px;
+  color: color-mix(in srgb, var(--warning-fg) 45%, var(--text));
+}
+.noticeTitle {
+  margin: 0 0 var(--space-1);
+  font-weight: 500;
+  font-size: var(--font-sm);
+}
+.diagnostics {
+  margin-top: var(--space-2);
+  font-size: var(--font-xs);
+  color: var(--text-3);
+}
+.diagnostics summary,
+.pathEditor summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.diagnostics pre {
+  margin: var(--space-2) 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.pathEditor summary {
+  color: var(--primary);
+  font-size: var(--font-xs);
+}
+.pathEditor summary:focus-visible,
+.diagnostics summary:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 4px;
+  border-radius: var(--radius-sm);
+}
+.browserPath {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  color: var(--text-2);
+  font-size: var(--font-xs);
+}
+.browserPath input {
+  width: 100%;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-xs);
+}
+
+.permissions {
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+}
+.permissionRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: var(--space-2);
+  padding: var(--space-3) 0;
+}
+.permissionRow + .permissionRow {
+  border-top: 1px solid var(--border-soft);
+}
+.permissionName {
+  color: var(--text-2);
+  font-weight: 500;
+}
+.permissionGranted {
+  color: color-mix(in srgb, var(--success-fg) 55%, var(--text));
+  font-size: var(--font-xs);
+}
+.permissionMissing {
+  color: var(--text-3);
+  font-size: var(--font-xs);
+}
+
+@container (max-width: 820px) {
+  .capabilityGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 640px) {
+  .permissionRow {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .permissionRow button {
+    grid-column: 1 / -1;
+    justify-self: start;
+    margin-top: var(--space-2);
+  }
+}

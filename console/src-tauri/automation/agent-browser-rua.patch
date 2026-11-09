@@ -1,0 +1,174 @@
+--- a/cli/src/connection.rs
++++ b/cli/src/connection.rs
+@@ -198,8 +198,11 @@
+     unsafe {
+         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+         if handle != 0 {
++            let mut code = 0;
++            let alive = windows_sys::Win32::System::Threading::GetExitCodeProcess(handle, &mut code) != 0
++                && code == 259; // STILL_ACTIVE
+             CloseHandle(handle);
+-            true
++            alive
+         } else {
+             false
+         }
+--- a/cli/src/main.rs
++++ b/cli/src/main.rs
+@@ -1341,6 +1341,40 @@
+     {
+         env::set_var("MSYS_NO_PATHCONV", "1");
+         env::set_var("MSYS2_ARG_CONV_EXCL", "*");
++    }
++
++    #[cfg(unix)]
++    if env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--rua-browser-child")) {
++        // This process leads the new Chrome process group. Its parent's stdin
++        // pipe is held only by the owning daemon; EOF means that owner is gone.
++        // Chrome and its descendants receive /dev/null, never this lifetime pipe.
++        if env::var_os("RUA_BROWSER_OWNER_FILE").is_none()
++            || unsafe { libc::getpgrp() } != std::process::id() as i32 {
++            exit(1);
++        }
++        let mut args = env::args_os().skip(2);
++        let Some(browser) = args.next() else { exit(1); };
++        std::thread::spawn(|| {
++            use std::io::Read;
++            let mut input = std::io::stdin().lock();
++            let mut byte = [0u8];
++            loop {
++                match input.read(&mut byte) {
++                    Ok(0) | Err(_) => break,
++                    Ok(_) => {},
++                }
++            }
++            // Our own group, established before exec; no discovery/name matching.
++            unsafe { libc::kill(-libc::getpgrp(), libc::SIGKILL); }
++        });
++        let result = std::process::Command::new(browser)
++            .args(args).stdin(std::process::Stdio::null()).status();
++        exit(result.ok().and_then(|s|s.code()).unwrap_or(1));
++    }
++
++    if env::args().nth(1).as_deref() == Some("--rua-automation-contract") {
++        println!("rua-agent-browser/1");
++        return;
+     }
+ 
+     // Native daemon mode: when AGENT_BROWSER_DAEMON is set, run as the daemon process
+@@ -1728,6 +1762,12 @@
+         plugins: Some(plugin_registry_json.as_str()),
+     };
+ 
++    if env::var_os("RUA_BROWSER_OWNER_FILE").is_some()
++        && matches!(cmd["action"].as_str(), Some("click" | "fill" | "scroll"))
++        && !connection::daemon_ready(&flags.session) {
++        print_json_error("Rua browser session was lost. Open/observe again before input.");
++        exit(1);
++    }
+     let daemon_result = match ensure_daemon(&flags.session, &daemon_opts) {
+         Ok(result) => result,
+         Err(e) => {
+--- a/cli/src/native/daemon.rs
++++ b/cli/src/native/daemon.rs
+@@ -19,6 +19,30 @@
+ use super::state;
+ use super::stream::{IdleActivity, StreamServer};
+ use crate::connection::INTERNAL_DAEMON_SHUTDOWN_ACTION;
++
++// Only Rua's private daemon namespace enables this lifecycle. The stop file
++// remains set until the daemon has acknowledged exit, so reconnect cannot revive input.
++async fn rua_owner_closed() {
++    let Some(owner_file) = env::var_os("RUA_BROWSER_OWNER_FILE").map(PathBuf::from) else {
++        return std::future::pending::<()>().await;
++    };
++    let session = env::var("AGENT_BROWSER_SESSION").unwrap_or_default();
++    let stop_file = get_daemon_socket_dir().join(format!("{session}.stop"));
++    let owner_pid = env::var("RUA_BROWSER_OWNER_PID").ok().and_then(|p|p.parse::<u32>().ok());
++    loop {
++        if !owner_file.exists() || stop_file.exists()
++            || owner_pid.is_some_and(|pid|!crate::connection::is_pid_alive(pid)) {
++            return;
++        }
++        tokio::time::sleep(Duration::from_millis(25)).await;
++    }
++}
++
++async fn rua_close(state: &mut DaemonState) {
++    // Dropping an owned ChromeProcess closes its process group/Windows Job.
++    let _ = tokio::time::timeout(Duration::from_secs(3), close_all_browser_backends(state)).await;
++    state.browser.take();
++}
+ 
+ pub async fn run_daemon(session: &str) {
+     let socket_dir = get_daemon_socket_dir();
+@@ -259,6 +283,12 @@
+ 
+     loop {
+         tokio::select! {
++            biased;
++            _ = rua_owner_closed() => {
++                let mut state = state.lock().await;
++                rua_close(&mut state).await;
++                break;
++            }
+             accept_result = listener.accept() => {
+                 match accept_result {
+                     Ok((stream, _)) => {
+@@ -413,6 +443,12 @@
+ 
+     loop {
+         tokio::select! {
++            biased;
++            _ = rua_owner_closed() => {
++                let mut state = state.lock().await;
++                rua_close(&mut state).await;
++                break;
++            }
+             accept_result = listener.accept() => {
+                 match accept_result {
+                     Ok((stream, _)) => {
+@@ -551,7 +587,15 @@
+ 
+                 let response = {
+                     let mut s = state.lock().await;
+-                    let response = execute_command(&cmd, &mut s).await;
++                    let response = tokio::select! {
++                        biased;
++                        _ = rua_owner_closed() => {
++                            rua_close(&mut s).await;
++                            close_notify.notify_one();
++                            serde_json::json!({"success":false,"error":"Rua interrupted this session; submitted action outcome may be unknown. Observe before a new action."})
++                        }
++                        response = execute_command(&cmd, &mut s) => response,
++                    };
+                     // Refresh while the state lock is still held. An idle
+                     // timer waiting on this command will observe the updated
+                     // clock as soon as it acquires the lock.
+--- a/cli/src/native/cdp/chrome.rs
++++ b/cli/src/native/cdp/chrome.rs
+@@ -822,11 +822,22 @@
+     #[cfg(target_os = "linux")]
+     let xvfb = maybe_start_xvfb(options);
+ 
++    // Rua's watchdog retains the OS parent/pipe ownership if this daemon
++    // crashes. It uses the process group created below, never a PID-file kill.
+     #[cfg(not(windows))]
+-    let mut cmd = Command::new(chrome_path);
++    let mut cmd = if std::env::var_os("RUA_BROWSER_OWNER_FILE").is_some() {
++        let executable = std::env::current_exe().map_err(|e| e.to_string())?;
++        let mut cmd = Command::new(executable);
++        cmd.arg("--rua-browser-child").arg(chrome_path);
++        cmd.stdin(Stdio::piped());
++        cmd
++    } else {
++        let mut cmd = Command::new(chrome_path);
++        cmd.stdin(Stdio::null());
++        cmd
++    };
+     #[cfg(not(windows))]
+     cmd.args(&args)
+-        .stdin(Stdio::null())
+         .stdout(Stdio::null())
+         .stderr(Stdio::piped());
+ 

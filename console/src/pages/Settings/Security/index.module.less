@@ -1,0 +1,754 @@
+.securityPage {
+  width: 100%;
+
+  :global {
+    .rua-ui-tabs-nav {
+      padding: 0 16px !important;
+    }
+  }
+}
+
+.pageBodyOverride {
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+.mainTabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+
+  :global(.rua-ui-tabs-panel:not([hidden])) {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+}
+
+.pageHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: relative;
+  padding: 20px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.breadcrumbHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  flex: 1;
+}
+
+.breadcrumbParent {
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+.breadcrumbSeparator {
+  color: var(--text-mute);
+  margin: 0 4px;
+}
+
+.breadcrumbCurrent {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 20px;
+}
+
+.header {
+  margin-bottom: 20px;
+}
+
+.title {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0 0 6px 0;
+  color: var(--text);
+}
+
+.description {
+  font-size: 14px;
+  color: var(--text-3);
+  margin: 0;
+}
+
+:global(.dark-mode) {
+  .breadcrumbSeparator {
+    color: var(--border);
+  }
+}
+
+.content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+}
+
+.mainTabs {
+  :global(.rua-ui-tabs-nav) {
+    margin-bottom: 20px;
+  }
+  :global(.rua-ui-tabs-tab) {
+    font-size: 14px;
+    font-weight: 500;
+  }
+  :global(.rua-ui-tabs-tab--active) {
+    font-weight: 600;
+  }
+}
+
+:global(.dark-mode) {
+  .formCard,
+  .tableCard {
+    border-color: var(--border);
+    box-shadow: none;
+
+    &:hover {
+      border-color: var(--border);
+    }
+  }
+}
+
+.tabLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.tabContent {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.skillScannerTabContent {
+  overflow: hidden;
+}
+
+.skillScannerTabContent .sectionSkillScannerContainer {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.skillScannerRoot {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.skillScannerRoot .formCard {
+  flex-shrink: 0;
+}
+
+.skillScannerRoot .innerTabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+
+  :global(.rua-ui-tabs-panel:not([hidden])) {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+}
+
+.skillScannerRoot .tabPanelContent {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.skillScannerRoot .tabPanelHeader {
+  flex-shrink: 0;
+}
+
+.skillScannerRoot .tabPanelContent .tableCard {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.skillScannerRoot .tabPanelContent .tableCard > div {
+  flex: 1;
+  min-height: 0;
+}
+
+.tabDescription {
+  font-size: 14px;
+  color: var(--text-3);
+  margin: 0 0 20px 0;
+  line-height: 1.6;
+}
+
+.sectionConfigureContainer {
+  padding: 0 16px;
+}
+
+.filterRow {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px 0;
+
+  background: transparent !important;
+
+  :global {
+    .rua-input-affix-wrapper,
+    .rua-input,
+    .rua-select-selector {
+      background: transparent !important;
+    }
+  }
+}
+
+.filterBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  background: transparent !important;
+}
+
+.searchInput {
+  flex: 1 1 auto;
+  min-width: 80px;
+  max-width: 280px;
+  background: transparent !important;
+}
+
+.filterActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+:global(.dark-mode) {
+  .filterRow {
+    background: transparent !important;
+
+    :global {
+      .rua-input-affix-wrapper,
+      .rua-input,
+      .rua-select-selector {
+        background: transparent !important;
+      }
+    }
+  }
+
+  .filterBar,
+  .searchInput,
+  .filterActions {
+    background: transparent !important;
+  }
+}
+
+.tableCard .filterRow {
+  background: transparent !important;
+}
+
+.sortOrderBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  font-size: 16px;
+  transition: all 0.2s;
+
+  &:hover {
+    color: var(--text);
+    background: var(--card-hover);
+  }
+}
+
+.sectionContainer {
+  .sectionHeader {
+    padding: 0 16px;
+  }
+
+  .tableCard {
+    border: none !important;
+    padding: 0 !important;
+
+    :global {
+      .rua-spark-card-wrapper {
+        padding: 0 !important;
+      }
+    }
+  }
+}
+
+.sectionFileGuardContainer,
+.sectionSkillScannerContainer {
+  padding: 0 16px;
+}
+
+.innerTabs {
+  margin-top: 20px;
+  :global(.rua-ui-tabs-nav) {
+    margin-bottom: 16px;
+  }
+  :global(.rua-ui-tabs-tab) {
+    font-size: 13px;
+    font-weight: 500;
+  }
+}
+
+.tabBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--danger-bg);
+  color: var(--on-primary);
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 18px;
+  height: 18px;
+  border-radius: var(--radius-md);
+  padding: 0 5px;
+  margin-left: 6px;
+  line-height: 18px;
+}
+
+.tabPanelContent {
+  padding-top: 4px;
+}
+
+.tabPanelHeader {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.formCard {
+  margin-bottom: 20px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  transition: all 0.2s ease-in-out;
+
+  &:hover {
+    box-shadow: var(--shadow-lg);
+    border-color: var(--border);
+  }
+}
+
+.toolGuardRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.permissionCardContent {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.permissionRuleDescription {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-3);
+  margin: 6px 0 0;
+}
+
+.permissionRuleList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.permissionRuleToolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.permissionRuleItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.permissionRuleLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.permissionRuleMeta {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.permissionRuleMatcher {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.permissionRuleActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.permissionRuleForm {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.permissionRuleFormGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.permissionRuleNativeSelect {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  padding: 0 10px;
+}
+
+.permissionRuleEnabledRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.permissionPrecedence {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-3);
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.sectionHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding: 0 16px;
+}
+
+.ruleTable {
+  :global(.rua-ui-table) {
+    width: 100%;
+  }
+
+  :global(.rua-ui-table-row:not(.rua-ui-table-header)) {
+    cursor: pointer;
+  }
+
+  :global(.rua-ui-table-td),
+  :global(.rua-ui-table-th) {
+    min-width: 0;
+  }
+}
+
+.sectionTitle {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text);
+}
+
+.tableCard {
+  margin-bottom: 0;
+  min-height: 0;
+}
+
+.skillScannerEnableRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.skillScannerEnableLabel {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.skillScannerConfig {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.skillScannerConfigItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.skillScannerLabel {
+  font-weight: 500;
+  flex-shrink: 0;
+
+  width: 140px;
+}
+
+.skillScannerControl {
+  width: 200px !important;
+  max-width: 100%;
+}
+
+.fileGuardInputRow {
+  :global {
+    .rua-input-affix-wrapper {
+      background: transparent;
+    }
+    .rua-input-affix-wrapper-disabled {
+      background: var(--bg-disabled) !important;
+    }
+    .rua-input-affix-wrapper-disabled .rua-input {
+      background: transparent !important;
+    }
+  }
+}
+
+:global(.dark-mode) .fileGuardInputRow {
+  :global {
+    .rua-input-affix-wrapper {
+      background: var(--surface-2) !important;
+    }
+  }
+}
+
+.emptyState {
+  padding: 40px 24px;
+  display: flex;
+  justify-content: center;
+}
+
+.emptyText {
+  color: var(--text-3);
+}
+
+.codeHash {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.idCell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  vertical-align: bottom;
+
+  :global(.rua-typography-copy) {
+    flex: 0 0 auto;
+  }
+}
+
+.idCellText {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.centerState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 400px;
+  gap: 16px;
+}
+
+.stateText {
+  font-size: 14px;
+  color: var(--text-3);
+}
+
+.stateTextError {
+  font-size: 14px;
+  color: var(--danger-fg);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.listItem {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--surface);
+  transition: background 0.15s ease;
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  &:hover {
+    background: var(--card-hover);
+  }
+}
+
+.ruleListItem {
+  cursor: pointer;
+}
+
+.ruleListItemHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ruleListItemHeader > .ruleListItemId {
+  min-width: 0;
+}
+
+.ruleListItemControls {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.listItemDisabled {
+  opacity: 0.55;
+}
+
+.listItemHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  padding-right: 84px;
+  min-height: 24px;
+  flex-wrap: wrap;
+  min-width: 0;
+
+  > .listItemId {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
+.miniTag {
+  flex-shrink: 0;
+}
+
+.listItemTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  flex: 1;
+  min-width: 0;
+}
+
+.listItemActions {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 1;
+}
+
+.listItemMeta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.5;
+  padding-right: 168px;
+  word-break: break-all;
+}
+
+.listItemMetaSeparator {
+  color: var(--text-mute);
+}
+
+.listItemId {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.listItemSummary {
+  font-size: 13px;
+  color: var(--text-2);
+  word-break: break-all;
+
+  padding-right: 8px;
+}
+
+.listItemCode {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  word-break: break-all;
+}
+
+.listEmpty {
+  padding: 64px 16px;
+  text-align: center;
+}

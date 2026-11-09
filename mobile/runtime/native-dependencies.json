@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "arch": "aarch64",
+  "repository": "https://packages.termux.dev/apt/termux-main/",
+  "packages": [
+    {
+      "Package": "libandroid-shmem",
+      "Version": "0.7",
+      "Filename": "pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_aarch64.deb",
+      "Size": "7216",
+      "SHA256": "0da3a24d558b93c92bcf8d611e0826a99ff96e396b148e6cdf33b47c47c57ff6",
+      "Homepage": "https://github.com/termux/libandroid-shmem",
+      "License": "BSD-3-Clause",
+      "SourceURL": "https://github.com/termux/libandroid-shmem/archive/refs/tags/v0.7.tar.gz",
+      "SourceSHA256": "1e5ff8459bc0a8c229dd8a94b27d119987e09ef3414331c2b5ebfff20b98e867"
+    },
+    {
+      "Package": "libtalloc",
+      "Version": "2.5.0",
+      "Filename": "pool/main/libt/libtalloc/libtalloc_2.5.0_aarch64.deb",
+      "Size": "34036",
+      "SHA256": "556591f43bb773ad8777e1a29522640866a55f95dab71914418b94a8c58ad5a7",
+      "Homepage": "https://talloc.samba.org/talloc/doc/html/index.html",
+      "License": "GPL-3.0",
+      "SourceURL": "https://www.samba.org/ftp/talloc/talloc-2.5.0.tar.gz",
+      "SourceSHA256": "912afa237510ae542a7733998eb18a12bcda35ab6729c8e2ddb43e8d0ebab007",
+      "LibraryLicense": "LGPL-3.0-or-later"
+    },
+    {
+      "Package": "proot",
+      "Version": "5.1.107.102",
+      "Filename": "pool/main/p/proot/proot_5.1.107.102_aarch64.deb",
+      "Size": "103028",
+      "SHA256": "10a394b585c2fc2b2c8502544f4e5f1be581dc8bfff79e8ba62f16207423e030",
+      "Homepage": "https://proot-me.github.io/",
+      "License": "GPL-2.0",
+      "SourceLicense": "GPL-2.0-or-later",
+      "SourceURL": "https://github.com/termux/proot/archive/v5.1.107.102.zip",
+      "SourceSHA256": "30d12a6e2cc4147123756ff58edea262d3083bbc238c12d0ab9b39e3d1c40852"
+    }
+  ],
+  "buildRecipes": {
+    "repository": "https://github.com/termux/termux-packages",
+    "commit": "ead77f879d6e931b249f51e3a5f16a060759f933",
+    "url": "https://codeload.github.com/termux/termux-packages/tar.gz/ead77f879d6e931b249f51e3a5f16a060759f933",
+    "sha256": "386a5206a3984ef9142534480e27cf961f9a80f39f5af5541eb8b76ec2f99a23"
+  }
+}

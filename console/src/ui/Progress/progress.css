@@ -1,0 +1,21 @@
+.rua-ui-progress {
+  width: 100%;
+}
+
+.rua-ui-progress-track {
+  height: 8px;
+  background: var(--bg-muted);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.rua-ui-progress--sm .rua-ui-progress-track {
+  height: 4px;
+}
+
+.rua-ui-progress-bar {
+  height: 100%;
+  background: var(--primary-fill);
+  border-radius: var(--radius-full);
+  transition: width 0.3s ease;
+}

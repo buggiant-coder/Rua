@@ -1,0 +1,41 @@
+[package]
+name = "cell-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Atomic memory + disk cell persistence (see ADR-0004)"
+publish = false
+autotests = false
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+dashmap = "6"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "basics"
+path = "tests/basics.rs"
+
+[[test]]
+name = "mtime_cache"
+path = "tests/mtime_cache.rs"
+
+[[test]]
+name = "atomic_update"
+path = "tests/atomic_update.rs"
+
+[[test]]
+name = "disk_first_writes"
+path = "tests/disk_first_writes.rs"
+
+[[test]]
+name = "errors"
+path = "tests/errors.rs"

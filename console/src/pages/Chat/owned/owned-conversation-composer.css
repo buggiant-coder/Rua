@@ -1,0 +1,346 @@
+.rua-owned-composer {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+  min-height: 124px;
+  margin: 6px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 0;
+  box-shadow: none;
+}
+
+.rua-owned-composer--expanded {
+  min-height: 248px;
+}
+
+.rua-owned-composer-slash {
+  position: absolute;
+  left: var(--space-2);
+  right: var(--space-2);
+  bottom: calc(100% + var(--space-2));
+  display: grid;
+  gap: 2px;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-1);
+  z-index: 4;
+}
+
+.rua-owned-composer-slash-item {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: var(--space-2);
+  color: var(--text);
+  text-align: left;
+}
+
+.rua-owned-composer-slash-item:hover,
+.rua-owned-composer-slash-item:focus,
+.rua-owned-composer-slash-item.is-active {
+  background: var(--surface-2);
+}
+
+.rua-owned-composer-slash-item span {
+  color: var(--link);
+  font-weight: 650;
+}
+
+.rua-owned-composer-slash-item small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-mute);
+}
+
+.rua-owned-composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: 10px 12px 2px;
+}
+
+.rua-owned-composer-attachment {
+  position: relative;
+  box-sizing: border-box;
+  color: var(--text-2);
+  font-size: var(--font-xs);
+}
+
+.rua-owned-composer-attachment.is-image {
+  display: inline-flex;
+  max-width: 180px;
+  max-height: 120px;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+}
+
+.rua-owned-composer-attachment.is-image .rua-image-viewer-trigger {
+  max-width: 180px;
+  max-height: 120px;
+}
+
+.rua-owned-composer-attachment-image {
+  width: auto;
+  height: auto;
+  max-width: 180px;
+  max-height: 120px;
+  object-fit: contain;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.rua-owned-composer-attachment.is-file {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 36px;
+  max-width: 260px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  padding: 6px 34px 6px 9px;
+}
+
+.rua-owned-composer-attachment.is-file > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rua-owned-composer-attachment-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  color: var(--text);
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+
+.rua-owned-composer-attachment-remove:hover,
+.rua-owned-composer-attachment-remove:focus-visible {
+  border-color: var(--primary);
+  color: var(--primary);
+  outline: none;
+}
+
+.rua-owned-composer-attachment.is-file
+  .rua-owned-composer-attachment-remove {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.rua-owned-composer-attachment.is-uploading {
+  opacity: 1;
+}
+
+.rua-owned-composer-uploading {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(20, 20, 20, 0.72);
+  color: white;
+  backdrop-filter: blur(6px);
+}
+
+.rua-owned-composer-uploading svg {
+  animation: rua-owned-composer-spin 0.8s linear infinite;
+}
+
+@keyframes rua-owned-composer-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.rua-owned-composer:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+.rua-owned-composer:has([data-rua-model-thinking-panel]) {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.rua-owned-composer-editor {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.rua-owned-composer textarea,
+.rua-owned-composer-marker-layer {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 82px;
+  max-height: 220px;
+  font: inherit;
+  line-height: 21px;
+  padding: 8px 12px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.rua-owned-composer textarea {
+  display: block;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+}
+
+@supports (field-sizing: content) {
+  .rua-owned-composer textarea {
+    field-sizing: content;
+  }
+}
+
+.rua-owned-composer textarea.has-marker-layer {
+  color: transparent;
+  caret-color: var(--text);
+}
+
+.rua-owned-composer-marker-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: var(--text);
+  pointer-events: none;
+}
+
+.rua-owned-composer-marker-layer button {
+  position: relative;
+  z-index: 1;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--primary);
+  font: inherit;
+  line-height: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.rua-owned-composer-file-marker {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
+.rua-owned-composer--expanded textarea,
+.rua-owned-composer--expanded .rua-owned-composer-marker-layer {
+  min-height: 164px;
+  max-height: 440px;
+}
+
+.rua-owned-composer textarea::placeholder {
+  color: var(--text-mute);
+}
+
+.rua-owned-composer-bottom {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: calc(var(--height-md) + 8px);
+  padding: 0 8px 8px;
+}
+
+.rua-owned-composer-prefix {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: visible;
+}
+
+.rua-owned-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.rua-owned-composer-char-count {
+  color: var(--text-mute);
+  font-size: var(--font-sm);
+  line-height: 20.4286px;
+  white-space: nowrap;
+}
+
+.rua-owned-composer-prefix .rua-btn,
+.rua-owned-composer-actions .rua-btn {
+  border-radius: var(--radius-md);
+}
+
+.rua-owned-composer-actions .rua-btn--filled:disabled {
+  background: var(--primary-fill);
+  color: var(--on-primary);
+  opacity: 0.5;
+}
+
+@media (max-width: 700px) {
+  .rua-owned-composer {
+    width: 100%;
+  }
+
+  .rua-owned-composer-bottom {
+    align-items: flex-end;
+  }
+
+  .rua-owned-composer-prefix {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+}
+
+@media (max-width: 520px) {
+  .rua-owned-composer-bottom {
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .rua-owned-composer-prefix {
+    flex-wrap: nowrap;
+  }
+
+  .rua-owned-composer-char-count {
+    display: none;
+  }
+}

@@ -1,0 +1,23 @@
+.rua-spinner {
+  display: inline-block;
+  border: 2px solid var(--primary);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: rua-spin 0.6s linear infinite;
+}
+
+.rua-spinner--sm {
+  width: 16px;
+  height: 16px;
+}
+
+.rua-spinner--md {
+  width: 24px;
+  height: 24px;
+}
+
+@keyframes rua-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

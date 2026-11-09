@@ -1,0 +1,45 @@
+.hubPage {
+  width: 100%;
+}
+
+.pageBody {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden !important;
+}
+
+.mainTabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+
+  :global(.rua-ui-tabs-nav) {
+    padding: 0 16px;
+    margin-bottom: 0;
+  }
+
+  :global(.rua-ui-tabs-tab) {
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  :global(.rua-ui-tabs-tab--active) {
+    font-weight: 600;
+  }
+
+  :global(.rua-ui-tabs-panel:not([hidden])) {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+}
+
+.tabPane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}

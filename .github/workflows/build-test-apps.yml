@@ -1,0 +1,333 @@
+name: Build test applications
+
+on:
+  workflow_dispatch:
+    inputs:
+      draft_from_run:
+        description: "Prepare a draft from an existing installer build run (empty builds installers)"
+        type: string
+      release_tag:
+        description: "Existing version tag for the draft"
+        type: string
+        default: v0.8.0
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  RUSTC_WRAPPER: ""
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  desktop:
+    if: inputs.draft_from_run == ''
+    name: Desktop (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.91.0"
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - uses: ./.github/actions/setup-protoc
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - run: npm ci
+        working-directory: console
+      - name: Build test installer without production credentials
+        shell: bash
+        run: bash scripts/ci/build-desktop.sh "${{ matrix.target }}" --test-package
+      - name: Package dependency notices and MPL sources
+        shell: bash
+        run: |
+          PYTHON=python3
+          command -v "$PYTHON" >/dev/null || PYTHON=python
+          "$PYTHON" scripts/release/package-notices.py --desktop --target "${{ matrix.target }}" \
+            --output "target/dist/desktop/${{ matrix.target }}/rua-${{ matrix.target }}-notices.tar.gz"
+      - name: Check Linux installed layout and startup
+        if: runner.os == 'Linux'
+        run: |
+          scripts/tests/verify-linux-desktop-installer.sh
+      - uses: actions/upload-artifact@v4
+        if: success() || failure()
+        with:
+          name: test-app-${{ matrix.target }}
+          path: target/dist/desktop/${{ matrix.target }}/*
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: failure() && runner.os == 'Linux'
+        with:
+          name: linux-desktop-startup-diagnostics
+          path: |
+            target/linux-desktop-startup.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  android:
+    if: inputs.draft_from_run == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.91.0"
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Prepare Android build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf protobuf-compiler
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
+          cargo install cargo-ndk --locked
+      - name: Build development-signed APK
+        run: scripts/package-mobile-apk.sh --debug --clean
+      - name: Package Android dependency and native sources
+        run: |
+          python3 scripts/release/package-notices.py --target aarch64-linux-android \
+            --output target/mobile-apk/rua-android-notices.tar.gz
+          python3 scripts/release/package-native-sources.py \
+            --output target/mobile-apk/rua-android-native-sources.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-app-android-arm64
+          path: |
+            target/mobile-apk/rua-debug-arm64-v8a.apk
+            target/mobile-apk/rua-debug-payload.json
+            target/mobile-apk/rua-android-notices.tar.gz
+            target/mobile-apk/rua-android-native-sources.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-preview:
+    name: Publish preview installers
+    if: >-
+      always() && !cancelled() &&
+      (inputs.draft_from_run != '' ||
+       (startsWith(github.ref, 'refs/tags/v') &&
+        needs.desktop.result == 'success' && needs.android.result == 'success'))
+    needs: [desktop, android]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.draft_from_run != '' && inputs.release_tag || github.ref }}
+      - name: Validate matching installers and complete release CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.draft_from_run || github.run_id }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          RELEASE_TAG: ${{ inputs.draft_from_run != '' && inputs.release_tag || github.ref_name }}
+        run: |
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > build-run.json
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?filter=all&per_page=100" --slurp > build-jobs.json
+          RELEASE_COMMIT="$(git rev-parse HEAD)"
+          export RELEASE_COMMIT
+          CI_RUN_ID="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs" \
+            -f "head_sha=$RELEASE_COMMIT" -f event=push -f status=success -f per_page=100 \
+            --jq '.workflow_runs[0].id // empty')"
+          [[ "$CI_RUN_ID" =~ ^[0-9]+$ ]] || { echo 'No successful release CI for the version tag commit'; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID" > ci-run.json
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID/jobs?filter=all&per_page=100" --slurp > ci-jobs.json
+          python3 - <<'PYTHON'
+          import json, os, pathlib, tomllib
+          run = json.loads(pathlib.Path('build-run.json').read_text())
+          jobs = [job for page in json.loads(pathlib.Path('build-jobs.json').read_text()) for job in page['jobs']]
+          ci_run = json.loads(pathlib.Path('ci-run.json').read_text())
+          ci_jobs = [job for page in json.loads(pathlib.Path('ci-jobs.json').read_text()) for job in page['jobs']]
+          version = tomllib.loads(pathlib.Path('Cargo.toml').read_text())['workspace']['package']['version']
+          assert os.environ['RELEASE_TAG'] == 'v' + version, 'Version tag mismatch'
+          for candidate, workflow in ((run, 'build-test-apps.yml'), (ci_run, 'release.yml')):
+              assert candidate['repository']['full_name'] == os.environ['GITHUB_REPOSITORY'], 'Wrong repository'
+              assert candidate['path'] == '.github/workflows/' + workflow, 'Wrong workflow'
+              assert candidate['head_sha'] == os.environ['RELEASE_COMMIT'], 'Run does not match the version tag'
+              if candidate is run and str(candidate['id']) == os.environ['CURRENT_RUN_ID']:
+                  assert candidate['status'] == 'in_progress' and candidate['conclusion'] is None, 'Unexpected current build status'
+              else:
+                  assert candidate['status'] == 'completed' and candidate['conclusion'] == 'success', 'Run is not successful'
+          assert ci_run['event'] == 'push' and ci_run['head_branch'] == 'main', 'Expected main release CI'
+          required_installers = {
+              'Desktop (aarch64-apple-darwin)', 'Desktop (x86_64-apple-darwin)',
+              'Desktop (x86_64-pc-windows-msvc)', 'Desktop (x86_64-unknown-linux-gnu)', 'android',
+          }
+          outcomes = {job['name']: job for job in sorted(jobs, key=lambda job: job['id'])}
+          for name in required_installers:
+              assert outcomes.get(name, {}).get('conclusion') == 'success', f'Installer failed: {name}'
+          required_ci = {'Format', 'Clippy', 'Check', 'Test', 'Release Gate',
+                         'Android Release Contract', 'Desktop Signing Contract'}
+          ci_outcomes = {job['name']: job for job in sorted(ci_jobs, key=lambda job: job['id'])}
+          # Older release tags used one Test job; new tags must include every test group.
+          smoke_name = 'Test'
+          if 'Test (smoke)' in ci_outcomes:
+              smoke_name = 'Test (smoke)'
+              required_ci.update('Test (' + suite + ')' for suite in (
+                  'smoke', 'workspace', 'server-contracts', 'server-product-hooks', 'server-endpoints',
+                  'server-infra', 'server-terminal', 'server-sync', 'docs'))
+          for name in required_ci:
+              assert ci_outcomes.get(name, {}).get('conclusion') == 'success', f'Required check failed: {name}'
+          for name in ('Check first-input shutdown and Task input in isolation',
+                       'Check MCP application and sync completion in isolation'):
+              smoke = next(step for step in ci_outcomes[smoke_name]['steps'] if step['name'] == name)
+              assert smoke['conclusion'] == 'success', f'Core Linux smoke tests did not pass: {name}'
+          print('Validated matching source, five installers, complete workspace tests, and release gate.')
+          print('Reused complete release CI:', ci_run['html_url'])
+          PYTHON
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.draft_from_run || github.run_id }}
+          pattern: test-app-*
+          path: artifacts
+          merge-multiple: true
+      - name: Include dependency sources and checksums
+        run: |
+          staging="$(mktemp -d .release-assets.XXXXXX)"
+          trap 'rm -rf "$staging"' EXIT
+          version="$(python3 -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("Cargo.toml").read_text())["workspace"]["package"]["version"])')"
+          mkdir -p "$staging/assets"
+          materials="$staging/dependency-sources"
+          mkdir -p "$materials"
+          for name in \
+            rua-aarch64-apple-darwin-notices.tar.gz \
+            rua-x86_64-apple-darwin-notices.tar.gz \
+            rua-x86_64-pc-windows-msvc-notices.tar.gz \
+            rua-x86_64-unknown-linux-gnu-notices.tar.gz \
+            rua-android-notices.tar.gz rua-android-native-sources.tar.gz rua-debug-payload.json; do
+            cp "artifacts/$name" "$materials/"
+          done
+          printf '%s\n' \
+            'Dependency sources and license materials for the matching Rua installers.' \
+            'The notices archives contain dependency inventories, license texts, and matching MPL sources.' \
+            'The Android native sources archive contains upstream sources, pinned Termux recipes, and patches.' \
+            'rua-debug-payload.json is the APK validation report.' \
+            'Rua source is available in GitHub Source code downloads for this release.' > "$materials/README.txt"
+          tar -czf "$staging/assets/Rua_${version}_dependency-sources.tar.gz" -C "$staging" dependency-sources
+          installers=(
+            artifacts/*aarch64-apple-darwin*.dmg artifacts/*x86_64-apple-darwin*.dmg
+            artifacts/*x86_64-pc-windows-msvc*.exe artifacts/*x86_64-unknown-linux-gnu*.deb
+            artifacts/rua-debug-arm64-v8a.apk
+          )
+          [[ "${#installers[@]}" -eq 5 ]]
+          names=(
+            "Rua_${version}_arm64.dmg" "Rua_${version}_x64.dmg"
+            "Rua_${version}_x64-setup.exe" "Rua_${version}_amd64.deb"
+            "Rua_${version}_arm64-v8a.apk"
+          )
+          for index in "${!installers[@]}"; do
+            [[ -f "${installers[$index]}" ]]
+            cp "${installers[$index]}" "$staging/assets/${names[$index]}"
+          done
+          (
+            cd "$staging/assets"
+            sha256sum -- *.dmg *.exe *.deb *.apk "Rua_${version}_dependency-sources.tar.gz" > SHA256SUMS
+          )
+          python3 - "$staging/assets" <<'PYTHON'
+          import os, pathlib, sys
+          staged = pathlib.Path(sys.argv[1])
+          for path in staged.iterdir():
+              with path.open('rb') as stream:
+                  os.fsync(stream.fileno())
+          os.rename(staged, 'release-assets')
+          for path in (pathlib.Path('release-assets'), pathlib.Path('.')):
+              fd = os.open(path, os.O_RDONLY)
+              try:
+                  os.fsync(fd)
+              finally:
+                  os.close(fd)
+          PYTHON
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Rua ${{ inputs.draft_from_run != '' && inputs.release_tag || github.ref_name }} Preview
+          tag_name: ${{ inputs.draft_from_run != '' && inputs.release_tag || github.ref_name }}
+          draft: true
+          prerelease: true
+          make_latest: false
+          fail_on_unmatched_files: true
+          body: |
+            ${{ inputs.draft_from_run != '' && format('Draft assembled from installer build run {0}. Installer build results: https://github.com/{1}/actions/runs/{0}', inputs.draft_from_run, github.repository) || '' }}
+
+            Complete Release CI for the matching tag commit is verified before these files are attached.
+
+            Preview installers for macOS (Apple Silicon / Intel), Windows x64,
+            Linux x64 (.deb), and Android ARM64.
+
+            macOS builds are ad-hoc signed without Apple notarization.
+            Windows builds do not have Authenticode signatures.
+            Android is a debug APK signed with the public development test key.
+            Operating systems may show trust warnings. Use on test devices.
+
+            Updates require manual installation; no latest.json or signed
+            automatic-update artifacts are published by this preview workflow.
+            Rua source is available through GitHub’s Source code downloads.
+            Rua_<version>_dependency-sources.tar.gz contains target-specific
+            dependency notices, MPL crate sources, Android runtime library sources,
+            pinned Termux build recipes and patches, and the APK validation report.
+            SHA256SUMS covers the five installers and the dependency sources archive.
+            See docs/android-native-source-delivery.md in the Rua source.
+          files: release-assets/*
+      - name: Remove superseded preview attachments
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.draft_from_run != '' && inputs.release_tag || github.ref_name }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --slurp > preview-releases.json
+          python3 - <<'PYTHON'
+          import json, os, pathlib, subprocess
+          releases = [release for page in json.loads(pathlib.Path('preview-releases.json').read_text()) for release in page]
+          matches = [release for release in releases if release['tag_name'] == os.environ['RELEASE_TAG']]
+          assert len(matches) == 1, 'Expected exactly one release for the preview tag'
+          release = matches[0]
+          assert release['prerelease'], 'Only a preview release can be cleaned up'
+          keep = {path.name for path in pathlib.Path('release-assets').iterdir()}
+          dependency_sources = 'Rua_' + os.environ['RELEASE_TAG'].removeprefix('v') + '_dependency-sources.tar.gz'
+          assert len(keep) == 7 and 'SHA256SUMS' in keep and dependency_sources in keep
+          assert keep <= {asset['name'] for asset in release['assets']}, 'Replacement attachments are incomplete'
+          for asset in release['assets']:
+              if asset['name'] not in keep:
+                  subprocess.run(['gh', 'api', '--method', 'DELETE',
+                                  f"repos/{os.environ['GITHUB_REPOSITORY']}/releases/assets/{asset['id']}"], check=True)
+          print('Preview release retains only five installers, dependency sources, and SHA256SUMS.')
+          PYTHON

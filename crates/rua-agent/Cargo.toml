@@ -1,0 +1,117 @@
+[package]
+name = "rua-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Rua business agent orchestration: profile, registry, executor, commands, prompt, hooks"
+publish = false
+autotests = false
+
+[dependencies]
+
+agent-types.workspace = true
+rua-command = { path = "../rua-command" }
+rua-i18n.workspace = true
+cell-store.workspace = true
+rua-core.workspace = true
+rua-contract.workspace = true
+rua-config.workspace = true
+rua-acp.workspace = true
+rua-security.workspace = true
+rua-mcp.workspace = true
+rua-plugin-runtime.workspace = true
+rua-provider.workspace = true
+rua-skills.workspace = true
+rua-tool.workspace = true
+rua-memory.workspace = true
+rua-session = { path = "../rua-session" }
+rua-task.workspace = true
+sqlite-vecstore.workspace = true
+mcp-manager.workspace = true
+react-agent.workspace = true
+llm-multiplex.workspace = true
+
+
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tokenizers.workspace = true
+dirs = "6"
+regex = "1"
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tracing-subscriber = { workspace = true }
+agent-types = { workspace = true }
+react-agent = { workspace = true }
+rua-tool = { workspace = true }
+rua-contract = { workspace = true }
+rua-core = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util", "time"] }
+
+[[test]]
+name = "memory"
+path = "tests/memory.rs"
+
+[[test]]
+name = "subagent_react"
+path = "tests/subagent_react.rs"
+
+[[test]]
+name = "runtime"
+path = "tests/runtime.rs"
+
+[[test]]
+name = "cells_layout"
+path = "tests/cells_layout.rs"
+
+[[test]]
+name = "registry_via_cells"
+path = "tests/registry_via_cells.rs"
+
+[[test]]
+name = "conversation_commands"
+path = "tests/conversation_commands.rs"
+
+[[test]]
+name = "conversation_wiring"
+path = "tests/conversation_wiring.rs"
+
+[[test]]
+name = "runtime_full_dispatch"
+path = "tests/runtime_full_dispatch.rs"
+
+[[test]]
+name = "unit_hooks"
+path = "tests/unit_hooks.rs"
+
+[[test]]
+name = "unit_memory"
+path = "tests/unit_memory.rs"
+
+[[test]]
+name = "unit_media"
+path = "tests/unit_media.rs"
+
+[[test]]
+name = "unit_prompt"
+path = "tests/unit_prompt.rs"
+
+[[test]]
+name = "unit_context"
+path = "tests/unit_context.rs"
+
+[[test]]
+name = "unit_compaction"
+path = "tests/unit_compaction.rs"

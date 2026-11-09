@@ -1,0 +1,64 @@
+{
+  "overrides": {
+    "qwenpaw-local": {
+      "id": "rua-local",
+      "name": "Rua Local"
+    },
+    "gemini": {
+      "id": "google"
+    },
+    "ollama": {
+      "name": "Ollama (Local)",
+      "base_url": "http://localhost:11434",
+      "chat_model": "OllamaChatModel"
+    },
+    "openai-response": {
+      "name": "OpenAI (Responses API)"
+    }
+  },
+  "providers": [
+    {
+      "id": "groq",
+      "name": "Groq",
+      "base_url": "https://api.groq.com/openai/v1",
+      "api_key_prefix": "gsk_",
+      "chat_model": "OpenAIChatModel",
+      "require_api_key": true,
+      "freeze_url": true,
+      "support_connection_check": true,
+      "is_local": false,
+      "preset_models": [
+        "llama-3.3-70b-versatile",
+        "mixtral-8x7b-32768"
+      ]
+    },
+    {
+      "id": "mistral",
+      "name": "Mistral AI",
+      "base_url": "https://api.mistral.ai/v1",
+      "api_key_prefix": "",
+      "chat_model": "OpenAIChatModel",
+      "require_api_key": true,
+      "freeze_url": true,
+      "support_connection_check": true,
+      "is_local": false,
+      "preset_models": [
+        "mistral-large-latest",
+        "mistral-medium-latest",
+        "codestral-latest"
+      ]
+    },
+    {
+      "id": "openai-compatible",
+      "name": "OpenAI Compatible",
+      "base_url": "",
+      "api_key_prefix": "",
+      "chat_model": "OpenAIChatModel",
+      "require_api_key": false,
+      "freeze_url": false,
+      "support_connection_check": true,
+      "is_local": false,
+      "preset_models": []
+    }
+  ]
+}

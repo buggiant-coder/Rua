@@ -1,0 +1,158 @@
+@import "../../../pages/Agent/Workspace/index.module.less";
+
+.mobileFullList {
+  width: 100% !important;
+}
+
+.mobileEditorDrawer {
+  :global {
+    .rua-ui-drawer-header {
+      display: none;
+    }
+    .rua-ui-drawer-body {
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+  }
+}
+
+.mobileEditorDrawerBody {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.filterRow {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px 0;
+}
+
+.filterBar {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.searchInput {
+  flex: 1 1 auto;
+  min-width: 80px;
+  max-width: 280px;
+}
+
+.sortOrderBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: 16px;
+  transition: all 0.2s;
+
+  &:hover {
+    color: var(--text);
+    background: var(--card-hover);
+  }
+}
+
+.builtinTag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--primary);
+  background: var(--primary-bg);
+  border-radius: var(--radius-sm);
+  vertical-align: middle;
+}
+
+:global(.dark-mode) {
+  .builtinTag {
+    background: var(--primary-hov);
+  }
+}
+
+.pickerSection {
+  margin-bottom: 4px;
+}
+
+.pickerHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.pickerLabel {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.bulkActions {
+  display: flex;
+  gap: 4px;
+}
+
+.pickerGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.pickerCard {
+  position: relative;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.2s;
+  background: var(--surface);
+
+  &:hover {
+    border-color: var(--primary);
+  }
+}
+
+.pickerCardSelected {
+  border-color: var(--primary) !important;
+  background: var(--primary-bg);
+}
+
+.pickerCheck {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  color: var(--primary);
+  font-size: 12px;
+}
+
+.pickerCardTitle {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:global(.dark-mode) {
+  .pickerCard {
+    background: var(--surface-2);
+    border-color: var(--border-soft);
+  }
+
+  .pickerCardSelected {
+    background: var(--primary-hov);
+  }
+}

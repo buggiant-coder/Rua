@@ -1,0 +1,64 @@
+.rua-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+.rua-check-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.rua-check-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.rua-check-box::after {
+  content: "";
+  display: block;
+  width: 4px;
+  height: 8px;
+  border: solid var(--surface);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg) scale(0);
+  transition: transform 0.15s;
+}
+
+.rua-check-input:checked + .rua-check-box {
+  background: var(--primary-fill);
+  border-color: var(--primary);
+}
+
+.rua-check-input:checked + .rua-check-box::after {
+  transform: rotate(45deg) scale(1);
+}
+
+.rua-check-input:focus-visible + .rua-check-box {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.rua-check-label {
+  font-size: var(--font-md);
+  color: var(--text);
+  user-select: none;
+}
+
+.rua-check--disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}

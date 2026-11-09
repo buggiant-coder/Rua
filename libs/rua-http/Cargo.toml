@@ -1,0 +1,25 @@
+[package]
+name = "rua-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Shared HTTP client construction for rua"
+publish = false
+autotests = false
+
+[dependencies]
+reqwest.workspace = true
+tracing.workspace = true
+serde.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+webpki-roots = "1"
+
+[[test]]
+name = "contract_diagnostics"
+path = "tests/contract_diagnostics.rs"

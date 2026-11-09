@@ -1,0 +1,31 @@
+.toggleBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+  color: var(--text-2);
+  padding: 0;
+  flex-shrink: 0;
+
+  &:hover {
+    background: var(--primary-bg);
+    color: var(--primary);
+  }
+}
+
+:global(.dark-mode) {
+  .toggleBtn {
+    &:hover {
+      background: var(--card-hover);
+      color: var(--on-primary);
+    }
+  }
+}

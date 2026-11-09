@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  mobile a11y service 配置. 当前能力开满, 实际功能等 task #33 merge.
+
+  flags:
+    flagDefault                              - 标准事件
+    flagReportViewIds                        - 上报 view id (识别 UI 元素)
+    flagRetrieveInteractiveWindows           - 拿到所有可交互窗口 (多窗口手机必须)
+    flagIncludeNotImportantViews             - 包含 importantForAccessibility=no 的 view
+    flagRequestEnhancedWebAccessibility      - WebView 内容也能访问
+
+  capabilities:
+    canPerformGestures                       - 模拟手势点击/滑动
+    canRetrieveWindowContent                 - 读取屏幕内容 (截 a11y tree)
+    canRequestEnhancedWebAccessibility       - 同 flag
+    canRequestFilterKeyEvents                - 监听物理按键 (后续可能用)
+
+  packageNames 不指定 = 监听所有应用.
+-->
+<accessibility-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeAllMask"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews|flagRequestEnhancedWebAccessibility"
+    android:canPerformGestures="true"
+    android:canRequestEnhancedWebAccessibility="true"
+    android:canRequestFilterKeyEvents="true"
+    android:canRetrieveWindowContent="true"
+    android:canTakeScreenshot="true"
+    android:description="@string/a11y_service_description"
+    android:notificationTimeout="100"
+    android:summary="@string/a11y_service_summary" />

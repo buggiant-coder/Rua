@@ -1,0 +1,33 @@
+name: Windows Rust Check
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  RUSTC_WRAPPER: ""
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUST_TOOLCHAIN: "1.91.0"
+
+jobs:
+  sync-runtime:
+    name: Sync Runtime Windows Check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-sync-runtime
+          cache-on-failure: true
+      - uses: ./.github/actions/setup-protoc
+      - run: cargo check --target x86_64-pc-windows-msvc -p rua-sync -p rua-server --locked

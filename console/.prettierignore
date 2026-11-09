@@ -1,0 +1,4 @@
+dist/
+dist-desktop-bootstrap/
+src-tauri/gen/
+src-tauri/target/

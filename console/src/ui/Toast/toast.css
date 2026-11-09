@@ -1,0 +1,49 @@
+.rua-ui-toast-container {
+  position: fixed;
+  top: var(--space-4);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  pointer-events: none;
+}
+
+.rua-ui-toast {
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--font-sm);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  pointer-events: auto;
+  animation: rua-toast-in 0.2s ease;
+}
+
+.rua-ui-toast--success {
+  background: var(--success-bg);
+  color: var(--success-fg);
+}
+.rua-ui-toast--error {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+.rua-ui-toast--info {
+  background: var(--primary-bg);
+  color: var(--primary);
+}
+.rua-ui-toast--warning {
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+}
+
+@keyframes rua-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

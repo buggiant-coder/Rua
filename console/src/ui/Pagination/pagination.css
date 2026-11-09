@@ -1,0 +1,52 @@
+.rua-ui-pagination {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.rua-ui-pagination-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--height-sm);
+  height: var(--height-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--font-sm);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.rua-ui-pagination-btn:hover:not(:disabled):not(
+    .rua-ui-pagination-btn--active
+  ) {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.rua-ui-pagination-btn--active {
+  background: var(--primary-fill);
+  color: var(--on-primary);
+  border-color: var(--primary-fill);
+}
+
+.rua-ui-pagination-btn:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+.rua-ui-pagination-ellipsis {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--height-sm);
+  height: var(--height-sm);
+  color: var(--text-3);
+  font-size: var(--font-sm);
+}

@@ -1,0 +1,23 @@
+.skillIcon {
+  width: 52px;
+  height: 52px;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  flex-shrink: 0;
+  object-fit: cover;
+  font-size: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+img.skillIcon {
+  display: block;
+}
+
+:global(.dark-mode) {
+  .skillIcon {
+    background: var(--surface-2);
+  }
+}

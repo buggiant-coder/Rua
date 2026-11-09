@@ -1,0 +1,8 @@
+{
+  "id": "task-e2e-agent",
+  "name": "Task E2E Test Agent",
+  "description": "Fixture agent for task end-to-end integration tests",
+  "system_prompt": "You are a test agent.",
+  "model": "echo",
+  "tools": ["task_create", "task_cancel", "Task_Get", "task_list", "task_await"]
+}

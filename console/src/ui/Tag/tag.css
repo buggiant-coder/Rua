@@ -1,0 +1,48 @@
+.rua-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  height: 22px;
+  font-size: var(--font-xs);
+  line-height: 1;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.rua-tag--default {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.rua-tag--primary {
+  background: var(--primary-bg);
+  color: var(--primary);
+}
+
+.rua-tag--danger {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+.rua-tag--success {
+  background: var(--success-bg);
+  color: var(--success-fg);
+}
+
+.rua-tag--warning {
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+}
+
+.rua-tag__close {
+  cursor: pointer;
+  margin-left: var(--space-1);
+  opacity: 0.6;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.rua-tag__close:hover {
+  opacity: 1;
+}

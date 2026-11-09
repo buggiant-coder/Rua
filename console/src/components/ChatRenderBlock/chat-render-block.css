@@ -1,0 +1,137 @@
+.rua-render-block {
+  --rua-render-block-bg: var(--chat-code-bg);
+  --rua-render-block-bar-solid-bg: var(--chat-agent-bg, var(--surface));
+  width: 100%;
+  min-width: 0;
+  margin: var(--space-2) 0 var(--space-3);
+  isolation: isolate;
+  overflow: clip;
+  border: 1px solid var(--chat-structure-border);
+  border-radius: var(--chat-structure-radius);
+  background: var(--rua-render-block-bg);
+  color: var(--chat-agent-fg, inherit);
+}
+
+.rua-render-block--markdown-plus {
+  --rua-render-block-bg: var(--chat-structure-bg);
+}
+
+.rua-render-block-bar {
+  position: sticky;
+  top: var(--chat-render-block-sticky-top, 0px);
+  z-index: 4;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--chat-structure-border);
+  border-radius: 0;
+  background: linear-gradient(
+      var(--chat-table-head-bg),
+      var(--chat-table-head-bg)
+    ),
+    var(--rua-render-block-bar-solid-bg);
+  background-clip: padding-box;
+  color: var(--chat-muted-fg);
+  padding: 0 var(--space-1);
+}
+
+.rua-render-block--non-sticky > .rua-render-block-bar {
+  position: static;
+}
+
+.rua-render-block-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--chat-strong-fg);
+  font-size: var(--font-xs);
+  font-weight: 650;
+  line-height: 1.35;
+  padding-left: calc(var(--space-2) - 1px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rua-render-block-controls {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.rua-render-block.is-collapsed .rua-render-block-bar {
+  border-bottom: 0;
+  border-radius: var(--chat-structure-radius);
+}
+
+.rua-render-block-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.rua-render-block-toggle {
+  position: relative;
+  z-index: 1;
+  width: var(--height-sm);
+  height: var(--height-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: var(--chat-control-radius);
+  background: transparent;
+  color: var(--chat-muted-fg);
+  cursor: pointer;
+  pointer-events: auto;
+  padding: 0;
+}
+
+.rua-render-block-toggle:hover {
+  background: var(--chat-control-hover-bg);
+  color: var(--chat-strong-fg);
+}
+
+.rua-render-block-toggle:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.rua-render-block-toggle svg {
+  transition: transform 0.16s ease;
+}
+
+.rua-render-block.is-collapsed .rua-render-block-toggle svg {
+  transform: rotate(180deg);
+}
+
+.rua-render-block-body {
+  position: relative;
+  z-index: 0;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: visible;
+}
+
+.rua-render-block .rua-render-block-body > pre {
+  max-height: none;
+  margin: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.rua-render-block-body > .rua-mdp-block {
+  margin: 0;
+  overflow: visible;
+}
+
+.rua-render-block--markdown-plus .rua-render-block-body {
+  padding: var(--space-3);
+}

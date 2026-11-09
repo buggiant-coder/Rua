@@ -1,0 +1,20 @@
+.stacked-list {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+  position: relative;
+}
+
+.stacked-list > * {
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+}
+
+.stacked-list > *:last-child {
+  border-bottom: none;
+}
+
+.stacked-list > *:hover {
+  background: var(--card-hover);
+}

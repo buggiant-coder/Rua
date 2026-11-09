@@ -1,0 +1,283 @@
+[package]
+name = "rua-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Axum HTTP server for rua"
+publish = false
+autotests = false
+
+[[bin]]
+name = "rua-server"
+path = "src/main.rs"
+
+[[test]]
+name = "endpoints"
+path = "tests/endpoints.rs"
+
+[[test]]
+name = "contract_auth_http"
+path = "tests/contract_auth_http.rs"
+
+[[test]]
+name = "contract_agents_http"
+path = "tests/contract_agents_http.rs"
+
+[[test]]
+name = "contract_acp_http"
+path = "tests/contract_acp_http.rs"
+
+[[test]]
+name = "contract_approval_http"
+path = "tests/contract_approval_http.rs"
+
+[[test]]
+name = "contract_chats_http"
+path = "tests/contract_chats_http.rs"
+
+[[test]]
+name = "contract_channels_http"
+path = "tests/contract_channels_http.rs"
+
+[[test]]
+name = "contract_config_http"
+path = "tests/contract_config_http.rs"
+
+[[test]]
+name = "contract_cron_http"
+path = "tests/contract_cron_http.rs"
+
+[[test]]
+name = "contract_local_models_http"
+path = "tests/contract_local_models_http.rs"
+
+[[test]]
+name = "unit_server"
+path = "tests/unit_server.rs"
+
+[[test]]
+name = "contract_messages_http"
+path = "tests/contract_messages_http.rs"
+
+[[test]]
+name = "integration_server"
+path = "tests/integration_server.rs"
+
+[[test]]
+name = "contract_console_http"
+path = "tests/contract_console_http.rs"
+
+[[test]]
+name = "contract_tool_http"
+path = "tests/contract_tool_http.rs"
+
+[[test]]
+name = "contract_terminal_http"
+path = "tests/contract_terminal_http.rs"
+
+[[test]]
+name = "contract_token_usage_http"
+path = "tests/contract_token_usage_http.rs"
+
+[[test]]
+name = "contract_voice_http"
+path = "tests/contract_voice_http.rs"
+
+[[test]]
+name = "contract_mcp_http"
+path = "tests/contract_mcp_http.rs"
+
+[[test]]
+name = "contract_provider_http"
+path = "tests/contract_provider_http.rs"
+
+[[test]]
+name = "contract_projects_http"
+path = "tests/contract_projects_http.rs"
+
+[[test]]
+name = "contract_skills_http"
+path = "tests/contract_skills_http.rs"
+
+[[test]]
+name = "contract_http_misc"
+path = "tests/contract_http_misc.rs"
+
+[[test]]
+name = "contract_sync"
+path = "tests/contract_sync.rs"
+
+[[test]]
+name = "channels"
+path = "tests/channels.rs"
+
+[[test]]
+name = "plugin"
+path = "tests/plugin.rs"
+
+[[test]]
+name = "console"
+path = "tests/console.rs"
+
+[[test]]
+name = "agent_approval"
+path = "tests/agent_approval.rs"
+
+[[test]]
+name = "infra"
+path = "tests/infra.rs"
+
+[[test]]
+name = "daemon_commands"
+path = "tests/daemon_commands.rs"
+
+[[test]]
+name = "server_commands"
+path = "tests/server_commands.rs"
+
+[[test]]
+name = "contract_apply_dispatch"
+path = "tests/contract_apply_dispatch.rs"
+
+[[test]]
+name = "contract_product_hooks_http"
+path = "tests/contract_product_hooks_http.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"
+rua-core.workspace = true
+rua-chat.workspace = true
+rua-http.workspace = true
+cell-store.workspace = true
+rua-observability.workspace = true
+rua-channel.workspace = true
+rua-command = { path = "../rua-command" }
+rua-contract.workspace = true
+rua-config.workspace = true
+rua-i18n.workspace = true
+rua-device-network.workspace = true
+rua-cron.workspace = true
+rua-provider.workspace = true
+rua-agent.workspace = true
+rua-memory.workspace = true
+sqlite-vecstore.workspace = true
+rua-mcp.workspace = true
+rua-security.workspace = true
+rua-prompts.workspace = true
+rua-plugin.workspace = true
+rua-plugin-runtime.workspace = true
+rua-doctor.workspace = true
+rua-voice.workspace = true
+rua-session.workspace = true
+rua-project.workspace = true
+rua-workspace = { path = "../rua-workspace" }
+rua-tool.workspace = true
+rua-usage.workspace = true
+rua-acp.workspace = true
+rua-skills.workspace = true
+rua-skills-hub.workspace = true
+rua-skills-market.workspace = true
+rua-skills-scanner.workspace = true
+rua-local-model.workspace = true
+rua-tunnel.workspace = true
+rua-sync.workspace = true
+rua-task.workspace = true
+iroh.workspace = true
+iroh-docs.workspace = true
+agent-types.workspace = true
+mcp-manager.workspace = true
+llm-multiplex.workspace = true
+react-agent.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+subtle = "2"
+tracing-appender = "0.2"
+hyper.workspace = true
+futures.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+blake3.workspace = true
+rusqlite.workspace = true
+
+notify = "7"
+
+
+anyhow.workspace = true
+mime_guess = "2"
+bytes = "1"
+http = "1"
+http-body-util = "0.1"
+pin-project-lite = "0.2"
+sha2 = "0.10"
+qrcode = { version = "0.14", default-features = false, features = ["image", "svg"] }
+base64 = "0.22"
+aes-gcm = "0.10"
+image = { version = "0.25", default-features = false, features = ["png"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+walkdir = "2"
+tempfile = "3"
+dirs = "6"
+reqwest.workspace = true
+rand.workspace = true
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+hex = "0.4"
+iana-time-zone = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+portable-pty = "0.9"
+
+[dev-dependencies]
+tokio-tungstenite.workspace = true
+wiremock = "0.6"
+serial_test = "3"
+futures-util = "0.3"
+iroh-blobs.workspace = true
+iroh-docs.workspace = true
+
+[features]
+imessage = ["rua-workspace/imessage"]
+sip-livekit = ["rua-workspace/sip-livekit"]
+matrix = ["rua-workspace/matrix"]
+mqtt = ["rua-workspace/mqtt"]
+default = []
+browser-tools = []
+office-tools = []
+local-inference = []
+wasm-runtime = []
+mobile-default = []
+mobile-full = ["mobile-default", "browser-tools", "office-tools", "local-inference", "wasm-runtime"]
+mobile-dev = ["mobile-default"]
+external-im = []
+metrics = ["rua-observability/metrics"]
+
+[[test]]
+name = "contract_desktop_automation"
+path = "tests/contract_desktop_automation.rs"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+cua-driver-core = { git = "https://github.com/trycua/cua", rev = "85e2b1318bd77ccf3cfa88ccdf875a4bb7eaed19", default-features = false }
+cua-driver-contract = { git = "https://github.com/trycua/cua", rev = "85e2b1318bd77ccf3cfa88ccdf875a4bb7eaed19" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+
+[build-dependencies]
+serde_json.workspace = true
+sha2.workspace = true

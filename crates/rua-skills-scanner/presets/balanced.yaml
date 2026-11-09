@@ -1,0 +1,65 @@
+
+
+
+rule_scoping:
+  skip_in_docs:
+    - "COMMAND_INJECTION_EVAL"
+    - "COMMAND_INJECTION_OS_SYSTEM"
+    - "COMMAND_INJECTION_SHELL_TRUE"
+  code_only:
+    - "COMMAND_INJECTION_EVAL"
+    - "COMMAND_INJECTION_OS_SYSTEM"
+    - "COMMAND_INJECTION_SHELL_TRUE"
+  doc_path_indicators:
+    - "docs"
+    - "doc"
+    - "examples"
+    - "tests"
+    - "test"
+  dedupe_duplicate_findings: true
+
+credentials:
+  known_test_values:
+    - "AKIAIOSFODNN7EXAMPLE"
+    - "AKIAI44QH8DHBEXAMPLE"
+    - "EXAMPLEKEYID"
+  placeholder_markers:
+    - "example"
+    - "placeholder"
+    - "your-"
+    - "your_"
+    - "fake"
+    - "dummy"
+    - "test_"
+
+file_classification:
+  inert_extensions:
+    - ".png"
+    - ".jpg"
+    - ".jpeg"
+    - ".gif"
+    - ".bmp"
+    - ".ico"
+    - ".svg"
+    - ".webp"
+    - ".woff"
+    - ".woff2"
+    - ".eot"
+    - ".ttf"
+    - ".otf"
+  archive_extensions:
+    - ".zip"
+    - ".tar"
+    - ".gz"
+    - ".bz2"
+    - ".xz"
+    - ".7z"
+    - ".rar"
+
+file_limits:
+  max_file_count: 500
+  max_file_size_bytes: 10485760
+
+severity_overrides: {}
+
+disabled_rules: []

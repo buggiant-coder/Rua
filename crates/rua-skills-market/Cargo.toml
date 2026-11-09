@@ -1,0 +1,47 @@
+[package]
+name = "rua-skills-market"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Market search layer: multi-provider skill discovery"
+publish = false
+autotests = false
+
+[[test]]
+name = "market"
+path = "tests/market.rs"
+
+[[test]]
+name = "modelscope"
+path = "tests/modelscope.rs"
+
+[[test]]
+name = "aliyun"
+path = "tests/aliyun.rs"
+
+[[test]]
+name = "skillhub"
+path = "tests/skillhub.rs"
+
+[dependencies]
+rua-config.workspace = true
+rua-http.workspace = true
+rua-skills-hub.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+hmac = "0.12"
+hex = "0.4"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
+serial_test = "3"

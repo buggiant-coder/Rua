@@ -1,0 +1,36 @@
+[package]
+name = "rua-doctor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "System diagnostics for rua (config / providers / workspaces)"
+publish = false
+autotests = false
+
+[dependencies]
+rua-config.workspace = true
+rua-core.workspace = true
+rua-http.workspace = true
+rua-provider.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+inventory.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+chrono-tz = "0.10"
+fs2 = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "checks"
+path = "tests/checks.rs"
+
+[[test]]
+name = "gating"
+path = "tests/gating.rs"
+
+[[test]]
+name = "report"
+path = "tests/report.rs"

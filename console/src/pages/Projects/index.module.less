@@ -1,0 +1,284 @@
+.page {
+  background: var(--bg);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 18px 20px 32px;
+}
+
+.section {
+  width: min(920px, 100%);
+  margin: 0 auto;
+}
+
+.sectionHeader {
+  display: flex;
+  height: 32px;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-3);
+
+  h2 {
+    margin: 0;
+    color: var(--text-2);
+    font-size: 12px;
+    font-weight: 750;
+    letter-spacing: 0;
+  }
+
+  > span {
+    color: var(--text-mute);
+    font-size: 11px;
+  }
+}
+
+.projectList {
+  border-top: 1px solid var(--border);
+}
+
+.projectRow {
+  display: grid;
+  min-height: 66px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  transition:
+    background 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.projectRow:hover {
+  background: var(--card-hover);
+}
+
+.projectRowFocused {
+  background: var(--primary-bg);
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+
+.projectOpen {
+  display: grid;
+  min-width: 0;
+  min-height: 65px;
+  grid-template-columns: 36px minmax(0, 1fr) minmax(150px, 220px);
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+
+  &:disabled {
+    cursor: default;
+  }
+}
+
+.projectIcon {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  color: var(--primary);
+  border-radius: var(--radius-sm);
+}
+
+.projectCopy {
+  min-width: 0;
+
+  code {
+    display: block;
+    margin-top: 4px;
+    overflow: hidden;
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.projectTitleLine {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+
+  strong {
+    overflow: hidden;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.projectDevice {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  color: var(--text-3);
+  font-size: 11px;
+
+  span:nth-child(2) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.statusDot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.statusOnline {
+  background: var(--success-fg);
+}
+
+.statusOffline {
+  background: var(--text-mute);
+}
+
+.statusWarning {
+  background: var(--warning-fg);
+}
+
+.statusDanger {
+  background: var(--danger-fg);
+}
+
+.availabilityLabel {
+  color: var(--text-mute);
+}
+
+.mobileAvailability {
+  display: none;
+}
+
+.createForm {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.deviceOption {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.deviceOffline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--text-mute);
+  font-size: 11px;
+}
+
+.duplicateBody {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+
+  > div {
+    min-width: 0;
+    flex: 1;
+  }
+
+  strong,
+  code {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  code {
+    margin-top: 3px;
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+}
+
+:global(html.mobile-mode) {
+  .body {
+    gap: 18px;
+    padding: 12px 0 24px;
+  }
+
+  .sectionHeader {
+    padding: 0 16px;
+  }
+
+  .projectRow {
+    min-height: 76px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px;
+    padding: 0 12px 0 16px;
+  }
+
+  .projectOpen {
+    min-height: 75px;
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 9px;
+  }
+
+  .projectDevice {
+    display: none;
+  }
+
+  .mobileAvailability {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 5px;
+    color: var(--text-3);
+    font-size: 11px;
+  }
+
+  .duplicateBody {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+.resourceFolderRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+
+  label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  span {
+    overflow-wrap: anywhere;
+  }
+}
+
+.projectActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}

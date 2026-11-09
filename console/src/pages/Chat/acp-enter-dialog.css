@@ -1,0 +1,193 @@
+.rua-acp-enter-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.rua-acp-enter-title-icon {
+  color: var(--warning-fg);
+}
+
+.rua-acp-enter-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.rua-acp-enter-loading,
+.rua-acp-enter-sessions-loading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-3);
+  padding: var(--space-3) 0;
+  font-size: var(--font-sm);
+}
+
+.rua-acp-enter-runners-error,
+.rua-acp-enter-sessions-error,
+.rua-acp-enter-submit-error {
+  color: var(--danger-fg);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bg);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: var(--font-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.rua-acp-enter-runners-empty,
+.rua-acp-enter-sessions-empty {
+  color: var(--text-3);
+  font-size: var(--font-sm);
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+}
+
+.rua-acp-enter-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.rua-acp-enter-label {
+  font-size: var(--font-xs);
+  color: var(--text-3);
+  font-weight: 500;
+}
+.rua-acp-enter-select,
+.rua-acp-enter-cwd {
+  width: 100%;
+}
+.rua-acp-enter-select .rua-ui-select-selector,
+.rua-acp-enter-cwd .rua-ui-select-selector {
+  padding-left: var(--space-3);
+}
+.rua-acp-enter-select .rua-ui-select-value,
+.rua-acp-enter-select .rua-ui-select-placeholder,
+.rua-acp-enter-cwd .rua-ui-select-value,
+.rua-acp-enter-cwd .rua-ui-select-placeholder {
+  left: var(--space-3);
+  right: calc(var(--space-4) + var(--space-3));
+}
+.rua-acp-enter-cwd .rua-ui-select-search,
+.rua-acp-enter-cwd .rua-ui-select-value,
+.rua-acp-enter-cwd .rua-ui-select-placeholder,
+.rua-acp-enter-cwd-dropdown .rua-ui-select-option-label {
+  font-family: var(--font-mono);
+  font-size: var(--font-sm);
+}
+.rua-acp-enter-select-dropdown,
+.rua-acp-enter-cwd-dropdown {
+  max-width: min(520px, calc(100vw - 32px));
+}
+
+.rua-acp-enter-sessions-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: var(--font-xs);
+  color: var(--text-3);
+  margin-top: var(--space-1);
+}
+.rua-acp-enter-sessions-count {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.rua-acp-enter-sessions-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.rua-acp-enter-session-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+}
+.rua-acp-enter-session-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rua-acp-enter-session-title {
+  font-size: var(--font-sm);
+  color: var(--text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rua-acp-enter-session-meta {
+  font-size: var(--font-xs);
+  color: var(--text-mute);
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
+  justify-content: space-between;
+}
+.rua-acp-enter-session-sid {
+  font-family: var(--font-mono);
+  font-size: var(--font-xs);
+  flex: none;
+}
+.rua-acp-enter-session-updated {
+  flex: none;
+  margin-left: auto;
+}
+.rua-acp-enter-session-cwd {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.rua-acp-enter-resume-btn {
+  flex: none;
+  width: var(--height-md);
+  height: var(--height-md);
+  padding: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.rua-acp-enter-resume-btn:hover:not(:disabled) {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
+}
+.rua-acp-enter-resume-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.rua-acp-enter-resume-btn svg {
+  margin-left: 1px;
+}
+
+@media (max-width: 700px) {
+  .rua-acp-enter-dialog {
+    width: 100vw !important;
+    max-width: 100vw !important;
+  }
+  .rua-acp-enter-sessions-list {
+    max-height: 200px;
+  }
+}

@@ -1,0 +1,32 @@
+[package]
+name = "rua-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Memory and dialog storage for rua — ReMeLight compatible"
+publish = false
+autotests = false
+
+[dependencies]
+rua-core.workspace = true
+rua-http.workspace = true
+sqlite-vecstore.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "unit_memory"
+path = "tests/unit_memory.rs"

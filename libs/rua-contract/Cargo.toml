@@ -1,0 +1,18 @@
+[package]
+name = "rua-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "P0/P1 trait definitions for rua"
+publish = false
+
+[dependencies]
+agent-types.workspace = true
+rua-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+chrono.workspace = true
+tokio = { workspace = true, features = ["sync"] }

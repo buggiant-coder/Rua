@@ -1,0 +1,35 @@
+.rua-tooltip-wrap {
+  display: inline-flex;
+  align-items: center;
+}
+
+.rua-tooltip-popup {
+  position: fixed;
+  z-index: 1070;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.rua-tooltip-popup--visible {
+  opacity: 1;
+}
+
+.rua-tooltip-popup-content {
+  max-width: 360px;
+  padding: 6px 8px;
+  font-size: var(--font-xs, 12px);
+  line-height: 1.5;
+  color: var(--tooltip-fg);
+  background: var(--tooltip-bg);
+  border-radius: var(--radius-sm, 2px);
+  word-wrap: break-word;
+}
+
+.rua-tooltip-popup-arrow {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: var(--tooltip-bg);
+  transform: rotate(45deg);
+}

@@ -1,0 +1,30 @@
+.rua-textarea {
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--font-md);
+  font-family: var(--font-sans);
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+  transition: border-color 0.15s;
+  resize: vertical;
+  field-sizing: content;
+  min-height: var(--height-md);
+}
+
+.rua-textarea:focus {
+  border-color: var(--primary);
+}
+
+.rua-textarea::placeholder {
+  color: var(--text-mute);
+}
+
+.rua-textarea:disabled {
+  background: var(--bg-disabled);
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}

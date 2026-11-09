@@ -1,0 +1,47 @@
+.environmentsPage {
+  padding: 0;
+}
+
+.envTable {
+  background: var(--surface);
+
+  :global(.rua-ui-table-row) {
+    min-height: 52px;
+  }
+
+  :global(.rua-ui-table-header) {
+    min-height: 38px;
+  }
+}
+
+.idCell {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+}
+
+.idCellText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.valueCell {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@container (max-width: 720px) {
+  .valueCell {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+}

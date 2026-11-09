@@ -1,0 +1,121 @@
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  h3 {
+    margin: 0;
+    font-size: var(--font-sm);
+    font-weight: 500;
+  }
+  button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+}
+.folderList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.folderRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  &[data-primary="true"] {
+    border-color: color-mix(in srgb, var(--primary) 35%, var(--border-soft));
+  }
+}
+.folderChoice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+  input {
+    margin: 0;
+    accent-color: var(--primary);
+    flex-shrink: 0;
+  }
+  svg {
+    flex-shrink: 0;
+    color: var(--text-3);
+  }
+}
+.folderDetails {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.folderName {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 14px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.primaryBadge {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--primary-bg);
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.folderPath {
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.removeFolder {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  &:hover:not(:disabled) {
+    background: var(--row-hover);
+    color: var(--danger-fg);
+  }
+  &:disabled {
+    opacity: 0.3;
+    cursor: default;
+  }
+}
+.folderChoice input:focus-visible,
+.removeFolder:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+@media (max-width: 480px) {
+  .folderRow {
+    padding: 10px 8px;
+  }
+  .folderChoice {
+    gap: 7px;
+  }
+}

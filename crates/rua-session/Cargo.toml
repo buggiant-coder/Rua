@@ -1,0 +1,39 @@
+[package]
+name = "rua-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Chat session management for rua"
+publish = false
+autotests = false
+
+[dependencies]
+agent-types.workspace = true
+rua-core.workspace = true
+rua-config.workspace = true
+rua-text-search.workspace = true
+rua-command = { path = "../rua-command" }
+rua-contract.workspace = true
+rua-i18n.workspace = true
+rua-skills.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+pulldown-cmark = { version = "0.12", default-features = false }
+mime_guess = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

@@ -1,0 +1,50 @@
+.rua-enable-disable-switch {
+  display: inline-flex;
+  align-items: center;
+  width: 100%;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.rua-enable-disable-switch button {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 26px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: transparent;
+  color: var(--text-mute);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-xs);
+  font-weight: 600;
+  line-height: 1;
+}
+
+.rua-enable-disable-switch button.is-selected {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.rua-enable-disable-switch button.is-enabled {
+  background: var(--primary-fill);
+  color: var(--on-primary);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--primary) 28%, transparent);
+}
+
+.rua-enable-disable-switch button.is-enabled:hover {
+  background: var(--primary-hover, var(--primary-fill));
+  color: var(--on-primary);
+}
+
+.rua-enable-disable-switch--disabled {
+  opacity: 0.65;
+}
+
+.rua-enable-disable-switch--disabled button {
+  cursor: not-allowed;
+}

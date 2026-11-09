@@ -1,0 +1,49 @@
+@import "../../styles/settings-page.less";
+
+.integrationGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+.version {
+  font-family: var(--font-mono);
+}
+.sectionBody {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.path {
+  display: block;
+  max-width: 100%;
+  margin: 0;
+  padding: var(--space-3);
+  overflow-wrap: anywhere;
+  border-radius: var(--radius-md);
+  color: var(--text-2);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--font-xs);
+}
+
+.warning {
+  margin: 0;
+  color: color-mix(in srgb, var(--warning-fg) 45%, var(--text));
+  font-size: var(--font-sm);
+  overflow-wrap: anywhere;
+}
+.modalText {
+  margin: 0;
+  color: var(--text-2);
+  line-height: 1.6;
+}
+.modalText + .modalText {
+  margin-top: var(--space-3);
+}
+
+@container (max-width: 820px) {
+  .integrationGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

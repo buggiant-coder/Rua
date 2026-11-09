@@ -1,0 +1,159 @@
+plugins {
+    id "com.android.application"
+    id "kotlin-android"
+}
+
+def releaseSigningVariables = [
+    storeFile: 'RUA_ANDROID_KEYSTORE',
+    keyAlias: 'RUA_ANDROID_KEY_ALIAS',
+    storePassword: 'RUA_ANDROID_STORE_PASSWORD',
+    keyPassword: 'RUA_ANDROID_KEY_PASSWORD',
+]
+def localSigningProperties = new Properties()
+def localSigningFile = new File(System.getProperty('user.home'), '.rua-release/android-signing.properties')
+if (localSigningFile.isFile()) {
+    localSigningFile.withReader('UTF-8') { localSigningProperties.load(it) }
+}
+def releaseSigningValues = releaseSigningVariables.collectEntries { property, variable ->
+    [(property): System.getenv(variable) ?: localSigningProperties.getProperty(property)]
+}
+
+gradle.taskGraph.whenReady { graph ->
+    if (graph.allTasks.any { it.project == project && it.name in ['assembleRelease', 'bundleRelease', 'packageRelease', 'validateSigningRelease'] }) {
+        def missing = releaseSigningVariables.findAll { property, variable -> !releaseSigningValues[property] }.values()
+        if (missing) {
+            throw new GradleException("Release signing requires: ${missing.join(', ')}. Configure ~/.rua-release/android-signing.properties or see docs/release-signing.md")
+        }
+        def keystore = file(releaseSigningValues.storeFile)
+        if (!keystore.isFile() || keystore.canonicalFile == file('testkey_untrusted.jks').canonicalFile) {
+            throw new GradleException('Release signing requires a private keystore, separate from testkey_untrusted.jks')
+        }
+    }
+}
+
+android {
+    namespace = "com.rua.mobile"
+    compileSdkVersion project.properties.compileSdkVersion.toInteger()
+    ndkVersion = project.properties.ndkVersion
+    def ruaPort = System.getenv("RUA_MOBILE_PORT") ?: "0"
+    if (!(ruaPort ==~ /[0-9]+/) || ruaPort.toInteger() < 0 || ruaPort.toInteger() > 65535) {
+        throw new GradleException("RUA_MOBILE_PORT must be an integer from 0 to 65535 (0 selects an available port)")
+    }
+    defaultConfig {
+        applicationId "com.rua.mobile"
+        minSdkVersion project.properties.minSdkVersion.toInteger()
+        targetSdkVersion project.properties.targetSdkVersion.toInteger()
+        // Rua APK version and development signing configuration.
+        versionCode 1
+        versionName "0.8.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField "int", "RUA_PORT", ruaPort
+        ndk { abiFilters 'arm64-v8a' }
+    }
+    signingConfigs {
+        release {
+            if (releaseSigningValues.values().every { it }) {
+                storeFile file(releaseSigningValues.storeFile)
+                keyAlias releaseSigningValues.keyAlias
+                storePassword releaseSigningValues.storePassword
+                keyPassword releaseSigningValues.keyPassword
+            }
+        }
+        debug {
+            storeFile file('testkey_untrusted.jks')
+            keyAlias 'alias'
+            storePassword 'xrj45yWGLbsO7W0v'
+            keyPassword 'xrj45yWGLbsO7W0v'
+        }
+    }
+    buildTypes {
+        debug { signingConfig = signingConfigs.debug }
+        release {
+            minifyEnabled true
+            shrinkResources = true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig = signingConfigs.release
+        }
+    }
+    compileOptions {
+        coreLibraryDesugaringEnabled = true
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    kotlinOptions { jvmTarget = "1.8" }
+    sourceSets {
+        main {
+            java.srcDirs += "src/main/kotlin"
+            assets.srcDirs = ["$buildDir/generated/native-payload/assets"]
+            jniLibs.srcDirs = ["$buildDir/generated/native-payload/jniLibs"]
+        }
+        androidTest { jniLibs.srcDirs += "$buildDir/generated/native-test/jniLibs" }
+    }
+    lint { disable 'ProtectedPermissions' }
+    testOptions { unitTests { includeAndroidResources = true } }
+    packagingOptions { jniLibs { useLegacyPackaging = true } }
+    androidResources { noCompress 'zip' }
+    applicationVariants.all { variant ->
+        variant.outputs.all { output -> outputFileName = "rua-${variant.buildType.name}-arm64-v8a.apk" }
+    }
+    buildFeatures { buildConfig = true }
+}
+
+dependencies {
+    implementation "androidx.annotation:annotation:1.9.0"
+    implementation "androidx.core:core:1.13.1"
+    implementation "androidx.appcompat:appcompat:1.7.0"
+    implementation "androidx.webkit:webkit:1.12.1"
+    implementation "androidx.camera:camera-camera2:1.4.2"
+    implementation "androidx.camera:camera-lifecycle:1.4.2"
+    implementation "androidx.camera:camera-view:1.4.2"
+    implementation "com.google.android.material:material:1.12.0"
+    implementation "org.apache.commons:commons-compress:1.27.1"
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.robolectric:robolectric:4.10"
+    androidTestImplementation "androidx.test:runner:1.6.2"
+    androidTestImplementation "androidx.test.ext:junit:1.2.1"
+    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:1.1.5"
+}
+
+def repoRoot = rootDir.toPath().resolve("../..").normalize().toFile()
+def nativeProfile = gradle.startParameter.taskNames.any { it.contains("Release") } ? "release-android" : "debug"
+def nativeBinary = System.getenv("RUA_ANDROID_BINARY") ?: new File(repoRoot, "target/aarch64-linux-android/${nativeProfile}/rua").path
+def consoleDist = new File(repoRoot, "console/dist")
+def nativePayload = new File(buildDir, "generated/native-payload")
+def nativeNdk = new File(android.sdkDirectory, "ndk/${android.ndkVersion}")
+def nativeHost = System.getProperty("os.name").toLowerCase().contains("mac") ? "darwin-x86_64" : "linux-x86_64"
+
+tasks.register("stageNativePayload", Exec) {
+    inputs.file(nativeBinary)
+    inputs.dir(consoleDist)
+    inputs.file(new File(repoRoot, "console/scripts/xterm-headless-bridge.mjs"))
+    inputs.file(new File(repoRoot, "console/package-lock.json"))
+    inputs.file(new File(repoRoot, "scripts/android/stage-native-payload.py"))
+    inputs.file(new File(repoRoot, "mobile/runtime/native-dependencies.json"))
+    inputs.dir(new File(repoRoot, "mobile/runtime/licenses"))
+    inputs.file(new File(repoRoot, "mobile/runtime/process-group.c"))
+    inputs.file(new File(repoRoot, "mobile/runtime/runtime-gate.c"))
+    inputs.file(new File(repoRoot, "mobile/runtime/runtime-manifest.json"))
+    inputs.file(new File(repoRoot, "mobile/runtime/update-runtime.py"))
+    outputs.dir(nativePayload)
+    commandLine "python3", new File(repoRoot, "scripts/android/stage-native-payload.py"),
+        "--binary", nativeBinary, "--console", consoleDist, "--out", nativePayload,
+        "--strip", new File(nativeNdk, "toolchains/llvm/prebuilt/${nativeHost}/bin/llvm-strip")
+}
+tasks.named("preBuild").configure { dependsOn("stageNativePayload") }
+
+// Device-test ELF lives in the instrumentation APK, never in the shipped application.
+def nativeProbe = new File(repoRoot, "target/aarch64-linux-android/debug/examples/native_runtime_probe")
+tasks.register("stageNativeTestProbe", Exec) {
+    inputs.file(nativeProbe)
+    inputs.file(new File(repoRoot, "scripts/android/stage-native-payload.py"))
+    outputs.dir(new File(buildDir, "generated/native-test"))
+    commandLine "python3", new File(repoRoot, "scripts/android/stage-native-payload.py"),
+        "--test-probe", "--binary", nativeProbe, "--console", consoleDist,
+        "--out", new File(buildDir, "generated/native-test"),
+        "--strip", new File(nativeNdk, "toolchains/llvm/prebuilt/${nativeHost}/bin/llvm-strip")
+}
+tasks.matching { it.name == "mergeDebugAndroidTestJniLibFolders" }.configureEach {
+    dependsOn("stageNativeTestProbe")
+}

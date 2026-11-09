@@ -1,0 +1,197 @@
+.rua-ui-datepicker {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+}
+
+.rua-ui-datepicker-input {
+  cursor: pointer;
+}
+
+.rua-ui-datepicker-input:disabled {
+  cursor: not-allowed;
+}
+
+.rua-ui-range-picker {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  align-items: center;
+  min-width: 0;
+  min-height: 34px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.rua-ui-range-picker:hover {
+  border-color: var(--text-mute);
+}
+
+.rua-ui-range-picker:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-bg);
+}
+
+.rua-ui-range-picker .rua-ui-datepicker {
+  position: static;
+  width: auto;
+  min-width: 0;
+}
+
+.rua-ui-range-picker .rua-ui-datepicker-input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding-inline: 9px;
+  text-align: center;
+  font-size: var(--font-sm);
+}
+
+.rua-ui-range-picker-separator,
+.rua-ui-range-picker-icon {
+  flex: 0 0 auto;
+  color: var(--text-mute);
+  pointer-events: none;
+}
+
+.rua-ui-range-picker-icon {
+  margin-right: 9px;
+}
+
+.rua-ui-range-picker .rua-ui-datepicker-panel {
+  right: auto;
+  left: 0;
+  width: 100%;
+}
+
+.rua-ui-datepicker-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 1050;
+  width: 280px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-3);
+  box-sizing: border-box;
+}
+
+.rua-ui-datepicker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.rua-ui-datepicker-title {
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--text);
+  user-select: none;
+}
+
+.rua-ui-datepicker-nav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 16px;
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  transition:
+    background 0.15s,
+    color 0.15s;
+  padding: 0;
+}
+
+.rua-ui-datepicker-nav:hover {
+  background: var(--primary-bg);
+  color: var(--text);
+}
+
+.rua-ui-datepicker-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  margin-bottom: var(--space-1);
+}
+
+.rua-ui-datepicker-weekday {
+  text-align: center;
+  font-size: var(--font-xs);
+  color: var(--text-mute);
+  font-weight: 500;
+  padding: var(--space-1) 0;
+  user-select: none;
+}
+
+.rua-ui-datepicker-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.rua-ui-datepicker-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--font-sm);
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  transition:
+    background 0.15s,
+    color 0.15s;
+  padding: 0;
+}
+
+.rua-ui-datepicker-cell--empty {
+  cursor: default;
+}
+
+.rua-ui-datepicker-cell:not(.rua-ui-datepicker-cell--empty):hover {
+  background: var(--primary-bg);
+}
+
+.rua-ui-datepicker-cell:disabled {
+  cursor: not-allowed;
+  color: var(--text-mute);
+  opacity: 0.45;
+}
+
+.rua-ui-datepicker-cell:disabled:hover {
+  background: transparent;
+}
+
+.rua-ui-datepicker-cell--today {
+  border: 1px solid var(--primary);
+}
+
+.rua-ui-datepicker-cell--selected {
+  background: var(--primary);
+  color: #fff;
+}
+
+.rua-ui-datepicker-cell--selected:hover {
+  background: var(--primary);
+  color: #fff;
+}

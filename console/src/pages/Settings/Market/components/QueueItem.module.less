@@ -1,0 +1,94 @@
+.queueItem {
+  padding: 8px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text);
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.queueItemTop {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+.queueItemMeta {
+  color: var(--text-mute);
+}
+
+.queueItemMessage {
+  color: var(--text-3);
+  word-break: break-word;
+}
+
+.queueItemActions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.statusTag {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.queued {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.installing {
+  background: rgba(255, 127, 22, 0.1);
+  color: var(--warning-fg);
+}
+
+.completed {
+  background: rgba(82, 196, 26, 0.12);
+  color: var(--success-fg);
+}
+
+.failed {
+  background: rgba(245, 34, 45, 0.08);
+  color: var(--danger-fg);
+}
+
+.cancelled {
+  background: rgba(239, 240, 243, 0.9);
+  color: rgba(20, 20, 19, 0.45);
+}
+
+:global(.dark-mode) {
+  .queueItem {
+    color: rgba(255, 255, 255, 0.88);
+    border-bottom-color: rgba(255, 255, 255, 0.06);
+  }
+
+  .queueItemMeta {
+    color: rgba(255, 255, 255, 0.45);
+  }
+
+  .queueItemMessage {
+    color: rgba(255, 255, 255, 0.65);
+  }
+
+  .queued {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.55);
+  }
+
+  .cancelled {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.45);
+  }
+}

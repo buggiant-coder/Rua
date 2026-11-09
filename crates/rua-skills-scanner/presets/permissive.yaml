@@ -1,0 +1,91 @@
+
+
+
+rule_scoping:
+  skip_in_docs:
+    - "COMMAND_INJECTION_EVAL"
+    - "COMMAND_INJECTION_OS_SYSTEM"
+    - "COMMAND_INJECTION_SHELL_TRUE"
+    - "HARDCODED_SECRET_HIGH_ENTROPY"
+    - "OBFUSCATION_BASE64_DECODE"
+  code_only:
+    - "COMMAND_INJECTION_EVAL"
+    - "COMMAND_INJECTION_OS_SYSTEM"
+    - "COMMAND_INJECTION_SHELL_TRUE"
+  doc_path_indicators:
+    - "docs"
+    - "doc"
+    - "examples"
+    - "tests"
+    - "test"
+    - "tutorials"
+    - "tutorial"
+    - "samples"
+    - "sample"
+    - "demo"
+    - "demos"
+  dedupe_duplicate_findings: true
+
+credentials:
+  known_test_values:
+    - "AKIAIOSFODNN7EXAMPLE"
+    - "AKIAI44QH8DHBEXAMPLE"
+    - "EXAMPLEKEYID"
+    - "test"
+    - "test123"
+    - "password"
+    - "changeme"
+    - "dummy"
+    - "placeholder"
+    - "sk-test"
+    - "pk-test"
+  placeholder_markers:
+    - "example"
+    - "placeholder"
+    - "your-"
+    - "your_"
+    - "fake"
+    - "dummy"
+    - "test_"
+    - "sample"
+    - "changeme"
+
+file_classification:
+  inert_extensions:
+    - ".png"
+    - ".jpg"
+    - ".jpeg"
+    - ".gif"
+    - ".bmp"
+    - ".ico"
+    - ".svg"
+    - ".webp"
+    - ".woff"
+    - ".woff2"
+    - ".eot"
+    - ".ttf"
+    - ".otf"
+    - ".mp3"
+    - ".mp4"
+    - ".wav"
+  archive_extensions:
+    - ".zip"
+    - ".tar"
+    - ".gz"
+    - ".bz2"
+    - ".xz"
+    - ".7z"
+    - ".rar"
+
+file_limits:
+  max_file_count: 2000
+  max_file_size_bytes: 52428800
+
+severity_overrides:
+  COMMAND_INJECTION_EVAL: MEDIUM
+  COMMAND_INJECTION_OS_SYSTEM: MEDIUM
+  COMMAND_INJECTION_SHELL_TRUE: LOW
+  HARDCODED_SECRET_HIGH_ENTROPY: LOW
+  OBFUSCATION_BASE64_DECODE: INFO
+
+disabled_rules: []

@@ -1,0 +1,33 @@
+.rua-ui-popover-trigger {
+  display: inline-flex;
+}
+
+.rua-ui-popover {
+  z-index: 1060;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--floating-surface-radius, var(--radius-lg));
+  box-shadow: var(--shadow-2xl);
+  color: var(--text);
+  padding: var(--space-1);
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
+}
+
+.rua-ui-popover--single {
+  border-radius: var(
+    --floating-single-surface-radius,
+    var(--floating-surface-radius, var(--radius-lg))
+  );
+}
+
+@keyframes rua-popover-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

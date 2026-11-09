@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="rua_runtime_environment_status" type="id" />
+    <item name="rua_runtime_setup" type="id" />
+    <item name="rua_runtime_setup_action" type="id" />
+    <item name="rua_runtime_setup_permissions" type="id" />
+</resources>

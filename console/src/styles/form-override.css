@@ -1,0 +1,4 @@
+span.spark-required-mark,
+span[class*="spark-required-mark"] {
+  color: var(--danger-fg) !important;
+}

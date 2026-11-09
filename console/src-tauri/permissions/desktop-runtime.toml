@@ -1,0 +1,10 @@
+[[permission]]
+identifier = "desktop-runtime"
+description = "Allows the Desktop UI to manage the owned Rua Runtime and shell locale."
+commands.allow = [
+  "desktop_runtime_status",
+  "retry_desktop_runtime",
+  "desktop_bootstrap_context",
+  "select_desktop_rua_root",
+  "set_desktop_locale",
+]

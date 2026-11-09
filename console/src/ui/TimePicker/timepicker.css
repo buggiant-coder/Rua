@@ -1,0 +1,71 @@
+.rua-ui-timepicker {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+}
+
+.rua-ui-timepicker-input {
+  cursor: pointer;
+}
+
+.rua-ui-timepicker-input:disabled {
+  cursor: not-allowed;
+}
+
+.rua-ui-timepicker-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 1050;
+  display: flex;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.rua-ui-timepicker-column {
+  height: 224px;
+  width: 64px;
+  overflow-y: auto;
+  padding: var(--space-1) 0;
+  scrollbar-width: thin;
+}
+
+.rua-ui-timepicker-column + .rua-ui-timepicker-column {
+  border-left: 1px solid var(--border-soft);
+}
+
+.rua-ui-timepicker-option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--font-sm);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+  padding: 0;
+}
+
+.rua-ui-timepicker-option:hover {
+  background: var(--primary-bg);
+}
+
+.rua-ui-timepicker-option--selected {
+  background: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+.rua-ui-timepicker-option--selected:hover {
+  background: var(--primary);
+  color: #fff;
+}

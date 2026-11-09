@@ -1,0 +1,94 @@
+.rua-image-viewer-trigger {
+  display: block;
+  max-width: 100%;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  cursor: zoom-in;
+}
+
+.rua-image-viewer-trigger img {
+  display: block;
+}
+
+.rua-image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.9);
+  user-select: none;
+  touch-action: none;
+}
+
+.rua-image-viewer-stage {
+  position: absolute;
+  inset: 64px 24px 24px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.rua-image-viewer-stage img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  transform-origin: center;
+  transition: transform 0.08s ease-out;
+  will-change: transform;
+}
+
+.rua-image-viewer-stage img:active {
+  cursor: grabbing !important;
+}
+
+.rua-image-viewer-toolbar {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--radius-md);
+  background: rgba(20, 20, 20, 0.82);
+  padding: 4px;
+  color: white;
+  backdrop-filter: blur(10px);
+}
+
+.rua-image-viewer-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: 0 8px;
+  color: inherit;
+  cursor: pointer;
+}
+
+.rua-image-viewer-toolbar button:hover,
+.rua-image-viewer-toolbar button:focus-visible {
+  background: rgba(255, 255, 255, 0.14);
+  outline: none;
+}
+
+.rua-image-viewer-toolbar svg {
+  width: 17px;
+  height: 17px;
+}
+
+.rua-image-viewer-toolbar span {
+  min-width: 42px;
+  font-size: var(--font-xs);
+  text-align: center;
+}

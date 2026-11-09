@@ -1,0 +1,1183 @@
+.page {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.agentControl {
+  display: inline-flex;
+  min-width: 0;
+  height: 32px;
+  align-items: center;
+  gap: var(--chat-scope-gap, 6px);
+  flex: 0 0 auto;
+  padding: 0 var(--chat-scope-padding, 8px);
+  max-width: 100%;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.agentControl:hover {
+  border-color: var(--border-soft);
+  background: var(--primary-bg);
+  color: var(--text);
+}
+
+.agentControl:active {
+  background: var(--primary-hov);
+}
+
+.agentControlIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--primary);
+}
+
+.agentName {
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agentNameLoading {
+  width: 56px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--border-soft);
+  color: transparent;
+}
+
+.agentControlChevron {
+  flex-shrink: 0;
+  color: var(--text-3);
+  opacity: 0.5;
+}
+
+.agentAvatar,
+.projectMark {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  place-items: center;
+  border-radius: 6px;
+}
+
+.agentAvatar {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
+  color: var(--primary);
+}
+
+.projectControl {
+  display: inline-flex;
+  min-width: 0;
+  height: 32px;
+  align-items: center;
+  gap: 5px;
+  max-width: min(300px, 38vw);
+  padding: 4px 10px 4px 0;
+  border: 0;
+  border-radius: var(--compact-control-radius, var(--radius-md));
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.projectControl:hover {
+  color: var(--primary);
+  box-shadow: 0 2px 8px rgba(97, 92, 237, 0.12);
+}
+
+.projectMark {
+  background: var(--primary-bg);
+  color: var(--primary);
+}
+
+.projectLabel {
+  min-width: 0;
+  flex: 1;
+}
+
+.projectLabel strong,
+.projectLabel small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: 0;
+}
+
+.projectLabel strong {
+  font-size: 13px;
+}
+
+.projectLabel small {
+  margin-top: 1px;
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.projectChevron {
+  flex-shrink: 0;
+  color: var(--text-3);
+  transition:
+    transform 0.2s,
+    color 0.15s;
+}
+
+.controlChevronOpen {
+  transform: rotate(180deg);
+  color: var(--primary);
+}
+
+:global(.dark-mode) {
+  .agentControl:hover {
+    background: var(--card-hover);
+  }
+}
+
+.iconButton {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-2);
+}
+
+.iconButton:hover {
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
+  background: var(--primary-bg);
+  color: var(--primary);
+}
+
+.iconButtonPrimary {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+
+.iconButtonPrimary:hover {
+  background: var(--primary-hover);
+  color: #fff;
+}
+
+.stage {
+  --project-drawer-width: 0px;
+
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) var(--project-drawer-width);
+  overflow: hidden;
+  transition: grid-template-columns 180ms ease;
+}
+
+.stageWorkspace {
+  --project-drawer-width: min(390px, 38vw);
+}
+
+.conversation {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.agentPopoverOverlay {
+  width: 280px;
+  max-width: calc(100vw - 16px);
+}
+
+.agentPopover {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px;
+}
+
+.agentPopoverTitle {
+  padding: 5px 7px 7px;
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.agentOption {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.agentOption:hover:not(:disabled),
+.agentOptionActive {
+  background: var(--surface-2);
+}
+
+.agentOption:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.agentOptionUnavailable {
+  opacity: 0.72;
+}
+
+.agentOptionCopy {
+  display: block;
+  min-width: 0;
+  flex: 1;
+}
+
+.agentOptionCopy strong,
+.agentOptionCopy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agentOptionCopy strong {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.agentOptionCopy small {
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 10px;
+}
+
+.agentEmpty {
+  padding: 12px 8px;
+  color: var(--text-3);
+  font-size: 12px;
+  text-align: center;
+}
+
+.agentSpinner {
+  animation: agent-spin 0.8s linear infinite;
+}
+
+@keyframes agent-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.projectPopoverOverlay {
+  width: 360px;
+  max-width: calc(100vw - 16px);
+}
+
+.projectPopover {
+  padding: 2px;
+}
+
+.projectPopoverHeader {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 3px 4px 8px;
+  color: var(--text-3);
+  font-size: 10px;
+  text-transform: uppercase;
+
+  strong {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .iconButton {
+    width: 30px;
+    height: 30px;
+    flex-basis: 30px;
+  }
+}
+
+.projectPopoverList {
+  display: flex;
+  max-height: min(420px, 64vh);
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+}
+
+.projectOption {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  grid-template-columns: 28px minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.projectOption:hover:not(:disabled),
+.projectOptionActive {
+  background: var(--surface-2);
+}
+
+.projectOptionActive {
+  border-color: color-mix(in srgb, var(--primary) 28%, var(--border));
+}
+
+.projectOptionMark {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--primary-bg);
+  color: var(--primary);
+}
+
+.projectOptionCopy {
+  min-width: 0;
+
+  strong,
+  small {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  small {
+    margin-top: 2px;
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+}
+
+.projectOptionDevice {
+  max-width: 86px;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawer {
+  z-index: 3;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: -12px 0 28px rgb(15 23 42 / 7%);
+  animation: drawer-enter 180ms ease both;
+}
+
+.chatsDrawer,
+.workspaceDrawer {
+  contain: layout paint;
+}
+
+@keyframes drawer-enter {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.drawerHeader {
+  display: flex;
+  min-height: 50px;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px 7px 12px;
+  border-bottom: 1px solid var(--border);
+
+  strong {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.drawerSearchRow {
+  display: flex;
+  gap: 7px;
+  padding: 10px 9px 7px;
+}
+
+.drawerSearch {
+  display: flex;
+  min-width: 0;
+  height: 34px;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text-3);
+
+  input {
+    width: 100%;
+    min-width: 0;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--text);
+    font-size: 11px;
+  }
+}
+
+.drawerList {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 4px 7px 12px;
+}
+
+.drawerListLabel {
+  display: flex;
+  justify-content: space-between;
+  padding: 9px 8px 5px;
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.chatRow {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+}
+
+.chatRow:hover,
+.chatRow:focus-within {
+  background: var(--surface-2);
+}
+
+.chatRowActive {
+  border-color: color-mix(in srgb, var(--primary) 30%, var(--border));
+  background: var(--primary-bg);
+}
+
+.chatRowAvatar {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+  color: var(--primary);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.chatRowMain {
+  min-width: 0;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.chatRowCopy {
+  min-width: 0;
+
+  strong,
+  small {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    font-size: 12px;
+  }
+
+  small {
+    margin-top: 2px;
+    color: var(--text-3);
+    font-size: 10px;
+  }
+}
+
+.chatRowTrailing {
+  display: flex;
+  min-width: 72px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.chatRowState {
+  display: flex;
+  min-height: 16px;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-3);
+  font-size: 10px;
+}
+
+.chatRowActions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.compactIconButton {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-3);
+
+  &:hover:not(:disabled),
+  &:focus-visible {
+    border-color: var(--border);
+    background: var(--surface);
+    color: var(--text);
+  }
+
+  &:disabled {
+    cursor: wait;
+    opacity: 0.45;
+  }
+}
+
+.compactIconButtonActive {
+  color: var(--primary);
+}
+
+.compactIconButtonDanger {
+  &:hover:not(:disabled),
+  &:focus-visible {
+    color: var(--danger-fg);
+  }
+}
+
+.runningDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success-fg);
+}
+
+.drawerState {
+  display: flex;
+  min-height: 92px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px;
+  color: var(--text-3);
+  font-size: 11px;
+  text-align: center;
+}
+
+.loadMoreButton {
+  display: flex;
+  width: calc(100% - 12px);
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 8px 6px 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11px;
+
+  &:hover:not(:disabled) {
+    background: var(--surface-2);
+  }
+
+  &:disabled {
+    cursor: wait;
+    opacity: 0.6;
+  }
+}
+
+.drawerInlineError {
+  padding: 8px;
+  color: var(--danger-fg);
+  font-size: 10px;
+  text-align: center;
+}
+
+.workspaceSummary {
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+}
+
+.workspaceRoot {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+
+  strong,
+  code {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    font-size: 12px;
+  }
+
+  code {
+    margin-top: 3px;
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+}
+
+.workspaceFacts {
+  margin: 0;
+
+  > div {
+    display: grid;
+    min-height: 44px;
+    grid-template-columns: 96px minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  dt {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-3);
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  dd {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    color: var(--text-2);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.workspaceSectionLabel {
+  padding: 16px 0 6px;
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.workspacePolicyState {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.workspaceShellDrawer {
+  :global(.rua-ui-drawer-body) {
+    height: 100%;
+    overflow: hidden;
+    padding: 0;
+    background: var(--surface);
+  }
+}
+
+.workspaceTabs {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+
+  :global(.rua-ui-tabs-nav) {
+    flex: 0 0 auto;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  :global(.rua-ui-tabs-tab) {
+    min-height: 40px;
+    padding: 0 9px;
+    font-size: 11px;
+  }
+
+  :global(.rua-ui-tabs-panel) {
+    min-height: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+}
+
+.workspaceTabLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+
+  small {
+    display: inline-grid;
+    min-width: 17px;
+    height: 17px;
+    place-items: center;
+    border-radius: 8px;
+    background: var(--surface-2);
+    color: var(--text-2);
+    font-size: 9px;
+  }
+}
+
+.workspacePanel,
+.workspaceContext {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+
+.workspacePanelToolbar {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 4px 12px;
+  border-bottom: 1px solid var(--border);
+
+  > span {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    color: var(--text-2);
+    font-size: 11px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.fileTree {
+  padding: 4px 0 12px;
+}
+
+.workspaceListText {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.fileTreeRow {
+  display: grid;
+  min-width: 0;
+  height: 27px;
+  grid-template-columns: minmax(0, 1fr) 26px;
+  align-items: center;
+  padding-right: 5px;
+
+  &:hover {
+    background: var(--row-hover);
+  }
+
+  &:not(:hover) .fileTreeAction {
+    opacity: 0;
+  }
+}
+
+.fileTreeMain {
+  display: flex;
+  min-width: 0;
+  height: 27px;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  text-align: left;
+
+  > span:nth-last-child(2) {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  > svg {
+    flex: 0 0 auto;
+    color: var(--text-3);
+  }
+}
+
+.fileTreeChevron {
+  display: inline-grid;
+  width: 13px;
+  flex: 0 0 13px;
+  place-items: center;
+}
+
+.fileTreeChevronOpen {
+  transform: rotate(90deg);
+}
+
+.fileTreeAction {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-3);
+
+  &:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+}
+
+.gitView {
+  padding: 2px 0 14px;
+}
+
+.gitBranchRow,
+.gitChangeRow,
+.gitCommitRow {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+}
+
+.gitHistoryList {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.gitLoadMore {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+
+  &:hover:not(:disabled) {
+    background: var(--row-hover);
+  }
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.65;
+  }
+}
+
+.gitBranchRow {
+  min-height: 36px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+
+  strong {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  span {
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+}
+
+.workspaceGroupHeader {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 12px 3px;
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.gitChangeRow {
+  min-height: 28px;
+
+  > span {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    color: var(--text-2);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  small {
+    color: var(--primary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 750;
+  }
+
+  &:hover {
+    background: var(--row-hover);
+  }
+}
+
+.gitCommitRow {
+  min-height: 38px;
+  gap: 0;
+  padding: 0 12px 0 4px;
+
+  &:hover {
+    background: var(--row-hover);
+  }
+}
+
+.gitGraphCell {
+  flex: 0 0 auto;
+  overflow: visible;
+
+  path,
+  circle {
+    vector-effect: non-scaling-stroke;
+    stroke-width: 1.75px;
+  }
+
+  path {
+    fill: none;
+  }
+}
+
+.gitCommitContent {
+  min-width: 0;
+  flex: 1;
+  padding: 3px 0;
+}
+
+.gitCommitSummary {
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gitCommitMeta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  height: 15px;
+
+  code {
+    flex: 0 0 auto;
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: 9px;
+  }
+}
+
+.gitRefLabel {
+  overflow: hidden;
+  max-width: 110px;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  border-radius: 8px;
+  color: var(--primary);
+  font-size: 9px;
+  line-height: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspaceEmpty {
+  padding: 18px 12px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.workspaceContext {
+  padding: 12px;
+}
+
+.spin {
+  animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+:global(html.mobile-mode) {
+  .header {
+    min-height: 54px;
+    padding: 7px 9px 7px 50px;
+  }
+
+  .agentPopoverOverlay {
+    width: calc(100vw - 16px);
+  }
+
+  .projectControl {
+    max-width: min(170px, calc(100vw - 190px));
+  }
+
+  .modelControl,
+  .reasoningControl {
+    display: none;
+  }
+
+  .projectDeviceInline,
+  .projectDeviceSeparator {
+    display: none;
+  }
+
+  .headerActions {
+    gap: 3px;
+    margin-left: 4px;
+  }
+
+  .iconButton {
+    width: 32px;
+    height: 32px;
+    flex-basis: 32px;
+  }
+
+  .projectPopoverOverlay {
+    width: calc(100vw - 16px);
+  }
+
+  .projectOption {
+    grid-template-columns: 28px minmax(0, 1fr) auto 16px;
+  }
+
+  .stage,
+  .stageWithDrawer {
+    display: block;
+  }
+
+  .conversation {
+    width: 100%;
+    height: 100%;
+  }
+
+  .drawer {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    border-left: 0;
+    box-shadow: none;
+  }
+}

@@ -1,0 +1,97 @@
+[package]
+name = "rua-provider"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "LLM provider management for rua"
+publish = false
+autotests = false
+
+[features]
+default = ["all-providers"]
+anthropic = ["llm-multiplex/anthropic"]
+gemini = ["llm-multiplex/gemini"]
+ollama = ["llm-multiplex/ollama"]
+all-providers = ["anthropic", "gemini", "ollama"]
+
+[dependencies]
+agent-types.workspace = true
+cell-store.workspace = true
+rua-config.workspace = true
+rua-contract.workspace = true
+rua-http.workspace = true
+llm-multiplex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+async-stream = "0.3"
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+futures.workspace = true
+uuid.workspace = true
+
+chrono.workspace = true
+dashmap = "6"
+fs2 = "0.4"
+reqwest.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+tempfile = "3"
+tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
+
+[[test]]
+name = "usage"
+path = "tests/usage.rs"
+
+[[test]]
+name = "contract_providers"
+path = "tests/contract_providers.rs"
+
+[[test]]
+name = "unit_migrate"
+path = "tests/unit_migrate.rs"
+
+[[test]]
+name = "unit_config_loader"
+path = "tests/unit_config_loader.rs"
+
+[[test]]
+name = "unit_retry"
+path = "tests/unit_retry.rs"
+
+[[test]]
+name = "unit_local_model_resume"
+path = "tests/unit_local_model_resume.rs"
+
+[[test]]
+name = "unit_provider_manager"
+path = "tests/unit_provider_manager.rs"
+
+[[test]]
+name = "unit_idealab_compat"
+path = "tests/unit_idealab_compat.rs"
+
+[[test]]
+name = "routing"
+path = "tests/routing.rs"
+
+[[test]]
+name = "lifecycle"
+path = "tests/lifecycle.rs"
+
+[[test]]
+name = "cells_layout"
+path = "tests/cells_layout.rs"
+
+[[test]]
+name = "capability"
+path = "tests/capability.rs"
+
+[[test]]
+name = "fallback"
+path = "tests/fallback.rs"

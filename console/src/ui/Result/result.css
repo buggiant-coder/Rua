@@ -1,0 +1,53 @@
+.rua-ui-result {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+}
+
+.rua-ui-result-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  font-size: 24px;
+  font-weight: 700;
+  margin-bottom: var(--space-4);
+}
+
+.rua-ui-result-icon--success {
+  background: var(--success-bg);
+  color: var(--success-fg);
+}
+.rua-ui-result-icon--error {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+.rua-ui-result-icon--info {
+  background: var(--primary-bg);
+  color: var(--primary);
+}
+.rua-ui-result-icon--warning {
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+}
+
+.rua-ui-result-title {
+  font-size: var(--font-lg);
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: var(--space-2);
+}
+
+.rua-ui-result-subtitle {
+  font-size: var(--font-md);
+  color: var(--text-3);
+  margin-bottom: var(--space-4);
+}
+
+.rua-ui-result-extra {
+  margin-top: var(--space-4);
+}

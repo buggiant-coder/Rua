@@ -1,0 +1,41 @@
+[package]
+name = "react-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "ReAct agent loop core library for rua"
+publish = false
+autotests = false
+
+[dependencies]
+agent-types.workspace = true
+llm-multiplex.workspace = true
+rua-json-repair.workspace = true
+rua-contract.workspace = true
+rua-core.workspace = true
+rua-security.workspace = true
+rua-tool.workspace = true
+rua-skills.workspace = true
+rua-provider.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+blake3.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true
+async-stream = "0.3"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+rua-task.workspace = true
+tempfile = "3"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

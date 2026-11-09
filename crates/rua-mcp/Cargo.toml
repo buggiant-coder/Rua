@@ -1,0 +1,64 @@
+[package]
+name = "rua-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "MCP client management for rua"
+publish = false
+autotests = false
+
+[dependencies]
+agent-types.workspace = true
+rua-core.workspace = true
+rua-http.workspace = true
+rua-contract.workspace = true
+rua-config.workspace = true
+rua-security.workspace = true
+cell-store.workspace = true
+mcp-manager.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "process", "io-util", "rt"] }
+tracing.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+tokio-util.workspace = true
+reqwest = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["sync", "time", "process", "io-util", "rt", "rt-multi-thread", "net", "macros", "test-util"] }
+serde_json = { workspace = true }
+axum = { workspace = true }
+mcp-manager = { workspace = true }
+agent-types = { workspace = true }
+
+[[test]]
+name = "bootstrap"
+path = "tests/bootstrap.rs"
+
+[[test]]
+name = "store"
+path = "tests/store.rs"
+
+[[test]]
+name = "protocol"
+path = "tests/protocol.rs"
+
+[[test]]
+name = "adapter"
+path = "tests/adapter.rs"
+
+[[test]]
+name = "integration_mcp"
+path = "tests/integration_mcp.rs"

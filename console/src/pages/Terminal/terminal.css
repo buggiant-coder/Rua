@@ -1,0 +1,473 @@
+.rua-terminal-page {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.rua-terminal-page-header,
+.rua-terminal-body,
+.rua-terminal-viewport,
+.rua-terminal-session-header,
+.rua-terminal-viewport-stack,
+.rua-terminal-viewport-slot,
+.rua-terminal-xterm,
+.rua-terminal-xterm-host {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.rua-terminal-page-header,
+.rua-terminal-body,
+.rua-terminal-viewport,
+.rua-terminal-session-header,
+.rua-terminal-viewport-stack,
+.rua-terminal-viewport-slot,
+.rua-terminal-xterm-host {
+  width: 100%;
+}
+
+.rua-terminal-page-header,
+.rua-terminal-body,
+.rua-terminal-session-header {
+  overflow: hidden;
+}
+
+.rua-terminal-field {
+  min-width: 0;
+  flex: 0 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-3);
+  font: 500 var(--font-xs) / 1 var(--font-sans);
+  white-space: nowrap;
+}
+
+.rua-terminal-field > span {
+  flex: 0 0 auto;
+}
+
+.rua-terminal-select {
+  font-size: var(--font-sm);
+  font-weight: 600;
+  border-radius: var(--compact-control-radius, var(--radius-md));
+}
+
+[data-skin="pill"] .rua-terminal-select {
+  border-radius: var(
+    --floating-single-surface-radius,
+    var(--compact-control-radius, var(--radius-md))
+  );
+}
+
+.rua-terminal-select .rua-ui-select-selector {
+  min-height: 30px;
+  flex-wrap: nowrap;
+  padding: 0 8px 0 12px;
+}
+
+.rua-terminal-select .rua-ui-select-value {
+  left: 12px;
+  right: 0;
+}
+
+.rua-terminal-select .rua-ui-select-suffix {
+  padding-right: 10px;
+}
+
+.rua-terminal-device-select {
+  width: 88px;
+  min-width: 88px;
+  max-width: 88px;
+}
+
+.rua-terminal-session-select {
+  width: clamp(120px, 16vw, 192px);
+  min-width: 120px;
+  max-width: 192px;
+}
+
+.rua-terminal-body {
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+  background: var(--bg);
+}
+
+.rua-terminal-viewport {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  color: var(--text);
+  overflow: hidden;
+}
+
+.rua-terminal-session-header {
+  flex: 0 0 auto;
+  height: 37px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 2px var(--space-4) 2px var(--space-3);
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.rua-terminal-title-stack {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.rua-terminal-title-stack > span {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 var(--font-sm) / 1.4 var(--font-mono);
+}
+
+.rua-terminal-title-stack > small {
+  min-width: 0;
+  flex: 0 0 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  font: 500 var(--font-xs) / 1.4 var(--font-mono);
+}
+
+.rua-terminal-title-stack > .rua-terminal-connectivity-tag {
+  flex: 0 0 auto;
+  overflow: visible;
+  font: 500 var(--font-xs) / 1 var(--font-sans);
+}
+
+.rua-terminal-session-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+
+.rua-terminal-session-actions .rua-terminal-icon-button {
+  width: var(--height-md);
+  height: var(--height-md);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-2);
+  padding: 0;
+  cursor: pointer;
+}
+
+.rua-terminal-session-actions .rua-terminal-icon-button:hover {
+  background: var(--card-hover);
+  color: var(--text);
+}
+
+.rua-terminal-viewport-stack {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.rua-terminal-viewport-slot {
+  position: absolute;
+  inset: 0;
+  display: none;
+  min-width: 0;
+  min-height: 0;
+}
+
+.rua-terminal-viewport-slot.is-active {
+  display: flex;
+}
+
+.rua-terminal-icon-button--danger {
+  color: var(--danger-fg) !important;
+}
+
+.rua-terminal-xterm {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0 0 var(--space-3) var(--space-2);
+  overflow: hidden;
+  background: var(--surface);
+  border-radius: 0;
+  box-sizing: border-box;
+}
+
+.rua-terminal-xterm-host {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.rua-terminal-xterm-host--locked-geometry {
+  position: relative;
+  overflow-x: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.rua-terminal-xterm-host--locked-geometry .xterm {
+  width: max-content;
+  height: max-content;
+  min-width: 100%;
+  min-height: 100%;
+  overflow: visible;
+}
+
+.rua-terminal-scroll-controls {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 10;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(6px);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.rua-terminal-scroll-controls.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.rua-terminal-scroll-control {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  padding: 0;
+}
+
+.rua-terminal-scroll-control:hover {
+  background: var(--surface-2);
+}
+
+.rua-terminal-xterm .xterm,
+.rua-terminal-xterm .xterm .xterm-screen {
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.rua-terminal-xterm-host--locked-geometry .xterm,
+.rua-terminal-xterm-host--locked-geometry .xterm .xterm-screen {
+  overflow: visible;
+}
+
+.rua-terminal-xterm .xterm {
+  min-width: 100%;
+}
+
+.rua-terminal-xterm .xterm .xterm-viewport {
+  border-radius: 0;
+}
+
+.rua-terminal-xterm-host .xterm .xterm-viewport {
+  background-color: var(--surface);
+}
+
+.rua-terminal-xterm .xterm .composition-view {
+  box-sizing: border-box;
+  max-width: min(100%, calc(100vw - 24px));
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+  padding: 0 2px;
+  overflow: hidden;
+  text-overflow: clip;
+}
+
+.rua-terminal-viewport [role="alert"],
+.rua-terminal-viewport [role="status"] {
+  margin: var(--space-2) var(--space-3) 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font: 500 var(--font-sm) / 1.4 var(--font-sans);
+}
+
+.rua-terminal-viewport [role="alert"] {
+  color: var(--danger-fg);
+  background: var(--danger-bg);
+}
+
+.rua-terminal-viewport [role="status"] {
+  color: var(--success-fg);
+  background: var(--success-bg);
+}
+
+.rua-terminal-kill-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.rua-terminal-kill-confirm p {
+  margin: 0;
+  color: var(--text-2);
+  font: 400 var(--font-sm) / 1.5 var(--font-sans);
+}
+
+.rua-terminal-kill-confirm-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.rua-terminal-rename-field {
+  position: relative;
+}
+
+.rua-terminal-rename-input {
+  width: 100%;
+  height: var(--height-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: 500 var(--font-sm) / 1 var(--font-sans);
+  padding: 0 calc(var(--height-md) + var(--space-2)) 0 var(--space-3);
+}
+
+.rua-terminal-rename-clear {
+  position: absolute;
+  top: 50%;
+  right: var(--space-2);
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-3);
+  padding: 0;
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.rua-terminal-rename-clear:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.rua-terminal-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.rua-terminal-options-row {
+  display: grid;
+  grid-template-columns: minmax(120px, max-content) minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: baseline;
+  color: var(--text-2);
+  font: 500 var(--font-sm) / 1.4 var(--font-sans);
+}
+
+.rua-terminal-options-row strong {
+  min-width: 0;
+  color: var(--text);
+  font: 500 var(--font-sm) / 1.4 var(--font-sans);
+  padding-left: var(--space-3);
+}
+
+.rua-terminal-options-field {
+  display: grid;
+  grid-template-columns: minmax(120px, max-content) minmax(180px, 1fr);
+  gap: var(--space-3);
+  align-items: center;
+  color: var(--text-2);
+  font: 500 var(--font-sm) / 1.4 var(--font-sans);
+}
+
+@media (max-width: 720px) {
+  .rua-terminal-field {
+    min-width: 0;
+  }
+
+  .rua-terminal-field.rua-terminal-device-field {
+    width: 96px;
+    min-width: 72px;
+    flex: 0 1 96px;
+  }
+
+  .rua-terminal-field.rua-terminal-session-field {
+    width: 112px;
+    min-width: 88px;
+    flex: 0 1 112px;
+  }
+
+  .rua-terminal-device-select,
+  .rua-terminal-session-select {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .rua-terminal-session-header {
+    align-items: center;
+    flex-direction: row;
+  }
+
+  .rua-terminal-session-actions {
+    width: auto;
+  }
+
+  .rua-terminal-options-row,
+  .rua-terminal-options-field {
+    grid-template-columns: 1fr;
+    gap: var(--space-1);
+  }
+
+  .rua-terminal-options-row strong {
+    padding-left: 0;
+  }
+}

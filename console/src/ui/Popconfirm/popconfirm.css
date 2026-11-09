@@ -1,0 +1,38 @@
+.rua-ui-popconfirm-trigger {
+  display: inline-flex;
+}
+
+.rua-ui-popconfirm {
+  z-index: 1060;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2xl);
+  color: var(--text);
+  padding: var(--space-4);
+  min-width: 180px;
+  max-width: 320px;
+}
+
+.rua-ui-popconfirm-message {
+  font-size: var(--font-sm, 14px);
+  line-height: 1.5;
+  margin-bottom: var(--space-3);
+}
+
+.rua-ui-popconfirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+@keyframes rua-popconfirm-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

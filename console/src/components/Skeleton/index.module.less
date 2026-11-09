@@ -1,0 +1,154 @@
+@keyframes rua-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.root {
+  width: 100%;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 25%,
+    var(--border-soft) 50%,
+    var(--surface-2) 75%
+  );
+  background-size: 200% 100%;
+  animation: rua-shimmer 1.5s infinite ease-in-out;
+}
+
+.listRoot {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.listRow {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  background: var(--bg-secondary, transparent);
+  border: 1px solid var(--border-color, var(--border-1, rgba(0, 0, 0, 0.06)));
+}
+
+.listRowText {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.avatarBlock {
+  flex-shrink: 0;
+}
+
+.barTitle {
+  width: 40%;
+  min-width: 120px;
+  height: 16px;
+}
+
+.barSub {
+  width: 70%;
+  min-width: 200px;
+  height: 12px;
+}
+
+.cardGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.cardItem {
+  padding: 16px;
+  background: var(--bg-secondary, transparent);
+  border: 1px solid var(--border-color, var(--border-1, rgba(0, 0, 0, 0.06)));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 140px;
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.cardTitleBar {
+  flex: 1;
+  height: 16px;
+}
+
+.paragraphRows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.paragraphRow {
+  height: 12px;
+}
+
+.detailRoot {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  max-width: 720px;
+}
+
+.detailBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.detailTitle {
+  width: 30%;
+  min-width: 160px;
+  height: 24px;
+}
+
+.tableRoot {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-color, var(--border-1, rgba(0, 0, 0, 0.06)));
+}
+
+.tableRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 80px;
+  gap: 16px;
+  padding: 12px 16px;
+  align-items: center;
+  border-bottom: 1px solid
+    var(--border-color, var(--border-1, rgba(0, 0, 0, 0.06)));
+
+  &:last-child {
+    border-bottom: 0;
+  }
+}
+
+.tableHeader {
+  background: var(--bg-disabled, rgba(0, 0, 0, 0.02));
+}
+
+.tableCell {
+  width: 70%;
+  height: 14px;
+}
+
+.tableCellNarrow {
+  width: 60px;
+  height: 14px;
+}

@@ -1,0 +1,71 @@
+.rua-input {
+  height: var(--height-md);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--font-md);
+  font-family: var(--font-sans);
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+  transition: border-color 0.15s;
+}
+
+.rua-input:focus {
+  border-color: var(--primary);
+}
+
+.rua-input::placeholder {
+  color: var(--text-mute);
+}
+
+.rua-input:disabled {
+  background: var(--bg-disabled);
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+.rua-input-clearable {
+  position: relative;
+  display: inline-flex;
+  width: 100%;
+}
+
+.rua-input-clearable .rua-input {
+  padding-right: 34px;
+}
+
+.rua-input-clear {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--text-mute);
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.rua-input-clear:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.rua-input-clear:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.rua-textarea {
+  height: auto;
+  resize: vertical;
+}

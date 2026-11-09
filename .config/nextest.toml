@@ -1,0 +1,31 @@
+
+
+
+[profile.default]
+
+
+test-threads = "num-cpus"
+
+
+
+slow-timeout = { period = "120s", terminate-after = 3 }
+
+
+retries = 0
+
+
+
+failure-output = "immediate-final"
+success-output = "never"
+
+
+status-level = "pass"
+
+[profile.ci]
+
+
+retries = 2
+fail-fast = false
+slow-timeout = { period = "120s", terminate-after = 3 }
+failure-output = "immediate-final"
+status-level = "all"

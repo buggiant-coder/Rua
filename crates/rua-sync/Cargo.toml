@@ -1,0 +1,161 @@
+[package]
+name = "rua-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Entity-store sync layer: iroh-docs, HLC, symmetric encryption, liveactor apply"
+publish = false
+autotests = false
+
+[features]
+test-util = []
+
+[dependencies]
+rua-prompts.workspace = true
+
+rua-device-network.workspace = true
+iroh = { workspace = true }
+iroh-docs = { workspace = true }
+iroh-blobs = { workspace = true }
+iroh-gossip = { workspace = true }
+irpc = { version = "0.15", default-features = false }
+blake3 = { workspace = true }
+bytes = "1"
+base64.workspace = true
+
+
+age = { workspace = true }
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+rand = { workspace = true }
+spake2 = { workspace = true }
+chacha20poly1305 = "0.10"
+hmac = "0.12"
+hkdf = "0.12"
+sha2.workspace = true
+
+
+serde.workspace = true
+serde_json.workspace = true
+
+
+async-trait.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures-lite = "2"
+
+
+anyhow.workspace = true
+
+
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+
+chrono.workspace = true
+
+
+hex = "0.4"
+qrcode = { workspace = true }
+
+
+diffy = "0.4"
+redb = "2"
+rusqlite.workspace = true
+
+
+rua-core.workspace = true
+rua-config.workspace = true
+rua-memory.workspace = true
+rua-mcp.workspace = true
+rua-project.workspace = true
+rua-provider = { path = "../rua-provider" }
+rua-session = { path = "../rua-session" }
+
+[dev-dependencies]
+bao-tree = "0.16"
+rua-chat = { path = "../rua-chat" }
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread", "time"] }
+iroh = { workspace = true }
+iroh-docs = { workspace = true }
+iroh-blobs = { workspace = true, features = ["test-utils"] }
+bytes = "1"
+
+[[test]]
+name = "network_secret_backup"
+path = "tests/network_secret_backup.rs"
+
+[[test]]
+name = "identity"
+path = "tests/identity.rs"
+
+[[test]]
+name = "hlc"
+path = "tests/hlc.rs"
+
+[[test]]
+name = "keystore"
+path = "tests/keystore.rs"
+
+[[test]]
+name = "pairing_pin"
+path = "tests/pairing_pin.rs"
+
+[[test]]
+name = "wormhole_handshake"
+path = "tests/wormhole_handshake.rs"
+required-features = ["test-util"]
+
+[[test]]
+name = "device_list_op"
+path = "tests/device_list_op.rs"
+
+[[test]]
+name = "trigger"
+path = "tests/trigger.rs"
+
+[[test]]
+name = "sync_power_policy"
+path = "tests/sync_power_policy.rs"
+
+[[test]]
+name = "revocation"
+path = "tests/revocation.rs"
+
+[[test]]
+name = "pairing_e2e"
+path = "tests/pairing_e2e.rs"
+required-features = ["test-util"]
+
+[[test]]
+name = "sync_blob_store"
+path = "tests/sync_blob_store.rs"
+
+[[test]]
+name = "parallel_stream"
+path = "tests/parallel_stream.rs"
+
+[[test]]
+name = "verified_stream"
+path = "tests/verified_stream.rs"
+
+[[test]]
+name = "sync_foundation"
+path = "tests/sync_foundation.rs"
+
+[[test]]
+name = "contract_entity_roundtrip"
+path = "tests/contract_entity_roundtrip.rs"
+required-features = ["test-util"]
+
+[[test]]
+name = "contract_device_network"
+path = "tests/contract_device_network.rs"
+required-features = ["test-util"]
+
+[[test]]
+name = "sync_benchmarks"
+path = "tests/sync_benchmarks.rs"
+required-features = ["test-util"]

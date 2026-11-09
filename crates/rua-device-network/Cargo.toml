@@ -1,0 +1,45 @@
+[package]
+name = "rua-device-network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Process-wide Device network presence and peer-session foundation"
+publish = false
+autotests = false
+
+[features]
+test-util = []
+
+[dependencies]
+async-trait.workspace = true
+bytes = "1"
+futures.workspace = true
+hmac = "0.12"
+iroh.workspace = true
+iroh-docs.workspace = true
+iroh-gossip.workspace = true
+iroh-mdns-address-lookup = "0.2"
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle = "2"
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+hex = "0.4"
+hostname = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[[test]]
+name = "runtime"
+path = "tests/runtime.rs"
+
+[[test]]
+name = "contract_session"
+path = "tests/contract_session.rs"

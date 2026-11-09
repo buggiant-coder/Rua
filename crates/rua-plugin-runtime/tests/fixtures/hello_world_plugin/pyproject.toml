@@ -1,0 +1,6 @@
+[project]
+name = "hello-world-plugin"
+version = "1.0.0"
+description = "Rua Python plugin demo and Rust end-to-end test fixture"
+requires-python = ">=3.8"
+dependencies = []

@@ -1,0 +1,262 @@
+.templatesPage {
+  padding: 0;
+
+  :global {
+    .rua-card-body {
+      padding: 0 !important;
+    }
+
+    .rua-table-cell {
+      padding: 8px 16px !important;
+    }
+  }
+}
+
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tableCard {
+  margin-bottom: 24px;
+}
+
+.headerRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  gap: 8px;
+}
+
+.headerLine {
+  font-size: 13px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+
+.fileListScroll {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 4px;
+}
+
+.fileItem {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 6px;
+  cursor: pointer;
+  background-color: var(--surface);
+  transition: all 0.2s;
+
+  &:hover {
+    border-color: var(--border);
+    background-color: var(--card-hover);
+  }
+}
+
+.fileItemHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.fileInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+.fileItemActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: 12px;
+}
+
+.fileItemName {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.fileItemMetaInline {
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 400;
+  margin-left: 8px;
+}
+
+.enabledBadge {
+  color: var(--success-fg);
+  font-size: 8px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.expandIcon {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-left: 4px;
+  cursor: pointer;
+}
+
+.subdirFileList {
+  margin-left: 16px;
+  margin-top: -4px;
+  margin-bottom: 8px;
+}
+
+.subdirFileItem {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 4px;
+  background-color: var(--surface);
+  transition: all 0.2s;
+
+  &:hover {
+    border-color: var(--border);
+    background-color: var(--card-hover);
+  }
+}
+
+.subdirFileHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.subdirFileName {
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+
+.sectionTitle {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.enabledFileList {
+  max-height: 200px;
+  overflow-y: auto;
+  margin-bottom: 4px;
+}
+
+.loadedPromptItem {
+  display: flex;
+  align-items: center;
+  padding: 3px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 3px;
+  background-color: var(--surface);
+  gap: 6px;
+}
+
+.loadedPromptName {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dragHandle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  flex-shrink: 0;
+  margin-right: 4px;
+  color: var(--text-mute);
+  cursor: grab;
+  font-size: 14px;
+  transition: color 0.2s;
+
+  &:active {
+    cursor: grabbing;
+  }
+
+  &:hover {
+    color: var(--primary);
+  }
+}
+
+.dragging {
+  box-shadow: var(--shadow-lg);
+  border-color: var(--primary) !important;
+}
+
+.emptyStateSmall {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+:global(.dark-mode) {
+  .fileItem {
+    background-color: var(--surface-2);
+    border-color: var(--border-soft);
+  }
+
+  .fileItemName {
+    color: var(--text);
+  }
+
+  .headerLine {
+    color: var(--text-3);
+  }
+
+  .expandIcon {
+    color: var(--text-mute);
+  }
+
+  .subdirFileItem {
+    background-color: var(--surface-2);
+    border-color: var(--border-soft);
+  }
+
+  .subdirFileName {
+    color: var(--text);
+  }
+
+  .sectionTitle {
+    color: var(--text);
+  }
+
+  .loadedPromptItem {
+    background-color: var(--surface-2);
+    border-color: var(--border-soft);
+  }
+
+  .loadedPromptName {
+    color: var(--text);
+  }
+
+  .dragHandle {
+    color: var(--border);
+  }
+
+  .dragging {
+    border-color: var(--primary) !important;
+  }
+
+  .emptyStateSmall {
+    color: var(--text-mute);
+  }
+}

@@ -1,0 +1,148 @@
+.panel {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  color: var(--text-2);
+}
+
+.header {
+  height: var(--page-header-height);
+  padding: 0 8px 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.brand {
+  font-family: var(--font-sans);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--text-2);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.fixedNav {
+  flex-shrink: 0;
+  padding: 0 8px 6px;
+}
+
+.navMenu {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 4px 8px 16px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+.navGroup + .navGroup {
+  margin-top: 4px;
+}
+
+.groupLabel {
+  padding: 10px 8px 4px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-mute);
+}
+
+.navItem {
+  width: 100%;
+  height: 34px;
+  margin-bottom: 2px;
+  padding: 0 8px 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+
+  &:hover {
+    background: var(--row-hover);
+    color: var(--text);
+  }
+
+  &:active {
+    background: var(--primary-hov);
+  }
+}
+
+.navItemActive {
+  background: var(--nav-active-bg) !important;
+  color: var(--nav-active-fg) !important;
+
+  &:hover {
+    background: var(--nav-active-hover-bg) !important;
+    color: var(--nav-active-fg) !important;
+    box-shadow: inset 0 0 0 1px var(--nav-active-hover-ring);
+  }
+}
+
+.navIcon {
+  width: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 18px;
+  opacity: 0.85;
+}
+
+.navItemActive .navIcon {
+  opacity: 1;
+}
+
+.navLabel {
+  flex: 1;
+  letter-spacing: 0.01em;
+}
+
+.conversations,
+.moreNavigation {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  &[hidden] {
+    display: none;
+  }
+}
+.footer {
+  flex: none;
+  border-top: 1px solid var(--border-soft);
+  padding: 8px;
+
+  .navItem[aria-expanded="true"] {
+    color: var(--primary);
+    background: var(--primary-bg);
+
+    &:hover {
+      background: var(--primary-hov);
+    }
+  }
+}

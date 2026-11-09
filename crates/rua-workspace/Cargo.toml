@@ -1,0 +1,89 @@
+[package]
+name = "rua-workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Workspace runtime orchestration for Rua AI Agent gateway"
+autotests = false
+
+[dependencies]
+rua-prompts.workspace = true
+rua-chat = { path = "../rua-chat" }
+rua-core = { path = "../../libs/rua-core" }
+rua-contract = { path = "../../libs/rua-contract" }
+rua-agent = { path = "../rua-agent" }
+rua-acp.workspace = true
+rua-config = { path = "../rua-config" }
+rua-session = { path = "../rua-session" }
+rua-provider = { path = "../rua-provider" }
+rua-tool = { path = "../rua-tool" }
+rua-task.workspace = true
+rua-mcp = { path = "../rua-mcp" }
+rua-memory = { path = "../rua-memory" }
+rua-security = { path = "../rua-security" }
+rua-skills = { path = "../rua-skills" }
+rua-channel = { path = "../rua-channel" }
+rua-cron = { path = "../rua-cron" }
+rua-plugin-runtime = { path = "../rua-plugin-runtime" }
+mcp-manager = { path = "../../libs/mcp-manager" }
+react-agent = { path = "../../crates/react-agent" }
+agent-types.workspace = true
+llm-multiplex.workspace = true
+sqlite-vecstore.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+rua-http.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+rusqlite.workspace = true
+futures.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+notify = "7"
+tokio-util = "0.7"
+walkdir = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tempfile = "3"
+bytes = "1"
+
+[features]
+default = ["imessage"]
+imessage = ["rua-channel/imessage"]
+sip-livekit = ["rua-channel/sip-livekit"]
+matrix = ["rua-channel/matrix"]
+mqtt = ["rua-channel/mqtt"]
+
+[dev-dependencies]
+tempfile = "3"
+cell-store.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[[test]]
+name = "adapter"
+path = "tests/adapter.rs"
+
+[[test]]
+name = "isolation"
+path = "tests/isolation.rs"
+
+[[test]]
+name = "config_misc"
+path = "tests/config_misc.rs"
+
+[[test]]
+name = "file_manager"
+path = "tests/file_manager.rs"
+
+[[test]]
+name = "chats_store"
+path = "tests/chats_store.rs"
+
+[[test]]
+name = "unit_workspace"
+path = "tests/unit_workspace.rs"

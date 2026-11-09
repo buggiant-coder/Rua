@@ -1,0 +1,462 @@
+.root {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: min(250px, 45vw);
+  height: var(--height-md);
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--chat-control-radius, var(--radius-xs));
+  background: var(--surface);
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-sm);
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+
+  &:hover,
+  &.triggerActive {
+    background: var(--primary-bg);
+    color: var(--primary);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+}
+
+.triggerArrow,
+.spin {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+.spin {
+  color: var(--primary);
+  animation: spin 900ms linear infinite;
+}
+
+.triggerName {
+  min-width: 0;
+  max-width: 150px;
+  overflow: hidden;
+  color: currentColor;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.triggerSeparator {
+  flex: 0 0 auto;
+  color: var(--text-mute);
+}
+
+.triggerThinking {
+  flex: 0 0 auto;
+  color: var(--text-3);
+  font-size: var(--font-xs);
+  white-space: nowrap;
+}
+
+.trigger:hover .triggerThinking,
+.triggerActive .triggerThinking {
+  color: currentColor;
+}
+
+.triggerArrow {
+  color: var(--text-mute);
+  transition: transform 0.18s ease;
+}
+
+.triggerArrowOpen {
+  transform: rotate(180deg);
+}
+
+.composerOverlay {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  left: -1px;
+  z-index: 6;
+}
+
+.panel {
+  --panel-content-inset: max(
+    var(--space-3),
+    calc(var(--radius-md) / 2 + var(--space-2))
+  );
+  --panel-row-bleed: var(--space-2);
+
+  width: 100%;
+  min-height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: none;
+}
+
+.panelHeader,
+.modelPanelHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 10px var(--panel-content-inset);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.panelHeader {
+  justify-content: space-between;
+}
+
+.panelTitle {
+  color: var(--text);
+  font-size: var(--font-sm);
+  font-weight: 700;
+  line-height: 20px;
+}
+
+.panelSubtitle {
+  color: var(--text-3);
+  font-size: var(--font-xs);
+  line-height: 16px;
+}
+
+.modelSummary {
+  display: flex;
+  width: calc(100% - 2 * (var(--panel-content-inset) - var(--panel-row-bleed)));
+  min-height: 62px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px calc(var(--panel-content-inset) - var(--panel-row-bleed));
+  padding: 9px var(--panel-row-bleed);
+  border: 0;
+  border-radius: var(--floating-item-radius, var(--radius-sm));
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+
+  &:hover {
+    background: var(--primary-bg);
+  }
+
+  > svg {
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    color: var(--text-mute);
+  }
+}
+
+.modelSummaryText {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+
+  strong,
+  small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    font-size: var(--font-sm);
+    font-weight: 650;
+    line-height: 20px;
+  }
+
+  small {
+    color: var(--text-3);
+    font-size: var(--font-xs);
+    line-height: 16px;
+  }
+}
+
+.sectionLabel {
+  color: var(--text-3);
+  font-size: var(--font-xs);
+  font-weight: 650;
+  line-height: 16px;
+}
+
+.thinkingSection {
+  display: grid;
+  gap: 8px;
+  padding: 0 var(--panel-content-inset) 14px;
+}
+
+.thinkingOptions {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 3px;
+  padding: 3px;
+  border-radius: var(--floating-item-radius, var(--radius-sm));
+  background: var(--bg-soft);
+
+  button {
+    min-width: 0;
+    height: 32px;
+    padding: 0 4px;
+    border: 0;
+    border-radius: var(--floating-item-radius, var(--radius-sm));
+    background: transparent;
+    color: var(--text-3);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--font-xs);
+
+    &:hover:not(:disabled) {
+      color: var(--text);
+    }
+
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+  }
+
+  .thinkingOptionActive {
+    background: var(--surface);
+    color: var(--primary);
+    font-weight: 700;
+    box-shadow: var(--shadow-sm);
+  }
+}
+
+.backButton {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--chat-control-radius, var(--radius-xs));
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+
+  &:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+
+  svg {
+    width: 17px;
+    height: 17px;
+  }
+}
+
+.selectorTabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-bottom: 1px solid var(--border-soft);
+
+  button {
+    height: 38px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--text-3);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--font-xs);
+    font-weight: 700;
+  }
+}
+
+.selectorTabActive {
+  border-bottom-color: var(--primary) !important;
+  color: var(--primary) !important;
+}
+
+.modelPanelBody {
+  max-height: min(420px, calc(100vh - 180px));
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.freeWarning {
+  margin: 2px 2px 6px;
+  padding: 6px 8px;
+  border-radius: var(--chat-inline-radius, var(--radius-xs));
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  font-size: var(--font-xs);
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.providerGroup + .providerGroup {
+  border-top: 1px solid var(--border-soft);
+}
+
+.providerItem,
+.modelItem {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.providerItem {
+  min-height: 40px;
+  padding: 7px 8px;
+  border-radius: var(--floating-item-radius, var(--chat-inline-radius));
+
+  &:hover {
+    background: var(--primary-bg);
+    color: var(--primary);
+  }
+}
+
+.providerMain {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.providerName,
+.modelName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.providerName {
+  font-size: var(--font-sm);
+  font-weight: 650;
+}
+
+.providerArrow {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  color: var(--text-mute);
+  transition: transform 0.18s ease;
+}
+
+.providerArrowOpen {
+  transform: rotate(90deg);
+}
+
+.modelList {
+  display: grid;
+  gap: 2px;
+  padding: 0 4px 6px 14px;
+}
+
+.modelItem {
+  min-height: 36px;
+  padding: 6px 8px;
+  border-radius: var(--floating-item-radius, var(--chat-inline-radius));
+  color: var(--text-2);
+  font-size: var(--font-sm);
+
+  &:hover,
+  &.modelItemActive {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+}
+
+.checkIcon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  color: var(--primary);
+}
+
+.freeBadge {
+  flex: 0 0 auto;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  background: var(--success-bg);
+  color: var(--success-fg);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 18px;
+}
+
+.emptyTip,
+.freeMoreHint {
+  padding: 14px 10px;
+  color: var(--text-3);
+  font-size: var(--font-xs);
+  line-height: 1.5;
+}
+
+.freeMoreHint {
+  margin-top: 4px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.spinWrapper {
+  display: grid;
+  min-height: 96px;
+  place-items: center;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 520px) {
+  .root {
+    flex: 0 1 auto;
+    max-width: 132px;
+    overflow: hidden;
+  }
+
+  .trigger {
+    width: auto;
+    max-width: 100%;
+    gap: 3px;
+    padding: 0 2px 0 4px;
+  }
+
+  .triggerName {
+    max-width: none;
+  }
+
+  .triggerArrow {
+    width: 12px;
+    height: 12px;
+  }
+
+  .triggerSeparator,
+  .triggerThinking {
+    display: none;
+  }
+
+  .panel {
+    width: 100%;
+  }
+}

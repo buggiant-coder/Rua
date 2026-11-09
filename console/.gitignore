@@ -1,0 +1,7 @@
+# Playwright e2e + visual outputs (ignored at console scope so the
+# console package can be opened standalone without pulling root .gitignore).
+test-results/
+playwright-report/
+e2e-trace/
+e2e-output/
+.playwright/

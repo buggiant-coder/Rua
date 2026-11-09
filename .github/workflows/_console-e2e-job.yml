@@ -1,0 +1,207 @@
+name: Console E2E Job
+
+on:
+  workflow_call:
+    inputs:
+      spec:
+        description: "Playwright spec to run"
+        type: string
+        default: "e2e/baseline.spec.ts"
+      base_url:
+        description: "Base URL used by console Playwright tests"
+        type: string
+        default: "http://127.0.0.1:8090"
+      artifact_name:
+        description: "Artifact name for logs and Playwright reports"
+        type: string
+        default: "console-e2e-artifacts"
+      auth_enabled:
+        description: "Run rua-server with RUA_AUTH_ENABLED=true instead of --no-auth"
+        type: boolean
+        default: false
+      seed_token_usage:
+        description: "Seed token_usage.json in the E2E working directory before server start"
+        type: boolean
+        default: false
+
+env:
+  RUSTC_WRAPPER: ""
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTUP_MAX_RETRIES: 10
+  CARGO_NET_RETRY: 10
+  CARGO_INCREMENTAL: 0
+  RUST_TOOLCHAIN: "1.91.0"
+
+jobs:
+  console-e2e:
+    name: Console E2E
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: console/package-lock.json
+
+      - name: Build console
+        shell: bash
+        env:
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          cd console
+          npm ci
+          npm run build:test
+
+      - name: Install Playwright browsers
+        shell: bash
+        run: |
+          cd console
+          npx playwright install chromium --with-deps
+
+      - name: Run terminal runtime tests
+        shell: bash
+        run: |
+          cd console
+          npm test -- --run \
+            src/terminal \
+            src/pages/Terminal \
+            src/layouts/MainLayout/MainLayout.test.tsx \
+            src/layouts/MobileLayout/MobileLayout.test.tsx
+
+      - name: Run xterm compatibility canaries
+        shell: bash
+        run: |
+          cd console
+          npm run test:terminal-compat
+
+      - uses: ./.github/actions/setup-protoc
+
+      - name: Build rua-server
+        shell: bash
+        run: cargo build -p rua-server
+
+      - name: Start rua-server
+        shell: bash
+        run: |
+          E2E_DIR="${RUNNER_TEMP}/rua-e2e"
+          mkdir -p "$E2E_DIR/working" "$E2E_DIR/secret" "$E2E_DIR/logs"
+          echo "RUA_E2E_DIR=$E2E_DIR" >> "$GITHUB_ENV"
+          export RUA_ROOT="$E2E_DIR/working"
+          export RUA_SECRET_DIR="$E2E_DIR/secret"
+
+          if [ "${{ inputs.seed_token_usage }}" = "true" ]; then
+            TODAY="$(date -u +%F)"
+            YESTERDAY="$(date -u -d '1 day ago' +%F)"
+            cat > "$E2E_DIR/working/token_usage.json" <<EOF
+          {
+            "$YESTERDAY": {
+              "dashscope:qwen-plus": {
+                "provider_id": "dashscope",
+                "model_name": "qwen-plus",
+                "prompt_tokens": 120,
+                "completion_tokens": 35,
+                "call_count": 2
+              }
+            },
+            "$TODAY": {
+              "dashscope:qwen-plus": {
+                "provider_id": "dashscope",
+                "model_name": "qwen-plus",
+                "prompt_tokens": 80,
+                "completion_tokens": 25,
+                "call_count": 1
+              },
+              "openai:gpt-4o": {
+                "provider_id": "openai",
+                "model_name": "gpt-4o",
+                "prompt_tokens": 40,
+                "completion_tokens": 20,
+                "call_count": 1
+              }
+            }
+          }
+          EOF
+          fi
+
+          AUTH_ARGS=()
+          if [ "${{ inputs.auth_enabled }}" = "true" ]; then
+            export RUA_AUTH_ENABLED=true
+          else
+            AUTH_ARGS+=(--no-auth)
+          fi
+
+          target/debug/rua-server \
+            --debug \
+            "${AUTH_ARGS[@]}" \
+            --host 127.0.0.1 \
+            --port 8090 \
+            --rua-root "$E2E_DIR/working" \
+            --console-static-dir console/dist \
+            > "$E2E_DIR/logs/rua-server.log" 2>&1 &
+
+          echo $! > "$E2E_DIR/rua-server.pid"
+
+      - name: Wait for backend ready
+        shell: bash
+        run: |
+          for i in $(seq 1 90); do
+            if curl -sf "${{ inputs.base_url }}/api/version" > /dev/null 2>&1; then
+              echo "rua-server ready after ${i}s"
+              exit 0
+            fi
+            if ! kill -0 "$(cat "$RUA_E2E_DIR/rua-server.pid")" 2>/dev/null; then
+              echo "rua-server exited before readiness"
+              cat "$RUA_E2E_DIR/logs/rua-server.log" || true
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "rua-server failed to become ready"
+          cat "$RUA_E2E_DIR/logs/rua-server.log" || true
+          exit 1
+
+      - name: Run console E2E
+        shell: bash
+        env:
+          RUA_E2E_BASE_URL: ${{ inputs.base_url }}
+        run: |
+          cd console
+          npm run e2e -- --project=chromium "${{ inputs.spec }}"
+
+      - name: Stop rua-server
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${RUA_E2E_DIR:-}" ] && [ -f "$RUA_E2E_DIR/rua-server.pid" ]; then
+            PID="$(cat "$RUA_E2E_DIR/rua-server.pid")"
+            kill -INT "$PID" 2>/dev/null || true
+            for _ in $(seq 1 15); do
+              kill -0 "$PID" 2>/dev/null || exit 0
+              sleep 1
+            done
+            kill -9 "$PID" 2>/dev/null || true
+          fi
+
+      - name: Upload E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: |
+            ${{ runner.temp }}/rua-e2e/logs/
+            console/playwright-report/
+            console/test-results/
+          retention-days: 7

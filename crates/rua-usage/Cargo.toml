@@ -1,0 +1,28 @@
+[package]
+name = "rua-usage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Device-local token usage ledger for Rua"
+publish = false
+autotests = false
+
+[dependencies]
+agent-types.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+rua-contract.workspace = true
+rua-core.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3"
+
+[[test]]
+name = "usage_ledger"
+path = "tests/usage_ledger.rs"

@@ -1,0 +1,121 @@
+.voiceTranscriptionPage {
+  width: 100%;
+}
+
+.pageHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: relative;
+  padding: 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.breadcrumbHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  flex: 1;
+}
+
+.breadcrumbParent {
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+.breadcrumbSeparator {
+  color: var(--text-mute);
+  margin: 0 4px;
+}
+
+.breadcrumbCurrent {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 20px;
+}
+
+.formContainer {
+  padding: 20px 32px;
+}
+
+.formCard {
+  width: 100%;
+}
+
+.form {
+  flex: 1;
+  min-height: 0;
+}
+
+.sectionDivider {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+
+  &:first-child {
+    margin-top: 0;
+  }
+}
+
+.fieldDescription {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.optionLabel {
+  font-weight: 500;
+  margin-right: 8px;
+}
+
+.optionDescription {
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0;
+}
+
+.sectionTitle {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+}
+
+.cardDescription {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.content {
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.centerState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 400px;
+}
+
+:global(.dark-mode) {
+  .breadcrumbSeparator {
+    color: var(--border);
+  }
+
+  .optionLabel {
+    color: var(--text);
+  }
+}

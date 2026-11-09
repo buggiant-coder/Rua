@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="application_name">手Rua</string>
+    <string name="a11y_service_summary">手Rua AI 助理</string>
+    <string name="a11y_service_description">让 AI 读取屏幕、执行点击和输入，帮助你操作手机。你可以随时停止正在进行的操作或关闭此权限。</string>
+</resources>

@@ -1,0 +1,3549 @@
+{
+  "channels": {
+    "console": {
+      "class": "ConsoleChannel",
+      "config_class": "ConsoleConfig",
+      "fields": [
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "path",
+          "name": "media_dir",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".console"
+    },
+    "dingtalk": {
+      "class": "DingTalkChannel",
+      "config_class": "DingTalkConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "client_id",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "client_secret",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "markdown",
+          "kind": "text",
+          "name": "message_type",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "markdown",
+          "kind": "text",
+          "name": "cron_message_type",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "card_template_id",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "content",
+          "kind": "text",
+          "name": "card_template_key",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "robot_code",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "path",
+          "name": "media_dir",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "card_auto_layout",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "at_sender_on_reply",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "streaming_enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "share_session_in_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "url",
+          "name": "endpoint",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".dingtalk"
+    },
+    "discord": {
+      "class": "DiscordChannel",
+      "config_class": "DiscordConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "bot_token",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "http_proxy",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "http_proxy_auth",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "accept_bot_messages",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "streaming_enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "path",
+          "name": "media_dir",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".discord_"
+    },
+    "feishu": {
+      "class": "FeishuChannel",
+      "config_class": "FeishuConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "app_id",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "app_secret",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "encrypt_key",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "verification_token",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": null,
+          "kind": "path",
+          "name": "media_dir",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "feishu",
+          "kind": "text",
+          "name": "domain",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "streaming_enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "share_session_in_group",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".feishu"
+    },
+    "imessage": {
+      "class": "IMessageChannel",
+      "config_class": "IMessageChannelConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "~/Library/Messages/chat.db",
+          "kind": "path",
+          "name": "db_path",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 1.0,
+          "kind": "number",
+          "name": "poll_sec",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "path",
+          "name": "media_dir",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 10485760,
+          "kind": "number",
+          "name": "max_decoded_size",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".imessage"
+    },
+    "matrix": {
+      "class": "MatrixChannel",
+      "config_class": "MatrixConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "url",
+          "name": "homeserver",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "user_id",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "access_token",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "group_allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": {},
+          "kind": "textarea",
+          "name": "groups",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "encryption",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "vision_enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 50,
+          "kind": "number",
+          "name": "history_limit",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "password",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "qwenpaw-worker",
+          "kind": "text",
+          "name": "device_name",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 30000,
+          "ge": 5000,
+          "kind": "number",
+          "le": 300000,
+          "name": "sync_timeout_ms",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "mention_pill_in_body",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "outbound_structured_mentions",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "streaming_enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "share_session_in_group",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".matrix"
+    },
+    "mattermost": {
+      "class": "MattermostChannel",
+      "config_class": "MattermostConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "url",
+          "name": "url",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "bot_token",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": null,
+          "kind": "path",
+          "name": "media_dir",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "toggle",
+          "name": "show_typing",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "thread_follow_without_mention",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".mattermost"
+    },
+    "mqtt": {
+      "class": "MQTTChannel",
+      "config_class": "MQTTConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "host",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "number",
+          "name": "port",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "transport",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "clean_session",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 2,
+          "kind": "number",
+          "name": "qos",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "text",
+          "name": "username",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "password",
+          "name": "password",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "subscribe_topic",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "publish_topic",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "tls_enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "path",
+          "name": "tls_ca_certs",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "path",
+          "name": "tls_certfile",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "path",
+          "name": "tls_keyfile",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".mqtt"
+    },
+    "onebot": {
+      "class": "OneBotChannel",
+      "config_class": "OneBotConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "127.0.0.1",
+          "kind": "text",
+          "name": "ws_host",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 6199,
+          "kind": "number",
+          "name": "ws_port",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "access_token",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "share_session_in_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "path",
+          "name": "media_dir",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "media_base64",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 10,
+          "gt": 0,
+          "kind": "number",
+          "name": "media_base64_max_mb",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 50,
+          "gt": 0,
+          "kind": "number",
+          "name": "media_download_max_mb",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".onebot"
+    },
+    "qq": {
+      "class": "QQChannel",
+      "config_class": "QQConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "app_id",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "client_secret",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "markdown_enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 100,
+          "kind": "number",
+          "name": "max_reconnect_attempts",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "ack_message",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".qq"
+    },
+    "sip": {
+      "class": "SIPChannel",
+      "config_class": "SIPChannelConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "dev",
+          "kind": "text",
+          "name": "sip_mode",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "0.0.0.0",
+          "kind": "text",
+          "name": "sip_host",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 5061,
+          "kind": "number",
+          "name": "sip_port",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "sip_username",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "sip_password",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "sip_server",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "UDP",
+          "kind": "text",
+          "name": "sip_transport",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 10000,
+          "kind": "number",
+          "name": "rtp_port_low",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 20000,
+          "kind": "number",
+          "name": "rtp_port_high",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "dashscope_api_key",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "aliyun",
+          "kind": "text",
+          "name": "tts_provider",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "tts_voice",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "aliyun",
+          "kind": "text",
+          "name": "stt_provider",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "zh-CN",
+          "kind": "text",
+          "name": "language",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "你好，我是QwenPaw",
+          "kind": "text",
+          "name": "welcome_greeting",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 120.0,
+          "kind": "number",
+          "name": "call_timeout",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "url",
+          "name": "livekit_url",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "livekit_api_key",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "livekit_api_secret",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "livekit_sip_trunk_id",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "sip-inbound",
+          "kind": "text",
+          "name": "livekit_room_name",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 24000,
+          "kind": "number",
+          "name": "livekit_output_sample_rate",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 5,
+          "kind": "number",
+          "name": "max_concurrent_calls",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".sip"
+    },
+    "slack": {
+      "class": "SlackChannel",
+      "config_class": "SlackConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "text",
+          "name": "dm_policy",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "text",
+          "name": "group_policy",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "bot_token",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "app_token",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": null,
+          "kind": "text",
+          "name": "proxy",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "streaming_enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "path",
+          "name": "media_dir",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".slack"
+    },
+    "telegram": {
+      "class": "TelegramChannel",
+      "config_class": "TelegramConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "bot_token",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "",
+          "kind": "url",
+          "name": "base_url",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "http_proxy",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "http_proxy_auth",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": null,
+          "kind": "toggle",
+          "name": "show_typing",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "streaming_enabled",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".telegram"
+    },
+    "voice": {
+      "class": "VoiceChannel",
+      "config_class": "VoiceChannelConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "twilio_account_sid",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "twilio_auth_token",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "phone_number",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "phone_number_sid",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "google",
+          "kind": "text",
+          "name": "tts_provider",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "en-US-Journey-D",
+          "kind": "text",
+          "name": "tts_voice",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "deepgram",
+          "kind": "text",
+          "name": "stt_provider",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "en-US",
+          "kind": "text",
+          "name": "language",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "Hi! This is QwenPaw. How can I help you?",
+          "kind": "text",
+          "name": "welcome_greeting",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".voice"
+    },
+    "wechat": {
+      "class": "WeChatChannel",
+      "config_class": "WeChatConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "bot_token",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "",
+          "kind": "path",
+          "name": "bot_token_file",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "url",
+          "name": "base_url",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "path",
+          "name": "media_dir",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "message_merge_enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 0,
+          "kind": "number",
+          "name": "message_merge_delay_ms",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".wechat"
+    },
+    "wecom": {
+      "class": "WecomChannel",
+      "config_class": "WecomConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_id",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "secret",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "",
+          "kind": "url",
+          "name": "ws_url",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "path",
+          "name": "media_dir",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "welcome_text",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "share_session_in_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": -1,
+          "kind": "number",
+          "name": "max_reconnect_attempts",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "streaming_enabled",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".wecom"
+    },
+    "xiaoyi": {
+      "class": "XiaoYiChannel",
+      "config_class": "XiaoYiConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "ak",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "sk",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "agent_id",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "url",
+          "name": "ws_url",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 3600000,
+          "kind": "number",
+          "name": "task_timeout_ms",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".xiaoyi"
+    },
+    "yuanbao": {
+      "class": "YuanbaoChannel",
+      "config_class": "YuanbaoConfig",
+      "fields": [
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "enabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "bot_prefix",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_calls",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_tool_results",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 200,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_call_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": 500,
+          "ge": 0,
+          "kind": "number",
+          "name": "tool_result_max_length",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "show_thinking",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "dm_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": "open",
+          "kind": "select",
+          "name": "group_policy",
+          "options": [
+            "open",
+            "allowlist"
+          ],
+          "secret": false
+        },
+        {
+          "default": [],
+          "kind": "tags",
+          "name": "allow_from",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "deny_message",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "require_mention",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": true,
+          "kind": "toggle",
+          "name": "no_text_debounce",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_dm",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "access_control_group",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "dm_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "group_disabled",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "text",
+          "name": "app_id",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "password",
+          "name": "app_secret",
+          "options": [],
+          "secret": true
+        },
+        {
+          "default": "bot.yuanbao.tencent.com",
+          "kind": "text",
+          "name": "api_domain",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": "",
+          "kind": "url",
+          "name": "ws_url",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": null,
+          "kind": "path",
+          "name": "media_dir",
+          "options": [],
+          "secret": false
+        },
+        {
+          "default": false,
+          "kind": "toggle",
+          "name": "accept_bot_messages",
+          "options": [],
+          "secret": false
+        }
+      ],
+      "module": ".yuanbao"
+    }
+  },
+  "schema_version": 1,
+  "upstream": {
+    "license": "Apache-2.0",
+    "repository": "https://github.com/agentscope-ai/QwenPaw",
+    "revision": "5bd10453e055c9d7eed0afc914bf94ecae81763c",
+    "source_sha256": {
+      "src/qwenpaw/app/channels/__init__.py": "2d626f110eb4ee849bd3e31c0a64e91e60d3f35fc11a6d744eeba5633b582a6d",
+      "src/qwenpaw/app/channels/access_control.py": "276b59057e3ed075dad9537e35cbaa89ae9125a9d1f4fcc9a3400ea8ae3c3ce8",
+      "src/qwenpaw/app/channels/base.py": "bfad4376fef0dc687cac51e5b0952fbf230ea750a156acc0c66e77bd1b6742ca",
+      "src/qwenpaw/app/channels/command_registry.py": "f6284b6ecda7014eb53fd4fbb1a72c6744d4971d94e4327e91f4bee97c3a0eeb",
+      "src/qwenpaw/app/channels/conflict.py": "3f256c74b523c1dee56b87936e7ee2dfabd4278101c351e2ec5b5946817df88a",
+      "src/qwenpaw/app/channels/console/__init__.py": "cdf64713ba8aade21195febc1ba7b18067790eb4b4d4387941c986ac925e02bc",
+      "src/qwenpaw/app/channels/console/channel.py": "eb3634e0f140cf9fae6ef366c25330bc3343fff6a17f3817edb7b609b8b1c602",
+      "src/qwenpaw/app/channels/dingtalk/__init__.py": "a2ad97c913545dd97d4617f33ad30649a26f2f8707c1b6dfe1ee0cbab070a123",
+      "src/qwenpaw/app/channels/dingtalk/ai_card.py": "f69326a076577d88215780dc1adcda4991d7aa5008fc98854a985a929e60b2e2",
+      "src/qwenpaw/app/channels/dingtalk/channel.py": "73af0e07ea91e582007d579359e56a9e393ef1b95f9e4615a46e54de86ae17dd",
+      "src/qwenpaw/app/channels/dingtalk/constants.py": "0abfeb7d196adb89eef4186ec604a0605681987d345b855f8588fb0564f9c313",
+      "src/qwenpaw/app/channels/dingtalk/content_utils.py": "94ff42319f7cce997507f77183aee05137e20cbd576cbeff8c98618e73bb3cd4",
+      "src/qwenpaw/app/channels/dingtalk/handler.py": "bfbbc6bddd5e7e089897faed84fed1a2195b90d378556d40c86ac8bec053b18b",
+      "src/qwenpaw/app/channels/dingtalk/markdown.py": "952817271e401571f5b2b4ee58a6bf93dc4aaf58a81613e453fe9aaae3dff2d0",
+      "src/qwenpaw/app/channels/dingtalk/utils.py": "21e65194ba80ff896670801a81c439b29311facc1838ec5e1434e9e1d8b98527",
+      "src/qwenpaw/app/channels/discord_/__init__.py": "2ec9fe02e4a18c041038089432e12dce8db928b1d9e36fbd50b343269984fdb0",
+      "src/qwenpaw/app/channels/discord_/channel.py": "2b8574632bd519985f3071c57280de74e8dc73238dbef096fe3a685cc3239ef4",
+      "src/qwenpaw/app/channels/feishu/__init__.py": "13c4350584d6c43d9d99a40053016e403b6f0139adb53a691a40d1ce7089175b",
+      "src/qwenpaw/app/channels/feishu/card_handler.py": "59f73e122e7521cc422c8abc1ca63cc0e44619e763fee577a7f4fa6fa5509dda",
+      "src/qwenpaw/app/channels/feishu/card_templates.py": "9e2206efa2ee9d07be794dea60c465e8e8e146b7d6357c461a5d352b748de99e",
+      "src/qwenpaw/app/channels/feishu/cards/__init__.py": "97cf7d70507f9d8a09088df36b8788fb5b3bd0aa3c9d31fd0b26606714169efd",
+      "src/qwenpaw/app/channels/feishu/cards/context.py": "9e3f5af50d5a4465cc3161242d6c8207e304df1a7abdb76925787f18e42689cc",
+      "src/qwenpaw/app/channels/feishu/cards/dispatcher.py": "189d8adab1b5d83fae02c5e9cc13a27a30d713210e173f94dc2f7582770d76cc",
+      "src/qwenpaw/app/channels/feishu/cards/tool_guard.py": "3a7e400145f96d6103c8a9047340d0d3f82a3796f684107d12b2920340ee01f8",
+      "src/qwenpaw/app/channels/feishu/channel.py": "29760939ef3997d38cd2a78c217b15b18d485ff0cb57688a057a1f538d4502ab",
+      "src/qwenpaw/app/channels/feishu/constants.py": "fe1a32e32d1a98e1a00dcb7d679c62115bfb2d602c3c6bebc02ffe05f75bc657",
+      "src/qwenpaw/app/channels/feishu/utils.py": "4496d84db32754513221422cd7d53d4d307b5e73d72d9f5742e021708937fb6f",
+      "src/qwenpaw/app/channels/imessage/__init__.py": "23993def5a9f896a870b4ab5c4a90ecff7763a1b95b0c4473da1a2b0e773bb1a",
+      "src/qwenpaw/app/channels/imessage/channel.py": "b1f66793ae533cc1cde99e73bd6565a5837ef8a6a17727a7d81690a7c8dfbd53",
+      "src/qwenpaw/app/channels/manager.py": "991dd147a645602ac76566fd8c265a12906d807cdad2c78689b62127b985436c",
+      "src/qwenpaw/app/channels/matrix/__init__.py": "d949ade78a9f257f0108526624d7e8bbd43a4babf9cfdb9b97822634ec7a5938",
+      "src/qwenpaw/app/channels/matrix/channel.py": "c73c5e5a7a5fbe6a03310b674f316da16437f5f7e62244fecc867eccafb18c62",
+      "src/qwenpaw/app/channels/mattermost/__init__.py": "5f012c1d7e1d8b9f3175dfffb50a02d78368cb4af7337a93ec154aa2048ab7bc",
+      "src/qwenpaw/app/channels/mattermost/channel.py": "e679d940b3e3838642b7079340af7686299d4a1f95dd825fff52ecbe4ad7ab12",
+      "src/qwenpaw/app/channels/mqtt/__init__.py": "cd423cc149310210e261c361afe99cda0d54d6c5d214451940ee8196d6a87d9c",
+      "src/qwenpaw/app/channels/mqtt/channel.py": "9f9531e8f70ca3e4888b234264faa10538b713c3c3c16b39a5c14f9f4e5bbdc4",
+      "src/qwenpaw/app/channels/onebot/__init__.py": "86c541e9887be16c753588c8f2eb1c54b650fc8941cfb171974ea3443b3aa69c",
+      "src/qwenpaw/app/channels/onebot/channel.py": "19e0fc2a9fd839ce8f31e5e9c670653bacd6dd7ebd48217157ff8851d7e9476c",
+      "src/qwenpaw/app/channels/onebot/media.py": "ec1c18472f8ef186ff344e1389d97e1c876fc41bb52538e2f8736e5971793ae6",
+      "src/qwenpaw/app/channels/qq/__init__.py": "1fc3688198c3a4ca38189ade014d2c4e157de8902cf278d34df68aff34d4d91d",
+      "src/qwenpaw/app/channels/qq/cards/__init__.py": "6312549416a78ad7a79234dbc73c82795c44e634963e9cd9fb72e2ed77d02218",
+      "src/qwenpaw/app/channels/qq/cards/context.py": "e080313ca7c2e1a87d986340ef829e8b4a8152213e921351bc027adde63bd825",
+      "src/qwenpaw/app/channels/qq/cards/dispatcher.py": "beed303a146d2152fb7fffaa0717116ae03601197064fd804aa62cfcc96a992b",
+      "src/qwenpaw/app/channels/qq/cards/tool_guard.py": "28ee28f674863155f2c4251d7f5ec17809a4d525949d42e9433aebd7f4fbdaf8",
+      "src/qwenpaw/app/channels/qq/channel.py": "992231dffebaf9ba18785f4cdc8dffe3f5d965a69fa41b0b375793d7da2c16b7",
+      "src/qwenpaw/app/channels/qrcode_auth_handler.py": "d44e0b1d5b4e85d9097d602ae605882c00ec44008945340e80986fe1eba3ac40",
+      "src/qwenpaw/app/channels/registry.py": "c09e6bdc26f7b3efe3d0099c1498614cd0f41574e733081aa687ef5ee064ec2d",
+      "src/qwenpaw/app/channels/renderer.py": "dc48b9528eb23dfb7146e24fe10ea41dbeb4be4fbb15aa0c91e0c2fb37da66c8",
+      "src/qwenpaw/app/channels/schema.py": "9a895b810a44901dd575972eaab06fef77715d9c52b28f5cf957041459453d1a",
+      "src/qwenpaw/app/channels/sip/__init__.py": "eadadd4fcf1cf5a55094e09ba67cb19766434c5ead8a8872467a35e4102a7f63",
+      "src/qwenpaw/app/channels/sip/_audioop_compat.py": "074c25d535db9b912d05f5ececa88d2f0b43cc4b41fdf1ccffa5006fff559365",
+      "src/qwenpaw/app/channels/sip/backend.py": "afb583d6378dbaad984b3e132ce55fbc778e8ea359a01fb09da69513a3a61250",
+      "src/qwenpaw/app/channels/sip/livekit_backend.py": "51b1c34f6b7ff4770a2a576c2a3e92c6dfa3b43a83680c6b69d814daa858e235",
+      "src/qwenpaw/app/channels/sip/mini_registrar.py": "37063e77bcf08eb75c02483e0b88b657cf04cc1b1f6253da6b498123672daeee",
+      "src/qwenpaw/app/channels/sip/pyvoip_backend.py": "9da9d22af4c60194a7af812f960fe1e6249cad741713a5a37df8a7ad49ecec9f",
+      "src/qwenpaw/app/channels/sip/session.py": "5c9072615360a81725d033589c28013270130b667609e4a5d6c46d2d98f9ef7c",
+      "src/qwenpaw/app/channels/sip/sip_client.py": "9004ae9b60472fae1f096274e131f81def44029b0bd61da0b969ca5a2370c6ac",
+      "src/qwenpaw/app/channels/sip/stt_engine.py": "b124effbb320d2c6d79fe68dbef64e43948f34eace15343fccb3ebe6e0fb392a",
+      "src/qwenpaw/app/channels/sip/stt_tts.py": "bfe92eef66bbf0ddad4ae83c88c10c27a7b5cda875293bf840f25bc9e116cb8e",
+      "src/qwenpaw/app/channels/slack/__init__.py": "726e1b343023a2a865d9a127861183a3b5e15fb9e5e0fe2adb508661ef1f2cc8",
+      "src/qwenpaw/app/channels/slack/channel.py": "8400ee2b344cfd866e8db26256a0af11dabacf72fd780c5da3621e555093c180",
+      "src/qwenpaw/app/channels/slack/constants.py": "6437aa2f620248bf53da01128bc347658a79139b715b2c2b4e0793e56bbcdbcc",
+      "src/qwenpaw/app/channels/slack/format.py": "4aa46e6d508979f832023d5d39630496717587e050569f76338eeb69d776aa17",
+      "src/qwenpaw/app/channels/slack/handler.py": "c615e08638a17622aceebb12fa3a42ef1614f26005b8597cc4b1964d95d5baf2",
+      "src/qwenpaw/app/channels/slack/sender.py": "cc68219d99989704c306f860efb9fa8b78bf3538a9e94012eb3f6a48bcf0db05",
+      "src/qwenpaw/app/channels/slack/utils.py": "5ba6082948509973c3623e2fc143dffbd644c3557bc02c773687b1de45bfb7b3",
+      "src/qwenpaw/app/channels/telegram/__init__.py": "b0ad1b2a5322afc1649e415282838bbfd7aa3e169f8dc07befec59d364b3f7ea",
+      "src/qwenpaw/app/channels/telegram/cards/__init__.py": "6d0fa8f31cdfbf577fd3595f7f24932e565740dbc79800f22a7de6195ac60b56",
+      "src/qwenpaw/app/channels/telegram/cards/context.py": "d82e30396fb35e68e2327fc0da907a43bbee2c744ded5d140d60099a41b7c7e0",
+      "src/qwenpaw/app/channels/telegram/cards/dispatcher.py": "d83e815705b47895da80e02355cfd13a53a2c2158eafd5023d150133987c5160",
+      "src/qwenpaw/app/channels/telegram/cards/tool_guard.py": "7da7eb7f19ce9d829142ba1071ab1899162ed6f525d30841d4aaa1d56d951a6b",
+      "src/qwenpaw/app/channels/telegram/channel.py": "c08581a00991c8a7800ccd806eef1654cb8fcd2dce6602ad7907fc5974cfd395",
+      "src/qwenpaw/app/channels/telegram/format_html.py": "98be0a2d4ba10849abfb1c757994c6549261138f54c981b5de1f5083f9c1b852",
+      "src/qwenpaw/app/channels/unified_queue_manager.py": "8e2926cfda9f6397bafe7d732c43cb75f9b1df43841bb936a0ea0c903c0b8120",
+      "src/qwenpaw/app/channels/utils.py": "28a006d24ec0258fc2ee0c5d7079e731c4b1f5b094d825985a181dbd78683e46",
+      "src/qwenpaw/app/channels/voice/__init__.py": "b72ecace392696e91cd590d9d5b63664152db0ce90491df252f47868ed9a0181",
+      "src/qwenpaw/app/channels/voice/channel.py": "c4b17bbd04a9ea3f15eda2db30cd2bae64172457e07ed6a1e28a8a98ef65e64e",
+      "src/qwenpaw/app/channels/voice/conversation_relay.py": "30070fe2aa9e365efadcd56546759a68fe90a1990218e24b42981cc5ec4a2fe7",
+      "src/qwenpaw/app/channels/voice/session.py": "826c2e9ac23e3719dfecf2c55e871cd9810834c9692497267d85729e5abf9089",
+      "src/qwenpaw/app/channels/voice/twilio_manager.py": "09fc5d82a26ebbef98b5d8135177e848986b3c3508d713750e7b1cda71a01a49",
+      "src/qwenpaw/app/channels/voice/twiml.py": "9cba72013aa5782c39de8aae6720b2a00b7a9a831325a2fb5861fbbfabd537f2",
+      "src/qwenpaw/app/channels/wechat/__init__.py": "231373585438ecd1cfc05544c5c23fe40baa626c336daafd78ce8bba69c8daaa",
+      "src/qwenpaw/app/channels/wechat/channel.py": "186cbf98cb59d22cfdff0f6c9ba8c9f14c0d649ae243d1043861cb7281224d6c",
+      "src/qwenpaw/app/channels/wechat/client.py": "99a5b8a71aeaeb58b7044c69c74044f0b9b7e0bc0620383ac4ac6d2103e51ce6",
+      "src/qwenpaw/app/channels/wechat/utils.py": "1534fb3577a14bac4f9325b504d6d51d35550ff52aea055970ac3e92cf7defce",
+      "src/qwenpaw/app/channels/wecom/__init__.py": "f5bae04551563f6888e289f91a7ce2b87eb80d1565d64306511bef755970e85f",
+      "src/qwenpaw/app/channels/wecom/cards/__init__.py": "063412922140e31152717b94dda4d425684f04c0742df79a1de36278a5a07250",
+      "src/qwenpaw/app/channels/wecom/cards/context.py": "cbe2d38e53517555f48ba556be309287543e96f90e2a52371a7b239f7e63557f",
+      "src/qwenpaw/app/channels/wecom/cards/dispatcher.py": "f67b0d7833afaf0e5ba964441a1e4795243a897e98cd444947c1bf3a67915870",
+      "src/qwenpaw/app/channels/wecom/cards/tool_guard.py": "4534d20e05cf98e548938cad3609850b2e9c2c868884377406a3132a1d9e06d5",
+      "src/qwenpaw/app/channels/wecom/channel.py": "15d2f6847b247be1f7b9f6ea64b55262fe4afa4a28b5341f779db53b08d8234c",
+      "src/qwenpaw/app/channels/wecom/utils.py": "b4a0b648b0f0f48ce1a14505603c6f36e81812123084b4a9d2a508fff3619f22",
+      "src/qwenpaw/app/channels/xiaoyi/__init__.py": "2c5c3a1549984d500ea69c63ef6a1d2e89743f7c1fead55533c789c152298c3a",
+      "src/qwenpaw/app/channels/xiaoyi/auth.py": "5d3bcb6548cd33c8cc034166bbdf30c7fc748164dca6b84973f58215911104fc",
+      "src/qwenpaw/app/channels/xiaoyi/channel.py": "eb004af936e05b8ce4953581d08a170e2ae4e24821c8d1ef12a44ac4173e8d6a",
+      "src/qwenpaw/app/channels/xiaoyi/constants.py": "0699bc6e2b68469944d2402f4dfdcf961e3671d9a9b631becdf2e29d4a2b8e81",
+      "src/qwenpaw/app/channels/xiaoyi/utils.py": "4603e9afe8fa6e540624a428f0912c1b7df665df0b045e040f1804bbd1b18f59",
+      "src/qwenpaw/app/channels/yuanbao/__init__.py": "d16c4ceeed28a360eded30a93bbf7993c8692179c59c974f2c7f9f2e86e2b0d3",
+      "src/qwenpaw/app/channels/yuanbao/auth.py": "808a12859b25e94aff8331b17de78006b4ae8a1a430dcda59750d4c45830c8aa",
+      "src/qwenpaw/app/channels/yuanbao/channel.py": "b323bc8c9f7728b5d37821102fb0820f9f83c741b795672521770139d2a216e3",
+      "src/qwenpaw/app/channels/yuanbao/codec.py": "b851630d507f3204b1a5af78bab7f48e6c1b93dbb8b0d56802a9e306518ad802",
+      "src/qwenpaw/app/channels/yuanbao/constants.py": "7579fa67b6b783ed11e650002072428f9db3323b9062238280ca4fb857a6d065",
+      "src/qwenpaw/app/channels/yuanbao/media.py": "f367ed31e97ce9a554af91b6d5e418b5910a3ae5cd622a76656c7854d00414bd",
+      "src/qwenpaw/app/channels/yuanbao/utils.py": "8d0bfb6bdd3f9fb513180d2027004388b0eb92bdc5b94e7a323ba8c79e404a1e",
+      "src/qwenpaw/config/config.py": "467ce75afabed516847f55f3b663d6a0eca7a54efa0ec9582a4d780d4893cd4d"
+    }
+  }
+}

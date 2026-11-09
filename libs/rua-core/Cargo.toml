@@ -1,0 +1,41 @@
+[package]
+name = "rua-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Core types and error definitions for rua"
+publish = false
+autotests = false
+
+[dependencies]
+agent-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+subtle = "2"
+uuid.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "net", "io-util"] }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "unit_runtime"
+path = "tests/unit_runtime.rs"
+
+[[test]]
+name = "unit_identity"
+path = "tests/unit_identity.rs"
+
+[[test]]
+name = "unit_seed_manifest"
+path = "tests/unit_seed_manifest.rs"
+
+[[test]]
+name = "unit_token_estimate"
+path = "tests/unit_token_estimate.rs"

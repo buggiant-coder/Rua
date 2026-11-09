@@ -1,0 +1,53 @@
+[data-skin="pill"] {
+  --radius-xs: 9999px;
+  --radius-sm: 16px;
+  --radius-md: 32px;
+  --radius-lg: 48px;
+  --compact-control-radius: 10px;
+  --floating-surface-radius: 24px;
+  --floating-single-surface-radius: 28px;
+  --floating-item-radius: 10px;
+  --chat-origin-badge-radius: 6px;
+  --chat-inline-radius: var(--radius-full);
+  --chat-control-radius: var(--radius-full);
+  --chat-structure-radius: 24px;
+  --chat-media-radius: 24px;
+}
+
+[data-skin="pill"] .rua-btn {
+  border-radius: 9999px;
+}
+[data-skin="pill"] .rua-input {
+  border-radius: 9999px;
+}
+[data-skin="pill"] .rua-number-input-wrapper {
+  border-radius: 9999px;
+}
+[data-skin="pill"] .rua-number-input {
+  border-radius: 9999px;
+}
+[data-skin="pill"] .rua-number-input-steppers {
+  border-radius: 0 9999px 9999px 0;
+}
+[data-skin="pill"] .rua-number-input-step-up {
+  border-radius: 0 9999px 0 0;
+}
+[data-skin="pill"] .rua-number-input-step-down {
+  border-radius: 0 0 9999px 0;
+}
+[data-skin="pill"] .rua-tag {
+  border-radius: 9999px;
+}
+[data-skin="pill"] .rua-toggle-track {
+  border-radius: 9999px;
+}
+
+[data-skin="pill"] .stacked-list {
+  border-radius: var(--radius-md);
+}
+[data-skin="pill"] .rua-card {
+  border-radius: var(--radius-md);
+}
+[data-skin="pill"] .rua-infobox {
+  border-radius: var(--radius-md);
+}

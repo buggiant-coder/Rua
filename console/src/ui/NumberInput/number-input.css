@@ -1,0 +1,90 @@
+.rua-number-input-wrapper {
+  position: relative;
+  display: inline-flex;
+  width: 100%;
+}
+
+.rua-number-input {
+  height: var(--height-md);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  padding-right: 32px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--font-md);
+  font-family: var(--font-sans);
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+  transition: border-color 0.15s;
+  -moz-appearance: textfield;
+}
+
+.rua-number-input::-webkit-inner-spin-button,
+.rua-number-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.rua-number-input:focus {
+  border-color: var(--primary);
+}
+
+.rua-number-input::placeholder {
+  color: var(--text-mute);
+}
+
+.rua-number-input:disabled {
+  background: var(--bg-disabled);
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+.rua-number-input-steppers {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  overflow: hidden;
+}
+
+.rua-number-input-step-up,
+.rua-number-input-step-down {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.rua-number-input-step-up:hover,
+.rua-number-input-step-down:hover {
+  background: var(--surface-hover, rgba(0, 0, 0, 0.04));
+  color: var(--text);
+}
+
+.rua-number-input-step-up {
+  border-bottom: 1px solid var(--border);
+}
+
+.rua-number-input-step-up:disabled,
+.rua-number-input-step-down:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+.rua-number-input-step-up:disabled:hover,
+.rua-number-input-step-down:disabled:hover {
+  background: transparent;
+}

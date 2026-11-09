@@ -1,0 +1,47 @@
+[package]
+name = "rua-acp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+autotests = false
+
+[dependencies]
+agent-client-protocol = "1.3.0"
+rua-config = { workspace = true }
+rua-contract = { workspace = true }
+rua-core = { workspace = true }
+rua-task.workspace = true
+agent-types = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["compat"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = "3"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+uuid = { workspace = true }
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+async-trait = { workspace = true }
+agent-types = { workspace = true }
+rua-contract = { workspace = true }
+rua-core = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+
+[[test]]
+name = "client"
+path = "tests/client.rs"
+
+[[test]]
+name = "acp_server"
+path = "tests/acp_server.rs"
+
+[[test]]
+name = "acp_permissions"
+path = "tests/acp_permissions.rs"

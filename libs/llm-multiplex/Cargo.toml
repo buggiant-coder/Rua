@@ -1,0 +1,73 @@
+[package]
+name = "llm-multiplex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Multi-provider LLM streaming abstraction for rua"
+publish = false
+autotests = false
+
+[features]
+default = ["all-providers"]
+openai-compatible = []
+anthropic = []
+gemini = []
+ollama = []
+all-providers = ["openai-compatible", "anthropic", "gemini", "ollama"]
+
+[dependencies]
+agent-types.workspace = true
+rua-core.workspace = true
+rua-http.workspace = true
+rua-json-repair.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
+tower.workspace = true
+http = "1"
+hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
+tokio-util = { workspace = true, features = ["rt"] }
+uuid.workspace = true
+
+base64 = "0.22"
+bytes = "1"
+pin-project-lite = "0.2"
+async-stream = "0.3"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[[test]]
+name = "unit_capture"
+path = "tests/unit_capture.rs"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"
+
+[[test]]
+name = "contract_message_normalization"
+path = "tests/contract_message_normalization.rs"
+
+[[test]]
+name = "contract_stream_events"
+path = "tests/contract_stream_events.rs"
+
+[[test]]
+name = "contract_provider_errors"
+path = "tests/contract_provider_errors.rs"
+
+[[test]]
+name = "contract_provider_connections"
+path = "tests/contract_provider_connections.rs"
+
+[[test]]
+name = "contract_provider_requests"
+path = "tests/contract_provider_requests.rs"

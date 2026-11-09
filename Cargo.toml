@@ -1,0 +1,193 @@
+[workspace]
+resolver = "2"
+members = [
+    "libs/agent-types",
+    "libs/cell-store",
+    "libs/json-repair",
+    "libs/rua-core",
+    "libs/rua-contract",
+    "libs/rua-observability",
+    "libs/rua-http",
+    "libs/rua-text-search",
+    "libs/sqlite-vecstore",
+    "libs/llm-multiplex",
+    "libs/mcp-manager",
+    "crates/react-agent",
+    "crates/rua-config",
+    "crates/rua-provider",
+    "crates/rua-agent",
+  "crates/rua-tool",
+  "crates/rua-usage",
+    "crates/rua-mcp",
+    "crates/rua-memory",
+    "crates/rua-cron",
+    "crates/rua-session",
+    "crates/rua-chat",
+    "crates/rua-server",
+    "crates/rua-prompts",
+    "crates/rua-plugin",
+    "crates/rua-doctor",
+    "crates/rua-security",
+    "crates/rua-channel",
+    "crates/rua-command",
+    "crates/rua-voice",
+    "crates/rua-workspace",
+    "crates/rua-skills",
+    "crates/rua-skills-scanner",
+    "crates/rua-skills-hub",
+    "crates/rua-skills-market",
+    "crates/rua-local-model",
+    "crates/rua-cli",
+    "crates/rua-tunnel",
+    "crates/rua-plugin-runtime",
+    "crates/rua-i18n",
+    "crates/rua-pack-tool",
+    "crates/rua-device-network",
+    "crates/rua-project",
+    "crates/rua-sync",
+    "crates/rua-acp",
+    "crates/rua-task",
+    "vendor/iroh",
+    "vendor/iroh-blobs",
+    "vendor/iroh-docs",
+]
+exclude = ["vendor/swarm-discovery"]
+
+[workspace.package]
+version = "0.8.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.91"
+
+[workspace.dependencies]
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+md-5 = "0.10"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+tokio-util = "0.7"
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+sha2 = "0.10"
+arc-swap = "1"
+semver = "1"
+sysinfo = "0.32"
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+chromiumoxide = { version = "0.9", default-features = false }
+base64 = "0.22"
+rumqttc = "0.25.1"
+jni = "0.21"
+rand = "0.8"
+prost = "0.14.3"
+prost-build = "0.14.4"
+
+
+iroh = "1.0.0-rc.0"
+iroh-docs = "0.99.0"
+iroh-blobs = { version = "0.101", features = ["fs-store"] }
+iroh-gossip = { version = "0.99.0", features = ["net"] }
+blake3 = "1"
+age = { version = "0.11", features = ["armor"] }
+ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
+keyring = { version = "3.6", features = ["apple-native", "linux-native", "windows-native"] }
+spake2 = "0.4"
+qrcode = "0.14"
+rusqlite = { version = "0.37", features = ["bundled"] }
+rua-usage = { path = "crates/rua-usage" }
+
+
+axum = { version = "0.8", features = ["macros", "multipart", "ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "compression-gzip", "trace", "timeout", "fs", "limit", "set-header"] }
+anyhow = "1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "blocking", "multipart", "query", "form", "rustls"] }
+inventory = "0.3"
+hyper = "1"
+
+
+agent-types = { path = "libs/agent-types" }
+rua-json-repair = { path = "libs/json-repair" }
+rua-core = { path = "libs/rua-core" }
+cell-store = { path = "libs/cell-store" }
+rua-contract = { path = "libs/rua-contract" }
+rua-observability = { path = "libs/rua-observability" }
+rua-http = { path = "libs/rua-http" }
+rua-text-search = { path = "libs/rua-text-search" }
+sqlite-vecstore = { path = "libs/sqlite-vecstore" }
+llm-multiplex = { path = "libs/llm-multiplex" }
+mcp-manager = { path = "libs/mcp-manager" }
+react-agent = { path = "crates/react-agent" }
+rua-config = { path = "crates/rua-config" }
+rua-provider = { path = "crates/rua-provider" }
+rua-agent = { path = "crates/rua-agent" }
+rua-tool = { path = "crates/rua-tool" }
+rua-mcp = { path = "crates/rua-mcp" }
+rua-memory = { path = "crates/rua-memory" }
+rua-cron = { path = "crates/rua-cron" }
+rua-session = { path = "crates/rua-session" }
+rua-chat = { path = "crates/rua-chat" }
+rua-server = { path = "crates/rua-server" }
+rua-prompts = { path = "crates/rua-prompts" }
+rua-plugin = { path = "crates/rua-plugin" }
+rua-doctor = { path = "crates/rua-doctor" }
+rua-security = { path = "crates/rua-security" }
+rua-voice = { path = "crates/rua-voice" }
+rua-channel = { path = "crates/rua-channel" }
+rua-workspace = { path = "crates/rua-workspace" }
+rua-skills = { path = "crates/rua-skills" }
+rua-skills-scanner = { path = "crates/rua-skills-scanner" }
+rua-skills-hub = { path = "crates/rua-skills-hub" }
+rua-skills-market = { path = "crates/rua-skills-market" }
+rua-local-model = { path = "crates/rua-local-model" }
+rua-tunnel = { path = "crates/rua-tunnel" }
+rua-plugin-runtime = { path = "crates/rua-plugin-runtime" }
+rua-i18n = { path = "crates/rua-i18n" }
+rua-device-network = { path = "crates/rua-device-network" }
+rua-project = { path = "crates/rua-project" }
+rua-sync = { path = "crates/rua-sync" }
+rua-acp = { path = "crates/rua-acp" }
+rua-task = { path = "crates/rua-task" }
+
+
+
+
+
+
+
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+codegen-units = 16
+
+[profile.release-android]
+inherits = "release"
+lto = "thin"
+panic = "unwind"
+opt-level = 3
+strip = "symbols"
+codegen-units = 16
+
+[patch.crates-io]
+iroh = { path = "vendor/iroh" }
+iroh-blobs = { path = "vendor/iroh-blobs" }
+iroh-docs = { path = "vendor/iroh-docs" }
+iroh-relay = { path = "libs/iroh-relay" }
+
+swarm-discovery = { path = "vendor/swarm-discovery" }

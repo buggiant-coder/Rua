@@ -1,0 +1,63 @@
+[package]
+name = "rua-desktop"
+version = "0.8.0"
+description = "Rua Desktop Shell"
+authors = ["Rua Contributors"]
+license = "Apache-2.0"
+repository = "https://github.com/buggiant-coder/Rua"
+edition = "2021"
+rust-version = "1.91"
+default-run = "rua-desktop"
+
+[lib]
+name = "rua_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+sha2 = "0.10"
+serde_json = "1"
+tauri-build = { version = "2.5.6", features = [] }
+
+[dependencies]
+rua-core = { path = "../../libs/rua-core" }
+tokio-util = "0.7"
+base64 = "0.22"
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tar = "0.4"
+flate2 = "1"
+zip = { version = "4.6", default-features = false, features = ["deflate"] }
+tempfile = "3"
+sysinfo = "0.32"
+tauri = { version = "2.11.5", features = ["tray-icon"] }
+tauri-plugin-dialog = "2.7.2"
+tauri-plugin-notification = "2.3.3"
+tauri-plugin-single-instance = "2.4.3"
+tauri-plugin-shell = "2.3.5"
+tauri-plugin-updater = "2.10.1"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+uuid = { version = "1", features = ["v4"] }
+notify-rust = "4.18"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "user_notification"
+path = "tests/user_notification.rs"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAlert", "NSApplication", "NSButton", "NSControl", "NSResponder", "NSView", "NSMenu", "NSMenuItem"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSUserDefaults"] }
+
+[workspace]
+
+# AppKit requires the process main thread rather than libtest worker threads.
+[[test]]
+name = "text_input_policy"
+path = "tests/text_input_policy.rs"
+harness = false

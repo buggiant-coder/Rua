@@ -1,0 +1,102 @@
+@accent: var(--primary);
+
+@accent-bg-dark: var(--primary-bg);
+@accent-press-dark: var(--primary-hov);
+@accent-bg-light: var(--primary-hov);
+@accent-press-light: var(--primary-hov);
+@dark-bg: var(--bg);
+@light-bg: var(--bg);
+@hairline-light: var(--border-soft);
+@hairline-dark: rgba(255, 255, 255, 0.08);
+@text-light: var(--text-2);
+@text-dark: var(--text-2);
+@muted-light: var(--text-mute);
+@muted-dark: var(--text-mute);
+
+.root {
+  height: var(--rua-mobile-visual-height, 100dvh);
+  width: 100vw;
+  display: flex;
+  flex-direction: column;
+  background: @light-bg;
+  color: @text-light;
+  overflow: hidden;
+
+  :global(html.dark-mode) & {
+    background: @dark-bg;
+    color: @text-dark;
+  }
+}
+
+.floatingHamburger {
+  position: fixed;
+  top: 4px;
+  left: 0;
+  z-index: 1000;
+  width: 36px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  color: @text-light;
+  padding: 0;
+  transition: background 0.15s ease;
+
+  > svg {
+    transform: translateX(1px);
+  }
+
+  &:active {
+    background: @accent-press-light;
+  }
+
+  :global(html.dark-mode) & {
+    color: @text-dark;
+    &:active {
+      background: @accent-press-dark;
+    }
+  }
+}
+
+.drawerRoot {
+  :global(.rua-ui-drawer) {
+    background: @light-bg;
+  }
+  :global(.rua-ui-drawer-body) {
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  :global(html.dark-mode) & {
+    :global(.rua-ui-drawer) {
+      background: @dark-bg;
+    }
+  }
+}
+
+.content {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: inherit;
+  position: relative;
+
+  &::-webkit-scrollbar {
+    width: 0;
+    background: transparent;
+  }
+}
+
+.suspenseFallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}

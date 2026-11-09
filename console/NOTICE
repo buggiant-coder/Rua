@@ -1,0 +1,14 @@
+Rua Console
+
+The initial Rua Console source import included portions of QwenPaw:
+
+  Copyright 2025 The QwenPaw Authors
+  Licensed under the Apache License, Version 2.0.
+
+The Rua Console has since been substantially modified. New Rua-owned
+components and modifications are Copyright 2026 The Rua Authors and are
+licensed under the Apache License, Version 2.0.
+
+This notice applies to files retained from or derived from that initial
+import. It does not claim that every current file in this directory originated
+in QwenPaw.

@@ -1,0 +1,224 @@
+.rua-ui-select {
+  display: inline-flex;
+  align-items: center;
+  height: var(--height-md);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--font-md);
+  font-family: var(--font-sans);
+  cursor: pointer;
+  box-sizing: border-box;
+  transition: border-color 0.15s;
+  width: 100%;
+  position: relative;
+}
+
+.rua-ui-select:hover {
+  border-color: var(--primary);
+}
+
+.rua-ui-select--open {
+  border-color: var(--primary);
+}
+
+.rua-ui-select--disabled {
+  background: var(--bg-disabled);
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+.rua-ui-select--disabled:hover {
+  border-color: var(--border);
+}
+
+.rua-ui-select-selector {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  min-height: calc(var(--height-md) - 2px);
+  overflow: hidden;
+  position: relative;
+}
+
+.rua-ui-select-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.rua-ui-select-search {
+  flex: 1;
+  min-width: 40px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--font-md);
+  font-family: var(--font-sans);
+  padding: 0;
+  height: 22px;
+}
+
+.rua-ui-select-search::placeholder {
+  color: var(--text-mute);
+}
+
+.rua-ui-select-value {
+  position: absolute;
+  left: var(--space-3);
+  right: 0;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.rua-ui-select-placeholder {
+  color: var(--text-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.rua-ui-select-suffix {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding-right: var(--space-2);
+  flex-shrink: 0;
+}
+
+.rua-ui-select-arrow {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--text-3);
+  transition:
+    transform 0.2s,
+    color 0.15s;
+}
+
+.rua-ui-select-arrow--open {
+  transform: rotate(180deg);
+  color: var(--primary);
+}
+
+.rua-ui-select-clear {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-3);
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.rua-ui-select-clear:hover {
+  opacity: 1;
+}
+
+.rua-ui-select-loading {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-soft);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: rua-select-spin 0.6s linear infinite;
+}
+
+@keyframes rua-select-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.rua-ui-select-dropdown {
+  z-index: 1060;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--floating-surface-radius, var(--radius-lg));
+  box-shadow: var(--shadow-2xl);
+  padding: var(--space-1) 0;
+}
+
+.rua-ui-select-dropdown--single {
+  border-radius: var(
+    --floating-single-surface-radius,
+    var(--floating-surface-radius, var(--radius-lg))
+  );
+}
+
+.rua-ui-select-options {
+  max-height: 256px;
+  overflow-y: auto;
+}
+
+.rua-ui-select-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  margin: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-sm, 14px);
+  line-height: 1.5;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.rua-ui-select-option:hover {
+  background: var(--primary-bg);
+}
+
+.rua-ui-select-option--selected {
+  color: var(--primary);
+  font-weight: 500;
+}
+
+.rua-ui-select-option--disabled {
+  color: var(--text-4, var(--text-3));
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.rua-ui-select-option--disabled:hover {
+  background: transparent;
+}
+
+.rua-ui-select-option-check {
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.rua-ui-select-option-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rua-ui-select-empty {
+  padding: var(--space-4) var(--space-3);
+  text-align: center;
+  color: var(--text-3);
+  font-size: var(--font-sm, 14px);
+}
+
+@keyframes rua-select-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

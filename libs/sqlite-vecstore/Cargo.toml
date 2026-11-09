@@ -1,0 +1,16 @@
+[package]
+name = "sqlite-vecstore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "SQLite + FTS5 low-level text and vector index (generic, no Rua dependency)"
+publish = false
+
+[dependencies]
+rusqlite = { version = "0.37", features = ["bundled", "column_decltype"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true

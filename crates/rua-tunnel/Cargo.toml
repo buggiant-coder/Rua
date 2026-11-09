@@ -1,0 +1,28 @@
+[package]
+name = "rua-tunnel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Cloudflare tunnel binary management for rua"
+publish = false
+autotests = false
+
+[dependencies]
+rua-http.workspace = true
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+flate2 = "1"
+tar = "0.4"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+wiremock = "0.6"
+tempfile = "3"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

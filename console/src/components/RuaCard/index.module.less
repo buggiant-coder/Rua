@@ -1,0 +1,148 @@
+.card {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+
+  :global(.stacked-list) & {
+    border: none;
+    border-radius: inherit;
+  }
+}
+
+.card.bare,
+.bare.card {
+  background: transparent !important;
+  background-color: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+
+  &:hover {
+    background: transparent !important;
+    background-color: transparent !important;
+    border: none !important;
+  }
+}
+
+.hoverable {
+  cursor: pointer;
+
+  &:hover {
+    background: var(--card-hover);
+  }
+}
+
+.selected {
+  border-color: var(--primary);
+  background: var(--primary-bg);
+}
+
+.disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+
+  min-height: 32px;
+}
+
+.icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.titleWrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.tags {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.actions {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  :global(.rua-btn) {
+    height: 32px;
+    min-height: 32px;
+    padding: 0 10px;
+    border-radius: var(--radius-sm);
+  }
+
+  :global(.rua-btn.rua-btn-icon-only) {
+    width: 32px;
+    padding: 0;
+  }
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 4px;
+
+  :global(.rua-btn) {
+    flex: 1;
+  }
+
+  :global(.rua-ui-popconfirm-trigger) {
+    flex: 1;
+    display: flex;
+
+    :global(.rua-btn) {
+      width: 100%;
+    }
+  }
+}
+
+:global(.dark-mode) {
+  .hoverable:hover {
+    border-color: var(--text-mute);
+  }
+}

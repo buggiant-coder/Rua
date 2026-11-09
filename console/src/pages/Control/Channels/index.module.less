@@ -1,0 +1,369 @@
+.pageHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: relative;
+  padding: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.breadcrumbHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  flex: 1;
+}
+
+.breadcrumbParent {
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+.breadcrumbSeparator {
+  color: var(--text-mute);
+  margin: 0 4px;
+}
+
+.breadcrumbCurrent {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 20px;
+}
+
+.title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.description {
+  color: var(--text-3);
+  font-size: 14px;
+  margin: 0;
+  display: none;
+}
+
+.headerControls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.searchInput {
+  width: 240px;
+}
+
+.loading {
+  text-align: center;
+  padding: 60px;
+}
+
+.loadingText {
+  color: var(--text-3);
+}
+
+.filterRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px 0;
+}
+
+.filterInput {
+  flex: 1 1 auto;
+  min-width: 80px;
+  max-width: 280px;
+}
+
+.sortOrderBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: 16px;
+  transition: all 0.2s;
+
+  &:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--card-hover);
+  }
+
+  &:disabled {
+    color: var(--text-disabled);
+    cursor: not-allowed;
+  }
+}
+
+@media (max-width: 720px) {
+  .filterRow {
+    padding: 10px 12px 0;
+    gap: 6px;
+  }
+
+  .filterInput {
+    flex: 1 1 auto;
+    max-width: none;
+    min-width: 0;
+  }
+}
+
+.emptyState {
+  padding: 60px 16px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 14px;
+}
+
+.channelsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+  padding: 16px;
+}
+
+.channelCard {
+  height: 138px;
+}
+
+.cardTopSection {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.channelIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  color: var(--primary);
+  flex-shrink: 0;
+
+  img {
+    border-radius: var(--radius-md);
+    object-fit: cover;
+  }
+}
+
+.statusContainer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  flex-shrink: 0;
+  margin-left: auto;
+  align-self: flex-start;
+}
+
+.statusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+
+  &.enabled {
+    background-color: var(--success-fg);
+  }
+
+  &.disabled {
+    background-color: var(--border);
+  }
+}
+
+.statusText {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: normal;
+  line-height: 19px;
+  letter-spacing: normal;
+
+  &.enabled {
+    color: var(--success-fg);
+  }
+
+  &.disabled {
+    color: var(--text-3);
+  }
+}
+
+.cardMiddleSection {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cardTitle {
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 24px;
+  letter-spacing: normal;
+  margin: 12px 0;
+}
+
+.builtinTag {
+  color: var(--text-3);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  padding: 0px 4px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
+  letter-spacing: normal;
+  margin-left: 12px;
+}
+
+.customTag {
+  color: var(--text-3);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  padding: 0px 4px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: normal;
+  line-height: 16px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-left: 12px;
+}
+
+.cardBottomSection {
+  margin-bottom: 12px;
+}
+
+.cardDescription {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cardFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: auto;
+}
+
+.cardHint {
+  font-size: 11px;
+  color: var(--text-disabled);
+}
+
+.drawerTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dingtalkDocBtn {
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+.formActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.formTopActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.drawerHeaderActions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.aclManualForm {
+  display: grid;
+  grid-template-columns:
+    minmax(96px, 1fr) minmax(120px, 1fr) minmax(120px, 1fr) minmax(120px, 1fr)
+    auto auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.aclToolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.aclUserCell {
+  display: grid;
+  grid-template-columns: minmax(88px, 1fr) minmax(120px, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.aclRowActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 900px) {
+  .aclManualForm {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .aclToolbar,
+  .aclRowActions {
+    align-items: stretch;
+  }
+}
+
+:global(.dark-mode) {
+  .breadcrumbSeparator {
+    color: var(--border);
+  }
+
+  .channelIcon {
+    background: var(--border-soft);
+    color: var(--text-2);
+  }
+
+  .builtinTag,
+  .customTag {
+    background: var(--border-soft);
+  }
+
+  .cardHint {
+    color: var(--text-mute);
+  }
+
+  .drawerHeaderActions {
+    .cancelBtn {
+      color: var(--text-2);
+    }
+  }
+}

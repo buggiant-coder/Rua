@@ -1,0 +1,103 @@
+.heartbeatPage {
+  :global {
+    .rua-spark-card-wrapper {
+      padding: 0 !important;
+    }
+
+    .rua-card {
+      padding: 16px !important;
+      padding-bottom: 0 !important;
+    }
+  }
+}
+
+.heartbeatContent {
+  padding: 0 20px;
+  margin-top: 16px;
+}
+
+.pageHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: relative;
+  padding: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.breadcrumbHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  flex: 1;
+}
+
+.breadcrumbParent {
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+.breadcrumbSeparator {
+  color: var(--text-mute);
+  margin: 0 4px;
+}
+
+.breadcrumbCurrent {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 20px;
+}
+
+.title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.description {
+  color: var(--text-3);
+  font-size: 14px;
+  margin: 0;
+  display: none;
+}
+
+.card {
+  max-width: 100%;
+}
+
+.everyField {
+}
+
+.everyRow {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.everyNumber {
+  width: 120px;
+}
+
+.everyUnit {
+  min-width: 100px;
+}
+
+.formActions {
+  display: flex;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.activeHoursRow {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+:global(.dark-mode) {
+  .breadcrumbSeparator {
+    color: var(--border);
+  }
+}

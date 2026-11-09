@@ -1,0 +1,310 @@
+.sessionsPage {
+  :global {
+    .rua-spark-card-wrapper {
+      padding: 0 !important;
+    }
+  }
+}
+
+.body {
+  :global {
+    .rua-spark-card-wrapper {
+      padding: 0 !important;
+    }
+  }
+}
+
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.selectionCount {
+  color: var(--text-2);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.filterRow {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px 0;
+}
+
+.filterBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.filterLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.searchInput {
+  flex: 1 1 auto;
+  min-width: 80px;
+  max-width: 280px;
+}
+
+.filterSelect {
+  width: 140px;
+  flex-shrink: 0;
+}
+
+.sortOrderBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: 16px;
+  transition: all 0.2s;
+
+  &:hover {
+    color: var(--text);
+    background: var(--card-hover);
+  }
+}
+
+.loading {
+  text-align: center;
+  padding: 60px;
+}
+
+.loadingText {
+  color: var(--text-3);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 16px;
+  background: var(--surface);
+}
+
+.paginationRow {
+  display: flex;
+  justify-content: center;
+  padding: 4px 16px 20px;
+}
+
+.listItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--surface);
+  transition: background 0.15s ease;
+}
+
+.listItemSelected {
+  background: var(--primary-bg) !important;
+}
+
+.listItemCheckbox {
+  flex-shrink: 0;
+}
+
+.listItemMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.listItemTopRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.sessionName {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  min-width: 0;
+}
+
+.idChip {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-3);
+  background: var(--bg-disabled);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+  line-height: 1.5;
+}
+
+.channelTag {
+  margin: 0;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.listItemMeta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+
+.metaItem {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+}
+
+.metaLabel {
+  color: var(--text-mute);
+  font-size: 11px;
+}
+
+.metaValue {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.metaDot {
+  color: var(--text-mute);
+}
+
+.listItemActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 720px) {
+  .headerRight {
+    width: 100%;
+    gap: 8px;
+  }
+
+  .filterRow {
+    padding: 10px 12px 0;
+  }
+
+  .filterBar {
+    gap: 6px;
+  }
+
+  .filterLeft {
+    gap: 6px;
+  }
+
+  .filterInput {
+    flex: 1 1 100%;
+    max-width: none;
+    min-width: 0;
+  }
+
+  .filterSelect {
+    width: 120px;
+    flex-shrink: 0;
+    max-width: none;
+    min-width: 0;
+  }
+
+  .list {
+    margin: 12px;
+  }
+
+  .listItem {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: start;
+    column-gap: 10px;
+    row-gap: 0;
+    padding: 12px;
+    flex-wrap: nowrap;
+  }
+
+  .listItemCheckbox {
+    grid-column: 1;
+    align-self: center;
+  }
+
+  .listItemMain {
+    grid-column: 2;
+    flex: initial;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    overflow: hidden;
+  }
+
+  .listItemTopRow {
+    flex-wrap: nowrap;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .sessionName {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 13px;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+
+  .idChip {
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+
+  .channelTag {
+    flex-shrink: 0;
+  }
+
+  .listItemMeta {
+    font-size: 11px;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+
+  .metaLabel {
+    font-size: 10px;
+  }
+
+  .metaValue {
+    font-size: 11px;
+  }
+
+  .listItemActions {
+    grid-column: 3;
+    align-self: center;
+    flex-shrink: 0;
+  }
+}

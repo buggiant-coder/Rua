@@ -1,0 +1,17 @@
+[package]
+name = "rua-pack-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Ed25519 signing tool for rua pack releases"
+publish = false
+
+[[bin]]
+name = "rua-pack-tool"
+path = "src/main.rs"
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+base64.workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "rua-text-search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Shared native text search primitives for Rua"
+publish = false
+autotests = false
+
+[dependencies]
+grep-matcher = "0.1"
+grep-regex = "0.1"
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"
