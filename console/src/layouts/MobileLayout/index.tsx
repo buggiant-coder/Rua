@@ -67,7 +67,8 @@ export default function MobileLayout() {
       <button
         type="button"
         className={styles.floatingHamburger}
-        onClick={() => setDrawerLocationKey(location.key)}
+        onClick={() => setDrawerLocationKey(drawerOpen ? null : location.key)}
+        aria-expanded={drawerOpen}
         aria-label="menu"
       >
         <Menu size={22} />

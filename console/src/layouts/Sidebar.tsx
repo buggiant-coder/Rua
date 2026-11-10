@@ -17,9 +17,10 @@ export default function Sidebar({
 }: SidebarProps) {
   return (
     <aside
-      hidden={!open}
+      {...(!open ? { inert: "" } : {})}
+      aria-hidden={!open}
       id="desktop-navigation"
-      className={styles.sider}
+      className={`${styles.sider} ${!open ? styles.siderCollapsed : ""}`}
       aria-label="navigation"
     >
       <NavigationPanel location={location} onNavigate={onNavigate} />

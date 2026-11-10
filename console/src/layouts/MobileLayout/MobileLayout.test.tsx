@@ -170,9 +170,7 @@ describe("MobileLayout", () => {
     vi.clearAllMocks();
     sessionStorage.clear();
     document.documentElement.classList.remove("mobile-mode");
-    document.documentElement.style.removeProperty(
-      "--rua-mobile-visual-height",
-    );
+    document.documentElement.style.removeProperty("--rua-mobile-visual-height");
     Object.defineProperty(window, "visualViewport", {
       configurable: true,
       value: undefined,
@@ -250,6 +248,18 @@ describe("MobileLayout", () => {
     expect(screen.getByText("SyncNowButton")).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "Close drawer" }));
+    expect(
+      screen.queryByRole("complementary", { name: "mobile drawer" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("closes the drawer when the menu is tapped again", () => {
+    renderMobileLayout();
+    const menu = screen.getByRole("button", { name: "menu" });
+    fireEvent.click(menu);
+    expect(menu).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(menu);
+    expect(menu).toHaveAttribute("aria-expanded", "false");
     expect(
       screen.queryByRole("complementary", { name: "mobile drawer" }),
     ).not.toBeInTheDocument();

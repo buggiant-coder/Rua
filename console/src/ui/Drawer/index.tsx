@@ -88,9 +88,14 @@ function Drawer({
   useEffect(() => {
     if (open) {
       setMounted(true);
-      requestAnimationFrame(() =>
-        requestAnimationFrame(() => setVisible(true)),
-      );
+      let secondFrame = 0;
+      const firstFrame = requestAnimationFrame(() => {
+        secondFrame = requestAnimationFrame(() => setVisible(true));
+      });
+      return () => {
+        cancelAnimationFrame(firstFrame);
+        cancelAnimationFrame(secondFrame);
+      };
     } else {
       setVisible(false);
       const timer = setTimeout(() => setMounted(false), 200);
@@ -148,9 +153,7 @@ function Drawer({
           </div>
         )}
         <div className="rua-ui-drawer-body">{children}</div>
-        {footer != null && (
-          <div className="rua-ui-drawer-footer">{footer}</div>
-        )}
+        {footer != null && <div className="rua-ui-drawer-footer">{footer}</div>}
       </div>
     </div>,
     document.body,

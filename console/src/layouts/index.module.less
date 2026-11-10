@@ -78,11 +78,25 @@
 }
 
 .sider {
-  &[hidden] {
-    display: none;
-  }
   width: 272px;
-  min-width: 272px;
+  min-width: 0;
+  box-sizing: border-box;
+  transition:
+    width 0.24s ease,
+    visibility 0s;
+
+  > * {
+    width: 271px;
+  }
+
+  &.siderCollapsed {
+    width: 0;
+    border-right-width: 0;
+    visibility: hidden;
+    transition:
+      width 0.24s ease,
+      visibility 0s 0.24s;
+  }
   background: var(--bg);
   overflow: hidden;
   height: 100%;
@@ -107,7 +121,9 @@
   background: transparent;
   color: var(--text-2);
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition:
+    background 0.15s ease,
+    left 0.24s ease;
 
   > svg {
     transform: translateX(1px);
