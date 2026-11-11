@@ -92,6 +92,7 @@ fn add_remote_peer(state: &AppState) {
             last_seen_ms: 1,
             direct_addrs: Vec::new(),
         }],
+        ..Default::default()
     };
     let sync_dir = state.rua_root.join("sync");
     std::fs::create_dir_all(&sync_dir).expect("sync dir");
@@ -100,6 +101,13 @@ fn add_remote_peer(state: &AppState) {
         serde_json::to_vec_pretty(&device_list).expect("serialize device list"),
     )
     .expect("write device list");
+}
+
+fn remote_peer_node_id(state: &AppState) -> String {
+    let list = rua_sync::control_store::SyncControlStore::from_data_dir(&state.rua_root)
+        .read_device_list()
+        .expect("device list");
+    hex::encode(list.devices[0].public_key)
 }
 
 fn author(byte: u8) -> AuthorId {
@@ -293,6 +301,8 @@ async fn diagnostics_reports_configured_policy_effective_policy_and_runtime_stat
 async fn diagnostics_reports_syncing_when_transport_cycle_is_active() {
     let (app, _tmp, state) = build_app(ServerProfile::Desktop);
     enable_sync(&app).await;
+    add_remote_peer(&state);
+    let active_peer = remote_peer_node_id(&state);
 
     let sync_dir = state.rua_root.join("sync");
     std::fs::create_dir_all(&sync_dir).expect("sync dir");
@@ -301,7 +311,7 @@ async fn diagnostics_reports_syncing_when_transport_cycle_is_active() {
         serde_json::to_vec_pretty(&SyncTransportStatsState {
             active_cycle: Some(SyncTransportActiveCycle {
                 started_at_ms: 12_000,
-                peer_node_id: "peer-active".to_string(),
+                peer_node_id: active_peer.clone(),
             }),
             ..Default::default()
         })
@@ -317,7 +327,7 @@ async fn diagnostics_reports_syncing_when_transport_cycle_is_active() {
     assert_eq!(body["progress"]["is_caught_up"], false);
     assert_eq!(
         body["transport"]["active_cycle"]["peer_node_id"],
-        "peer-active"
+        active_peer
     );
 }
 
@@ -582,12 +592,13 @@ async fn diagnostics_reports_needs_attention_for_failed_last_cycle() {
     let (app, _tmp, state) = build_app(ServerProfile::Desktop);
     enable_sync(&app).await;
     add_remote_peer(&state);
+    let failed_peer = remote_peer_node_id(&state);
 
     record_transport_cycle(
         &state.rua_root.join("sync"),
         SyncTransportCycleStats {
             completed_at_ms: 10_000,
-            peer_node_id: "peer-failed".to_string(),
+            peer_node_id: failed_peer,
             status: SyncTransportCycleStatus::Failure,
             error: Some("timeout".to_string()),
             failure_kind: Some(SyncTransportFailureKind::Internal),
@@ -621,12 +632,13 @@ async fn diagnostics_reports_waiting_for_device_when_peer_is_unavailable() {
     let (app, _tmp, state) = build_app(ServerProfile::Desktop);
     enable_sync(&app).await;
     add_remote_peer(&state);
+    let offline_peer = remote_peer_node_id(&state);
 
     record_transport_cycle(
         &state.rua_root.join("sync"),
         SyncTransportCycleStats {
             completed_at_ms: 10_000,
-            peer_node_id: "peer-offline".to_string(),
+            peer_node_id: offline_peer,
             status: SyncTransportCycleStatus::Failure,
             error: Some("peer unreachable: connection refused".to_string()),
             failure_kind: Some(SyncTransportFailureKind::PeerUnavailable),
@@ -732,4 +744,247 @@ async fn desktop_lifecycle_background_keeps_runtime_active_in_diagnostics() {
     assert_eq!(body["background_grace"]["pending"], false);
     assert_eq!(body["warm_suspended"], false);
     assert!(state.sync_enabled.load(Ordering::SeqCst));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diagnostics_excludes_nonmember_transport_history_from_current_network_totals() {
+    let (app, _tmp, state) = build_app(ServerProfile::Desktop);
+    enable_sync(&app).await;
+    state.sync_runtime.shutdown_unavailable().await;
+    add_remote_peer(&state);
+    let sync_dir = state.rua_root.join("sync");
+    let list = rua_sync::control_store::SyncControlStore::from_sync_dir(&sync_dir)
+        .read_device_list()
+        .unwrap();
+    let current_peer = hex::encode(list.devices[0].public_key);
+    let unrelated_peer = hex::encode([97; 32]);
+    let raw = json!({
+        "rolling": {
+            "cycles": 26_802, "failures": 13_601,
+            "events_received": 900, "events_sent": 800,
+            "direct_tx_bytes": 10_000, "direct_rx_bytes": 20_000,
+            "relay_tx_bytes": 30_000, "relay_rx_bytes": 40_000
+        },
+        "peers": {
+            current_peer.clone(): {
+                "cycles": 2, "failures": 1, "direct_bytes": 300, "relay_bytes": 30
+            },
+            unrelated_peer.clone(): {
+                "cycles": 26_800, "failures": 13_600,
+                "direct_bytes": 29_700, "relay_bytes": 69_970
+            }
+        }
+    });
+    std::fs::write(
+        sync_dir.join("transport_stats.json"),
+        serde_json::to_vec_pretty(&raw).unwrap(),
+    )
+    .unwrap();
+
+    let response = request(&app, Method::GET, "/api/sync/diagnostics", None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = read_json(response).await;
+    let transport = &body["transport"];
+    assert_eq!(transport["rolling"]["cycles"], 2);
+    assert_eq!(transport["rolling"]["failures"], 1);
+    for metric in [
+        "events_received",
+        "events_sent",
+        "direct_tx_bytes",
+        "direct_rx_bytes",
+        "relay_tx_bytes",
+        "relay_rx_bytes",
+    ] {
+        assert_eq!(
+            transport["rolling"][metric], 0,
+            "unattributed legacy {metric}"
+        );
+    }
+    assert_eq!(transport["peers"][&current_peer]["direct_bytes"], 300);
+    assert_eq!(transport["peers"][&current_peer]["relay_bytes"], 30);
+    assert!(transport["peers"].get(&unrelated_peer).is_none());
+    let retained: Value =
+        serde_json::from_slice(&std::fs::read(sync_dir.join("transport_stats.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        retained, raw,
+        "projection must preserve the raw diagnostic evidence"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diagnostics_preserves_all_legacy_metrics_when_all_recorded_peers_are_members() {
+    let (app, _tmp, state) = build_app(ServerProfile::Desktop);
+    enable_sync(&app).await;
+    state.sync_runtime.shutdown_unavailable().await;
+    add_remote_peer(&state);
+    let sync_dir = state.rua_root.join("sync");
+    let list = rua_sync::control_store::SyncControlStore::from_sync_dir(&sync_dir)
+        .read_device_list()
+        .unwrap();
+    let current_peer = hex::encode(list.devices[0].public_key);
+    let rolling = json!({
+        "cycles": 2, "failures": 1, "events_received": 7, "events_sent": 11,
+        "direct_tx_bytes": 100, "direct_rx_bytes": 200,
+        "relay_tx_bytes": 10, "relay_rx_bytes": 20
+    });
+    let raw = json!({
+        "rolling": rolling.clone(),
+        "peers": { current_peer.clone(): {
+            "cycles": 2, "failures": 1, "direct_bytes": 300, "relay_bytes": 30
+        }}
+    });
+    std::fs::write(
+        sync_dir.join("transport_stats.json"),
+        serde_json::to_vec_pretty(&raw).unwrap(),
+    )
+    .unwrap();
+
+    let response = request(&app, Method::GET, "/api/sync/diagnostics", None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = read_json(response).await;
+    assert_eq!(body["transport"]["rolling"], rolling);
+    assert_eq!(body["transport"]["peers"][&current_peer]["cycles"], 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial(device_network_lifecycle)]
+async fn warm_suspended_membership_preserves_durable_binding_without_reviving_runtime() {
+    let (app, _tmp, state) = build_app(ServerProfile::MobileApk);
+    enable_sync(&app).await;
+    add_remote_peer(&state);
+    wait_for_no_active_repair(&state).await;
+    let before = read_json(request(&app, Method::GET, "/api/sync/status", None).await).await;
+    assert_eq!(before["membership"]["state"], "bound");
+    let namespace = before["membership"]["namespace_id"].clone();
+    let sync_dir = state.rua_root.join("sync");
+    let disk_secret_before = std::fs::read(sync_dir.join("network_secret.key")).unwrap();
+    let device_before = std::fs::read(state.rua_root.join("device_identity.json")).unwrap();
+
+    // Exercise the real mobile background/suspension path with zero grace,
+    // keeping this lifecycle regression independent of the 60-second default.
+    let policy = request(
+        &app,
+        Method::PUT,
+        "/api/sync/power-policy",
+        Some(json!({
+            "mode":"custom", "periodic_interval_secs":600,
+            "background_flush_grace_secs":0,
+            "allow_background_runtime":false,
+            "allow_background_scheduled_sync":false
+        })),
+    )
+    .await;
+    assert_eq!(policy.status(), StatusCode::OK);
+    let background = request(
+        &app,
+        Method::POST,
+        "/api/platform/lifecycle",
+        Some(json!({"event":"background"})),
+    )
+    .await;
+    assert_eq!(background.status(), StatusCode::OK);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if state.sync_node.lock().await.is_none()
+                && state.device_network.lock().await.is_none()
+                && state.sync_runtime.effective_status().await.warm_suspended
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("complete Device Network warm suspension");
+    assert!(
+        matches!(
+            state.bound_sync_network().await,
+            Err(rua_server::sync_network::BoundSyncNetworkError::NotPaired)
+        ),
+        "the operational guard still requires a live Sync node"
+    );
+
+    let status = read_json(request(&app, Method::GET, "/api/sync/status", None).await).await;
+    let diagnostics =
+        read_json(request(&app, Method::GET, "/api/sync/diagnostics", None).await).await;
+    assert_eq!(
+        (&status["paired"], &status["membership"]["state"], &diagnostics["identity"]["status"]),
+        (&json!(true), &json!("bound"), &json!("bound")),
+        "warm suspension must not look like lost pairing: status={status}, diagnostics={diagnostics}"
+    );
+    assert_eq!(status["membership"]["namespace_id"], namespace);
+    assert_eq!(diagnostics["identity"]["namespace_id"], namespace);
+    assert_ne!(diagnostics["progress"]["state"], "not_paired");
+    assert_eq!(diagnostics["runtime_state"]["state"], "warm_suspended");
+    assert_eq!(diagnostics["warm_suspended"], true);
+    assert!(
+        state.sync_node.lock().await.is_none(),
+        "GET must not rebind a suspended runtime"
+    );
+    assert!(state.device_network.lock().await.is_none());
+    assert_eq!(
+        std::fs::read(sync_dir.join("network_secret.key")).unwrap(),
+        disk_secret_before
+    );
+    assert_eq!(
+        std::fs::read(state.rua_root.join("device_identity.json")).unwrap(),
+        device_before
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn persisted_membership_does_not_infer_binding_from_a_secret_or_device_list() {
+    let (app, _tmp, state) = build_app(ServerProfile::MobileApk);
+    let enabled = request(&app, Method::POST, "/api/sync/enable", None).await;
+    assert_eq!(enabled.status(), StatusCode::OK);
+    let secret = NetworkSecret::generate();
+    secret.save(&state.rua_root.join("sync")).unwrap();
+    *state.sync_network_secret.write().unwrap() = Some(std::sync::Arc::new(secret));
+    add_remote_peer(&state);
+    assert_eq!(state.sidecar_store.bound_network_namespace().unwrap(), None);
+    let status = read_json(request(&app, Method::GET, "/api/sync/status", None).await).await;
+    let diagnostics =
+        read_json(request(&app, Method::GET, "/api/sync/diagnostics", None).await).await;
+    assert_eq!(status["paired"], false);
+    assert_eq!(status["membership"]["state"], "network_created");
+    assert_eq!(diagnostics["identity"]["status"], "not_paired");
+    assert!(state.sync_node.lock().await.is_none());
+    assert_eq!(
+        state.sidecar_store.bound_network_namespace().unwrap(),
+        None,
+        "GET must not manufacture a durable binding"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial(device_network_lifecycle)]
+async fn persisted_membership_rejects_a_different_namespace_after_suspension() {
+    let (app, _tmp, state) = build_app(ServerProfile::MobileApk);
+    enable_sync(&app).await;
+    let previous = state
+        .sidecar_store
+        .bound_network_namespace()
+        .unwrap()
+        .unwrap();
+    state
+        .sync_runtime
+        .warm_suspend_with(|| state.suspend_device_network_runtime())
+        .await
+        .unwrap();
+    assert!(state.sync_node.lock().await.is_none());
+    let secret = NetworkSecret::generate();
+    assert_ne!(*secret.namespace_id().as_bytes(), previous);
+    secret.save(&state.rua_root.join("sync")).unwrap();
+    // Memory and disk agree; the independent persisted namespace must still
+    // reject this as a different network rather than label it paired.
+    *state.sync_network_secret.write().unwrap() = Some(std::sync::Arc::new(secret));
+    let status = read_json(request(&app, Method::GET, "/api/sync/status", None).await).await;
+    let diagnostics =
+        read_json(request(&app, Method::GET, "/api/sync/diagnostics", None).await).await;
+    assert_eq!(status["paired"], false);
+    assert_eq!(status["membership"]["state"], "identity_mismatch");
+    assert_eq!(diagnostics["identity"]["status"], "identity_mismatch");
+    assert_eq!(diagnostics["progress"]["state"], "identity_mismatch");
+    assert!(state.sync_node.lock().await.is_none());
 }

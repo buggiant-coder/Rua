@@ -4,7 +4,7 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("--verify-desktop-bundle") {
         let result = std::env::current_exe()
             .map_err(|e| e.to_string())
-            .and_then(|path| rua_desktop::bundle::verify_current(&path));
+            .and_then(|path| rua_desktop_lib::bundle::verify_current(&path));
         match result {
             Ok(receipt) => println!("{receipt}"),
             Err(error) => {
@@ -14,5 +14,5 @@ fn main() {
         }
         return;
     }
-    rua_desktop::run();
+    rua_desktop_lib::run();
 }

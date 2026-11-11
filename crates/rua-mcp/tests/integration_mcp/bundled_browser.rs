@@ -9,11 +9,13 @@ use rua_contract::Tool;
 use rua_core::runtime_authority::{RuntimeCapability, RuntimeCapabilitySource};
 use rua_core::tool::ToolContext;
 use rua_core::ChatAddress;
-use rua_mcp::bundled_browser::{
-    session_key, BundledBrowser, BundledBrowserClient, DRIVER_VERSION, SERVER_ID,
-};
+#[cfg(unix)]
+use rua_mcp::bundled_browser::DRIVER_VERSION;
+use rua_mcp::bundled_browser::{session_key, BundledBrowser, BundledBrowserClient, SERVER_ID};
 use rua_mcp::{McpManagerImpl, McpMobilePolicy, McpToolBridge, PlatformProfile};
-use serde_json::{json, Value};
+use serde_json::json;
+#[cfg(unix)]
+use serde_json::Value;
 
 fn context(agent: &str, address: ChatAddress) -> McpCallContext {
     McpCallContext {

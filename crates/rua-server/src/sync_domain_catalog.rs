@@ -562,9 +562,16 @@ pub async fn build_publication_changes(
             sync_meta.hlc,
         )],
         SyncPublicationFact::DeviceListEntrySnapshot { entry } => {
-            vec![DeviceListSyncAdapter::snapshot_change(
+            let name_record =
+                rua_sync::control_store::SyncControlStore::from_data_dir(context.data_dir)
+                    .read_device_list()
+                    .map_err(|error| error.to_string())?
+                    .name_records
+                    .remove(&hex::encode(entry.device_id));
+            vec![DeviceListSyncAdapter::snapshot_change_with_name_record(
                 DeviceListSyncAdapter::new_op_id(),
                 entry,
+                name_record,
                 sync_meta.device_id,
                 sync_meta.hlc,
             )]
@@ -579,14 +586,31 @@ pub async fn build_publication_changes(
         }
         SyncPublicationFact::DeviceListDeviceRenamed {
             device_id_hex,
-            friendly_name,
+            name_record: _,
         } => {
-            vec![DeviceListSyncAdapter::rename_change(
+            let current =
+                rua_sync::control_store::SyncControlStore::from_data_dir(context.data_dir)
+                    .read_device_list()
+                    .map_err(|error| error.to_string())?;
+            let Some(name_record) =
+                current
+                    .name_records
+                    .get(&device_id_hex)
+                    .cloned()
+                    .filter(|_| {
+                        current
+                            .devices
+                            .iter()
+                            .any(|entry| hex::encode(entry.device_id) == device_id_hex)
+                    })
+            else {
+                return Ok(Vec::new());
+            };
+            vec![DeviceListSyncAdapter::rename_record_change(
                 DeviceListSyncAdapter::new_op_id(),
                 device_id_hex,
-                friendly_name,
+                name_record,
                 sync_meta.device_id,
-                sync_meta.hlc,
             )]
         }
         SyncPublicationFact::ProjectSidebarRecordsCommitted { records } => records

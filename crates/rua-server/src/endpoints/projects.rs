@@ -2736,6 +2736,28 @@ fn project_submit_response(
             "transport": format!("{transport:?}"),
         }))
         .into_response(),
+        ConversationInputDeliveryOutcome::Unconfirmed {
+            chat_id,
+            detail,
+            submission_id,
+            device_delivery_id,
+            target_device_id,
+            device_delivery_sequence,
+        } => Json(serde_json::json!({
+            "accepted": false,
+            "mode": "unconfirmed",
+            "chat_id": chat_id,
+            "input_id": null,
+            "submission_id": submission_id,
+            "detail": detail,
+            "device_delivery_id": device_delivery_id,
+            "target_device_id": target_device_id,
+            "device_delivery_sequence": device_delivery_sequence,
+            "accepted_at": null,
+            "failure_kind": "delivery_unknown",
+            "control": null,
+        }))
+        .into_response(),
         ConversationInputDeliveryOutcome::Rejected {
             detail,
             target_device_id,

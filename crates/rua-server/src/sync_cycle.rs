@@ -353,6 +353,7 @@ async fn run_sync_cycle_candidate(
     deadline: SyncCycleDeadline,
 ) -> Result<SyncCycleResult, String> {
     let peer_addr = resolve_peer_addr_within_budget(node, candidate, deadline).await?;
+    let namespace_id = hex::encode(node.namespace_id().as_bytes());
     let transport_budget = deadline.remaining().min(candidate.sync_timeout);
     if transport_budget.is_zero() {
         return Err(format!(
@@ -360,8 +361,9 @@ async fn run_sync_cycle_candidate(
         ));
     }
 
-    crate::sync_peer_directory::record_transport_active(
+    crate::sync_peer_directory::record_transport_active_for_network(
         sync_dir,
+        &namespace_id,
         &candidate.node_id_string,
         cycle_started_ms,
     );
@@ -379,6 +381,7 @@ async fn run_sync_cycle_candidate(
             result.peer_node_id = candidate.node_id_string.clone();
             crate::sync_peer_directory::record_transport_success(
                 sync_dir,
+                &namespace_id,
                 &candidate.node_id_string,
                 cycle_started_ms,
                 completed_at_ms,
@@ -389,8 +392,9 @@ async fn run_sync_cycle_candidate(
         Err(e) => {
             if e.to_string().contains("AlreadySyncing") {
                 if !already_syncing_as_success {
-                    crate::sync_peer_directory::clear_transport_active(
+                    crate::sync_peer_directory::clear_transport_active_for_network(
                         sync_dir,
+                        &namespace_id,
                         &candidate.node_id_string,
                     );
                     return Err("already syncing".to_string());
@@ -408,8 +412,9 @@ async fn run_sync_cycle_candidate(
                 {
                     warn!(error = %e, "[sync] save peer health after already-syncing failed");
                 }
-                crate::sync_peer_directory::clear_transport_active(
+                crate::sync_peer_directory::clear_transport_active_for_network(
                     sync_dir,
+                    &namespace_id,
                     &candidate.node_id_string,
                 );
                 return Ok(SyncCycleResult {
@@ -430,6 +435,7 @@ async fn run_sync_cycle_candidate(
             }
             crate::sync_peer_directory::record_transport_failure(
                 sync_dir,
+                &namespace_id,
                 &candidate.node_id_string,
                 cycle_started_ms,
                 failed_at_ms,

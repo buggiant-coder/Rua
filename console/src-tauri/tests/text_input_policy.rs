@@ -3,7 +3,7 @@ fn main() {
     use objc2::{sel, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{NSApplication, NSMenu, NSMenuItem};
     use objc2_foundation::{NSString, NSUserDefaults};
-    use rua_desktop::text_input::{clean_edit_menu, configure};
+    use rua_desktop_lib::text_input::{clean_edit_menu, configure};
 
     let mtm = MainThreadMarker::new().expect("AppKit main thread");
     configure();

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rua_desktop::desktop_install::{
+use rua_desktop_lib::desktop_install::{
     legacy_command_matches, parse_endpoint_port, require_migration_confirmation,
 };
 

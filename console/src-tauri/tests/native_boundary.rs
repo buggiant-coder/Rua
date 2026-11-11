@@ -1,4 +1,4 @@
-use rua_desktop::native::{atomic_write, validate_external_url, validate_suggested_name};
+use rua_desktop_lib::native::{atomic_write, validate_external_url, validate_suggested_name};
 
 #[test]
 fn external_link_validation_accepts_only_supported_absolute_schemes() {
@@ -66,12 +66,13 @@ fn resource_directory_open_requires_an_existing_absolute_directory() {
     let temp = tempfile::tempdir().unwrap();
     let file = temp.path().join("file");
     std::fs::write(&file, "data").unwrap();
-    assert!(rua_desktop::native::validate_project_resource_directory("relative").is_err());
+    assert!(rua_desktop_lib::native::validate_project_resource_directory("relative").is_err());
     assert!(
-        rua_desktop::native::validate_project_resource_directory(file.to_str().unwrap()).is_err()
+        rua_desktop_lib::native::validate_project_resource_directory(file.to_str().unwrap())
+            .is_err()
     );
     assert_eq!(
-        rua_desktop::native::validate_project_resource_directory(temp.path().to_str().unwrap())
+        rua_desktop_lib::native::validate_project_resource_directory(temp.path().to_str().unwrap())
             .unwrap(),
         temp.path().canonicalize().unwrap()
     );

@@ -144,7 +144,48 @@ pub async fn publish_full_export_snapshot(
     };
     let total = snapshot.changes.len();
     let mut appended = 0usize;
-    append_full_export_changes(&log, &snapshot.changes, &mut appended).await;
+    let (device_changes, other_changes): (Vec<_>, Vec<_>) = snapshot
+        .changes
+        .into_iter()
+        .partition(|change| change.domain == rua_sync::device_list_adapter::DEVICE_LIST_DOMAIN);
+    if !device_changes.is_empty() {
+        // A frozen capture can predate a local rename/removal. Serialize the
+        // current Device name read with append so an older export cannot compact
+        // a newer committed name out of this author's replica-log row.
+        let _publication_guard = crate::sync_publication::DEVICE_LIST_PUBLICATION_LOCK
+            .lock()
+            .await;
+        let current =
+            match rua_sync::control_store::SyncControlStore::from_data_dir(&state.rua_root)
+                .read_device_list()
+            {
+                Ok(current) => current,
+                Err(error) => {
+                    warn!(%error, "[sync-v4] full_export: read current Device names");
+                    return false;
+                }
+            };
+        let mut refreshed = Vec::new();
+        for change in device_changes {
+            let entry: rua_sync::device_list::DeviceEntry =
+                match serde_json::from_value(change.payload.clone()) {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        warn!(%error, "[sync-v4] full_export: invalid captured Device entry");
+                        return false;
+                    }
+                };
+            if !current.contains_device(&entry.device_id) {
+                continue;
+            }
+            let name_record = current.name_records.get(&change.record_id).cloned();
+            refreshed.push(rua_sync::device_list_adapter::DeviceListSyncAdapter::snapshot_change_with_name_record(
+                rua_sync::device_list_adapter::DeviceListSyncAdapter::new_op_id(), entry, name_record, change.device_id, change.hlc,
+            ));
+        }
+        append_full_export_changes(&log, &refreshed, &mut appended).await;
+    }
+    append_full_export_changes(&log, &other_changes, &mut appended).await;
 
     tracing::info!(
         scope = snapshot.scope.label(),

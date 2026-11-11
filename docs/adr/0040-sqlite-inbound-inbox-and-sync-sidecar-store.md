@@ -41,6 +41,12 @@ facts.
 Recording arrival is cheap and does not require decrypting or applying the
 payload in the transport callback.
 
+Each apply drain has a bounded time budget. On completion, including budget
+exhaustion, the coordinator schedules remaining durable pending work for a
+subsequent drain or waits until the earliest retry deadline. Continuing queued
+work does not require another transport event. Empty queues have no drain
+timer; runtime shutdown cancels both the wait and any in-flight apply.
+
 ### D3 - Sidecar Store owns idempotency and record cursors
 
 The sidecar stores applied `op_id` records and per-record cursors. A cursor
@@ -72,6 +78,11 @@ retry and may become dormant. Blob-ready notification can reactivate matching
 dormant rows. The inbox does not continuously scan or spin while a provider is
 unavailable.
 
+Automatic continuation preserves the existing attempt limit and retry backoff.
+It never resets attempts or reactivates failed, dormant, discarded, or applied
+rows. Bounded drains yield between continuations; infrastructure failures that
+leave pending work without progress use a delayed retry instead of a hot loop.
+
 ### D6 - Repair metadata lives beside inbox state
 
 The database records Repair Scan attempts, last successful completion,
@@ -85,6 +96,49 @@ local state. Losing it can require a Repair Scan and reapplication decisions,
 but it must not delete canonical domain content or change the sync network
 identity.
 
+Active bookkeeping is bound to the current Sync namespace before a consumer
+attaches. Rebinding the same namespace preserves its queue and versions;
+switching namespaces resets active inbox, applied-operation, cursor, and repair
+state without modifying canonical domain files.
+
+An unbound legacy database cannot prove which namespace its versions describe.
+Its applied operations and cursors are quarantined in local legacy tables in
+the same transaction that clears active bookkeeping and records the current
+binding. Quarantined versions do not suppress current-network records. Before
+consumers attach, locally available self-authored current-namespace entries may
+restore tombstone bookkeeping only when the decrypted explicit removal and its
+archived operation fingerprint, record identity, and HLC all agree. Unavailable
+or unprovable legacy metadata remains quarantined. Repair Scan and remote
+current-network replay establish the remaining active versions. Canonical
+domain state and stored base-snapshot bytes are
+preserved; quarantine is recovery history, not another canonical domain store.
+
+### D8 - Transport diagnostics describe the bound network and current members
+
+`sync/transport_stats.json` remains local operational evidence. Its raw totals
+and peer records are preserved when pairing changes the namespace or membership.
+The current Sync diagnostics response projects attempts, failures, traffic, and
+the last/active cycle onto the bound namespace and current remote Device List
+members. Unrelated peer history must not appear as work attempted by a newly
+paired network. No bound namespace means no current-network transport totals.
+
+New observations persist their originating Sync Node namespace and per-peer
+rolling metrics, including event counts and each traffic direction. A completed
+attempt keeps that provenance even if pairing has replaced the namespace on
+disk. Removing a member excludes its measurements from the current view without
+erasing them; adding the same member back retains its network-specific history.
+
+Legacy files have per-peer attempts, failures, and undirected traffic totals,
+but no namespace or per-peer event/directional traffic totals. Their unchanged
+baseline is preserved separately on the first new observation. The projection
+retains exact legacy attempts, failures, and per-peer traffic for current members.
+All legacy rolling metrics remain attributable when every recorded peer is a
+current member. Otherwise unassignable legacy event and directional traffic
+totals stay in the raw evidence and do not enter current rolling metrics; the
+system does not invent ratios or reset legitimate current-peer counts. A legacy
+peer reused across different networks cannot be separated retrospectively by
+namespace; only newly recorded measurements have that provenance.
+
 ## Hard invariants
 
 - Inbound arrival is persisted before asynchronous apply work is considered
@@ -94,6 +148,8 @@ identity.
 - Domain apply must tolerate replay after a crash between canonical persistence
   and SQLite bookkeeping.
 - Inbox and sidecar state are Device-local and never replicated.
+- Active versions and inbox coordinates describe the bound Sync namespace;
+  unproven legacy versions cannot filter current-network work.
 - `sync-state.sqlite` is not the canonical store for any product domain.
 - iroh-docs internal storage is not used for Rua bookkeeping tables.
 - Missing blob content does not cause an unbounded retry loop.

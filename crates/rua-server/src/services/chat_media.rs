@@ -1,5 +1,5 @@
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -469,7 +469,7 @@ impl ChatMediaService {
             let _ = fs::remove_file(metadata_path(&media_dir, media_id));
             report.removed += 1;
         }
-        File::open(&media_dir)?.sync_all()?;
+        rua_core::fs::sync_directory(&media_dir)?;
         tracing::info!(
             scanned = report.scanned,
             removed = report.removed,
@@ -512,7 +512,7 @@ fn atomic_write_media(
     let result = atomic_write_file(media_dir, target, bytes);
     if result.is_err() {
         let _ = fs::remove_file(metadata_path);
-        let _ = File::open(media_dir).and_then(|directory| directory.sync_all());
+        let _ = rua_core::fs::sync_directory(media_dir);
     }
     result
 }
@@ -527,7 +527,7 @@ fn atomic_write_file(parent: &Path, target: &Path, bytes: &[u8]) -> io::Result<(
         temp.write_all(bytes)?;
         temp.sync_all()?;
         fs::rename(&temp_path, target)?;
-        File::open(parent)?.sync_all()?;
+        rua_core::fs::sync_directory(parent)?;
         Ok(())
     })();
     if result.is_err() {

@@ -1219,6 +1219,93 @@ describe("OwnedConversationSurface", () => {
     ).toBe("device-delivery-1");
   });
 
+  it.each([
+    {
+      placement: "known local target",
+      target: "device-local",
+      current: "device-local",
+      remote: false,
+    },
+    {
+      placement: "known remote target",
+      target: "device-remote",
+      current: "device-local",
+      remote: true,
+    },
+    {
+      placement: "unselected draft target",
+      target: null,
+      current: "device-local",
+      remote: false,
+    },
+    {
+      placement: "unresolved current identity",
+      target: "device-remote",
+      current: null,
+      remote: false,
+    },
+  ])(
+    "uses pending delivery placement for $placement",
+    async ({ target, current, remote }) => {
+      mockGetChat.mockResolvedValue(idleHistory());
+      const submitResponse = deferred<Response>();
+      const fetchMock = routeFetch((url) =>
+        url.includes("/console/submit") ? submitResponse.promise : undefined,
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(
+        <MemoryRouter>
+          <OwnedConversationSurface
+            address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+            chatModel={configuredModel}
+            authorityPlacementDeviceId={target}
+            currentDeviceId={current}
+          />
+        </MemoryRouter>,
+      );
+
+      const input = await screen.findByPlaceholderText("Message");
+      await waitFor(() => expect(input).not.toBeDisabled());
+      fireEvent.change(input, { target: { value: "placement pending input" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect(submitCalls(fetchMock)).toHaveLength(1));
+      await screen.findByText("placement pending input");
+
+      try {
+        if (remote) {
+          expect(
+            screen.getByText("Delivering to remote device..."),
+          ).toBeInTheDocument();
+        } else {
+          expect(
+            screen.queryByText("Delivering to remote device..."),
+          ).not.toBeInTheDocument();
+        }
+      } finally {
+        await act(async () => {
+          submitResponse.resolve(
+            submitAcceptedResponse(
+              remote
+                ? {
+                    mode: "started",
+                    device_delivery_id: "device-delivery-placement",
+                    target_device_id: "device-remote",
+                    device_delivery_sequence: 1,
+                    accepted_at: "2026-06-27T00:00:00Z",
+                  }
+                : {},
+            ),
+          );
+        });
+      }
+
+      if (remote) {
+        await screen.findByText("Delivered, waiting for result");
+      }
+    },
+  );
+
   it("shows remote delivery progress after the target acknowledges", async () => {
     mockGetChat.mockResolvedValue(idleHistory());
     const fetchMock = routeFetch((url) =>

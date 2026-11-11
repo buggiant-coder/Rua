@@ -2757,6 +2757,7 @@ async fn project_archive_distinguishes_offline_member_from_revoked_device() {
                 last_seen_ms: 1,
                 direct_addrs: Vec::new(),
             }],
+            ..Default::default()
         })
         .unwrap(),
     )
@@ -3129,6 +3130,7 @@ async fn archived_offline_project_delete_does_not_contact_resource_device() {
                 last_seen_ms: 1,
                 direct_addrs: Vec::new(),
             }],
+            ..Default::default()
         })
         .unwrap(),
     )

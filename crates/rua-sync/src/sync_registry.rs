@@ -205,7 +205,62 @@ impl SyncRegistry {
     }
 }
 
-fn change_fingerprint(change: &SyncChange) -> SyncResult<String> {
+/// Only these explicit domain operations prove a tombstone without replaying
+/// canonical writes. Snapshot outcomes can also be tombstoned, but their state
+/// depends on domain context and cannot be reconstructed from the kind alone.
+pub(crate) fn is_explicit_removal(change: &SyncChange) -> bool {
+    matches!(
+        (change.domain.as_str(), change.kind.as_str()),
+        (
+            crate::device_list_adapter::DEVICE_LIST_DOMAIN,
+            crate::device_list_adapter::DEVICE_LIST_KIND_REMOVE
+        ) | (
+            crate::agent_adapter::AGENT_CONFIG_DOMAIN,
+            crate::agent_adapter::AGENT_CONFIG_KIND_DELETE
+        ) | (
+            crate::agent_prompt_file_adapter::AGENT_PROMPT_FILE_DOMAIN,
+            crate::agent_prompt_file_adapter::AGENT_PROMPT_FILE_KIND_DELETE
+        ) | (
+            crate::agent_security_adapter::AGENT_SECURITY_DOMAIN,
+            crate::agent_security_adapter::AGENT_SECURITY_KIND_DELETE
+        ) | (
+            crate::agent_template_adapter::AGENT_TEMPLATE_DOMAIN,
+            crate::agent_template_adapter::AGENT_TEMPLATE_KIND_DELETE
+        ) | (
+            crate::chat_adapter::CHAT_DOMAIN,
+            crate::chat_adapter::CHAT_KIND_INDEX_DELETE
+        ) | (
+            crate::evergreen_chat_adapter::EVERGREEN_CHAT_DOMAIN,
+            crate::evergreen_chat_adapter::EVERGREEN_CHAT_KIND_FILE_DELETE
+        ) | (
+            crate::media_adapter::MEDIA_DOMAIN,
+            crate::media_adapter::MEDIA_KIND_DELETE
+        ) | (
+            crate::project_adapter::PROJECT_CATALOG_DOMAIN,
+            crate::project_adapter::PROJECT_DELETE_KIND
+        ) | (
+            crate::prompt_adapter::PROMPT_DOMAIN,
+            crate::prompt_adapter::PROMPT_KIND_DELETE
+        ) | (
+            crate::provider_adapter::PROVIDER_SECRET_DOMAIN,
+            crate::provider_adapter::PROVIDER_SECRET_KIND_DELETE
+        ) | (
+            crate::root_config_adapter::ROOT_CONFIG_DOMAIN,
+            crate::root_config_adapter::ROOT_CONFIG_KIND_DELETE
+        ) | (
+            crate::shared_mcp_adapter::SHARED_MCP_DOMAIN,
+            crate::shared_mcp_adapter::SHARED_MCP_KIND_DELETE
+        ) | (
+            crate::skill_adapter::SKILL_BLOB_DOMAIN,
+            crate::skill_adapter::SKILL_BLOB_KIND_DELETE
+        ) | (
+            crate::structured_memory_adapter::STRUCTURED_MEMORY_DOMAIN,
+            crate::structured_memory_adapter::STRUCTURED_MEMORY_KIND_DELETE
+        )
+    )
+}
+
+pub(crate) fn change_fingerprint(change: &SyncChange) -> SyncResult<String> {
     #[derive(Serialize)]
     struct CanonicalChange<'a> {
         schema_version: u16,

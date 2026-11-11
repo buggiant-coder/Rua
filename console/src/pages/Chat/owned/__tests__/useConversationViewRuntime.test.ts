@@ -1298,6 +1298,88 @@ describe("useConversationViewRuntime", () => {
     clearSubmitted(key);
   });
 
+  it.each(["agent", "project"] as const)(
+    "retains an explicit unconfirmed %s input until history confirms its original identity",
+    async (scope) => {
+      const address =
+        scope === "agent"
+          ? { scope, agentId: "agent-a", chatId: "unconfirmed-chat" }
+          : { scope, projectId: "project-1", chatId: "unconfirmed-chat" };
+      const key = `${
+        scope === "agent" ? "agent-a" : "project:project-1"
+      }:unconfirmed-chat`;
+      const getHistory =
+        scope === "agent" ? chatApiMock.getChat : projectChatsApiMock.getChat;
+      getHistory.mockResolvedValue({ status: "idle", messages: [] });
+      vi.stubGlobal(
+        "fetch",
+        routeFetch((url, init) => {
+          if (!url.includes("/console/submit")) return undefined;
+          const request = JSON.parse(String(init?.body));
+          return jsonResponse({
+            accepted: false,
+            mode: "unconfirmed",
+            failure_kind: "delivery_unknown",
+            detail: "Acceptance reply was not received",
+            chat_id: "unconfirmed-chat",
+            submission_id: request.submission_id,
+            device_delivery_id: "delivery-unconfirmed",
+            device_delivery_sequence: 1,
+            target_device_id: "device-remote",
+            input_id: null,
+            accepted_at: null,
+            control: null,
+          });
+        }),
+      );
+      const options = {
+        address,
+        unmaterialized: true,
+        authorityPlacementDeviceId: "device-remote",
+        projectExecutionAgentId: "agent-a",
+      };
+      const first = renderHook(() => useConversationViewRuntime(options));
+      act(() => first.result.current.applyCommittedModel(configuredModel));
+      await act(async () => {
+        expect(
+          await first.result.current.submit("wait for this acceptance"),
+        ).toBe("unknown");
+      });
+      const saved = loadSubmitted(key);
+      expect(saved?.submissionId).toBeTruthy();
+      expect(first.result.current.queuedSubmissions).toEqual([
+        expect.objectContaining({
+          submissionId: saved?.submissionId,
+          deliveryState: "unknown",
+          editable: false,
+          deletable: false,
+        }),
+      ]);
+      first.unmount();
+
+      getHistory.mockResolvedValue({
+        status: "idle",
+        messages: [
+          {
+            id: "durable-unconfirmed-user",
+            role: "user",
+            content: [{ type: "text", text: "wait for this acceptance" }],
+            metadata: { submission_id: saved?.submissionId },
+          },
+        ],
+      });
+      const restored = renderHook(() => useConversationViewRuntime(options));
+      await waitFor(() => expect(loadSubmitted(key)).toBeNull());
+      expect(
+        (fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) =>
+          String(url).includes("/console/submit"),
+        ),
+      ).toHaveLength(1);
+      restored.unmount();
+      clearSubmitted(key);
+    },
+  );
+
   it("confirms a restored submission from read-only Chat history and clears only its record", async () => {
     const key = "agent-a:confirmed-chat";
     saveSubmitted(key, {

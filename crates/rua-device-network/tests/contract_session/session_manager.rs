@@ -15,6 +15,12 @@ use rua_device_network::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Barrier, Notify};
 
+#[cfg(feature = "test-util")]
+#[path = "delayed_transport.rs"]
+mod delayed_transport;
+#[cfg(feature = "test-util")]
+use delayed_transport::DelayedNetwork;
+
 #[derive(Debug, Default)]
 struct EchoHandler {
     calls: AtomicUsize,
@@ -154,7 +160,11 @@ async fn build_runtime(
     std::fs::create_dir_all(&sync_dir).expect("sync dir");
     std::fs::write(
         sync_dir.join("device_list.json"),
-        serde_json::to_vec_pretty(&DeviceList { devices: peers }).expect("serialize peers"),
+        serde_json::to_vec_pretty(&DeviceList {
+            devices: peers,
+            ..Default::default()
+        })
+        .expect("serialize peers"),
     )
     .expect("write peers");
     let secret = iroh::SecretKey::from_bytes(&[secret_byte; 32]);
@@ -191,6 +201,83 @@ async fn build_runtime(
         addr,
         handler,
     }
+}
+
+#[cfg(feature = "test-util")]
+async fn build_runtime_on_delayed_network(
+    secret_byte: u8,
+    network_secret: [u8; 32],
+    peers: Vec<DeviceEntry>,
+    config: DeviceSessionConfig,
+    network: &DelayedNetwork,
+) -> TestRuntime {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sync_dir = dir.path().join("sync");
+    std::fs::create_dir_all(&sync_dir).expect("sync dir");
+    std::fs::write(
+        sync_dir.join("device_list.json"),
+        serde_json::to_vec_pretty(&DeviceList {
+            devices: peers,
+            ..Default::default()
+        })
+        .expect("serialize peers"),
+    )
+    .expect("write peers");
+    let secret = iroh::SecretKey::from_bytes(&[secret_byte; 32]);
+    let identity = DeviceNetworkIdentity::new(secret);
+    let device_id = hex::encode(identity.local_device_id());
+    let transport = network.transport(identity.endpoint_secret().public());
+    let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .clear_ip_transports()
+        .clear_relay_transports()
+        .add_custom_transport(transport);
+    let bootstrap = DeviceNetworkBootstrap::bind_with_endpoint_builder(
+        builder,
+        identity,
+        BoundDeviceNetworkMembership::new(network_secret),
+        DevicePeerDirectory::from_sync_dir(&sync_dir),
+    )
+    .await
+    .expect("bind isolated delayed runtime");
+    let handler = Arc::new(EchoHandler::default());
+    let runtime = bootstrap.spawn_with_session_config(Vec::new(), Some(handler.clone()), config);
+    let addr = DelayedNetwork::endpoint_addr(runtime.endpoint().id());
+    TestRuntime {
+        _dir: dir,
+        sync_dir,
+        runtime,
+        device_id,
+        addr,
+        handler,
+    }
+}
+
+#[cfg(feature = "test-util")]
+async fn slow_pair() -> (TestRuntime, TestRuntime, DelayedNetwork) {
+    let network_secret = [101; 32];
+    let config = DeviceSessionConfig {
+        connect_timeout: Duration::from_secs(10),
+        handshake_timeout: Duration::from_secs(10),
+        ..test_config()
+    };
+    let network = DelayedNetwork::new(Duration::from_millis(650));
+    let b = build_runtime_on_delayed_network(
+        102,
+        network_secret,
+        vec![peer_entry(101)],
+        config.clone(),
+        &network,
+    )
+    .await;
+    let a = build_runtime_on_delayed_network(
+        101,
+        network_secret,
+        vec![peer_entry(102)],
+        config,
+        &network,
+    )
+    .await;
+    (a, b, network)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -253,6 +340,7 @@ fn write_peer_list(sync_dir: &std::path::Path, peer: DeviceEntry) {
         sync_dir.join("device_list.json"),
         serde_json::to_vec_pretty(&DeviceList {
             devices: vec![peer],
+            ..Default::default()
         })
         .expect("serialize peer list"),
     )
@@ -303,6 +391,7 @@ fn peer_directory_keeps_bare_identity_for_address_lookup() {
         sync_dir.join("device_list.json"),
         serde_json::to_vec_pretty(&DeviceList {
             devices: vec![peer_entry(82)],
+            ..Default::default()
         })
         .expect("serialize Device List"),
     )
@@ -988,6 +1077,71 @@ async fn disconnect_reconnects_with_a_new_generation() {
 
     a.runtime.shutdown().await.expect("shutdown A");
     b.runtime.shutdown().await.expect("shutdown B");
+}
+
+#[cfg(feature = "test-util")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn timed_out_command_keeps_a_healthy_generation_with_rtt_over_one_second() {
+    let (a, b, network) = health_probe::warm_slow_pair().await;
+    let manager = a.runtime.session_manager();
+    let before = manager.diagnostics();
+    let generation = before.sessions[0].generation.expect("connected generation");
+    assert!(
+        before.sessions[0].rtt_ms.expect("measured QUIC RTT") > 1000,
+        "slow path diagnostics: {:?}",
+        before.sessions[0]
+    );
+
+    b.handler.hang_next.store(true, Ordering::SeqCst);
+    let started = Instant::now();
+    let error = manager
+        .command_once_to(&b.device_id, b"mutation", Duration::from_millis(100))
+        .await
+        .expect_err("caller deadline");
+    assert!(matches!(
+        error,
+        DeviceSessionError::Timeout {
+            stage: "command exchange",
+            ..
+        }
+    ));
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "health recovery must not extend the caller deadline"
+    );
+    // The independent health stream needs a real 1.3s round trip. A 1s fixed
+    // health timer closes this otherwise healthy physical connection first.
+    tokio::time::sleep(Duration::from_millis(1800)).await;
+    let after = manager.diagnostics();
+    assert_eq!(
+        after.sessions[0].generation,
+        Some(generation),
+        "a probe slower than 1s must not retire a healthy WAN generation"
+    );
+    assert_eq!(after.sessions[0].state, DeviceSessionState::Connected);
+    assert_eq!(after.physical_dial_attempts, 1);
+    assert_eq!(
+        b.handler.calls.load(Ordering::SeqCst),
+        2,
+        "a timed-out mutation must not be replayed"
+    );
+    b.handler.hang_release.notify_waiters();
+    assert_eq!(
+        manager
+            .command_to(&b.device_id, b"after", Duration::from_secs(5))
+            .await
+            .expect("reuse healthy generation"),
+        b"after"
+    );
+    assert_eq!(
+        manager.diagnostics().sessions[0].generation,
+        Some(generation)
+    );
+    assert_eq!(manager.diagnostics().physical_dial_attempts, 1);
+
+    a.runtime.shutdown().await.expect("shutdown A");
+    b.runtime.shutdown().await.expect("shutdown B");
+    network.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2230,3 +2384,7 @@ async fn unpaired_sender_knowing_endpoint_and_direct_address_cannot_run_commands
     a.runtime.shutdown().await.expect("shutdown A");
     b.runtime.shutdown().await.expect("shutdown B");
 }
+
+#[cfg(feature = "test-util")]
+#[path = "health_probe.rs"]
+mod health_probe;

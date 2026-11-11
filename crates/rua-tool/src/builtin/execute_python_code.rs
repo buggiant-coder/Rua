@@ -333,6 +333,7 @@ impl Tool for ExecutePythonCodeTool {
                 message: plan.diagnostics.join("; "),
             });
         }
+        #[cfg(unix)]
         let host_resource_limits = plan.host_resource_limits;
         let process = plan.process()?;
         let command_display = process.command.to_string_lossy().into_owned();

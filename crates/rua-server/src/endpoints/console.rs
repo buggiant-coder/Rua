@@ -247,6 +247,7 @@ async fn console_submit_response(
         mode: match outcome.kind {
             ConsoleSubmitKind::Started => "started",
             ConsoleSubmitKind::Queued => "queued",
+            ConsoleSubmitKind::Unconfirmed => "unconfirmed",
             ConsoleSubmitKind::Rejected => "rejected",
         },
         detail: outcome.detail,

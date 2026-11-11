@@ -63,7 +63,11 @@ async fn build_peer(
     std::fs::create_dir_all(&sync_dir).expect("sync dir");
     std::fs::write(
         sync_dir.join("device_list.json"),
-        serde_json::to_vec_pretty(&DeviceList { devices: peers }).expect("serialize peers"),
+        serde_json::to_vec_pretty(&DeviceList {
+            devices: peers,
+            ..Default::default()
+        })
+        .expect("serialize peers"),
     )
     .expect("write peers");
     let secret = iroh::SecretKey::from_bytes(&[secret_byte; 32]);
@@ -251,6 +255,58 @@ fn list_device_directory_returns_sorted_files_and_directories() {
             ("report.pdf", SyncTransferDeviceEntryKind::File, Some(6)),
         ]
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn installed_sync_node_serves_blobs_after_pairing_rebind() {
+    let dir = TempDir::new().unwrap();
+    let state = rua_server::AppState::from_tempdir(
+        dir.path().to_path_buf(),
+        rua_server::ServerProfile::Desktop,
+    );
+    let identity = rua_sync::identity::DeviceIdentity::generate();
+    let network = rua_sync::identity::NetworkSecret::generate();
+    let node = rua_sync::endpoint::SyncNode::bind(
+        &dir.path().join("sync"),
+        network.namespace_secret(),
+        &identity,
+        None,
+    )
+    .await
+    .unwrap();
+    *state.sync_device.write().unwrap() = Some(Arc::new(identity));
+    let provider = TestPeer {
+        device_id: hex::encode(node.network_runtime().identity().local_device_id()),
+        addr: local_endpoint_addr(node.endpoint()),
+        runtime: node.network_runtime().clone(),
+        _dir: dir,
+    };
+    let consumer = build_peer(88, network.to_bytes(), vec![], None).await;
+    install_connectable_peer(&provider, &consumer);
+    install_connectable_peer(&consumer, &provider);
+    let expected = b"paired-device encrypted sync payload";
+    let hash = rua_sync::opaque_replica_log::store_encrypted_blob_bytes(
+        node.blobs_store(),
+        bytes::Bytes::from_static(expected),
+    )
+    .await
+    .unwrap();
+    // This is the installation path used by pairing, migration and resume.
+    state.install_sync_node(node).await;
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        read_sync_blob_via_session(
+            consumer.runtime.session_manager(),
+            &provider.device_id,
+            hash,
+        ),
+    )
+    .await
+    .expect("bounded blob read")
+    .expect("installed node must expose Sync Blobs");
+    assert_eq!(result, expected);
+    consumer.runtime.shutdown().await.unwrap();
+    state.clear_sync_node().await;
 }
 
 #[test]

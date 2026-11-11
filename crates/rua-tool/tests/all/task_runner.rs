@@ -5,19 +5,23 @@ use std::time::Duration;
 use async_trait::async_trait;
 use rua_contract::Tool;
 use rua_core::tool::ToolContext;
+#[cfg(unix)]
+use rua_task::TaskWatchOutputNotification;
 use rua_task::{
     TaskInput, TaskInputCapability, TaskInputError, TaskInputSink, TaskListFilter,
     TaskLiveOutputBatch, TaskLiveOutputCursor, TaskLiveOutputError, TaskLiveOutputSource,
     TaskNotificationSink, TaskOwner, TaskRunOutput, TaskRunRequest, TaskRunner, TaskRunnerError,
-    TaskRunnerKind, TaskRuntime, TaskRuntimeConfig, TaskState, TaskWatchOutputNotification,
+    TaskRunnerKind, TaskRuntime, TaskRuntimeConfig, TaskState,
 };
+#[cfg(unix)]
+use rua_tool::extended::task_tools::TaskRunnerSessionHandle;
 use rua_tool::extended::task_tools::{
     TaskAwaitTool, TaskCancelTool, TaskCreateTool, TaskListTool, TaskReadTool, TaskRetryTool,
-    TaskRunnerSessionHandle, TaskRuntimeHandle, TaskSendInputTool, TaskUnwatchTool, TaskWatchTool,
+    TaskRuntimeHandle, TaskSendInputTool, TaskUnwatchTool, TaskWatchTool,
 };
-use rua_tool::{
-    RuntimeCommandExecutor, ShellTool, ToolTaskExecution, ToolTaskExecutionRequest, ToolTaskRunner,
-};
+#[cfg(unix)]
+use rua_tool::{RuntimeCommandExecutor, ShellTool};
+use rua_tool::{ToolTaskExecution, ToolTaskExecutionRequest, ToolTaskRunner};
 use tokio::sync::{Mutex, Notify};
 
 struct RecordingExecution {
@@ -667,12 +671,14 @@ impl TaskRunner for ProjectControlRunner {
 }
 
 #[derive(Default)]
+#[cfg(unix)]
 struct RecordingWatchSink {
     notifications: Mutex<Vec<TaskWatchOutputNotification>>,
     changed: Notify,
 }
 
 #[async_trait]
+#[cfg(unix)]
 impl TaskNotificationSink for RecordingWatchSink {
     async fn watch_output(
         &self,
@@ -883,6 +889,7 @@ async fn wait_for_terminal(runtime: &TaskRuntime, owner: &TaskOwner, task_id: &s
     .unwrap();
 }
 
+#[cfg(unix)]
 async fn wait_for_input_capability(
     runtime: &TaskRuntime,
     owner: &TaskOwner,
@@ -1251,6 +1258,7 @@ async fn task_create_returns_before_blocking_runner_completes() {
     wait_for_terminal(&runtime, &owner, task_id).await;
 }
 
+#[cfg(unix)]
 struct RealShellTaskExecution {
     working_dir: std::path::PathBuf,
 }
@@ -1351,6 +1359,7 @@ async fn task_read_reopens_persisted_shell_observation_after_runtime_restart() {
 }
 
 #[async_trait]
+#[cfg(unix)]
 impl ToolTaskExecution for RealShellTaskExecution {
     async fn execute(
         &self,
@@ -1385,6 +1394,7 @@ impl ToolTaskExecution for RealShellTaskExecution {
     }
 }
 
+#[cfg(unix)]
 struct DelayedShellResultExecution {
     working_dir: std::path::PathBuf,
     shell_finished: Notify,
@@ -1392,6 +1402,7 @@ struct DelayedShellResultExecution {
 }
 
 #[async_trait]
+#[cfg(unix)]
 impl ToolTaskExecution for DelayedShellResultExecution {
     async fn execute(
         &self,

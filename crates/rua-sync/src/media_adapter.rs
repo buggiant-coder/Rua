@@ -538,7 +538,7 @@ fn atomic_write_media_replica(path: &Path, bytes: &[u8]) -> SyncResult<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
         std::fs::rename(&temp, path)?;
-        std::fs::File::open(parent)?.sync_all()
+        rua_core::fs::sync_directory(parent)
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&temp);

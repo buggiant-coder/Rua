@@ -195,6 +195,7 @@ async fn attach_remote_prompt_peer(
                     remote_addr.ip_addrs().map(ToString::to_string).collect(),
                 ),
             ],
+            ..Default::default()
         })
         .expect("write paired Device List");
 
@@ -896,6 +897,7 @@ async fn remove_device_closes_the_shared_session_and_prevents_new_streams() {
         remote_sync_dir.join("device_list.json"),
         serde_json::to_vec_pretty(&DeviceList {
             devices: vec![local_peer],
+            ..Default::default()
         })
         .expect("serialize remote peer list"),
     )
@@ -1090,6 +1092,71 @@ async fn rename_device_updates_local_device_list() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unbound_local_rename_survives_stale_owner_snapshot_and_full_export() {
+    use rua_sync::device_list_adapter::DeviceListSyncAdapter;
+    use rua_sync::hlc::HlcTimestamp;
+    use rua_sync::merge_store::MergeStore;
+    use rua_sync::sync_registry::{DomainSyncAdapter, SyncRegistry};
+
+    let (app, tmp, state) = build_app();
+    state
+        .sync_enabled
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    seed_device_list(tmp.path(), vec![sample_device(2, "old-phone")]);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/sync/devices/rename")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"device_id":"0202020202020202","friendly_name":"daily phone"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let adapter = DeviceListSyncAdapter::new(tmp.path().to_path_buf(), "windows");
+    let store = MergeStore::open(&tmp.path().join("merge")).unwrap();
+    let stale = DeviceListSyncAdapter::snapshot_change(
+        "stale-owner",
+        sample_device(2, "old-phone"),
+        "0202020202020202",
+        HlcTimestamp {
+            wall_ms: 1,
+            counter: 0,
+            device_id: [2; 8],
+        },
+    );
+    adapter.apply_change(&stale, &store).await.unwrap();
+    assert_eq!(
+        read_device_list(tmp.path()).devices[0].friendly_name,
+        "daily phone"
+    );
+
+    // Publication was unavailable; the committed name must recover from the
+    // canonical list alone when a network is later bound.
+    let peer = TempDir::new().unwrap();
+    seed_device_list(peer.path(), vec![sample_device(2, "old-phone")]);
+    let mut registry = SyncRegistry::new();
+    registry
+        .register(Arc::new(DeviceListSyncAdapter::new(
+            peer.path().to_path_buf(),
+            "peer",
+        )))
+        .unwrap();
+    let peer_store = MergeStore::open(&peer.path().join("merge")).unwrap();
+    for change in adapter.export_records().await.unwrap() {
+        registry.apply_change(&change, &peer_store).await.unwrap();
+    }
+    assert_eq!(
+        read_device_list(peer.path()).devices[0].friendly_name,
+        "daily phone"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rename_device_emits_device_list_v4_when_sync_enabled() {
     let (app, tmp, state) = build_sync_enabled_app();
     seed_device_list(tmp.path(), vec![sample_device(2, "old-phone")]);
@@ -1221,7 +1288,11 @@ fn seed_device_list(root: &std::path::Path, devices: Vec<DeviceEntry>) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(
         path,
-        serde_json::to_vec_pretty(&DeviceList { devices }).unwrap(),
+        serde_json::to_vec_pretty(&DeviceList {
+            devices,
+            ..Default::default()
+        })
+        .unwrap(),
     )
     .unwrap();
 }

@@ -30,6 +30,9 @@ done
 
 FULL_CHECK=0
 GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+if [[ -n "$GIT_ROOT" ]]; then
+    GIT_ROOT=$(cd "$GIT_ROOT" && pwd -P)
+fi
 if [[ "$GIT_ROOT" != "$REPO_ROOT" ]]; then
     echo "Git checkout unavailable; running full Rust validation."
     FULL_CHECK=1

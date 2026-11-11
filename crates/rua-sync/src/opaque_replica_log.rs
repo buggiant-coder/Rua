@@ -1,10 +1,12 @@
 use bytes::Bytes;
+use futures_lite::StreamExt;
 use iroh::EndpointId;
 use iroh_blobs::Hash;
 use iroh_docs::api::Doc;
 pub use iroh_docs::AuthorId;
 use iroh_docs::{Author, Entry};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
@@ -124,6 +126,30 @@ impl OpaqueReplicaLog {
 
     pub fn blob_context(&self) -> (BlobsApiStore, crypto::SyncKey) {
         (self.blobs_store.clone(), self.sync_key.clone())
+    }
+
+    /// Rebuild payload reachability from the durable current replica entries.
+    /// An unreadable envelope must fail the proof, so GC can abort its sweep.
+    pub(crate) async fn protect_referenced_payloads(
+        &self,
+        live: &mut HashSet<Hash>,
+    ) -> Result<(), SyncError> {
+        let entries = self
+            .doc
+            .get_many(iroh_docs::store::Query::all())
+            .await
+            .map_err(|error| SyncError::Store(format!("list payload roots: {error}")))?;
+        tokio::pin!(entries);
+        while let Some(entry) = entries.next().await {
+            let entry =
+                entry.map_err(|error| SyncError::Store(format!("read payload root: {error}")))?;
+            live.insert(entry.content_hash());
+            let frame = self.read_entry_frame(&entry).await?;
+            for change in frame.into_changes() {
+                protect_change_payloads(&change, live)?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn put_encrypted_blob(&self, plaintext: &[u8]) -> Result<String, SyncError> {
@@ -489,6 +515,46 @@ impl OpaqueReplicaLog {
         )
         .await
     }
+}
+
+fn protect_change_payloads(change: &SyncChange, live: &mut HashSet<Hash>) -> Result<(), SyncError> {
+    match change.domain.as_str() {
+        crate::media_adapter::MEDIA_DOMAIN => match change.kind.as_str() {
+            crate::media_adapter::MEDIA_KIND_DELETE => {}
+            crate::media_adapter::MEDIA_KIND_UPSERT | crate::media_adapter::MEDIA_KIND_SNAPSHOT => {
+                let payload: crate::media_adapter::MediaFilePayload =
+                    serde_json::from_value(change.payload.clone())?;
+                if payload.inline_ciphertext_b64.is_none() {
+                    live.insert(parse_hash(&payload.hash_ref)?);
+                }
+            }
+            _ => {
+                return Err(SyncError::InvalidPayload(
+                    "unknown Media payload kind".into(),
+                ))
+            }
+        },
+        crate::skill_adapter::SKILL_BLOB_DOMAIN => match change.kind.as_str() {
+            crate::skill_adapter::SKILL_BLOB_KIND_DELETE => {}
+            crate::skill_adapter::SKILL_BLOB_KIND_UPSERT
+            | crate::skill_adapter::SKILL_BLOB_KIND_SNAPSHOT => {
+                let manifest: crate::skill_adapter::SkillBlobManifest =
+                    serde_json::from_value(change.payload.clone())?;
+                for file in manifest.files {
+                    if file.inline_ciphertext_b64.is_none() {
+                        live.insert(parse_hash(&file.hash_ref)?);
+                    }
+                }
+            }
+            _ => {
+                return Err(SyncError::InvalidPayload(
+                    "unknown Skill payload kind".into(),
+                ))
+            }
+        },
+        _ => {}
+    }
+    Ok(())
 }
 
 fn validate_change_schema(change: &SyncChange) -> Result<(), SyncError> {

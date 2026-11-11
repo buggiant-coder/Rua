@@ -355,9 +355,7 @@ async fn rename_directory_atomically(source: PathBuf, target: PathBuf) -> Result
             )
         })?;
         if let Some(parent) = target.parent() {
-            if let Err(error) =
-                std::fs::File::open(parent).and_then(|directory| directory.sync_all())
-            {
+            if let Err(error) = rua_core::fs::sync_directory(parent) {
                 if let Err(cleanup_error) = std::fs::remove_dir_all(&target) {
                     tracing::warn!(%cleanup_error, path = %target.display(), "failed to roll back Chat directory");
                 }

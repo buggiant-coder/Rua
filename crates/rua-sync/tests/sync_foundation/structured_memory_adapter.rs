@@ -18,6 +18,116 @@ fn hlc(wall_ms: u64) -> HlcTimestamp {
     }
 }
 
+#[tokio::test]
+async fn inbound_snapshot_upgrades_actual_pre_title_workspace_schema() {
+    let source = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let record = write_memory(
+        source.path(),
+        "default",
+        "Canonical memory after schema upgrade.",
+    );
+    let workspace = target.path().join("workspaces/default");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let connection = rusqlite::Connection::open(workspace.join("memory.db")).unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../../../rua-memory/tests/fixtures/structured-memory-before-title.sql"
+        ))
+        .unwrap();
+    drop(connection);
+    let change = StructuredMemorySyncAdapter::snapshot_change(
+        "legacy-schema-inbound",
+        &record,
+        "source",
+        hlc(200),
+    )
+    .unwrap();
+    let mut registry = SyncRegistry::new();
+    registry
+        .register(Arc::new(StructuredMemorySyncAdapter::new(
+            target.path().to_path_buf(),
+            "target",
+        )))
+        .unwrap();
+    let merge_store = MergeStore::open(&target.path().join("merge")).unwrap();
+
+    let outcome = registry.apply_change(&change, &merge_store).await.expect(
+        "inbound snapshot must migrate the existing pre-title database before canonical upsert",
+    );
+
+    assert_eq!(outcome.status, RegistryApplyStatus::Applied);
+    let loaded = open_store(target.path(), "default")
+        .get(rua_memory::MemoryGetRequest {
+            ids: vec![record.id.clone()],
+            include_inactive: false,
+        })
+        .unwrap();
+    assert_eq!(loaded[0].title, record.title);
+    assert_eq!(loaded[0].metadata, record.metadata);
+}
+
+#[tokio::test]
+async fn visibility_before_legacy_memory_retries_after_parent_snapshot_upgrade() {
+    let source = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let record = write_memory(source.path(), "default", "Shared legacy-schema memory.");
+    share_memory(source.path(), "default", &record.id, "reviewer");
+    let exported = StructuredMemorySyncAdapter::new(source.path().to_path_buf(), "source")
+        .export_records()
+        .await
+        .unwrap();
+    let memory = exported
+        .iter()
+        .find(|change| change.kind == STRUCTURED_MEMORY_KIND_SNAPSHOT)
+        .unwrap();
+    let visibility = exported
+        .iter()
+        .find(|change| change.kind == STRUCTURED_MEMORY_KIND_VISIBILITY_SNAPSHOT)
+        .unwrap();
+    let workspace = target.path().join("workspaces/default");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let connection = rusqlite::Connection::open(workspace.join("memory.db")).unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../../../rua-memory/tests/fixtures/structured-memory-before-title.sql"
+        ))
+        .unwrap();
+    drop(connection);
+    let mut registry = SyncRegistry::new();
+    registry
+        .register(Arc::new(StructuredMemorySyncAdapter::new(
+            target.path().to_path_buf(),
+            "target",
+        )))
+        .unwrap();
+    let merge_store = MergeStore::open(&target.path().join("merge")).unwrap();
+
+    let error = registry
+        .apply_change(visibility, &merge_store)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("FOREIGN KEY"),
+        "expected missing parent constraint: {error}"
+    );
+    assert!(!merge_store.has_applied_op(&visibility.op_id).unwrap());
+    registry.apply_change(memory, &merge_store).await.unwrap();
+    assert_eq!(
+        registry
+            .apply_change(visibility, &merge_store)
+            .await
+            .unwrap()
+            .status,
+        RegistryApplyStatus::Applied
+    );
+    let grants = open_store(target.path(), "default")
+        .list_visibility_for_agent("default")
+        .unwrap();
+    assert_eq!(grants[0].memory_id, record.id);
+    assert_eq!(grants[0].grantee_agent_ids, vec!["reviewer"]);
+}
+
 fn write_memory(
     data_dir: &std::path::Path,
     agent_id: &str,

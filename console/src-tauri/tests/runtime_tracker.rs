@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr};
 
-use rua_desktop::runtime::{
+use rua_desktop_lib::runtime::{
     packaged_binary_next_to, ready_endpoint_from_stdout, RuntimeTracker, DESKTOP_READY_PREFIX,
 };
 

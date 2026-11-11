@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::errors::ApiError;
 use crate::state::AppState;
-use crate::sync_network::BoundSyncNetworkError;
 
 pub fn require_sync_enabled(state: &AppState) -> Option<Response> {
     if !state.sync_enabled.load(Ordering::SeqCst) {
@@ -761,84 +760,41 @@ fn power_policy_save_error(error: rua_sync::SyncError) -> Response {
 
 async fn get_sync_diagnostics(state: axum::extract::State<AppState>) -> Response {
     let sync_enabled = state.sync_enabled.load(Ordering::SeqCst);
-    let mut identity_mismatch = false;
-    let mut not_paired = false;
-    let (identity, self_pubkey_bytes) = if sync_enabled {
-        let node = state.sync_node.lock().await.as_ref().cloned();
-        let self_pubkey_bytes = match node.as_ref() {
-            Some(node) => *node.node_id().as_bytes(),
-            None => {
-                not_paired = true;
-                [0u8; 32]
-            }
-        };
-
-        if not_paired {
-            (
-                SyncIdentityDiagnostics {
-                    status: "not_paired",
-                    namespace_id: None,
-                    detail: None,
-                },
-                None,
-            )
+    let membership = state.sync_network_membership().await;
+    let not_paired = matches!(
+        membership.state,
+        crate::sync_network::SyncNetworkMembershipState::EnabledNoNetwork
+            | crate::sync_network::SyncNetworkMembershipState::NetworkCreated
+    );
+    let identity_mismatch = matches!(
+        membership.state,
+        crate::sync_network::SyncNetworkMembershipState::IdentityMismatch
+            | crate::sync_network::SyncNetworkMembershipState::CorruptIdentity
+    );
+    let identity = SyncIdentityDiagnostics {
+        status: match membership.state {
+            crate::sync_network::SyncNetworkMembershipState::Disabled => "disabled",
+            crate::sync_network::SyncNetworkMembershipState::Bound => "bound",
+            _ if identity_mismatch => "identity_mismatch",
+            _ => "not_paired",
+        },
+        namespace_id: if not_paired {
+            None
         } else {
-            let network_secret = state
-                .sync_network_secret
-                .read()
-                .ok()
-                .and_then(|guard| guard.as_ref().map(Arc::clone));
-            let device = state
-                .sync_device
-                .read()
-                .ok()
-                .and_then(|guard| guard.as_ref().map(Arc::clone));
-            match crate::sync_network::BoundSyncNetwork::from_optional_parts(
-                &state.rua_root.join("sync"),
-                node.as_ref(),
-                network_secret,
-                device,
-            ) {
-                Ok(bound) => (
-                    SyncIdentityDiagnostics {
-                        status: "bound",
-                        namespace_id: Some(bound.namespace_id_hex()),
-                        detail: None,
-                    },
-                    Some(self_pubkey_bytes),
-                ),
-                Err(
-                    BoundSyncNetworkError::NotPaired | BoundSyncNetworkError::MissingDiskSecret,
-                ) => (
-                    SyncIdentityDiagnostics {
-                        status: "not_paired",
-                        namespace_id: None,
-                        detail: None,
-                    },
-                    Some(self_pubkey_bytes),
-                ),
-                Err(error) => {
-                    identity_mismatch = true;
-                    (
-                        SyncIdentityDiagnostics {
-                            status: "identity_mismatch",
-                            namespace_id: None,
-                            detail: Some(error.to_string()),
-                        },
-                        Some(self_pubkey_bytes),
-                    )
-                }
-            }
-        }
+            membership.namespace_id
+        },
+        detail: membership.detail,
+    };
+    // Device identity survives runtime suspension; peer diagnostics must not
+    // disappear merely because there is no live node from which to read it.
+    let self_pubkey_bytes = if sync_enabled {
+        state
+            .sync_device
+            .read()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|device| device.public_key().to_bytes()))
     } else {
-        (
-            SyncIdentityDiagnostics {
-                status: "disabled",
-                namespace_id: None,
-                detail: None,
-            },
-            None,
-        )
+        None
     };
     let inbox = match state.inbound_inbox.diagnostics(20) {
         Ok(diagnostics) => diagnostics,
@@ -872,13 +828,23 @@ async fn get_sync_diagnostics(state: axum::extract::State<AppState>) -> Response
             );
         }
     };
-    let transport = crate::sync_cycle::load_transport_stats(&state.rua_root.join("sync"));
+    let transport = self_pubkey_bytes
+        .as_ref()
+        .map(|self_public_key| {
+            crate::sync_peer_directory::load_transport_stats_for_network(
+                &state.rua_root.join("sync"),
+                identity.namespace_id.as_deref(),
+                self_public_key,
+            )
+        })
+        .unwrap_or_default();
     let peers = self_pubkey_bytes
         .as_ref()
         .map(|self_pubkey_bytes| {
-            crate::sync_cycle::load_peer_health_diagnostics(
+            crate::sync_peer_directory::load_peer_health_diagnostics_with_transport(
                 &state.rua_root.join("sync"),
                 self_pubkey_bytes,
+                &transport,
             )
         })
         .unwrap_or_default();

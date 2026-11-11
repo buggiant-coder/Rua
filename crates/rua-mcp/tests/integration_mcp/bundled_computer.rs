@@ -1,19 +1,31 @@
+#[cfg(unix)]
 use mcp_manager::types::{McpCallContext, McpConfig, McpServerId};
+#[cfg(unix)]
 use mcp_manager::{client::McpClient, manager::McpManager};
+#[cfg(unix)]
 use rua_contract::Tool;
+#[cfg(unix)]
 use rua_core::tool::{ToolContext, MODEL_SUPPORTS_IMAGE_METADATA_KEY};
+#[cfg(unix)]
 use rua_core::{ChatAddress, ContentPart};
-use rua_mcp::bundled_computer::{
-    BundledComputer, BundledComputerClient, ComputerPermissions, SERVER_ID,
-};
+use rua_mcp::bundled_computer::ComputerPermissions;
+#[cfg(unix)]
+use rua_mcp::bundled_computer::{BundledComputer, BundledComputerClient, SERVER_ID};
+#[cfg(unix)]
 use rua_mcp::{McpManagerImpl, McpMobilePolicy, McpToolBridge, PlatformProfile};
-use serde_json::{json, Value};
+use serde_json::json;
+#[cfg(unix)]
+use serde_json::Value;
+#[cfg(unix)]
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::sync::Arc;
 
+#[cfg(unix)]
 fn permissions() -> Value {
     json!({"source":{"attribution":"host"},"accessibility":true,"screen_recording":true})
 }
+#[cfg(unix)]
 fn context(agent: &str) -> McpCallContext {
     McpCallContext {
         agent_id: agent.into(),

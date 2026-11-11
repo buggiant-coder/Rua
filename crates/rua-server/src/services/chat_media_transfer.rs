@@ -28,8 +28,7 @@ impl ChatMediaTransferRegistry {
     pub fn authorize_upload(&self, upload: AuthorizedMediaUpload) -> Result<(), String> {
         std::fs::create_dir_all(&upload.media_dir)
             .map_err(|error| format!("create Chat Media directory: {error}"))?;
-        std::fs::File::open(&upload.media_dir)
-            .and_then(|directory| directory.sync_all())
+        rua_core::fs::sync_directory(&upload.media_dir)
             .map_err(|error| format!("sync Chat Media directory: {error}"))?;
         let mut uploads = self.uploads.lock().unwrap_or_else(|lock| lock.into_inner());
         uploads.retain(|_, upload| upload.authorized_at.elapsed() < Self::AUTHORIZATION_TTL);
@@ -93,7 +92,7 @@ impl ChatMediaTransferRegistry {
             temp.write_all(&bytes)?;
             temp.sync_all()?;
             std::fs::rename(&temp_path, &metadata_path)?;
-            std::fs::File::open(&upload.media_dir)?.sync_all()
+            rua_core::fs::sync_directory(&upload.media_dir)
         })();
         if result.is_err() {
             let _ = std::fs::remove_file(&temp_path);

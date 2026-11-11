@@ -82,7 +82,11 @@ async fn build_peer(
     std::fs::create_dir_all(&sync_dir).expect("sync dir");
     std::fs::write(
         sync_dir.join("device_list.json"),
-        serde_json::to_vec_pretty(&DeviceList { devices: peers }).expect("serialize peers"),
+        serde_json::to_vec_pretty(&DeviceList {
+            devices: peers,
+            ..Default::default()
+        })
+        .expect("serialize peers"),
     )
     .expect("write peers");
     let secret = iroh::SecretKey::from_bytes(&[secret_byte; 32]);

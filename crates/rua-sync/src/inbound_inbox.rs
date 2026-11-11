@@ -443,6 +443,24 @@ impl InboundInbox {
         self.pending_ready_limited(now_ms, usize::MAX)
     }
 
+    /// Next automatic drain deadline; terminal states never schedule retries.
+    pub fn next_drain_delay(&self, now_ms: u64) -> Result<Option<std::time::Duration>, SyncError> {
+        let connection = self.connection()?;
+        let due: Option<i64> = connection
+            .query_row(
+                "SELECT MIN(CASE state WHEN 'pending' THEN 0 ELSE COALESCE(retry_after_ms, 0) END)
+                 FROM inbound_inbox WHERE state IN ('pending', 'retryable')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| sql_error("read next drain deadline", error))?;
+        due.map(|due| {
+            u64_from_i64(due, "inbound inbox drain deadline")
+                .map(|due| std::time::Duration::from_millis(due.saturating_sub(now_ms)))
+        })
+        .transpose()
+    }
+
     pub fn pending_ready_limited(
         &self,
         now_ms: u64,

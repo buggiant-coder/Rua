@@ -25,6 +25,10 @@ pub enum BoundSyncNetworkError {
         runtime_device_id: String,
         state_device_id: String,
     },
+    PersistedNamespaceMismatch {
+        bound_namespace_id: String,
+        secret_namespace_id: String,
+    },
     CorruptDiskSecret(String),
 }
 
@@ -54,6 +58,13 @@ impl std::fmt::Display for BoundSyncNetworkError {
                 f,
                 "runtime Device {runtime_device_id} does not match in-memory Device {state_device_id}"
             ),
+            Self::PersistedNamespaceMismatch {
+                bound_namespace_id,
+                secret_namespace_id,
+            } => write!(
+                f,
+                "persisted namespace {bound_namespace_id} does not match network secret namespace {secret_namespace_id}"
+            ),
             Self::CorruptDiskSecret(error) => write!(f, "network secret load failed: {error}"),
         }
     }
@@ -73,6 +84,7 @@ pub enum SyncNetworkMembershipState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Display projection of durable network membership, not live-node readiness.
 pub struct SyncNetworkMembership {
     pub state: SyncNetworkMembershipState,
     #[serde(skip_serializing_if = "Option::is_none")]

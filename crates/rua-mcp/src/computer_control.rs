@@ -128,14 +128,24 @@ fn invalid(message: &str) -> McpError {
 }
 
 pub fn interaction_tool(tools: &[McpToolInfo]) -> Option<McpToolInfo> {
-    let variants: Vec<_> = ["click", "type_text", "press_key", "scroll"].iter().filter_map(|name| {
-        let tool=tools.iter().find(|tool| tool.name==*name)?;
-        let mut schema=tool.input_schema.clone();
-        if let Some(props)=schema["properties"].as_object_mut() { props.retain(|key,_| action_properties(name).contains(&key.as_str())); }
-        if let Some(required)=schema["required"].as_array_mut() { required.retain(|v| v.as_str().is_some_and(|v|action_properties(name).contains(&v))); }
-        schema["additionalProperties"]=json!(false);
-        Some(json!({"type":"object","required":["tool","arguments"],"additionalProperties":false,"properties":{"tool":{"type":"string","enum":[name]},"arguments":schema}}))
-    }).collect();
+    let variants: Vec<_> = ["click", "type_text", "press_key", "scroll"]
+        .into_iter()
+        .filter_map(|name| {
+            let tool = tools.iter().find(|tool| tool.name == name)?;
+            let mut schema = tool.input_schema.clone();
+            let allowed = action_properties(name);
+            if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+                properties.retain(|key, _| allowed.contains(&key.as_str()));
+            }
+            // Optional JSON Schema keywords must stay absent. IndexMut would
+            // insert null before inspecting a native schema without `required`.
+            if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
+                required.retain(|value| value.as_str().is_some_and(|name| allowed.contains(&name)));
+            }
+            schema["additionalProperties"] = json!(false);
+            Some(json!({"type":"object","required":["tool","arguments"],"additionalProperties":false,"properties":{"tool":{"type":"string","enum":[name]},"arguments":schema}}))
+        })
+        .collect();
     if variants.len() != 4 {
         return None;
     }

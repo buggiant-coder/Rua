@@ -1,5 +1,5 @@
-use rua_desktop::bundle::{sha256, validate_receipt};
-use rua_desktop::update_bundle::{extract_macos, extract_windows_installer, DirectorySwap};
+use rua_desktop_lib::bundle::{sha256, validate_receipt};
+use rua_desktop_lib::update_bundle::{extract_macos, extract_windows_installer, DirectorySwap};
 use serde_json::json;
 use std::io::{Cursor, Write};
 use std::path::Path;
@@ -97,12 +97,15 @@ fn release_receipt_rejects_missing_component_and_different_product_target_or_man
     .is_err());
 }
 fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    archive_with_mode(entries, 0o755)
+}
+fn archive_with_mode(entries: &[(&str, &[u8])], mode: u32) -> Vec<u8> {
     let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut tar = tar::Builder::new(encoder);
     for (name, data) in entries {
         let mut h = tar::Header::new_gnu();
         h.set_size(data.len() as u64);
-        h.set_mode(0o755);
+        h.set_mode(mode);
         h.set_cksum();
         tar.append_data(&mut h, name, *data).unwrap();
     }
@@ -120,6 +123,30 @@ fn archive_extraction_preserves_single_bundle_and_refuses_mixed_roots() {
     let mixed = archive(&[("Rua.app/one", b"1"), ("Other.app/two", b"2")]);
     assert!(extract_macos(&mixed, temp.path()).is_err());
     assert!(extract_macos(&archive(&[]), temp.path()).is_err());
+}
+
+#[test]
+fn archive_extraction_preserves_read_only_file_bytes_and_permissions() {
+    let temp = tempfile::tempdir().unwrap();
+    let bytes = archive_with_mode(
+        &[(
+            "Rua.app/Contents/Resources/read-only.txt",
+            b"sealed resource",
+        )],
+        0o444,
+    );
+    let root = extract_macos(&bytes, temp.path()).unwrap();
+    let path = root.join("Contents/Resources/read-only.txt");
+    assert_eq!(std::fs::read(&path).unwrap(), b"sealed resource");
+    assert!(std::fs::metadata(&path).unwrap().permissions().readonly());
+    #[cfg(windows)]
+    {
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        // Test cleanup clears the Windows file attribute, never Unix permission bits.
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
 }
 #[test]
 fn windows_update_archive_accepts_one_installer_and_rejects_extra_executables() {
@@ -146,7 +173,7 @@ fn windows_update_archive_accepts_one_installer_and_rejects_extra_executables() 
 
 #[test]
 fn signed_pe_retains_the_release_identity_but_changed_code_does_not() {
-    use rua_desktop::bundle::pe_image_sha256;
+    use rua_desktop_lib::bundle::pe_image_sha256;
     let mut unsigned = vec![0u8; 512];
     unsigned[..2].copy_from_slice(b"MZ");
     unsigned[0x3c..0x40].copy_from_slice(&64u32.to_le_bytes());

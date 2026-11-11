@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use rua_desktop::owner::{
+use rua_desktop_lib::owner::{
     identity_matches, reconcile_decision, OwnerRecord, ProcessIdentity, ReconcileDecision,
     OWNER_RECORD_VERSION,
 };

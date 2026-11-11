@@ -33,6 +33,10 @@ hex = "0.4"
 hostname = "0.4"
 
 [dev-dependencies]
+iroh = { workspace = true, features = ["unstable-custom-transports"] }
+iroh-base = "=1.0.0-rc.0"
+n0-watcher = "=1.0.0-rc.0"
+noq-udp = "=1.0.0-rc.0"
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

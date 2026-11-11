@@ -67,6 +67,22 @@ the original submission data in its existing draft/storage lifetime for refresh
 reconciliation. This does not add server restart recovery or an exactly-once
 guarantee for external side effects.
 
+Remote input confirmation has a finite 30-second window starting after required
+media preparation, independent of the shorter control-command window. The
+prepared delivery payload stays stable across observation of the same attempt;
+a confirmation timeout neither cancels accepted work nor proves rejection. An
+unconfirmed HTTP result carries `mode: unconfirmed`, `delivery_unknown`, and the
+original Chat, submission, Device delivery, target, and sequence identifiers;
+Authority-owned input IDs and acceptance timestamps remain absent until known.
+The source preserves its existing submitted draft for canonical-history
+reconciliation and does not automatically resend the mutation.
+
+An acceptance reply follows complete canonical admission, including the first
+Chat configuration, placement, and user boundary. Post-commit Sync publication
+runs under the existing Workspace Runtime task tracker with cancellation and a
+finite lifetime; a blocked Sync lock cannot hold the acceptance reply. Optional
+Control View enrichment has a bounded best-effort wait and may be omitted.
+
 Each successful initial materialization or authority adoption installs a new
 Authority Epoch represented by Rua's sortable HLC tuple
 `(wall_ms, logical_counter, device_id)`. It is an opaque generation token to

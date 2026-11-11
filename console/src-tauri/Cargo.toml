@@ -10,7 +10,7 @@ rust-version = "1.91"
 default-run = "rua-desktop"
 
 [lib]
-name = "rua_desktop"
+name = "rua_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

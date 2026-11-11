@@ -79,6 +79,12 @@ pub struct DeviceSessionConfig {
     pub capabilities: BTreeSet<String>,
     pub connect_timeout: Duration,
     pub handshake_timeout: Duration,
+    /// Minimum health-probe budget after a logical timeout or network change.
+    /// The selected connection path's smoothed RTT can raise this to three RTTs,
+    /// capped at ten seconds unless this configured floor is already higher.
+    /// Without a selected-path observation, use the largest known RTT among
+    /// this connection's open paths. With no RTT, allow ten seconds or this
+    /// configured floor, whichever is higher.
     pub network_change_probe_timeout: Duration,
     pub reconnect_attempts: usize,
     pub replacement_drain_timeout: Duration,
@@ -408,6 +414,7 @@ struct DeviceSessionConnection {
     origin: DeviceSessionOrigin,
     connection: Connection,
     active_streams: AtomicUsize,
+    health_probe_running: AtomicBool,
     draining: AtomicBool,
     stream_idle: Notify,
     established_at_ms: u64,
@@ -466,21 +473,46 @@ impl DeviceSessionConnection {
         })
     }
 
+    fn path_observation(&self) -> (String, Option<Duration>) {
+        let paths = self.connection.paths();
+        let selected = paths.iter().find(|path| path.is_selected());
+        let path_class = match selected.as_ref() {
+            Some(path) if path.is_ip() => "direct",
+            Some(path) if path.is_relay() => "relay",
+            Some(_) => "other",
+            None => "unknown",
+        };
+        // Iroh's peer-wide route can stay selected when this new connection is
+        // added, leaving its path snapshot without an is_selected observation.
+        // Open-path statistics still come from this exact QUIC connection.
+        let rtt = selected
+            .map(|path| path.rtt())
+            .filter(|rtt| !rtt.is_zero())
+            .or_else(|| {
+                paths
+                    .iter()
+                    .map(|path| path.rtt())
+                    .filter(|rtt| !rtt.is_zero())
+                    .max()
+            });
+        (path_class.to_string(), rtt)
+    }
+
     fn path_diagnostics(&self) -> (String, Option<u64>) {
-        self.connection
-            .paths()
-            .iter()
-            .find(|path| path.is_selected())
-            .map(|path| {
-                if path.is_ip() {
-                    ("direct".to_string(), Some(path.rtt().as_millis() as u64))
-                } else if path.is_relay() {
-                    ("relay".to_string(), Some(path.rtt().as_millis() as u64))
-                } else {
-                    ("other".to_string(), Some(path.rtt().as_millis() as u64))
-                }
-            })
-            .unwrap_or_else(|| ("unknown".to_string(), None))
+        let (path_class, rtt) = self.path_observation();
+        (path_class, rtt.map(|rtt| rtt.as_millis() as u64))
+    }
+
+    fn health_probe_timeout(&self, floor: Duration) -> Duration {
+        // This is an application liveness heuristic, not QUIC's PTO: the
+        // public path API exposes smoothed RTT, but not RTT variance. A missing
+        // observation is not evidence of a fast path, so retain the finite
+        // conservative ceiling instead of reverting to a one-second probe.
+        self.path_observation()
+            .1
+            .map(|rtt| rtt.saturating_mul(3).min(Duration::from_secs(10)))
+            .unwrap_or(Duration::from_secs(10))
+            .max(floor)
     }
 
     fn traffic_bytes(&self) -> (u64, u64) {
@@ -494,6 +526,18 @@ impl DeviceSessionConnection {
             .iter()
             .find(|path| path.is_selected())
             .map(|path| path.remote_addr().clone())
+    }
+}
+
+struct HealthProbeGuard {
+    session: Arc<DeviceSessionConnection>,
+}
+
+impl Drop for HealthProbeGuard {
+    fn drop(&mut self) {
+        self.session
+            .health_probe_running
+            .store(false, Ordering::SeqCst);
     }
 }
 
@@ -667,17 +711,20 @@ impl DeviceSessionManager {
             .cloned()
             .collect::<Vec<_>>();
         let probed_sessions = sessions.len();
-        let probe_timeout = self.inner.config.network_change_probe_timeout;
         let results = futures::future::join_all(sessions.into_iter().map(|session| {
             let manager = self.clone();
             async move {
-                let deadline = Instant::now() + probe_timeout;
-                let result = timeout_at(
-                    deadline,
-                    "network-change probe",
-                    manager.execute_probe(&session),
-                )
-                .await;
+                let deadline = Instant::now()
+                    + session
+                        .health_probe_timeout(manager.inner.config.network_change_probe_timeout);
+                let result = tokio::select! {
+                    _ = manager.inner.cancellation.cancelled() => return false,
+                    result = timeout_at(
+                        deadline,
+                        "network-change probe",
+                        manager.execute_probe(&session),
+                    ) => result,
+                };
                 match result {
                     Ok(Ok(())) => false,
                     Ok(Err(error)) | Err(error) => {
@@ -868,13 +915,7 @@ impl DeviceSessionManager {
                     return Err(error);
                 }
                 Err(error) => {
-                    let manager = self.clone();
-                    self.inner.tasks.spawn(async move {
-                        tokio::select! {
-                            _ = manager.inner.cancellation.cancelled() => {},
-                            _ = manager.preserve_responsive_generation_after_timeout(&session) => {},
-                        }
-                    });
+                    self.schedule_health_probe_after_timeout(session);
                     return Err(error);
                 }
             }
@@ -940,17 +981,8 @@ impl DeviceSessionManager {
                     return Err(error);
                 }
                 Err(error) => {
-                    last_error = Some(error.to_string());
-                    if self
-                        .preserve_responsive_generation_after_timeout(&session)
-                        .await
-                    {
-                        return Err(error);
-                    }
-                    if attempt == self.inner.config.reconnect_attempts || Instant::now() >= deadline
-                    {
-                        return Err(error);
-                    }
+                    self.schedule_health_probe_after_timeout(session);
+                    return Err(error);
                 }
                 Ok(Err(error)) => {
                     last_error = Some(error.to_string());
@@ -1024,17 +1056,8 @@ impl DeviceSessionManager {
                     return Err(error);
                 }
                 Err(error) => {
-                    last_error = Some(error.to_string());
-                    if self
-                        .preserve_responsive_generation_after_timeout(&session)
-                        .await
-                    {
-                        return Err(error);
-                    }
-                    if attempt == self.inner.config.reconnect_attempts || Instant::now() >= deadline
-                    {
-                        return Err(error);
-                    }
+                    self.schedule_health_probe_after_timeout(session);
+                    return Err(error);
                 }
                 Ok(Err(error)) => {
                     last_error = Some(error.to_string());
@@ -1512,6 +1535,7 @@ impl DeviceSessionManager {
             origin,
             connection,
             active_streams: AtomicUsize::new(0),
+            health_probe_running: AtomicBool::new(false),
             draining: AtomicBool::new(false),
             stream_idle: Notify::new(),
             established_at_ms: now,
@@ -1607,33 +1631,42 @@ impl DeviceSessionManager {
         Ok(())
     }
 
-    async fn preserve_responsive_generation_after_timeout(
-        &self,
-        session: &Arc<DeviceSessionConnection>,
-    ) -> bool {
-        let deadline = Instant::now() + self.inner.config.network_change_probe_timeout;
-        match timeout_at(
-            deadline,
-            "session health probe",
-            self.execute_probe(session),
-        )
-        .await
-        {
-            Ok(Ok(())) => {
-                self.set_peer_state(
-                    session.peer_device_id,
-                    session.peer_endpoint_id,
-                    DeviceSessionState::Connected,
-                    None,
-                    false,
-                );
-                true
-            }
-            Ok(Err(error)) | Err(error) => {
-                self.invalidate_if_generation(session.peer_device_id, session.generation, &error);
-                false
-            }
+    fn schedule_health_probe_after_timeout(&self, session: Arc<DeviceSessionConnection>) {
+        // One manager-owned probe per generation bounds work even when many
+        // independent logical operations expire together. Never replay them.
+        if session.health_probe_running.swap(true, Ordering::SeqCst) {
+            return;
         }
+        // Construct before spawning so cancellation also releases the flag if
+        // the tracked task is dropped before its first poll.
+        let guard = HealthProbeGuard { session };
+        let manager = self.clone();
+        let cancellation = self.inner.cancellation.child_token();
+        self.inner.tasks.spawn(async move {
+            let session = &guard.session;
+            let deadline = Instant::now()
+                + session.health_probe_timeout(manager.inner.config.network_change_probe_timeout);
+            let result = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return,
+                _ = session.connection.closed() => return,
+                result = timeout_at(
+                    deadline,
+                    "session health probe",
+                    manager.execute_probe(session),
+                ) => result,
+            };
+            if let Ok(Err(error)) | Err(error) = result {
+                manager.invalidate_if_generation(
+                    session.peer_device_id,
+                    session.generation,
+                    &error,
+                );
+            }
+            // A logical timeout never downgraded connectivity. Success needs
+            // no state update, which also prevents stale probes reviving a
+            // replaced or removed generation's status.
+        });
     }
 
     async fn execute_command(

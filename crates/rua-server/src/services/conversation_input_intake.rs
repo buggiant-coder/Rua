@@ -252,6 +252,14 @@ pub enum ConversationInputDeliveryOutcome {
         accepted_at: Option<String>,
         control: Option<Box<crate::services::conversation_authority::ConversationControlView>>,
     },
+    Unconfirmed {
+        chat_id: String,
+        detail: String,
+        submission_id: String,
+        device_delivery_id: String,
+        target_device_id: String,
+        device_delivery_sequence: u64,
+    },
     Rejected {
         detail: String,
         target_device_id: Option<String>,
@@ -281,6 +289,30 @@ pub(crate) struct InitialAcpSelection {
 }
 
 impl ConversationInputDeliveryOutcome {
+    fn remote_error(
+        request: &RemoteConversationInputRequest,
+        error: DeviceCommandDeliveryError,
+    ) -> Self {
+        let unconfirmed = matches!(error.failure_kind(), "device_offline" | "protocol_error")
+            || matches!(&error, DeviceCommandDeliveryError::Rejected { reason, .. } if reason == "unexpected_response");
+        if unconfirmed {
+            Self::Unconfirmed {
+                chat_id: request.chat_id().to_string(),
+                detail: error.to_string(),
+                submission_id: request.submission_id.clone(),
+                device_delivery_id: request.device_delivery_id.clone(),
+                target_device_id: request.target_device_id.clone(),
+                device_delivery_sequence: request.device_delivery_sequence,
+            }
+        } else {
+            Self::Rejected {
+                detail: error.to_string(),
+                target_device_id: Some(request.target_device_id.clone()),
+                failure_kind: Some(error.failure_kind().to_string()),
+            }
+        }
+    }
+
     fn local_started(
         chat_id: String,
         input_id: Option<String>,
@@ -4254,11 +4286,9 @@ impl ConversationInputIntake {
                         .await
                     {
                         Ok(outcome) => ConversationInputDeliveryOutcome::remote(chat_id, outcome),
-                        Err(error) => ConversationInputDeliveryOutcome::Rejected {
-                            detail: error.to_string(),
-                            target_device_id: Some(target_device_id),
-                            failure_kind: Some(error.failure_kind().to_string()),
-                        },
+                        Err(error) => {
+                            ConversationInputDeliveryOutcome::remote_error(&prepared, error)
+                        }
                     },
                     Err(detail) => ConversationInputDeliveryOutcome::Rejected {
                         detail,
@@ -4564,11 +4594,7 @@ impl ConversationInputIntake {
                     .await
                 {
                     Ok(outcome) => ConversationInputDeliveryOutcome::remote(chat_id, outcome),
-                    Err(error) => ConversationInputDeliveryOutcome::Rejected {
-                        detail: error.to_string(),
-                        target_device_id: Some(project.resource_device_id),
-                        failure_kind: Some(error.failure_kind().to_string()),
-                    },
+                    Err(error) => ConversationInputDeliveryOutcome::remote_error(&prepared, error),
                 }
             }
             ConversationSubmitRoute::Rejected {
@@ -6337,20 +6363,12 @@ impl ConversationInputIntake {
                 {
                     Ok(outcome) => outcome,
                     Err(error) => {
-                        return ConversationInputDeliveryOutcome::Rejected {
-                            detail: error.to_string(),
-                            target_device_id: Some(prepared.target_device_id),
-                            failure_kind: Some(error.failure_kind().to_string()),
-                        };
+                        return ConversationInputDeliveryOutcome::remote_error(&prepared, error);
                     }
                 }
             }
             Err(error) => {
-                return ConversationInputDeliveryOutcome::Rejected {
-                    detail: error.to_string(),
-                    target_device_id: Some(prepared.target_device_id),
-                    failure_kind: Some(error.failure_kind().to_string()),
-                };
+                return ConversationInputDeliveryOutcome::remote_error(&prepared, error);
             }
         };
         ConversationInputDeliveryOutcome::remote(address.chat_id().to_string(), outcome)
@@ -7135,22 +7153,14 @@ impl ConversationInputIntake {
                     }
                 }
             }
-            self.session_sync
-                .emit_evergreen_chat_snapshot(&scope_root, &request.address)
+            self.schedule_accepted_remote_input_publication(&scope_root, &request, false)
                 .await;
-            if request.source_device_id != request.target_device_id {
-                self.sync_committed_state_after_foreground(
-                    &request.address,
-                    &request.source_device_id,
-                )
-                .await;
-            }
             return Ok(conversation_input_ack(
                 &request,
                 accepted_at,
                 acceptance.input_id,
                 acceptance.mode,
-                self.authority_control_view(&scope_root, &request.address)
+                self.remote_input_ack_control(&scope_root, &request.address)
                     .await,
             ));
         }
@@ -7363,34 +7373,90 @@ impl ConversationInputIntake {
                 }
             };
             if requires_atomic_materialization {
-                if let Some(entry) =
-                    crate::services::chat_index::get(&scope_root, request.chat_id()).await?
-                {
-                    self.session_sync
-                        .emit_chat_index_upsert_for(
-                            &request.address,
-                            crate::services::console_chat::chat_index_entry_to_json(&entry),
-                        )
-                        .await;
-                }
-                self.session_sync
-                    .emit_evergreen_chat_snapshot(&scope_root, &request.address)
+                self.schedule_accepted_remote_input_publication(&scope_root, &request, true)
                     .await;
-                if request.source_device_id != request.target_device_id {
-                    self.remote_input_delivery
-                        .spawn_priority_sync_to_device(&request.source_device_id);
-                }
             }
             return Ok(conversation_input_ack(
                 &request,
                 accepted_at,
                 input.input_id,
                 mode,
-                self.authority_control_view(&scope_root, &request.address)
+                self.remote_input_ack_control(&scope_root, &request.address)
                     .await,
             ));
         }
         Err("Conversation Authority is unavailable".to_string())
+    }
+
+    async fn remote_input_ack_control(
+        &self,
+        scope_root: &Path,
+        address: &ChatAddress,
+    ) -> Option<Box<crate::services::conversation_authority::ConversationControlView>> {
+        // This read-only enrichment is optional. Durable acceptance must not
+        // depend on metadata or a Control View becoming available promptly.
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            self.authority_control_view(scope_root, address),
+        )
+        .await
+        .ok()
+        .flatten()
+    }
+
+    async fn schedule_accepted_remote_input_publication(
+        &self,
+        scope_root: &Path,
+        request: &RemoteConversationInputRequest,
+        include_index: bool,
+    ) {
+        let Some(runtime) = self.registry.get(&request.agent_id).await else {
+            return;
+        };
+        let task_id = format!(
+            "remote-input-publication:{}:{}",
+            request.device_delivery_id,
+            uuid::Uuid::new_v4()
+        );
+        let cancellation = runtime
+            .task_tracker()
+            .register(task_id.clone(), "Publish accepted remote input".to_string())
+            .await;
+        // Register before checking lifecycle: shutdown either observes this token
+        // in cancel_all, or this check rejects a registration made after it.
+        if !runtime.can_accept_requests().await {
+            runtime.task_tracker().complete(&task_id).await;
+            return;
+        }
+        let scope_root = scope_root.to_path_buf();
+        let request = request.clone();
+        let session_sync = self.session_sync.clone();
+        let delivery = self.remote_input_delivery.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => {},
+                result = tokio::time::timeout(Duration::from_secs(30), async {
+                    if include_index {
+                        if let Ok(Some(entry)) = crate::services::chat_index::get(&scope_root, request.chat_id()).await {
+                            session_sync.emit_chat_index_upsert_for(
+                                &request.address,
+                                crate::services::console_chat::chat_index_entry_to_json(&entry),
+                            ).await;
+                        }
+                    }
+                    session_sync.emit_evergreen_chat_snapshot(&scope_root, &request.address).await;
+                    if request.source_device_id != request.target_device_id {
+                        delivery.priority_sync_to_device(&request.source_device_id).await;
+                    }
+                }) => {
+                    if result.is_err() {
+                        tracing::warn!(chat_address = %request.address, "accepted remote input publication timed out; canonical state remains committed");
+                    }
+                },
+            }
+            runtime.task_tracker().complete(&task_id).await;
+        });
     }
 
     async fn materialize_remote_media(

@@ -6,6 +6,121 @@ use rua_memory::{
     MEMORY_TITLE_MAX_CHARS,
 };
 
+#[test]
+fn legacy_subject_schema_migrates_titles_preserving_rows_and_unknown_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("memory.db");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(include_str!(
+        "../fixtures/structured-memory-before-title.sql"
+    ))
+    .unwrap();
+    conn.execute_batch("ALTER TABLE memory_records ADD COLUMN future_metadata TEXT;
+        INSERT INTO memory_records (id, agent_id, scope, kind, subject, content, status, confidence, created_at, metadata_json, future_metadata)
+        VALUES ('legacy-subject', 'agent-a', 'user', 'preference', '  Workstation\nPreference  ', 'Existing canonical content.', 'active', 0.9, '2026-01-01T00:00:00Z', '{\"future\":{\"kept\":true}}', 'unknown column value');
+        INSERT INTO memory_records (id, agent_id, scope, kind, subject, content, status, confidence, created_at)
+        VALUES ('legacy-null', 'agent-a', 'user', 'fact', NULL, 'Content provides the missing title.', 'active', 1.0, '2026-01-01T00:00:00Z');").unwrap();
+    drop(conn);
+
+    let store = StructuredMemoryStore::open(&path).expect("upgrade old subject schema");
+    let records = store
+        .get(MemoryGetRequest {
+            ids: vec![
+                rua_memory::MemoryId::new("legacy-subject"),
+                rua_memory::MemoryId::new("legacy-null"),
+            ],
+            include_inactive: true,
+        })
+        .unwrap();
+    assert_eq!(records[0].title, "Workstation Preference");
+    assert_eq!(records[0].content, "Existing canonical content.");
+    assert_eq!(
+        records[0].metadata,
+        serde_json::json!({"future": {"kept": true}})
+    );
+    assert_eq!(records[1].title, "Content provides the missing title.");
+    assert_eq!(
+        store.search("agent-a", "Workstation", 5).unwrap()[0].0.id.0,
+        "legacy-subject"
+    );
+    drop(store);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let preserved: (String, String) = conn
+        .query_row(
+            "SELECT subject, future_metadata FROM memory_records WHERE id='legacy-subject'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        preserved,
+        (
+            "  Workstation\nPreference  ".into(),
+            "unknown column value".into()
+        )
+    );
+    conn.execute(
+        "UPDATE memory_records SET title='Current canonical title' WHERE id='legacy-subject'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let reopened = StructuredMemoryStore::open(&path).unwrap();
+    assert_eq!(
+        reopened
+            .get(MemoryGetRequest {
+                ids: vec![rua_memory::MemoryId::new("legacy-subject")],
+                include_inactive: true
+            })
+            .unwrap()[0]
+            .title,
+        "Current canonical title"
+    );
+}
+
+#[test]
+fn failed_legacy_title_migration_rolls_back_schema_and_preserves_data() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("memory.db");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(include_str!(
+        "../fixtures/structured-memory-before-title.sql"
+    ))
+    .unwrap();
+    conn.execute_batch("INSERT INTO memory_records (id, agent_id, scope, kind, subject, content, status, confidence, created_at, metadata_json)
+        VALUES ('preserved', 'agent-a', 'user', 'fact', 'Existing title', 'Existing content', 'active', 1, '2026-01-01T00:00:00Z', '{\"unknown\":42}');
+        CREATE TRIGGER fail_upgrade BEFORE UPDATE ON memory_records BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END;").unwrap();
+    drop(conn);
+    assert!(StructuredMemoryStore::open(&path).is_err());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let columns = conn
+        .prepare("PRAGMA table_info(memory_records)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(!columns.iter().any(|name| name == "title"));
+    assert_eq!(
+        conn.query_row(
+            "SELECT metadata_json FROM memory_records WHERE id='preserved'",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "{\"unknown\":42}"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='memory_sources'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
 fn write_memory(
     store: &mut StructuredMemoryStore,
     content: &str,

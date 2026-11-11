@@ -167,6 +167,92 @@ beforeEach(() => {
 });
 
 describe("ConversationNavigation", () => {
+  it("refreshes projects received from another device when returning to the foreground", async () => {
+    vi.mocked(projectsApi.list).mockResolvedValue([]);
+    render(
+      <ConversationNavigation
+        location={{ pathname: "/agents/alpha/chats/same", search: "" }}
+        onNavigate={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(projectsApi.list).toHaveBeenCalledTimes(1));
+    vi.mocked(projectsApi.list).mockResolvedValue([project("replicated")]);
+    act(() => window.dispatchEvent(new Event("rua:foreground")));
+    expect(
+      await screen.findByRole("button", { name: "Project replicated", exact: true }),
+    ).toBeInTheDocument();
+  });
+
+  it("refreshes projects received while the visible navigation stays mounted", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      vi.mocked(projectsApi.list).mockResolvedValue([]);
+      const view = render(
+        <ConversationNavigation
+          location={{ pathname: "/agents/alpha/chats/same", search: "" }}
+          onNavigate={vi.fn()}
+        />,
+      );
+      await waitFor(() => expect(projectsApi.list).toHaveBeenCalledTimes(1));
+      vi.mocked(projectsApi.list).mockResolvedValue([project("replicated")]);
+      act(() => vi.advanceTimersByTime(10000));
+      expect(
+        await screen.findByRole("button", { name: "Project replicated", exact: true }),
+      ).toBeInTheDocument();
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces foreground and polling refreshes while a project request is pending", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const pending = deferred<ReturnType<typeof project>[]>();
+      vi.mocked(projectsApi.list).mockReturnValueOnce(pending.promise);
+      const view = render(
+        <ConversationNavigation
+          location={{ pathname: "/agents/alpha/chats/same", search: "" }}
+          onNavigate={vi.fn()}
+        />,
+      );
+      await waitFor(() => expect(projectsApi.list).toHaveBeenCalledTimes(1));
+      act(() => {
+        vi.advanceTimersByTime(30000);
+        window.dispatchEvent(new Event("rua:foreground"));
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(projectsApi.list).toHaveBeenCalledTimes(1);
+      await act(async () => pending.resolve([project("one")]));
+      await waitFor(() => expect(projectsApi.list).toHaveBeenCalledTimes(2));
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refreshes conversations replicated into an already expanded project", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      vi.mocked(projectChatsApi.listChats).mockResolvedValue({ data: [], total: 0 });
+      const view = render(
+        <ConversationNavigation
+          location={{ pathname: "/projects/one/chats/same", search: "" }}
+          onNavigate={vi.fn()}
+        />,
+      );
+      await waitFor(() => expect(projectChatsApi.listChats).toHaveBeenCalledTimes(1));
+      vi.mocked(projectChatsApi.listChats).mockResolvedValue({
+        data: [chat("remote", "Synced conversation")], total: 1,
+      });
+      act(() => vi.advanceTimersByTime(10000));
+      expect(await screen.findByRole("button", { name: "Synced conversation", exact: true })).toBeInTheDocument();
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each(["/projects/one/chats/same", "/agents/alpha/chats/same"])(
     "keeps independent chats collapsed across More routes and remounts from %s",
     async (pathname) => {

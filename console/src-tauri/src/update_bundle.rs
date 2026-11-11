@@ -180,8 +180,29 @@ pub fn extract_macos(bytes: &[u8], directory: &Path) -> Result<PathBuf, String> 
         }
         let unpacked = directory.join(&path);
         if entry.header().entry_type().is_file() {
-            std::fs::File::open(&unpacked)
-                .and_then(|file| file.sync_all())
+            #[cfg(windows)]
+            let file = {
+                // FlushFileBuffers requires a writable handle. Archive files may
+                // be read-only; restore that attribute immediately after opening.
+                let permissions = std::fs::metadata(&unpacked)
+                    .map_err(|e| e.to_string())?
+                    .permissions();
+                if permissions.readonly() {
+                    let mut writable = permissions.clone();
+                    // Windows clears only FILE_ATTRIBUTE_READONLY; Unix mode bits are untouched.
+                    #[allow(clippy::permissions_set_readonly_false)]
+                    writable.set_readonly(false);
+                    std::fs::set_permissions(&unpacked, writable).map_err(|e| e.to_string())?;
+                }
+                let file = std::fs::OpenOptions::new().write(true).open(&unpacked);
+                if permissions.readonly() {
+                    std::fs::set_permissions(&unpacked, permissions).map_err(|e| e.to_string())?;
+                }
+                file
+            };
+            #[cfg(not(windows))]
+            let file = std::fs::File::open(&unpacked);
+            file.and_then(|file| file.sync_all())
                 .map_err(|e| e.to_string())?;
         }
         if let Some(parent) = unpacked.parent() {

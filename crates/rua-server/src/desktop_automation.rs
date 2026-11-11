@@ -8,6 +8,13 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(
+    target_os = "windows",
+    allow(
+        clippy::needless_return,
+        reason = "the hash-pinned SDK source uses explicit returns in platform-specific branches"
+    )
+)]
 pub mod cua_host;
 pub use rua_core::desktop_automation::computer_os_supported as supported_os;
 pub use rua_mcp::bundled_computer::DRIVER_VERSION;

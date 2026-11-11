@@ -5,12 +5,16 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 use std::time::Duration;
 use subtle::ConstantTimeEq;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 const FRAME_LIMIT: usize = 64 * 1024;
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 const MEDIA_FRAME_LIMIT: usize = 1200 * 1024;
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 static BRIDGE: OnceLock<PhoneBridge> = OnceLock::new();
 

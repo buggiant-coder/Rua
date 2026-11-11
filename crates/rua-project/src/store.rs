@@ -949,6 +949,6 @@ fn remove_file_and_sync_parent(path: &Path) -> ProjectResult<()> {
             "Project store path has no parent",
         ))
     })?;
-    std::fs::File::open(parent)?.sync_all()?;
+    rua_core::fs::sync_directory(parent)?;
     Ok(())
 }

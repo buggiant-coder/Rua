@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::io;
 use std::process::Stdio;
 

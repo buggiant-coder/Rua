@@ -49,6 +49,22 @@ connectivity projection. It is not an access-control list for decrypting the
 replica log and is not sufficient evidence that a peer belongs to the active
 network.
 
+Explicit Device renames are committed with their own durable versions in the
+Device List domain. Presence observations and whole-list file timestamps are
+not rename versions. Full Export carries the committed name and its original
+version, including names edited on behalf of another Device; forwarding a
+snapshot must not turn an old default name into a new rename. Pairing advertises
+the saved local entry and preserves newer committed names when installing its
+membership result. Name facts remain domain-owned rather than depending on the
+rebuildable Sync Sidecar Store.
+
+Saved names from pre-provenance Device Lists are imported once as deterministic
+baseline name facts. Exact generated platform/key-or-Device-id fallback names
+remain presence observations. Exporting newly observed rows never promotes
+those observations into edits. Explicit revisions outrank imported baselines;
+conflicting unversioned custom names are preserved locally until an explicit
+rename resolves the ambiguity.
+
 ### D4 - Pairing transfers membership through an authenticated one-shot flow
 
 Pairing uses the short-lived PIN and PAKE-protected rendezvous channel to

@@ -1,11 +1,15 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::Serialize;
 
-use crate::device_list::DeviceList;
+use crate::device_list::{DeviceList, DeviceNameRecord};
+use crate::hlc::HlcTimestamp;
 use crate::network_migration_adapter::NetworkMigrationPayload;
-use crate::SyncResult;
+use crate::{SyncError, SyncResult};
+
+static DEVICE_LIST_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone)]
 pub struct SyncControlStore {
@@ -52,7 +56,51 @@ impl SyncControlStore {
     }
 
     pub fn write_device_list(&self, device_list: &DeviceList) -> SyncResult<()> {
-        write_json_file(self.device_list_path(), device_list)
+        write_device_list_file(self.device_list_path(), device_list)
+    }
+
+    /// Commit the projection and its revision together, even without a bound network.
+    pub fn commit_device_name(
+        &self,
+        device_id: &[u8; 8],
+        friendly_name: &str,
+        author: [u8; 8],
+    ) -> SyncResult<Option<DeviceNameRecord>> {
+        update_device_list_file(&self.device_list_path(), |list| {
+            if !list.contains_device(device_id) {
+                return Ok((None, false));
+            }
+            let id = hex::encode(device_id);
+            let mut record = list.name_records.get(&id).cloned().unwrap_or_default();
+            let previous = HlcTimestamp::from_sortable_bytes(&record.revision);
+            let wall_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let (wall_ms, counter) = if wall_ms > previous.wall_ms {
+                (wall_ms, 0)
+            } else if let Some(counter) = previous.counter.checked_add(1) {
+                (previous.wall_ms, counter)
+            } else {
+                (
+                    previous
+                        .wall_ms
+                        .checked_add(1)
+                        .ok_or_else(|| SyncError::Store("device name revision exhausted".into()))?,
+                    0,
+                )
+            };
+            record.friendly_name = friendly_name.to_owned();
+            record.revision = HlcTimestamp {
+                wall_ms,
+                counter,
+                device_id: author,
+            }
+            .to_sortable_bytes();
+            list.rename_device(device_id, friendly_name);
+            list.name_records.insert(id, record.clone());
+            Ok((Some(record), true))
+        })
     }
 
     pub fn remove_device_list(&self) -> SyncResult<()> {
@@ -82,6 +130,10 @@ impl SyncControlStore {
 }
 
 pub fn read_device_list_file(path: &Path) -> SyncResult<DeviceList> {
+    update_device_list_file(path, |list| Ok((list.clone(), false)))
+}
+
+fn read_device_list_file_raw(path: &Path) -> SyncResult<DeviceList> {
     if !path.exists() {
         return Ok(DeviceList::default());
     }
@@ -90,7 +142,28 @@ pub fn read_device_list_file(path: &Path) -> SyncResult<DeviceList> {
 }
 
 pub fn write_device_list_file(path: impl AsRef<Path>, device_list: &DeviceList) -> SyncResult<()> {
-    write_json_file(path, device_list)
+    let _guard = DEVICE_LIST_WRITE_LOCK
+        .lock()
+        .map_err(|_| SyncError::Store("device list write lock poisoned".into()))?;
+    let mut device_list = device_list.clone();
+    device_list.migrate_saved_name_records();
+    write_json_file(path, &device_list)
+}
+
+pub(crate) fn update_device_list_file<T>(
+    path: &Path,
+    update: impl FnOnce(&mut DeviceList) -> SyncResult<(T, bool)>,
+) -> SyncResult<T> {
+    let _guard = DEVICE_LIST_WRITE_LOCK
+        .lock()
+        .map_err(|_| SyncError::Store("device list write lock poisoned".into()))?;
+    let mut list = read_device_list_file_raw(path)?;
+    let migrated = list.migrate_saved_name_records();
+    let (result, changed) = update(&mut list)?;
+    if changed || migrated {
+        write_json_file(path, &list)?;
+    }
+    Ok(result)
 }
 
 pub fn write_json_file(path: impl AsRef<Path>, value: &impl Serialize) -> SyncResult<()> {

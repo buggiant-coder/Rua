@@ -326,7 +326,7 @@ Details: [pairing proposal](docs/adr/0036-master-identity-device-list-and-pairin
 | **Device Identity** | Local Ed25519 identity used by endpoint and replica Author. It is not the network root; resetting Sync does not rotate it. |
 | **NetworkSecret** | Network root determining the iroh-docs namespace and deriving SyncKey. Correct secret/bound membership, not a Device List row, establishes network membership. |
 | **SyncKey** | In-memory symmetric key derived from NetworkSecret for envelope/blob encryption; not a separately stored per-Device recipient key. |
-| **Device List** | Paired-device display and peer-selection metadata, not proof of decryption authority. |
+| **Device List** | Paired-device display and peer-selection metadata, including durable explicit name versions preserved by Full Export; not proof of decryption authority. |
 | **Bound Device Network / Bound Sync Network** | Authenticated Device/network binding and the matching Sync namespace/consumer binding. Consumers do not reconstruct trust independently. |
 | **Device Network Runtime** | Process-wide owner of endpoint/router, discovery, relay, shared Device Sessions, connectivity, and network lifecycle. Sync is a consumer rather than owner of general reachability. |
 | **Device Session** | Lazy authenticated/versioned logical peer session, stable across replaceable physical connection generations. Session Manager owns connection establishment and bounded reconnect. |
