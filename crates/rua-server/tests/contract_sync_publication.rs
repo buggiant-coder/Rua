@@ -1012,18 +1012,23 @@ async fn device_list_facts_publish_device_list_changes_when_bound() {
 
     entry.friendly_name = "Pocket".to_string();
     let device_list = rua_sync::device_list::DeviceList {
-        devices: vec![entry],
+        devices: vec![entry.clone()],
+        ..Default::default()
     };
     std::fs::write(
         tmp.path().join("sync").join("device_list.json"),
         serde_json::to_vec_pretty(&device_list).expect("serialize device list"),
     )
     .expect("write device list");
+    let name_record = rua_sync::control_store::SyncControlStore::from_data_dir(tmp.path())
+        .commit_device_name(&[1, 2, 3, 4, 5, 6, 7, 8], "Pocket", [9; 8])
+        .expect("commit name")
+        .expect("existing Device");
     let result = publish_sync_fact(
         &state,
         SyncPublicationFact::DeviceListDeviceRenamed {
             device_id_hex: "0102030405060708".to_string(),
-            friendly_name: "Pocket".to_string(),
+            name_record: name_record.clone(),
         },
     )
     .await;
@@ -1062,6 +1067,144 @@ async fn device_list_facts_publish_device_list_changes_when_bound() {
             && change.payload["device_id"] == "0102030405060708"
             && change.payload["friendly_name"] == "Pocket"
     }));
+
+    entry.friendly_name = "stale captured name".into();
+    let result = publish_sync_fact(
+        &state,
+        SyncPublicationFact::DeviceListEntrySnapshot { entry },
+    )
+    .await;
+    assert_eq!(result.status, PublicationStatus::Published);
+    let changes = collect_v4_changes(&state).await;
+    let snapshot = changes
+        .iter()
+        .find(|change| {
+            change.domain == "device_list"
+                && change.record_id == "0102030405060708"
+                && change.kind == "snapshot"
+        })
+        .unwrap();
+    assert_eq!(snapshot.payload["friendly_name"], "Pocket");
+    let exported_name: rua_sync::device_list::DeviceNameRecord =
+        serde_json::from_value(snapshot.payload["name_record"].clone()).unwrap();
+    assert_eq!(exported_name, name_record);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_name_publication_and_frozen_export_keep_latest_committed_name() {
+    use rua_server::services::sync_ops;
+    use rua_sync::control_store::SyncControlStore;
+    use rua_sync::device_list::{DeviceEntry, DeviceList};
+    use rua_sync::device_list_adapter::DeviceListSyncAdapter;
+    use rua_sync::merge_store::MergeStore;
+    use rua_sync::sync_registry::SyncRegistry;
+
+    let (state, tmp) = build_state(true, true);
+    let control = SyncControlStore::from_data_dir(tmp.path());
+    let entry = DeviceEntry {
+        device_id: [1; 8],
+        public_key: [1; 32],
+        label: "phone".into(),
+        friendly_name: "default phone".into(),
+        added_at_ms: 1,
+        last_seen_ms: 1,
+        direct_addrs: vec![],
+    };
+    control
+        .write_device_list(&DeviceList {
+            devices: vec![entry.clone()],
+            ..Default::default()
+        })
+        .unwrap();
+    let first = control
+        .commit_device_name(&[1; 8], "first name", [2; 8])
+        .unwrap()
+        .unwrap();
+    let captured = sync_ops::capture_full_export_v4_bootstrap(&state)
+        .await
+        .expect("capture export");
+    assert!(sync_ops::publish_full_export_snapshot(&state, captured.clone()).await);
+    let first_snapshot = collect_v4_changes(&state)
+        .await
+        .into_iter()
+        .find(|change| change.domain == "device_list" && change.record_id == "0101010101010101")
+        .unwrap();
+    let latest = control
+        .commit_device_name(&[1; 8], "latest name", [2; 8])
+        .unwrap()
+        .unwrap();
+    for name_record in [latest.clone(), first] {
+        let result = publish_sync_fact(
+            &state,
+            SyncPublicationFact::DeviceListDeviceRenamed {
+                device_id_hex: "0101010101010101".into(),
+                name_record,
+            },
+        )
+        .await;
+        assert_eq!(result.status, PublicationStatus::Published);
+    }
+    let changes = collect_v4_changes(&state).await;
+    let change = changes
+        .iter()
+        .find(|change| change.domain == "device_list" && change.record_id == "0101010101010101")
+        .unwrap();
+    assert_eq!(change.payload["friendly_name"], "latest name");
+    assert_eq!(change.hlc.to_sortable_bytes(), latest.revision);
+
+    assert!(sync_ops::publish_full_export_snapshot(&state, captured.clone()).await);
+    let changes = collect_v4_changes(&state).await;
+    let change = changes
+        .iter()
+        .find(|change| change.domain == "device_list" && change.record_id == "0101010101010101")
+        .unwrap();
+    assert_eq!(change.kind, "snapshot");
+    let peer = TempDir::new().unwrap();
+    let peer_control = SyncControlStore::from_data_dir(peer.path());
+    peer_control
+        .write_device_list(&DeviceList {
+            devices: vec![entry],
+            ..Default::default()
+        })
+        .unwrap();
+    let peer_store = MergeStore::open(&peer.path().join("merge")).unwrap();
+    let mut peer_registry = SyncRegistry::new();
+    peer_registry
+        .register(Arc::new(DeviceListSyncAdapter::new(
+            peer.path().to_path_buf(),
+            "peer",
+        )))
+        .unwrap();
+    peer_registry
+        .apply_change(&first_snapshot, &peer_store)
+        .await
+        .unwrap();
+    peer_registry
+        .apply_change(change, &peer_store)
+        .await
+        .unwrap();
+    assert_eq!(
+        peer_control.read_device_list().unwrap().devices[0].friendly_name,
+        "latest name"
+    );
+
+    let mut removed = control.read_device_list().unwrap();
+    removed.remove_device(&[1; 8]);
+    control.write_device_list(&removed).unwrap();
+    publish_sync_fact(
+        &state,
+        SyncPublicationFact::DeviceListDeviceRemoved {
+            device_id_hex: "0101010101010101".into(),
+        },
+    )
+    .await;
+    assert!(sync_ops::publish_full_export_snapshot(&state, captured).await);
+    let changes = collect_v4_changes(&state).await;
+    let change = changes
+        .iter()
+        .find(|change| change.domain == "device_list" && change.record_id == "0101010101010101")
+        .unwrap();
+    assert_eq!(change.kind, "remove");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

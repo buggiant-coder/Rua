@@ -125,7 +125,12 @@ pub async fn run_pairing_listener(
         "pairing listener endpoint created, waiting for connector"
     );
 
-    let my_entry = build_device_entry(current_device);
+    let my_entry = current_device_list
+        .devices
+        .iter()
+        .find(|entry| entry.device_id == current_device.device_id_short())
+        .cloned()
+        .unwrap_or_else(|| build_device_entry(current_device));
     let my_state = build_network_state(network_secret, created_at_ms);
 
     let mut last_err = None;
@@ -202,7 +207,12 @@ pub async fn run_pairing_connector(
 ) -> Result<PairingOutcome, SyncError> {
     const MAX_ATTEMPTS: u32 = 3;
 
-    let my_entry = build_device_entry(current_device);
+    let my_entry = current_device_list
+        .devices
+        .iter()
+        .find(|entry| entry.device_id == current_device.device_id_short())
+        .cloned()
+        .unwrap_or_else(|| build_device_entry(current_device));
     let my_state = build_network_state(network_secret, created_at_ms);
 
     let mut last_err = None;

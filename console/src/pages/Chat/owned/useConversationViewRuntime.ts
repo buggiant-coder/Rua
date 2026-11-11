@@ -172,7 +172,7 @@ function remotePendingDeliveryFromSubmission(
 type SubmitChatResult = {
   accepted?: boolean;
   submission_id?: string;
-  mode?: "started" | "queued" | "rejected";
+  mode?: "started" | "queued" | "rejected" | "unconfirmed";
   chat_id?: string;
   input_id?: string;
   device_delivery_id?: string;
@@ -183,6 +183,7 @@ type SubmitChatResult = {
   failure_kind?:
     | "business"
     | "device_offline"
+    | "delivery_unknown"
     | "version_incompatible"
     | "protocol_error"
     | "invalid_request";
@@ -2936,10 +2937,14 @@ export function useConversationViewRuntime({
       }
       setContextCompactionStatus(null);
       setError(null);
-      const optimisticUser = {
-        ...message,
-        remote_delivery_state: "sending" as const,
-      };
+      const localDeviceAtSubmit = currentDeviceIdRef.current;
+      const deliveringToRemoteDevice =
+        targetAtSubmit &&
+        localDeviceAtSubmit &&
+        targetAtSubmit !== localDeviceAtSubmit;
+      const optimisticUser = deliveringToRemoteDevice
+        ? { ...message, remote_delivery_state: "sending" as const }
+        : message;
       setSendingSubmission({
         owner: runtimeOwnerKey,
         chatId: chatAtCall,
@@ -3005,7 +3010,9 @@ export function useConversationViewRuntime({
         const confirmedAcceptance = result?.accepted === true;
         const confirmedRejection =
           result?.accepted === false &&
+          result.mode !== "unconfirmed" &&
           result.failure_kind !== "device_offline" &&
+          result.failure_kind !== "delivery_unknown" &&
           result.failure_kind !== "protocol_error";
         if (confirmedAcceptance || confirmedRejection)
           clearSubmitted(submittedDraftKey, submissionId);

@@ -253,6 +253,7 @@ async fn seed_portable_state(tmp: &TempDir) {
                 last_seen_ms: 2_000,
                 direct_addrs: Vec::new(),
             }],
+            ..Default::default()
         })
         .expect("device list json"),
     )
@@ -1305,6 +1306,7 @@ fn write_two_device_list(local: &AppState, remote: &AppState, remote_addr: &iroh
                 remote_addr.ip_addrs().map(ToString::to_string).collect(),
             ),
         ],
+        ..Default::default()
     };
     rua_sync::control_store::SyncControlStore::from_data_dir(&local.rua_root)
         .write_device_list(&list)

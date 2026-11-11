@@ -78,6 +78,11 @@ The resulting Warm Suspend may retain local process state, but the Device is
 not reachable through mDNS, Relay, Gossip, Device Session, periodic Sync, or
 inbound apply.
 
+Warm Suspend preserves durable network membership. Status and diagnostics use
+the persisted namespace binding together with the matching NetworkSecret when
+no live node exists; they must not present suspension as lost pairing or revive
+networking to answer a read. Operations still require the live bound runtime.
+
 ### D6 - Foreground Operation leases protect active work
 
 Reference-counted leases may retain background residency for active

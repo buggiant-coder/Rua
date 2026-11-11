@@ -86,6 +86,14 @@ Adapters may represent large file content with encrypted blob references
 instead of inline bytes. Blob payloads use the same SyncKey-derived envelope
 boundary. A hash proves content identity, not authorization to read plaintext.
 
+Current encrypted replica entries are also durable GC roots for referenced
+media and skill-file blobs. Each GC cycle reconstructs those references from
+the current namespace entries, alongside the existing Docs content roots;
+process-local temporary tags alone do not establish that lifetime. If an
+entry needed to establish reachability cannot be read or decrypted, that GC
+cycle aborts before sweeping. Replaced and orphaned payloads remain eligible
+for collection after ordinary temporary protections expire.
+
 ### D7 - Local canonical state remains outside the log
 
 The opaque replica is a replication journal and current-record exchange

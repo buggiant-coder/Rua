@@ -1521,6 +1521,9 @@ impl CollaborationService {
                         detail.unwrap_or_else(|| "Collaboration acceptance unconfirmed".into())
                     );
                 }
+                Ok(ConversationInputDeliveryOutcome::Unconfirmed { detail, .. }) => {
+                    return Err(detail);
+                }
                 Ok(ConversationInputDeliveryOutcome::Rejected { detail, .. }) | Err(detail) => {
                     record.outcome = Some(outcome(&id, "rejected", detail, false));
                     store

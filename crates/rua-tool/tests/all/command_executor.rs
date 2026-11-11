@@ -347,6 +347,7 @@ async fn runtime_executor_zero_timeout_disables_the_execution_deadline() {
     assert!(!output.cancelled);
 }
 
+#[cfg(unix)]
 async fn wait_for_stdin(session: &rua_task::TaskRunnerSession) {
     tokio::time::timeout(Duration::from_secs(2), async {
         while session.input_capability().await != rua_task::TaskInputCapability::Stdin {

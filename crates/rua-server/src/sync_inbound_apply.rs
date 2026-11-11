@@ -12,6 +12,7 @@ const MAX_INBOUND_DRAIN_READ_CONCURRENCY: usize = 4;
 const INBOUND_READ_TIMEOUT: Duration = Duration::from_millis(1_500);
 const INBOUND_ACTIVE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(45);
 const INBOUND_DRAIN_TIME_BUDGET: Duration = Duration::from_secs(90);
+const INBOUND_DRAIN_FAILURE_DELAY: Duration = Duration::from_secs(5);
 const MAX_AUTO_APPLY_ATTEMPTS: u32 = 3;
 
 #[derive(Debug)]
@@ -248,7 +249,10 @@ impl InboundApplyRuntime {
         Ok(())
     }
 
-    pub async fn apply_liveactor_mode(&self, mode: rua_sync::liveactor_apply::ApplyMode) {
+    pub async fn apply_liveactor_mode(
+        &self,
+        mode: rua_sync::liveactor_apply::ApplyMode,
+    ) -> Option<Duration> {
         let _guard = self.apply_lock.lock().await;
         let merge_store =
             rua_sync::merge_store::MergeStore::from_shared(Arc::clone(&self.sidecar_store));
@@ -259,12 +263,12 @@ impl InboundApplyRuntime {
                     Ok(bound_network) => bound_network,
                     Err(e) => {
                         tracing::warn!(error = %e, "[liveactor] bound sync network");
-                        return;
+                        return None;
                     }
                 };
                 self.run_repair_scan_if_needed(bound_network.doc(), force, "repair_request")
                     .await;
-                self.drain_bound_network(bound_network, &merge_store).await;
+                self.drain_bound_network(bound_network, &merge_store).await
             }
             rua_sync::liveactor_apply::ApplyMode::Incremental(entries, content_ready) => {
                 for hash in content_ready {
@@ -317,12 +321,12 @@ impl InboundApplyRuntime {
                     Ok(bound_network) => bound_network,
                     Err(e) => {
                         tracing::warn!(error = %e, "[liveactor] bound sync network");
-                        return;
+                        return None;
                     }
                 };
                 self.run_repair_scan_if_needed(bound_network.doc(), false, "incremental")
                     .await;
-                self.drain_bound_network(bound_network, &merge_store).await;
+                self.drain_bound_network(bound_network, &merge_store).await
             }
             rua_sync::liveactor_apply::ApplyMode::Drain(content_ready) => {
                 for hash in content_ready {
@@ -347,12 +351,12 @@ impl InboundApplyRuntime {
                     Ok(bound_network) => bound_network,
                     Err(e) => {
                         tracing::warn!(error = %e, "[liveactor] bound sync network");
-                        return;
+                        return None;
                     }
                 };
                 self.run_repair_scan_if_needed(bound_network.doc(), false, "drain")
                     .await;
-                self.drain_bound_network(bound_network, &merge_store).await;
+                self.drain_bound_network(bound_network, &merge_store).await
             }
         }
     }
@@ -405,7 +409,7 @@ impl InboundApplyRuntime {
         &self,
         bound_network: BoundSyncNetwork,
         merge_store: &rua_sync::merge_store::MergeStore,
-    ) {
+    ) -> Option<Duration> {
         let v4_log = bound_network.opaque_replica_log();
         let device_id_hex = bound_network.local_device_id_hex();
         let local_author = bound_network.local_author();
@@ -441,6 +445,28 @@ impl InboundApplyRuntime {
         .await;
         if let Some(error) = result.error.as_ref() {
             tracing::warn!(%error, "[liveactor] inbound drain stopped");
+        }
+        match self
+            .inbound_inbox
+            .next_drain_delay(rua_sync::inbound_inbox::now_ms())
+        {
+            Ok(delay) => delay.map(|delay| {
+                if result.error.is_some()
+                    && result.applied == 0
+                    && result.retryable == 0
+                    && result.discarded == 0
+                {
+                    // A store/catalog failure leaves entries pending without
+                    // consuming an apply attempt. Do not spin on that failure.
+                    delay.max(INBOUND_DRAIN_FAILURE_DELAY)
+                } else {
+                    delay
+                }
+            }),
+            Err(error) => {
+                tracing::warn!(%error, "[liveactor] read next inbox drain deadline");
+                Some(INBOUND_DRAIN_FAILURE_DELAY)
+            }
         }
     }
 
@@ -487,6 +513,7 @@ struct InboundDrainContext<'a> {
 
 #[derive(Default)]
 struct InboundDrainResult {
+    applied: usize,
     retryable: usize,
     discarded: usize,
     error: Option<String>,
@@ -571,6 +598,7 @@ async fn drain_inbound_inbox(args: InboundDrainContext<'_>) -> InboundDrainResul
                 "[liveactor] inbound drain stopped at time budget"
             );
             return InboundDrainResult {
+                applied: total_applied,
                 retryable: total_retryable,
                 discarded: total_discarded,
                 error: Some("Inbound Inbox drain reached its time budget".to_string()),
@@ -583,6 +611,7 @@ async fn drain_inbound_inbox(args: InboundDrainContext<'_>) -> InboundDrainResul
             Err(e) => {
                 tracing::warn!(error = %e, "[liveactor] read inbound inbox");
                 return InboundDrainResult {
+                    applied: total_applied,
                     retryable: total_retryable,
                     discarded: total_discarded,
                     error: Some(format!("read Inbound Inbox: {e}")),
@@ -628,6 +657,7 @@ async fn drain_inbound_inbox(args: InboundDrainContext<'_>) -> InboundDrainResul
         "[liveactor] inbound drain completed"
     );
     InboundDrainResult {
+        applied: total_applied,
         retryable: total_retryable,
         discarded: total_discarded,
         error: None,

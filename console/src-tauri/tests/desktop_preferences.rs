@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rua_desktop::preferences::{
+use rua_desktop_lib::preferences::{
     resolve_configured_rua_root, DesktopLabels, DesktopLocale, DesktopPreferencesStore,
 };
 
@@ -98,7 +98,7 @@ fn quit_confirmation_defaults_on_for_new_and_existing_preferences() {
     let temp = tempfile::tempdir().unwrap();
     let store = DesktopPreferencesStore::new(temp.path().join("preferences.json"));
     assert!(store.load().unwrap().confirm_before_quit());
-    let old: rua_desktop::preferences::DesktopPreferences =
+    let old: rua_desktop_lib::preferences::DesktopPreferences =
         serde_json::from_str(r#"{"version":1,"locale":"en","futureSetting":42}"#).unwrap();
     assert!(old.confirm_before_quit());
     assert_eq!(serde_json::to_value(old).unwrap()["futureSetting"], 42);

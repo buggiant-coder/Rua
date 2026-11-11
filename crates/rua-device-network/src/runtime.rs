@@ -143,6 +143,29 @@ impl DeviceNetworkBootstrap {
             DeviceNetworkPreset::Production => (n0_endpoint_builder(), true),
             DeviceNetworkPreset::Local => (Endpoint::builder(presets::Minimal), false),
         };
+        Self::bind_with_builder(builder, mdns_enabled, identity, membership, peer_directory).await
+    }
+
+    /// Injects an isolated transport while retaining normal identity, membership,
+    /// address resolution, authentication, and router setup in contract tests.
+    #[cfg(feature = "test-util")]
+    #[doc(hidden)]
+    pub async fn bind_with_endpoint_builder(
+        builder: iroh::endpoint::Builder,
+        identity: DeviceNetworkIdentity,
+        membership: BoundDeviceNetworkMembership,
+        peer_directory: DevicePeerDirectory,
+    ) -> Result<Self, DeviceNetworkError> {
+        Self::bind_with_builder(builder, false, identity, membership, peer_directory).await
+    }
+
+    async fn bind_with_builder(
+        builder: iroh::endpoint::Builder,
+        mdns_enabled: bool,
+        identity: DeviceNetworkIdentity,
+        membership: BoundDeviceNetworkMembership,
+        peer_directory: DevicePeerDirectory,
+    ) -> Result<Self, DeviceNetworkError> {
         let peer_lookup = MemoryLookup::with_provenance("rua_device_directory");
         let endpoint = builder
             .address_lookup(peer_lookup.clone())

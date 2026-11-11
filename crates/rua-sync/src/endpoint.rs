@@ -1,11 +1,12 @@
+use std::future::Future;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 
 use iroh::{Endpoint, PublicKey, SecretKey};
 pub use iroh_blobs::api::Store as BlobsApiStore;
 use iroh_blobs::store::fs::options::Options as BlobsFsOptions;
-use iroh_blobs::store::GcConfig;
+use iroh_blobs::store::{GcConfig, ProtectCb, ProtectOutcome};
 use iroh_blobs::BlobsProtocol;
 pub use iroh_blobs::Hash as BlobHash;
 use iroh_docs::actor::SyncHandle;
@@ -24,10 +25,66 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::identity::DeviceIdentity;
+use crate::opaque_replica_log::OpaqueReplicaLog;
 use crate::sync_blob_store::StatefulBlobDownloader;
 use crate::SyncError;
 
 pub use rua_device_network::n0_endpoint_builder;
+
+#[derive(Default)]
+struct PayloadGcContext {
+    logs: RwLock<std::collections::BTreeMap<NamespaceId, Arc<OpaqueReplicaLog>>>,
+}
+
+impl PayloadGcContext {
+    fn register(&self, namespace: NamespaceId, log: OpaqueReplicaLog) {
+        self.logs
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(namespace, Arc::new(log));
+    }
+}
+
+fn payload_gc_callback(docs_callback: ProtectCb, context: Weak<PayloadGcContext>) -> ProtectCb {
+    Arc::new(move |live| {
+        let docs_callback = Arc::clone(&docs_callback);
+        let context = context.clone();
+        // The GC callback requires a Sync future; local RPC/blob readers only
+        // promise Send. Serialize polling without spawning an unowned task.
+        let future = std::sync::Mutex::new(Box::pin(async move {
+            if matches!((docs_callback)(live).await, ProtectOutcome::Abort) {
+                return ProtectOutcome::Abort;
+            }
+            let Some(context) = context.upgrade() else {
+                return ProtectOutcome::Abort;
+            };
+            let logs = context
+                .logs
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            if logs.is_empty() {
+                return ProtectOutcome::Abort;
+            }
+            for log in logs {
+                if let Err(error) = log.protect_referenced_payloads(live).await {
+                    warn!(%error, "Sync Blob GC aborted: encrypted payload reachability is unknown");
+                    return ProtectOutcome::Abort;
+                }
+            }
+            ProtectOutcome::Continue
+        }));
+        Box::pin(std::future::poll_fn(move |context| {
+            future
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_mut()
+                .poll(context)
+        }))
+    })
+}
 
 struct ExternalBlobGcTask {
     cancel: CancellationToken,
@@ -87,6 +144,7 @@ pub struct SyncNode {
     blobs_store: BlobsApiStore,
     blob_downloader: StatefulBlobDownloader,
     external_blob_gc_task: Option<Arc<ExternalBlobGcTask>>,
+    payload_gc_context: Arc<PayloadGcContext>,
 }
 
 impl SyncNode {
@@ -151,6 +209,7 @@ impl SyncNode {
         command_handler: Option<Arc<dyn DeviceSessionCommandHandler>>,
         blob_gc_interval: Duration,
     ) -> Result<Self, SyncError> {
+        crate::sync_state::bind_network(sync_dir, namespace_secret.id().as_bytes())?;
         let bootstrap = bind_device_network(
             DeviceNetworkPreset::Production,
             sync_dir,
@@ -159,6 +218,7 @@ impl SyncNode {
         )
         .await?;
 
+        let payload_gc_context = Arc::new(PayloadGcContext::default());
         let (blobs_store, protect_handler, external_blob_gc_task) = match blobs_store {
             Some(blobs_store) => {
                 let (protect_handler, protect_cb) = ProtectCallbackHandler::new();
@@ -166,7 +226,10 @@ impl SyncNode {
                     blobs_store.clone(),
                     GcConfig {
                         interval: blob_gc_interval,
-                        add_protected: Some(protect_cb),
+                        add_protected: Some(payload_gc_callback(
+                            protect_cb,
+                            Arc::downgrade(&payload_gc_context),
+                        )),
                     },
                 );
                 (blobs_store, Some(protect_handler), Some(task))
@@ -179,7 +242,10 @@ impl SyncNode {
                 let mut opts = BlobsFsOptions::new(&blobs_dir);
                 opts.gc = Some(GcConfig {
                     interval: blob_gc_interval,
-                    add_protected: Some(protect_cb),
+                    add_protected: Some(payload_gc_callback(
+                        protect_cb,
+                        Arc::downgrade(&payload_gc_context),
+                    )),
                 });
 
                 let db_path = blobs_dir.join("blobs.db");
@@ -235,6 +301,22 @@ impl SyncNode {
             .await
             .map_err(|e| SyncError::Store(format!("import namespace: {e}")))?;
 
+        let network = crate::identity::NetworkSecret::from_namespace_secret(
+            iroh_docs::NamespaceSecret::from_bytes(&namespace_secret.to_bytes()),
+        );
+        payload_gc_context.register(
+            namespace_id,
+            OpaqueReplicaLog::new(
+                doc.clone(),
+                device.to_iroh_author(),
+                network.derive_sync_key(),
+                blobs_store_saved.clone(),
+            ),
+        );
+
+        recover_proven_own_removals(sync_dir, namespace_secret, device, &doc, &blobs_store_saved)
+            .await?;
+
         doc.start_sync(vec![])
             .await
             .map_err(|e| SyncError::Store(format!("start sync: {e}")))?;
@@ -263,6 +345,7 @@ impl SyncNode {
             blobs_store: blobs_store_saved,
             blob_downloader,
             external_blob_gc_task,
+            payload_gc_context,
         })
     }
 
@@ -331,6 +414,15 @@ impl SyncNode {
             .map_err(|e| SyncError::Store(format!("import author for additional ns: {e}")))?;
 
         let sync_key = ns.derive_sync_key();
+        self.payload_gc_context.register(
+            ns.namespace_id(),
+            OpaqueReplicaLog::new(
+                doc.clone(),
+                author.clone(),
+                sync_key.clone(),
+                self.blobs_store.clone(),
+            ),
+        );
         Ok(crate::opaque_replica_log::OpaqueReplicaLog::new(
             doc,
             author,
@@ -380,6 +472,7 @@ impl SyncNode {
         namespace_secret: &iroh_docs::NamespaceSecret,
         device: &DeviceIdentity,
     ) -> Result<SyncNode, SyncError> {
+        crate::sync_state::bind_network(sync_dir, namespace_secret.id().as_bytes())?;
         let bootstrap = bind_device_network(
             DeviceNetworkPreset::Local,
             sync_dir,
@@ -426,6 +519,9 @@ impl SyncNode {
             .await
             .map_err(|e| SyncError::Store(format!("import namespace: {e}")))?;
 
+        recover_proven_own_removals(sync_dir, namespace_secret, device, &doc, &blobs_store_saved)
+            .await?;
+
         doc.start_sync(vec![])
             .await
             .map_err(|e| SyncError::Store(format!("start sync: {e}")))?;
@@ -442,8 +538,67 @@ impl SyncNode {
             blobs_store: blobs_store_saved,
             blob_downloader,
             external_blob_gc_task: None,
+            payload_gc_context: Arc::new(PayloadGcContext::default()),
         })
     }
+}
+
+async fn recover_proven_own_removals(
+    sync_dir: &Path,
+    namespace_secret: &iroh_docs::NamespaceSecret,
+    device: &DeviceIdentity,
+    doc: &Doc,
+    blobs_store: &BlobsApiStore,
+) -> Result<(), SyncError> {
+    let candidates = crate::sync_state::quarantined_tombstone_records(sync_dir)?;
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let network = crate::identity::NetworkSecret::from_namespace_secret(
+        iroh_docs::NamespaceSecret::from_bytes(&namespace_secret.to_bytes()),
+    );
+    let log = crate::opaque_replica_log::OpaqueReplicaLog::new(
+        doc.clone(),
+        device.to_iroh_author(),
+        network.derive_sync_key(),
+        blobs_store.clone(),
+    );
+    let local_device_id = hex::encode(device.device_id_short());
+    let author = device.to_iroh_author().id();
+    let namespace_id = namespace_secret.id();
+    let mut recovered = 0usize;
+    let mut unavailable = 0usize;
+    for (domain, record_id) in candidates {
+        let key = log.record_entry_key(&domain, &record_id);
+        // This reads local content only. Startup does not wait for a provider;
+        // missing or unproven history stays quarantined for later recovery.
+        match log.read_change(author, &key).await {
+            Ok(Some(change)) if change.device_id == local_device_id => {
+                if crate::sync_state::restore_verified_removal(
+                    sync_dir,
+                    namespace_id.as_bytes(),
+                    &change,
+                )? {
+                    recovered += 1;
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                unavailable += 1;
+                tracing::debug!(%error, %domain, %record_id, "own removal proof unavailable");
+            }
+        }
+    }
+    if recovered > 0 {
+        info!(recovered, "restored current-network own removal ordering");
+    }
+    if unavailable > 0 {
+        warn!(
+            unavailable,
+            "legacy tombstones remain quarantined without local proof"
+        );
+    }
+    Ok(())
 }
 
 async fn spawn_docs_persistent(

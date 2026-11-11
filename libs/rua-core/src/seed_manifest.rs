@@ -273,10 +273,7 @@ fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 fn fsync_dir(path: &Path) -> Result<()> {
-    let dir = std::fs::File::open(path).map_err(|e| RuaError::Io {
-        message: format!("Failed to open directory {}: {e}", path.display()),
-    })?;
-    dir.sync_all().map_err(|e| RuaError::Io {
+    crate::fs::sync_directory(path).map_err(|e| RuaError::Io {
         message: format!("Failed to fsync directory {}: {e}", path.display()),
     })
 }

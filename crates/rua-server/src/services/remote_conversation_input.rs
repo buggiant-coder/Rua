@@ -19,6 +19,9 @@ use crate::services::device_session_access::current_session_manager;
 
 const SOURCE_PENDING_CONVERSATION_INPUTS_DIR: &str = "source_pending_conversation_inputs";
 const DEVICE_COMMAND_DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
+// Initial configuration capture is part of durable input admission. Its finite
+// confirmation window starts after any independent media preparation.
+const REMOTE_INPUT_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_CONVERSATION_INPUT_PRIORITY_SYNC_ATTEMPTS: usize = 3;
 const REMOTE_CONVERSATION_INPUT_PRIORITY_SYNC_BACKOFF: Duration = Duration::from_millis(300);
 
@@ -329,7 +332,14 @@ impl RemoteConversationInputDelivery {
         request: &RemoteConversationInputRequest,
         log_context: &str,
     ) -> Result<RemoteConversationInputDeliveryOutcome, DeviceCommandDeliveryError> {
-        self.transfer_staged_media(request).await?;
+        self.transfer_staged_media(request).await.map_err(|error| {
+            // The input command has not been dispatched, so this is a confirmed
+            // preparation failure rather than an ambiguously delivered input.
+            DeviceCommandDeliveryError::Rejected {
+                reason: "remote_input_media_preparation_failed".to_string(),
+                detail: error.to_string(),
+            }
+        })?;
         let ack = self
             .deliver_remote_conversation_input_to_target(request)
             .await?;
@@ -655,13 +665,19 @@ impl RemoteConversationInputDelivery {
         &self,
         request: &RemoteConversationInputRequest,
     ) -> Result<RemoteConversationInputAck, DeviceCommandDeliveryError> {
-        let session_manager = current_session_manager(&self.device_network)
+        let deadline = tokio::time::Instant::now() + REMOTE_INPUT_CONFIRMATION_TIMEOUT;
+        // Keep the prepared wire payload stable so domain idempotency can
+        // recognize this same attempt. This local confirmation clock starts
+        // after media preparation; it does not reset payload timestamps.
+        let session_manager = self
+            .device_network
+            .session_manager(deadline)
             .await
             .map_err(DeviceCommandDeliveryError::Connect)?;
         deliver_remote_conversation_input_via_session(
             &session_manager,
             request,
-            DEVICE_COMMAND_DELIVERY_TIMEOUT,
+            deadline.saturating_duration_since(tokio::time::Instant::now()),
         )
         .await
     }

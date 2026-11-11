@@ -24,14 +24,15 @@ export function requestNewConversation(address: ConversationAddress): boolean {
   return true;
 }
 
-type Listener = (address?: ConversationAddress) => void;
+type Listener = (address?: ConversationAddress, background?: boolean) => void;
 const listeners = new Set<Listener>();
 
 /** Refresh list projections after a Chat or Project mutation, never per token. */
 export function invalidateConversationNavigation(
   address?: ConversationAddress,
+  background = false,
 ) {
-  for (const listener of listeners) listener(address);
+  for (const listener of listeners) listener(address, background);
 }
 
 export function subscribeConversationNavigation(

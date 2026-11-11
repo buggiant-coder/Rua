@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use chrono::{DateTime, Duration, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -25,14 +25,16 @@ impl StructuredMemoryStore {
     pub fn open(path: impl AsRef<Path>) -> MemoryResult<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
-        init_schema(&conn)?;
-        Ok(Self { conn })
+        let store = Self { conn };
+        init_schema(&store)?;
+        Ok(store)
     }
 
     pub fn open_in_memory() -> MemoryResult<Self> {
         let conn = Connection::open_in_memory()?;
-        init_schema(&conn)?;
-        Ok(Self { conn })
+        let store = Self { conn };
+        init_schema(&store)?;
+        Ok(store)
     }
 
     pub fn write(&mut self, req: MemoryWriteRequest) -> MemoryResult<MemoryWriteOutcome> {
@@ -1925,7 +1927,11 @@ struct RecordRow {
     metadata_json: String,
 }
 
-fn init_schema(conn: &Connection) -> MemoryResult<()> {
+fn init_schema(store: &StructuredMemoryStore) -> MemoryResult<()> {
+    // Serialize schema upgrades with other writers and keep canonical backfill
+    // and derived-index refresh in the same rollback boundary.
+    let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
+    let conn = &tx;
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS memory_records (
@@ -2070,6 +2076,46 @@ fn init_schema(conn: &Connection) -> MemoryResult<()> {
         USING fts5(id UNINDEXED, content, tokenize = 'unicode61');
         "#,
     )?;
+    let title_added = ensure_column(conn, "memory_records", "title", "TEXT NOT NULL DEFAULT ''")?;
+    if title_added {
+        let has_subject = table_columns(conn, "memory_records")?
+            .iter()
+            .any(|column| column == "subject");
+        let subject = if has_subject { "subject" } else { "NULL" };
+        let rows = {
+            let mut statement = conn.prepare(&format!(
+                "SELECT id, {subject}, content FROM memory_records"
+            ))?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        for (id, subject, content) in rows {
+            let subject = subject.unwrap_or_default();
+            let source = if subject.trim().is_empty() {
+                &content
+            } else {
+                &subject
+            };
+            let normalized = source.split_whitespace().collect::<Vec<_>>().join(" ");
+            let title = normalized
+                .chars()
+                .take(crate::types::MEMORY_TITLE_MAX_CHARS)
+                .collect::<String>();
+            let title = if title.is_empty() { "Memory" } else { &title };
+            conn.execute(
+                "UPDATE memory_records SET title = ?1 WHERE id = ?2",
+                params![title, id],
+            )?;
+        }
+    }
     ensure_column(conn, "memory_records", "written_on_device_id", "TEXT")?;
     ensure_column(
         conn,
@@ -2085,7 +2131,22 @@ fn init_schema(conn: &Connection) -> MemoryResult<()> {
         "resource_device_name_snapshot",
         "TEXT",
     )?;
+    if title_added {
+        // The old projection indexed nullable `subject`; it is disposable.
+        // Preserve the canonical subject column and every unknown record field.
+        conn.execute_batch("DROP TABLE memory_records_fts; CREATE VIRTUAL TABLE memory_records_fts USING fts5(id UNINDEXED, content);")?;
+        store.rebuild_derived_indexes()?;
+    }
+    tx.commit()?;
     Ok(())
+}
+
+fn table_columns(conn: &Connection, table: &str) -> MemoryResult<Vec<String>> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(columns)
 }
 
 fn ensure_column(
@@ -2093,18 +2154,16 @@ fn ensure_column(
     table: &str,
     column: &str,
     column_type: &str,
-) -> MemoryResult<()> {
-    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-    let columns = stmt
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<Result<Vec<_>, _>>()?;
+) -> MemoryResult<bool> {
+    let columns = table_columns(conn, table)?;
     if !columns.iter().any(|name| name == column) {
         conn.execute(
             &format!("ALTER TABLE {table} ADD COLUMN {column} {column_type}"),
             [],
         )?;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 fn insert_record_tx(

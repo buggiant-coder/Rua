@@ -454,7 +454,11 @@ async fn build_runtime(
     std::fs::create_dir_all(&sync_dir).expect("sync dir");
     std::fs::write(
         sync_dir.join("device_list.json"),
-        serde_json::to_vec_pretty(&DeviceList { devices: peers }).expect("serialize peers"),
+        serde_json::to_vec_pretty(&DeviceList {
+            devices: peers,
+            ..Default::default()
+        })
+        .expect("serialize peers"),
     )
     .expect("write peers");
     let identity = DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[secret_byte; 32]));
@@ -543,6 +547,7 @@ fn install_connectable_peers(source: &TestRuntime, targets: &[&TestRuntime]) {
                 }
             })
             .collect(),
+        ..Default::default()
     };
     std::fs::write(
         source._dir.path().join("sync/device_list.json"),
@@ -5599,18 +5604,29 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
                 attachments: Vec::new(),
                 input: None,
                 messages: None,
-                extra: serde_json::Map::new(),
+                extra: serde_json::Map::from_iter([(
+                    "submission_id".to_string(),
+                    serde_json::json!("offline-project-unconfirmed-submission"),
+                )]),
                 channel_kind: Some(rua_channel::core::renderer::ChannelKind::Chat),
             },
         )
         .await;
-    assert!(matches!(
-        offline_submit,
-        rua_server::services::conversation_input_intake::ConversationInputDeliveryOutcome::Rejected {
-            failure_kind: Some(ref failure_kind),
-            ..
-        } if failure_kind == "device_offline"
-    ));
+    let rua_server::services::conversation_input_intake::ConversationInputDeliveryOutcome::Unconfirmed {
+        chat_id: unconfirmed_chat_id,
+        submission_id,
+        device_delivery_id,
+        target_device_id,
+        device_delivery_sequence,
+        ..
+    } = offline_submit else {
+        panic!("an absent remote acknowledgement must retain the submitted identifiers: {offline_submit:?}");
+    };
+    assert_eq!(unconfirmed_chat_id, offline_chat_id);
+    assert_eq!(submission_id, "offline-project-unconfirmed-submission");
+    assert!(device_delivery_id.starts_with("device-delivery-"));
+    assert_eq!(target_device_id, target.device_id);
+    assert!(device_delivery_sequence > 0);
     assert_eq!(
         offline_store
             .read_turn_range(offline_chat_id, 1, usize::MAX)
@@ -10783,4 +10799,385 @@ async fn shared_runtime_access_reports_failure_and_suspension_without_polling() 
         .is_err());
     availability.mark_failed("bind failed");
     assert!(waiter.await.err().unwrap().contains("bind failed"));
+}
+
+struct InputConfirmationHandler {
+    inner: Arc<DeviceCommandHandler>,
+    before_acceptance: Duration,
+    hold_reply: bool,
+    accepted: Notify,
+    release_reply: Notify,
+    requests: Mutex<Vec<RemoteConversationInputRequest>>,
+}
+
+#[async_trait]
+impl DeviceSessionCommandHandler for InputConfirmationHandler {
+    async fn handle_command(&self, payload: &[u8]) -> Result<Vec<u8>, String> {
+        let envelope: serde_json::Value =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        if envelope["command"] == "conversation_input" {
+            let request = serde_json::from_value(envelope["payload"].clone())
+                .map_err(|error| error.to_string())?;
+            self.requests.lock().unwrap().push(request);
+            tokio::time::sleep(self.before_acceptance).await;
+            let response = self.inner.handle_command(payload).await?;
+            if matches!(
+                serde_json::from_slice::<DeviceCommandResponse>(&response),
+                Ok(DeviceCommandResponse::Accepted(_))
+            ) {
+                self.accepted.notify_one();
+                if self.hold_reply {
+                    self.release_reply.notified().await;
+                }
+            }
+            Ok(response)
+        } else {
+            self.inner.handle_command(payload).await
+        }
+    }
+}
+
+struct RemoteInputConfirmationFixture {
+    _source_dir: TempDir,
+    _target_dir: TempDir,
+    source_state: AppState,
+    target_state: AppState,
+    source: TestRuntime,
+    target: TestRuntime,
+    handler: Arc<InputConfirmationHandler>,
+    chat_id: String,
+    submission_id: String,
+}
+
+impl RemoteInputConfirmationFixture {
+    async fn new(before_acceptance: Duration, hold_reply: bool) -> Self {
+        let source_dir = TempDir::new().unwrap();
+        let target_dir = TempDir::new().unwrap();
+        let source_state = AppState::from_tempdir(source_dir.path().into(), ServerProfile::Test);
+        let target_state = AppState::from_tempdir(target_dir.path().into(), ServerProfile::Test);
+        install_test_device(&source_state, 171);
+        install_test_device(&target_state, 172);
+        let captured = CapturingAgentRuntime::default();
+        for state in [&source_state, &target_state] {
+            state
+                .registry
+                .get_or_create("default")
+                .await
+                .unwrap()
+                .set_react_runtime(Arc::new(captured.clone()))
+                .await;
+            seed_fixture_provider(state, vec![fixture_provider_model("model-a")]).await;
+            state
+                .agent_service
+                .get_agent("default")
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        let target_id = hex::encode(
+            DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[172; 32])).local_device_id(),
+        );
+        let handler = Arc::new(InputConfirmationHandler {
+            inner: full_command_handler(&target_state, &target_id),
+            before_acceptance,
+            hold_reply,
+            accepted: Notify::new(),
+            release_reply: Notify::new(),
+            requests: Mutex::new(Vec::new()),
+        });
+        let source = build_runtime(
+            171,
+            [173; 32],
+            vec![peer_entry(172)],
+            None,
+            Vec::new(),
+            test_config(),
+        )
+        .await;
+        let target = build_runtime(
+            172,
+            [173; 32],
+            vec![peer_entry(171)],
+            Some(handler.clone()),
+            Vec::new(),
+            test_config(),
+        )
+        .await;
+        install_connectable_peer(&source, &target);
+        *source_state.device_network.lock().await = Some(source.runtime.clone());
+        *target_state.device_network.lock().await = Some(target.runtime.clone());
+        Self {
+            _source_dir: source_dir,
+            _target_dir: target_dir,
+            source_state,
+            target_state,
+            source,
+            target,
+            handler,
+            chat_id: uuid::Uuid::new_v4().to_string(),
+            submission_id: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+
+    fn submit(&self) -> impl std::future::Future<Output = serde_json::Value> + Send + 'static {
+        let app = rua_server::router::build_app(self.source_state.clone(), None);
+        let chat_id = self.chat_id.clone();
+        let body = serde_json::json!({
+            "message": "one diagnostic input",
+            "submission_id": self.submission_id,
+            "target_device_id": self.target.device_id,
+            "chat_model_slot": {"provider_id":"fixture","model":"model-a"},
+        });
+        async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri(format!(
+                            "/api/agents/default/chats/{chat_id}/console/submit"
+                        ))
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "{}",
+                String::from_utf8_lossy(&bytes)
+            );
+            serde_json::from_slice(&bytes).unwrap()
+        }
+    }
+
+    async fn persisted_users(&self) -> Vec<rua_session::MessageLogEntry> {
+        let workspace = self
+            .target_state
+            .registry
+            .get_or_create("default")
+            .await
+            .unwrap()
+            .workspace_dir();
+        let store = WorkspaceSessionStore::new(workspace);
+        let turns = store
+            .read_turn_range(&self.chat_id, 1, usize::MAX)
+            .await
+            .unwrap();
+        let mut users = Vec::new();
+        for turn in turns {
+            users.extend(
+                store
+                    .read_turn_messages(&self.chat_id, &turn.turn_id)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter(|message| message.role == "user"),
+            );
+        }
+        users
+    }
+
+    async fn shutdown(&self) {
+        self.handler.release_reply.notify_one();
+        self.source.runtime.shutdown().await.unwrap();
+        self.target.runtime.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_input_confirmation_waits_for_slow_admission_without_replay() {
+    let fixture = RemoteInputConfirmationFixture::new(Duration::from_secs(12), false).await;
+    let outcome = fixture.submit().await;
+    fixture.shutdown().await;
+    assert_eq!(
+        outcome["accepted"], true,
+        "slow admission must retain its bounded input confirmation window: {outcome}"
+    );
+    assert_eq!(outcome["submission_id"], fixture.submission_id);
+    assert_eq!(fixture.handler.requests.lock().unwrap().len(), 1);
+    assert_eq!(fixture.persisted_users().await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_input_confirmation_does_not_wait_for_post_commit_sync_lock() {
+    let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
+    fixture
+        .target_state
+        .sync_enabled
+        .store(true, Ordering::Relaxed);
+    let sync_guard = fixture.target_state.sync_node.lock().await;
+    let mut submitting = tokio::spawn(fixture.submit());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while fixture.persisted_users().await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the authority must durably accept before testing publication blockage");
+    let before_sync = tokio::time::timeout(Duration::from_secs(2), &mut submitting).await;
+    if before_sync.is_ok() {
+        let runtime = fixture.target_state.registry.get("default").await.unwrap();
+        assert!(runtime
+            .task_tracker()
+            .active_task_names()
+            .await
+            .iter()
+            .any(|name| name == "Publish accepted remote input"));
+        assert!(runtime.task_tracker().cancel_all().await > 0);
+        assert!(
+            runtime.task_tracker().drain(Duration::from_secs(1)).await,
+            "Agent cancellation must remove a publication still blocked on Sync"
+        );
+    }
+    drop(sync_guard);
+    let acknowledged_before_sync = before_sync.is_ok();
+    let outcome = match before_sync {
+        Ok(value) => value.unwrap(),
+        Err(_) => submitting.await.unwrap(),
+    };
+    fixture.shutdown().await;
+    assert!(
+        acknowledged_before_sync,
+        "durable acceptance must be acknowledged without waiting for Sync: {outcome}"
+    );
+    assert_eq!(outcome["accepted"], true);
+    assert_eq!(fixture.persisted_users().await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_input_confirmation_lost_ack_is_unconfirmed_with_original_ids() {
+    let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, true).await;
+    let submitting = tokio::spawn(fixture.submit());
+    tokio::time::timeout(Duration::from_secs(5), fixture.handler.accepted.notified())
+        .await
+        .expect("actual authority must commit and build Accepted before the reply is withheld");
+    let users = fixture.persisted_users().await;
+    assert_eq!(users.len(), 1);
+    let outcome = tokio::time::timeout(Duration::from_secs(35), submitting)
+        .await
+        .expect("input confirmation remains bounded")
+        .unwrap();
+    let request = fixture.handler.requests.lock().unwrap()[0].clone();
+    fixture.shutdown().await;
+    assert_eq!(
+        outcome["mode"], "unconfirmed",
+        "a missing acceptance reply cannot prove rejection: {outcome}"
+    );
+    assert_eq!(outcome["accepted"], false);
+    assert_eq!(outcome["failure_kind"], "delivery_unknown");
+    assert_eq!(outcome["chat_id"], fixture.chat_id);
+    assert_eq!(outcome["submission_id"], request.submission_id);
+    assert_eq!(outcome["device_delivery_id"], request.device_delivery_id);
+    assert_eq!(
+        outcome["device_delivery_sequence"],
+        request.device_delivery_sequence
+    );
+    assert_eq!(outcome["target_device_id"], request.target_device_id);
+    assert!(outcome["input_id"].is_null());
+    assert!(outcome["accepted_at"].is_null());
+    assert_eq!(
+        fixture.handler.requests.lock().unwrap().len(),
+        1,
+        "transport uncertainty must not replay the input"
+    );
+    assert_eq!(fixture.persisted_users().await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_input_confirmation_publication_timeout_clears_tracker() {
+    let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
+    fixture
+        .target_state
+        .sync_enabled
+        .store(true, Ordering::Relaxed);
+    let sync_guard = fixture.target_state.sync_node.lock().await;
+    let outcome = tokio::time::timeout(Duration::from_secs(5), fixture.submit())
+        .await
+        .expect("publication cannot hold the committed input acknowledgement");
+    assert_eq!(outcome["accepted"], true);
+    let runtime = fixture.target_state.registry.get("default").await.unwrap();
+    assert!(runtime
+        .task_tracker()
+        .active_task_names()
+        .await
+        .iter()
+        .any(|name| name == "Publish accepted remote input"));
+    assert!(
+        runtime.task_tracker().drain(Duration::from_secs(32)).await,
+        "publication expiry must remove its tracked task while Sync is still blocked"
+    );
+    drop(sync_guard);
+    fixture.shutdown().await;
+    assert_eq!(fixture.persisted_users().await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_input_confirmation_same_prepared_attempt_reuses_cached_acceptance() {
+    use rua_server::services::remote_conversation_input::{
+        RemoteConversationInputDelivery, RemoteConversationInputParams,
+    };
+    let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
+    let delivery = RemoteConversationInputDelivery::new(
+        Arc::clone(&fixture.source_state.sync_node),
+        Arc::clone(&fixture.source_state.device_network),
+        fixture.source_state.rua_root.clone(),
+    );
+    let address = ChatAddress::agent("default", &fixture.chat_id);
+    let manifest =
+        rua_server::services::conversation_manifest::initial_conversation_manifest_hash(&address)
+            .unwrap();
+    let request = ConsoleChatRequest {
+        message: "one prepared attempt".to_string(),
+        chat_id: Some(fixture.chat_id.clone()),
+        model: None,
+        is_reconnect: false,
+        attachments: Vec::new(),
+        input: None,
+        messages: None,
+        extra: serde_json::Map::from_iter([
+            (
+                "submission_id".to_string(),
+                serde_json::json!(fixture.submission_id),
+            ),
+            (
+                "chat_model_slot".to_string(),
+                serde_json::json!({"provider_id":"fixture","model":"model-a"}),
+            ),
+        ]),
+        channel_kind: None,
+    };
+    let prepared = delivery
+        .build_remote_conversation_input_request(&RemoteConversationInputParams {
+            address: &address,
+            execution_agent_id: "default",
+            request: &request,
+            source_device_id: &fixture.source.device_id,
+            target_device_id: &fixture.target.device_id,
+            authority_epoch: epoch(1),
+            base_manifest_hash: &manifest,
+            workspace_dir: None,
+            materialize_conversation: true,
+        })
+        .await
+        .unwrap();
+    let first = delivery
+        .deliver_prepared_conversation_input(&prepared, "same attempt first observation")
+        .await
+        .unwrap();
+    let second = delivery
+        .deliver_prepared_conversation_input(&prepared, "same attempt repeated observation")
+        .await;
+    fixture.shutdown().await;
+    let second = second.expect("the same prepared attempt must retain byte-identical wire payload and reuse its cached receipt");
+    assert_eq!(first, second);
+    assert_eq!(fixture.persisted_users().await.len(), 1);
+    let requests = fixture.handler.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0], requests[1]);
 }

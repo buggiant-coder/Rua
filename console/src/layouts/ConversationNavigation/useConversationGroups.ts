@@ -278,7 +278,7 @@ export function useConversationGroup(
   );
 
   useEffect(() => {
-    return subscribeConversationNavigation((address) => {
+    return subscribeConversationNavigation((address, background) => {
       if (
         address &&
         !(
@@ -288,6 +288,7 @@ export function useConversationGroup(
         )
       )
         return;
+      if (background && loadingRef.current) return;
       staleRef.current = true;
       requestRef.current += 1;
       loadingRef.current = false;

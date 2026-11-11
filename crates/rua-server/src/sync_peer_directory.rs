@@ -1,7 +1,8 @@
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,6 +13,7 @@ use tracing::warn;
 
 pub const PEER_HEALTH_FILE: &str = "peer_health.json";
 const TRANSPORT_STATS_FILE: &str = "transport_stats.json";
+static TRANSPORT_STATS_WRITE_LOCK: Mutex<()> = Mutex::new(());
 const PEER_FAILURE_COOLDOWN_BASE_MS: u64 = 60_000;
 const PEER_FAILURE_COOLDOWN_MAX_MS: u64 = 5 * 60_000;
 const PEER_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -105,6 +107,39 @@ pub struct SyncTransportStatsState {
     pub rolling: SyncTransportRollingStats,
     #[serde(default)]
     pub peers: BTreeMap<String, SyncPeerTransportStats>,
+}
+
+// Keep storage provenance separate from the stable HTTP transport DTO.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct StoredTransportStats {
+    #[serde(flatten)]
+    raw: SyncTransportStatsState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_unscoped: Option<SyncTransportStatsState>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    networks: BTreeMap<String, NetworkTransportStats>,
+    #[serde(default, flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct NetworkTransportStats {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    active_cycle: Option<SyncTransportActiveCycle>,
+    #[serde(default)]
+    peers: BTreeMap<String, NetworkPeerTransportStats>,
+    #[serde(default, flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct NetworkPeerTransportStats {
+    #[serde(default)]
+    rolling: SyncTransportRollingStats,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_cycle: Option<SyncTransportCycleStats>,
+    #[serde(default, flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -382,11 +417,19 @@ pub fn load_peer_health_diagnostics(
     sync_dir: &Path,
     self_pubkey_bytes: &[u8; 32],
 ) -> PeerHealthDiagnostics {
+    let transport_stats = load_transport_stats(sync_dir);
+    load_peer_health_diagnostics_with_transport(sync_dir, self_pubkey_bytes, &transport_stats)
+}
+
+pub fn load_peer_health_diagnostics_with_transport(
+    sync_dir: &Path,
+    self_pubkey_bytes: &[u8; 32],
+    transport_stats: &SyncTransportStatsState,
+) -> PeerHealthDiagnostics {
     let device_list = load_device_list(sync_dir);
     let peer_health = load_peer_health(sync_dir);
     let mut diagnostics =
         peer_health_diagnostics_for_cycle(&device_list, self_pubkey_bytes, &peer_health, now_ms());
-    let transport_stats = load_transport_stats(sync_dir);
     for peer in &mut diagnostics.peers {
         if let Some(stats) = transport_stats.peers.get(&peer.node_id) {
             if let Some(last_cycle) = &stats.last_cycle {
@@ -420,6 +463,7 @@ pub fn mark_peer_failure(peer_health: &mut PeerHealthState, peer_node_id: &str, 
 
 pub fn record_transport_success(
     sync_dir: &Path,
+    namespace_id: &str,
     peer_node_id: &str,
     started_at_ms: u64,
     completed_at_ms: u64,
@@ -446,11 +490,13 @@ pub fn record_transport_success(
         relay_rtt_ms: observation.relay_rtt_ms,
         warnings: result.warnings.clone(),
     };
-    record_transport_cycle(sync_dir, cycle);
+    record_transport_cycle_for_network(sync_dir, namespace_id, cycle);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn record_transport_failure(
     sync_dir: &Path,
+    namespace_id: &str,
     peer_node_id: &str,
     started_at_ms: u64,
     completed_at_ms: u64,
@@ -477,51 +523,98 @@ pub fn record_transport_failure(
         relay_rtt_ms: None,
         warnings: Vec::new(),
     };
-    record_transport_cycle(sync_dir, cycle);
+    record_transport_cycle_for_network(sync_dir, namespace_id, cycle);
 }
 
 pub fn record_transport_active(sync_dir: &Path, peer_node_id: &str, started_at_ms: u64) {
-    let path = sync_dir.join(TRANSPORT_STATS_FILE);
-    let mut state = load_transport_stats(sync_dir);
-    state.active_cycle = Some(SyncTransportActiveCycle {
+    let namespace_id = disk_namespace_id(sync_dir);
+    record_transport_active_in_namespace(
+        sync_dir,
+        namespace_id.as_deref(),
+        peer_node_id,
         started_at_ms,
-        peer_node_id: peer_node_id.to_string(),
-    });
-    let bytes = match serde_json::to_vec_pretty(&state) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            warn!(error = %e, "[sync] serialize active transport stats failed");
-            return;
+    );
+}
+
+pub fn record_transport_active_for_network(
+    sync_dir: &Path,
+    namespace_id: &str,
+    peer_node_id: &str,
+    started_at_ms: u64,
+) {
+    record_transport_active_in_namespace(sync_dir, Some(namespace_id), peer_node_id, started_at_ms);
+}
+
+fn record_transport_active_in_namespace(
+    sync_dir: &Path,
+    namespace_id: Option<&str>,
+    peer_node_id: &str,
+    started_at_ms: u64,
+) {
+    update_transport_stats(sync_dir, |stored| {
+        let active = SyncTransportActiveCycle {
+            started_at_ms,
+            peer_node_id: peer_node_id.to_owned(),
+        };
+        stored.raw.active_cycle = Some(active.clone());
+        if let Some(namespace_id) = namespace_id {
+            stored
+                .networks
+                .entry(namespace_id.to_owned())
+                .or_default()
+                .active_cycle = Some(active);
         }
-    };
-    if let Err(e) = atomic_write(&path, &bytes) {
-        warn!(error = %e, "[sync] save active transport stats failed");
-    }
+        true
+    });
 }
 
 pub fn clear_transport_active(sync_dir: &Path, peer_node_id: &str) {
-    let path = sync_dir.join(TRANSPORT_STATS_FILE);
-    let mut state = load_transport_stats(sync_dir);
-    if state
-        .active_cycle
-        .as_ref()
-        .is_some_and(|active| active.peer_node_id == peer_node_id)
-    {
-        state.active_cycle = None;
-        let bytes = match serde_json::to_vec_pretty(&state) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                warn!(error = %e, "[sync] serialize cleared transport stats failed");
-                return;
-            }
-        };
-        if let Err(e) = atomic_write(&path, &bytes) {
-            warn!(error = %e, "[sync] clear active transport stats failed");
+    let namespace_id = disk_namespace_id(sync_dir);
+    clear_transport_active_in_namespace(sync_dir, namespace_id.as_deref(), peer_node_id);
+}
+
+pub fn clear_transport_active_for_network(sync_dir: &Path, namespace_id: &str, peer_node_id: &str) {
+    clear_transport_active_in_namespace(sync_dir, Some(namespace_id), peer_node_id);
+}
+
+fn clear_transport_active_in_namespace(
+    sync_dir: &Path,
+    namespace_id: Option<&str>,
+    peer_node_id: &str,
+) {
+    update_transport_stats(sync_dir, |stored| {
+        let mut changed = false;
+        if stored
+            .raw
+            .active_cycle
+            .as_ref()
+            .is_some_and(|active| active.peer_node_id == peer_node_id)
+        {
+            stored.raw.active_cycle = None;
+            changed = true;
         }
-    }
+        if let Some(namespace_id) = namespace_id {
+            let newly_scoped = !stored.networks.contains_key(namespace_id);
+            let network = stored.networks.entry(namespace_id.to_owned()).or_default();
+            if network
+                .active_cycle
+                .as_ref()
+                .is_some_and(|active| active.peer_node_id == peer_node_id)
+            {
+                network.active_cycle = None;
+                changed = true;
+            }
+            changed |= newly_scoped;
+        }
+        changed
+    });
 }
 
 pub fn load_transport_stats(sync_dir: &Path) -> SyncTransportStatsState {
+    load_stored_transport_stats(sync_dir).raw
+}
+
+fn load_stored_transport_stats(sync_dir: &Path) -> StoredTransportStats {
     let path = sync_dir.join(TRANSPORT_STATS_FILE);
     std::fs::read_to_string(path)
         .ok()
@@ -530,57 +623,198 @@ pub fn load_transport_stats(sync_dir: &Path) -> SyncTransportStatsState {
 }
 
 pub fn record_transport_cycle(sync_dir: &Path, cycle: SyncTransportCycleStats) {
-    let path = sync_dir.join(TRANSPORT_STATS_FILE);
-    let mut state = load_transport_stats(sync_dir);
-    state.active_cycle = None;
-    state.rolling.cycles = state.rolling.cycles.saturating_add(1);
-    if cycle.status == SyncTransportCycleStatus::Failure {
-        state.rolling.failures = state.rolling.failures.saturating_add(1);
-    }
-    state.rolling.events_received = state
-        .rolling
-        .events_received
-        .saturating_add(cycle.events_received as u64);
-    state.rolling.events_sent = state
-        .rolling
-        .events_sent
-        .saturating_add(cycle.events_sent as u64);
-    state.rolling.direct_tx_bytes = state
-        .rolling
-        .direct_tx_bytes
-        .saturating_add(cycle.direct_tx_bytes);
-    state.rolling.direct_rx_bytes = state
-        .rolling
-        .direct_rx_bytes
-        .saturating_add(cycle.direct_rx_bytes);
-    state.rolling.relay_tx_bytes = state
-        .rolling
-        .relay_tx_bytes
-        .saturating_add(cycle.relay_tx_bytes);
-    state.rolling.relay_rx_bytes = state
-        .rolling
-        .relay_rx_bytes
-        .saturating_add(cycle.relay_rx_bytes);
+    let namespace_id = disk_namespace_id(sync_dir);
+    record_transport_cycle_in_namespace(sync_dir, namespace_id.as_deref(), cycle);
+}
 
-    let peer = state.peers.entry(cycle.peer_node_id.clone()).or_default();
-    peer.cycles = peer.cycles.saturating_add(1);
-    if cycle.status == SyncTransportCycleStatus::Failure {
-        peer.failures = peer.failures.saturating_add(1);
-    }
-    peer.direct_bytes = peer.direct_bytes.saturating_add(cycle.direct_bytes());
-    peer.relay_bytes = peer.relay_bytes.saturating_add(cycle.relay_bytes());
-    peer.last_cycle = Some(cycle.clone());
-    state.last_cycle = Some(cycle);
+pub fn record_transport_cycle_for_network(
+    sync_dir: &Path,
+    namespace_id: &str,
+    cycle: SyncTransportCycleStats,
+) {
+    record_transport_cycle_in_namespace(sync_dir, Some(namespace_id), cycle);
+}
 
-    let bytes = match serde_json::to_vec_pretty(&state) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            warn!(error = %e, "[sync] serialize transport stats failed");
+fn record_transport_cycle_in_namespace(
+    sync_dir: &Path,
+    namespace_id: Option<&str>,
+    cycle: SyncTransportCycleStats,
+) {
+    update_transport_stats(sync_dir, |stored| {
+        if let Some(namespace_id) = namespace_id {
+            let network = stored.networks.entry(namespace_id.to_owned()).or_default();
+            network.active_cycle = None;
+            let peer = network.peers.entry(cycle.peer_node_id.clone()).or_default();
+            add_cycle_totals(&mut peer.rolling, &cycle);
+            peer.last_cycle = Some(cycle.clone());
+        }
+        let state = &mut stored.raw;
+        state.active_cycle = None;
+        add_cycle_totals(&mut state.rolling, &cycle);
+        let peer = state.peers.entry(cycle.peer_node_id.clone()).or_default();
+        peer.cycles = peer.cycles.saturating_add(1);
+        if cycle.status == SyncTransportCycleStatus::Failure {
+            peer.failures = peer.failures.saturating_add(1);
+        }
+        peer.direct_bytes = peer.direct_bytes.saturating_add(cycle.direct_bytes());
+        peer.relay_bytes = peer.relay_bytes.saturating_add(cycle.relay_bytes());
+        peer.last_cycle = Some(cycle.clone());
+        state.last_cycle = Some(cycle);
+        true
+    });
+}
+
+fn disk_namespace_id(sync_dir: &Path) -> Option<String> {
+    rua_sync::identity::NetworkSecret::load(sync_dir)
+        .ok()
+        .flatten()
+        .map(|secret| hex::encode(secret.namespace_id().as_bytes()))
+}
+
+fn update_transport_stats(sync_dir: &Path, update: impl FnOnce(&mut StoredTransportStats) -> bool) {
+    let _guard = match TRANSPORT_STATS_WRITE_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(error) => {
+            warn!(%error, "[sync] transport stats write lock poisoned");
             return;
         }
     };
-    if let Err(e) = atomic_write(&path, &bytes) {
-        warn!(error = %e, "[sync] save transport stats failed");
+    let mut stored = load_stored_transport_stats(sync_dir);
+    if stored.legacy_unscoped.is_none() {
+        stored.legacy_unscoped = Some(stored.raw.clone());
+    }
+    if !update(&mut stored) {
+        return;
+    }
+    let bytes = match serde_json::to_vec_pretty(&stored) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            warn!(%error, "[sync] serialize transport stats failed");
+            return;
+        }
+    };
+    if let Err(error) = atomic_write(&sync_dir.join(TRANSPORT_STATS_FILE), &bytes) {
+        warn!(%error, "[sync] save transport stats failed");
+    }
+}
+
+fn add_cycle_totals(rolling: &mut SyncTransportRollingStats, cycle: &SyncTransportCycleStats) {
+    rolling.cycles = rolling.cycles.saturating_add(1);
+    if cycle.status == SyncTransportCycleStatus::Failure {
+        rolling.failures = rolling.failures.saturating_add(1);
+    }
+    rolling.events_received = rolling
+        .events_received
+        .saturating_add(cycle.events_received as u64);
+    rolling.events_sent = rolling.events_sent.saturating_add(cycle.events_sent as u64);
+    rolling.direct_tx_bytes = rolling
+        .direct_tx_bytes
+        .saturating_add(cycle.direct_tx_bytes);
+    rolling.direct_rx_bytes = rolling
+        .direct_rx_bytes
+        .saturating_add(cycle.direct_rx_bytes);
+    rolling.relay_tx_bytes = rolling.relay_tx_bytes.saturating_add(cycle.relay_tx_bytes);
+    rolling.relay_rx_bytes = rolling.relay_rx_bytes.saturating_add(cycle.relay_rx_bytes);
+}
+
+fn add_rolling_totals(total: &mut SyncTransportRollingStats, other: &SyncTransportRollingStats) {
+    total.cycles = total.cycles.saturating_add(other.cycles);
+    total.failures = total.failures.saturating_add(other.failures);
+    total.events_received = total.events_received.saturating_add(other.events_received);
+    total.events_sent = total.events_sent.saturating_add(other.events_sent);
+    total.direct_tx_bytes = total.direct_tx_bytes.saturating_add(other.direct_tx_bytes);
+    total.direct_rx_bytes = total.direct_rx_bytes.saturating_add(other.direct_rx_bytes);
+    total.relay_tx_bytes = total.relay_tx_bytes.saturating_add(other.relay_tx_bytes);
+    total.relay_rx_bytes = total.relay_rx_bytes.saturating_add(other.relay_rx_bytes);
+}
+
+/// Project local transport history onto the bound namespace and its current members.
+/// Legacy files have no namespace or per-peer event/directional-byte provenance.
+pub fn load_transport_stats_for_network(
+    sync_dir: &Path,
+    namespace_id: Option<&str>,
+    self_public_key: &[u8; 32],
+) -> SyncTransportStatsState {
+    let Some(namespace_id) = namespace_id else {
+        return SyncTransportStatsState::default();
+    };
+    let members: BTreeSet<_> = load_device_list(sync_dir)
+        .devices
+        .into_iter()
+        .filter(|entry| &entry.public_key != self_public_key)
+        .map(|entry| hex::encode(entry.public_key))
+        .collect();
+    let stored = load_stored_transport_stats(sync_dir);
+    let legacy = stored.legacy_unscoped.as_ref().unwrap_or(&stored.raw);
+    let complete_legacy_membership =
+        !legacy.peers.is_empty() && legacy.peers.keys().all(|peer| members.contains(peer));
+    let mut projected = SyncTransportStatsState::default();
+    if complete_legacy_membership {
+        projected.rolling = legacy.rolling.clone();
+    }
+    for (id, peer) in &legacy.peers {
+        if members.contains(id) {
+            projected.peers.insert(id.clone(), peer.clone());
+            if !complete_legacy_membership {
+                projected.rolling.cycles = projected.rolling.cycles.saturating_add(peer.cycles);
+                projected.rolling.failures =
+                    projected.rolling.failures.saturating_add(peer.failures);
+            }
+            take_latest_cycle(&mut projected.last_cycle, peer.last_cycle.as_ref());
+        }
+    }
+    take_latest_cycle(
+        &mut projected.last_cycle,
+        legacy
+            .last_cycle
+            .as_ref()
+            .filter(|cycle| members.contains(&cycle.peer_node_id)),
+    );
+    if let Some(network) = stored.networks.get(namespace_id) {
+        projected.active_cycle = network
+            .active_cycle
+            .as_ref()
+            .filter(|cycle| members.contains(&cycle.peer_node_id))
+            .cloned();
+        for (id, scoped_peer) in &network.peers {
+            if !members.contains(id) {
+                continue;
+            }
+            add_rolling_totals(&mut projected.rolling, &scoped_peer.rolling);
+            let peer = projected.peers.entry(id.clone()).or_default();
+            peer.cycles = peer.cycles.saturating_add(scoped_peer.rolling.cycles);
+            peer.failures = peer.failures.saturating_add(scoped_peer.rolling.failures);
+            peer.direct_bytes = peer
+                .direct_bytes
+                .saturating_add(scoped_peer.rolling.direct_tx_bytes)
+                .saturating_add(scoped_peer.rolling.direct_rx_bytes);
+            peer.relay_bytes = peer
+                .relay_bytes
+                .saturating_add(scoped_peer.rolling.relay_tx_bytes)
+                .saturating_add(scoped_peer.rolling.relay_rx_bytes);
+            take_latest_cycle(&mut peer.last_cycle, scoped_peer.last_cycle.as_ref());
+            take_latest_cycle(&mut projected.last_cycle, scoped_peer.last_cycle.as_ref());
+        }
+    } else {
+        projected.active_cycle = legacy
+            .active_cycle
+            .as_ref()
+            .filter(|cycle| members.contains(&cycle.peer_node_id))
+            .cloned();
+    }
+    projected
+}
+
+fn take_latest_cycle(
+    latest: &mut Option<SyncTransportCycleStats>,
+    candidate: Option<&SyncTransportCycleStats>,
+) {
+    let Some(candidate) = candidate else { return };
+    if latest
+        .as_ref()
+        .is_none_or(|old| candidate.completed_at_ms > old.completed_at_ms)
+    {
+        *latest = Some(candidate.clone());
     }
 }
 

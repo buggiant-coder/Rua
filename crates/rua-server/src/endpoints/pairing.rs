@@ -372,21 +372,29 @@ async fn join_pairing(
 
 async fn handle_pairing_outcome(
     state: &AppState,
-    outcome: PairingOutcome,
+    mut outcome: PairingOutcome,
     sync_dir: &std::path::Path,
 ) -> Result<(), String> {
-    let device_list = match &outcome {
-        PairingOutcome::Joined { device_list, .. }
-        | PairingOutcome::Shared { device_list }
-        | PairingOutcome::PeerAdded { device_list }
-        | PairingOutcome::MergeNeeded { device_list, .. } => device_list,
-    };
-
-    if let Err(e) = rua_sync::control_store::SyncControlStore::from_sync_dir(sync_dir)
-        .write_device_list(device_list)
     {
-        tracing::warn!("[pairing] failed to persist device_list.json: {e}");
-        return Err(format!("persist device_list.json: {e}"));
+        let _apply_guard = state.inbound_apply_lock.lock().await;
+        let store = rua_sync::control_store::SyncControlStore::from_sync_dir(sync_dir);
+        let current = store.read_device_list().map_err(|error| {
+            tracing::warn!(%error, "[pairing] failed to read current device_list.json");
+            format!("read current device_list.json: {error}")
+        })?;
+        let device_list = match &mut outcome {
+            PairingOutcome::Joined { device_list, .. }
+            | PairingOutcome::Shared { device_list }
+            | PairingOutcome::PeerAdded { device_list }
+            | PairingOutcome::MergeNeeded { device_list, .. } => device_list,
+        };
+
+        // The handshake used a captured list; names may have changed while it ran.
+        device_list.merge_name_facts_from(&current);
+        if let Err(e) = store.write_device_list(device_list) {
+            tracing::warn!("[pairing] failed to persist device_list.json: {e}");
+            return Err(format!("persist device_list.json: {e}"));
+        }
     }
 
     match outcome {

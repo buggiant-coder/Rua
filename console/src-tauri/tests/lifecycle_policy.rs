@@ -1,7 +1,7 @@
-use rua_desktop::runtime::{
+use rua_desktop_lib::runtime::{
     stop_disposition, wait_for_termination, RuntimeOwnership, StopDisposition,
 };
-use rua_desktop::tray::{
+use rua_desktop_lib::tray::{
     rua_root_switch_enabled, secondary_launch_action, window_close_action, ExitRequestAction,
     SecondaryLaunchAction, TrayState, WindowCloseAction,
 };
@@ -93,7 +93,7 @@ async fn shared_stop_waiters_complete_from_one_termination_event() {
 
 #[tokio::test]
 async fn exit_rejects_a_startup_already_queued_behind_update() {
-    let lifecycle = rua_desktop::update::DesktopLifecycle::default();
+    let lifecycle = rua_desktop_lib::update::DesktopLifecycle::default();
     let update = lifecycle.begin_operation().await.unwrap();
     let startup = lifecycle.begin_operation();
     tokio::pin!(startup);

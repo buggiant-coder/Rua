@@ -5,11 +5,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rua_core::{ChatAddress, ChatScope};
+#[cfg(unix)]
 use rua_server::services::product_hook_execution::{
-    CommandExecutionResource, CommandHandler, HandlerAdapterError, HandlerAdapterInvocation,
-    HandlerAdapterResult, HandlerExecutionFailureKind, HandlerExecutionResult, HandlerExecutor,
-    HandlerExposure, HandlerInvocation, HandlerKind, NativeHandler, PluginHandler,
-    StrictCommandHandler,
+    CommandExecutionResource, StrictCommandHandler,
+};
+use rua_server::services::product_hook_execution::{
+    CommandHandler, HandlerAdapterError, HandlerAdapterInvocation, HandlerAdapterResult,
+    HandlerExecutionFailureKind, HandlerExecutionResult, HandlerExecutor, HandlerExposure,
+    HandlerInvocation, HandlerKind, NativeHandler, PluginHandler,
 };
 use serde_json::json;
 use tokio_util::sync::CancellationToken;

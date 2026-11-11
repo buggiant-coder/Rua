@@ -315,7 +315,7 @@ async fn project_chat_media_round_trip_uses_project_workspace_only() {
 
 #[test]
 fn project_managed_media_materializes_from_the_project_workspace() {
-    let rua_root = std::path::Path::new("/tmp/rua-media-scope");
+    let rua_root = tempfile::tempdir().expect("Rua root");
     let address = ChatAddress::project("project-1", "chat-1");
     let mut messages = vec![AgentInputMessage {
         role: "user".to_string(),
@@ -326,12 +326,18 @@ fn project_managed_media_materializes_from_the_project_workspace() {
         }],
     }];
 
-    ChatMediaService.materialize_message_parts(rua_root, &address, &mut messages);
+    ChatMediaService.materialize_message_parts(rua_root.path(), &address, &mut messages);
+    let expected_path = rua_root
+        .path()
+        .join("projects")
+        .join("project-1")
+        .join("media")
+        .join("00000000-0000-4000-8000-000000000001");
 
     assert!(matches!(
         &messages[0].content[0],
         rua_core::ContentPart::Image { url, .. }
-            if url == "/tmp/rua-media-scope/projects/project-1/media/00000000-0000-4000-8000-000000000001"
+            if std::path::Path::new(url) == expected_path.as_path()
     ));
 }
 

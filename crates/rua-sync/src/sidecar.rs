@@ -156,6 +156,37 @@ impl SidecarStore {
         })
     }
 
+    /// Persisted namespace binding, independent of live transport availability.
+    /// This read does not establish Device authorization or create a binding.
+    pub fn bound_network_namespace(&self) -> Result<Option<[u8; 32]>, SyncError> {
+        let connection = self.connection()?;
+        let exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'sync_network_binding')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| sql_error("inspect network binding", error))?;
+        if !exists {
+            return Ok(None);
+        }
+        connection
+            .query_row(
+                "SELECT namespace FROM sync_network_binding WHERE singleton = 1",
+                [],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .map_err(|error| sql_error("read network binding", error))?
+            .map(|namespace| {
+                namespace.try_into().map_err(|_| {
+                    SyncError::Store("persisted sync namespace must contain 32 bytes".into())
+                })
+            })
+            .transpose()
+    }
+
     pub fn get_cursor(&self, record_id: &str) -> Result<Option<SidecarEntry>, SyncError> {
         let connection = self.connection()?;
         connection

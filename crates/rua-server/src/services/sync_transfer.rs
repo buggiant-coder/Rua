@@ -2513,10 +2513,7 @@ async fn fsync_parent_best_effort(path: &Path) {
     let Some(parent) = path.parent().map(Path::to_path_buf) else {
         return;
     };
-    let _ = tokio::task::spawn_blocking(move || {
-        std::fs::File::open(parent).and_then(|file| file.sync_all())
-    })
-    .await;
+    let _ = tokio::task::spawn_blocking(move || rua_core::fs::sync_directory(&parent)).await;
 }
 
 async fn read_json_frame<T, R>(reader: &mut R) -> Result<T, SyncTransferPlanError>

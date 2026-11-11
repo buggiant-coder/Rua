@@ -5,6 +5,7 @@ pub mod desktop_cli;
 pub mod desktop_control;
 pub mod error;
 pub mod event;
+pub mod fs;
 pub mod id;
 pub mod message;
 pub mod phone_use;

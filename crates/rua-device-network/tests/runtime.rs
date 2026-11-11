@@ -120,6 +120,7 @@ fn write_peer_list(sync_dir: &std::path::Path, peer: DeviceEntry) {
         sync_dir.join("device_list.json"),
         serde_json::to_vec_pretty(&DeviceList {
             devices: vec![peer],
+            ..Default::default()
         })
         .expect("serialize peer list"),
     )

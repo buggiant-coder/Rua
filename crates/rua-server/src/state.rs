@@ -2236,7 +2236,8 @@ impl AppState {
                     crate::services::sync_transfer::SyncTransferBulkHandler::new(local_device_id)
                         .with_foreground_operations(Arc::clone(&self.foreground_operations))
                         .with_media_transfers(Arc::clone(&self.chat_media_transfers))
-                        .with_chat_media_root(self.rua_root.clone()),
+                        .with_chat_media_root(self.rua_root.clone())
+                        .with_sync_blobs(node.blobs_store().clone()),
                 ));
         }
         crate::services::chat_activity_wake::spawn_chat_activity_gossip_listener(
@@ -2418,7 +2419,41 @@ impl AppState {
         match self.bound_sync_network().await {
             Ok(bound) => SyncNetworkMembership::bound(bound.namespace_id()),
             Err(BoundSyncNetworkError::NotPaired | BoundSyncNetworkError::MissingDiskSecret) => {
-                SyncNetworkMembership::network_created(disk_secret.namespace_id())
+                // Warm suspension removes the live node, not this network's
+                // persisted binding. Keep the operational guard above strict;
+                // only the display projection can use these durable facts.
+                let memory_secret = self
+                    .sync_network_secret
+                    .read()
+                    .ok()
+                    .and_then(|guard| guard.as_ref().map(Arc::clone));
+                if let Some(memory_secret) = memory_secret {
+                    if memory_secret.to_bytes() != disk_secret.to_bytes() {
+                        return SyncNetworkMembership::identity_mismatch(
+                            BoundSyncNetworkError::DiskSecretMismatch {
+                                disk_namespace_id: hex::encode(
+                                    disk_secret.namespace_id().as_bytes(),
+                                ),
+                                memory_namespace_id: hex::encode(
+                                    memory_secret.namespace_id().as_bytes(),
+                                ),
+                            },
+                        );
+                    }
+                }
+                match self.sidecar_store.bound_network_namespace() {
+                    Ok(Some(namespace)) if namespace == *disk_secret.namespace_id().as_bytes() => {
+                        SyncNetworkMembership::bound(disk_secret.namespace_id())
+                    }
+                    Ok(Some(namespace)) => SyncNetworkMembership::identity_mismatch(
+                        BoundSyncNetworkError::PersistedNamespaceMismatch {
+                            bound_namespace_id: hex::encode(namespace),
+                            secret_namespace_id: hex::encode(disk_secret.namespace_id().as_bytes()),
+                        },
+                    ),
+                    Ok(None) => SyncNetworkMembership::network_created(disk_secret.namespace_id()),
+                    Err(error) => SyncNetworkMembership::corrupt(error.to_string()),
+                }
             }
             Err(error) => SyncNetworkMembership::identity_mismatch(error),
         }

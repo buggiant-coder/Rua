@@ -206,6 +206,7 @@ async fn remove_device(
 
     let sync_dir = state.rua_root.join("sync");
     let store = rua_sync::control_store::SyncControlStore::from_sync_dir(&sync_dir);
+    let apply_guard = state.inbound_apply_lock.lock().await;
     let mut device_list = match store.read_device_list() {
         Ok(device_list) => device_list,
         Err(error) => {
@@ -251,6 +252,7 @@ async fn remove_device(
     if let Err(error) = store.write_device_list(&device_list) {
         return ApiError::Internal(format!("write device list: {error}")).into_response();
     }
+    drop(apply_guard);
     let device_network = state.device_network.lock().await.as_ref().cloned();
     if let Some(runtime) = device_network {
         if let Err(error) = runtime
@@ -299,31 +301,35 @@ async fn rename_device(
         Err(e) => return ApiError::BadRequest(e).into_response(),
     };
 
-    let sync_dir = state.rua_root.join("sync");
-
-    let device_list_path = sync_dir.join("device_list.json");
-    let mut renamed = false;
-    if device_list_path.exists() {
-        if let Some(mut dl) = std::fs::read_to_string(&device_list_path)
-            .ok()
-            .and_then(|content| {
-                serde_json::from_str::<rua_sync::device_list::DeviceList>(&content).ok()
-            })
+    let author = match state
+        .sync_device
+        .read()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|device| device.device_id_short()))
+    {
+        Some(author) => author,
+        None => {
+            return ApiError::Internal("local Device identity unavailable".into()).into_response()
+        }
+    };
+    let record = {
+        let _apply_guard = state.inbound_apply_lock.lock().await;
+        match rua_sync::control_store::SyncControlStore::from_data_dir(&state.rua_root)
+            .commit_device_name(&device_id_bytes, &body.friendly_name, author)
         {
-            renamed = dl.contains_device(&device_id_bytes);
-            dl.rename_device(&device_id_bytes, &body.friendly_name);
-            if let Err(e) = write_device_list(&device_list_path, &dl) {
-                return ApiError::Internal(format!("write device list: {e}")).into_response();
+            Ok(record) => record,
+            Err(error) => {
+                return ApiError::Internal(format!("commit device name: {error}")).into_response()
             }
         }
-    }
+    };
 
-    if renamed {
+    if let Some(name_record) = record {
         let _ = crate::sync_publication::publish_sync_fact(
             &state,
             crate::sync_publication::SyncPublicationFact::DeviceListDeviceRenamed {
-                device_id_hex: body.device_id.clone(),
-                friendly_name: body.friendly_name.clone(),
+                device_id_hex: hex::encode(device_id_bytes),
+                name_record,
             },
         )
         .await;
@@ -404,12 +410,4 @@ fn is_self_device(state: &AppState, device_id: &[u8; 8]) -> bool {
         .and_then(|guard| guard.as_ref().map(|device| device.device_id_short()))
         .as_ref()
         == Some(device_id)
-}
-
-fn write_device_list(
-    path: &std::path::Path,
-    device_list: &rua_sync::device_list::DeviceList,
-) -> Result<(), String> {
-    rua_sync::control_store::write_device_list_file(path, device_list)
-        .map_err(|e| format!("write device list: {e}"))
 }

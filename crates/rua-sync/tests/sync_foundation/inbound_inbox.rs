@@ -32,6 +32,60 @@ fn record_remote_insert_is_pending() {
 }
 
 #[test]
+fn next_drain_tracks_earliest_retry_and_excludes_terminal_states() {
+    let (_dir, inbox) = temp_inbox();
+    assert_eq!(inbox.next_drain_delay(1_000).unwrap(), None);
+    let hash = iroh_blobs::Hash::new(b"frame");
+    inbox
+        .record_remote_insert(author(1), b"later", hash)
+        .unwrap();
+    inbox
+        .mark_retryable(author(1), b"later", "unavailable", 5_000)
+        .unwrap();
+    assert_eq!(
+        inbox.next_drain_delay(1_000).unwrap(),
+        Some(std::time::Duration::from_millis(4_000))
+    );
+    inbox
+        .record_remote_insert(author(1), b"sooner", hash)
+        .unwrap();
+    assert_eq!(
+        inbox.next_drain_delay(1_000).unwrap(),
+        Some(std::time::Duration::ZERO)
+    );
+    inbox
+        .mark_retryable(author(1), b"sooner", "unavailable", 2_000)
+        .unwrap();
+    assert_eq!(
+        inbox.next_drain_delay(1_000).unwrap(),
+        Some(std::time::Duration::from_millis(1_000))
+    );
+    inbox.mark_failed(author(1), b"sooner", "invalid").unwrap();
+    assert_eq!(
+        inbox.next_drain_delay(1_000).unwrap(),
+        Some(std::time::Duration::from_millis(4_000))
+    );
+    inbox
+        .mark_retryable_limited(
+            author(1),
+            b"later",
+            "source unavailable",
+            5_000,
+            1,
+            rua_sync::inbound_inbox::RetryExhaustion::Dormant,
+        )
+        .unwrap();
+    inbox
+        .record_remote_insert(author(1), b"applied", hash)
+        .unwrap();
+    inbox.mark_applied(author(1), b"applied").unwrap();
+    inbox
+        .record_remote_insert(author(1), b"discarded", iroh_blobs::Hash::EMPTY)
+        .unwrap();
+    assert_eq!(inbox.next_drain_delay(u64::MAX).unwrap(), None);
+}
+
+#[test]
 fn replica_deletion_markers_do_not_wait_for_content_and_repair_old_dormant_rows() {
     let (dir, inbox) = temp_inbox();
     inbox

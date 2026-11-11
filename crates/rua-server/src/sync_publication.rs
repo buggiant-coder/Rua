@@ -12,6 +12,9 @@ use tracing::warn;
 use crate::state::AppState;
 use crate::sync_network::{BoundSyncNetwork, BoundSyncNetworkError};
 
+pub(crate) static DEVICE_LIST_PUBLICATION_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
+
 #[derive(Debug, Clone)]
 pub enum SyncPublicationFact {
     AgentPromptFilesCommitted {
@@ -117,7 +120,7 @@ pub enum SyncPublicationFact {
     },
     DeviceListDeviceRenamed {
         device_id_hex: String,
-        friendly_name: String,
+        name_record: rua_sync::device_list::DeviceNameRecord,
     },
     ProjectSidebarRecordsCommitted {
         records: Vec<rua_project::ProjectSidebarRecord>,
@@ -524,9 +527,14 @@ pub async fn publish_sync_fact_with_runtime(
         }
     };
 
+    let is_device_list_fact = fact.is_device_list_fact();
+    let publication_guard = if is_device_list_fact {
+        Some(DEVICE_LIST_PUBLICATION_LOCK.lock().await)
+    } else {
+        None
+    };
     let sync_meta = build_sync_meta(&device, runtime.sync_hlc_clock.as_ref());
     let blob_context = Some(bound_network.blob_context());
-    let is_device_list_fact = fact.is_device_list_fact();
     let changes = match crate::sync_domain_catalog::build_publication_changes(
         fact,
         sync_meta,
@@ -567,6 +575,7 @@ pub async fn publish_sync_fact_with_runtime(
         publication_started,
     )
     .await;
+    drop(publication_guard);
     if result.appended > 0 {
         notify_write_coalesced_sync(runtime).await;
         if is_device_list_fact {

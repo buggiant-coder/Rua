@@ -179,6 +179,9 @@ export default function ConversationNavigation({
   const projectsLoaded = useRef(false);
   const [projectsError, setProjectsError] = useState<string | null>(null);
   const projectRequest = useRef(0);
+  const projectsRefreshing = useRef(false);
+  const projectRefreshQueued = useRef(false);
+  const projectsMounted = useRef(true);
   const [expanded, setExpanded] = useState(() =>
     readExpanded(location.pathname),
   );
@@ -267,7 +270,14 @@ export default function ConversationNavigation({
           ?.display_name || t("projects.title")
       : t("navigation.independentChats");
 
-  const loadProjects = useCallback(async () => {
+  const loadProjects = useCallback(async function refreshProjects() {
+    if (!projectsMounted.current) return;
+    if (projectsRefreshing.current) {
+      projectRefreshQueued.current = true;
+      return;
+    }
+    projectsRefreshing.current = true;
+    projectRefreshQueued.current = false;
     const request = ++projectRequest.current;
     setProjectsLoading(true);
     setProjectsError(null);
@@ -284,10 +294,14 @@ export default function ConversationNavigation({
         );
     } finally {
       if (request === projectRequest.current) setProjectsLoading(false);
+      projectsRefreshing.current = false;
+      if (projectRefreshQueued.current && projectsMounted.current)
+        void refreshProjects();
     }
   }, []);
 
   useEffect(() => {
+    projectsMounted.current = true;
     void ensureCatalogLoaded().catch(() => {});
     void loadProjects();
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -298,9 +312,25 @@ export default function ConversationNavigation({
         void loadProjects();
       }, 150);
     });
+    // Sync writes canonical Project files outside this page's mutation events.
+    // Reconcile the catalog at the same visible cadence as Sidebar metadata.
+    const foreground = () => {
+      if (document.visibilityState !== "hidden")
+        invalidateConversationNavigation(undefined, true);
+    };
+    window.addEventListener("focus", foreground);
+    window.addEventListener("rua:foreground", foreground);
+    document.addEventListener("visibilitychange", foreground);
+    const poll = setInterval(foreground, 10000);
     return () => {
+      projectsMounted.current = false;
+      projectRefreshQueued.current = false;
       projectRequest.current += 1;
       if (refreshTimer !== undefined) clearTimeout(refreshTimer);
+      clearInterval(poll);
+      window.removeEventListener("focus", foreground);
+      window.removeEventListener("rua:foreground", foreground);
+      document.removeEventListener("visibilitychange", foreground);
       unsubscribe();
     };
   }, [ensureCatalogLoaded, loadProjects]);

@@ -95,6 +95,22 @@ stale generation; a single logical operation timing out does not establish
 that the transport is stale. Stream-specific cursors or offsets decide how
 each operation resumes.
 
+A logical deadline returns its timeout immediately. A manager-owned cancellable
+health probe may then check the same physical connection without replaying the
+operation; concurrent logical timeouts share one such probe per generation.
+Logical-timeout and network-change probes use the configured
+`network_change_probe_timeout` as a minimum budget, raised to three times the
+selected path's smoothed RTT up to ten seconds (or the configured minimum if
+higher). Iroh's peer-wide route can remain unchanged while a new connection's
+path observation has no selected flag. In that case the manager uses the
+largest known RTT among that same connection's currently open paths, without
+claiming that a transport class is selected. If no nonzero RTT is observable,
+the probe receives ten seconds or the configured minimum, whichever is higher;
+missing diagnostics do not establish that the connection is fast. This is a
+bounded application heuristic, not QUIC PTO, and a previous path's low RTT
+estimate need not describe a newly migrated path. Probe completion cannot
+change a replacement generation's connectivity.
+
 "One session" means one admitted authenticated connection generation, not a
 requirement to merge Docs/Blobs/Gossip protocols into that connection. A bounded
 candidate/draining overlap remains necessary for simultaneous incoming dials
@@ -148,7 +164,9 @@ Device settings and cross-device features consume one Session-owned
 connectivity projection and diagnostics. The current public state is
 `connected`, `connecting`, or `not_connected`; protocol-version incompatibility
 is retained as a diagnostic/error while the peer remains `not_connected`.
-Diagnostics also expose path class and RTT when known. None of these values
+Diagnostics expose the selected path class when known and the same-connection
+RTT estimate used by the health probe. The class may be unknown while open-path
+RTT is available. None of these values
 proves Conversation Authority, history completeness, queue state, or Sync
 convergence.
 

@@ -355,7 +355,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
         fs::rename(&temp, path)?;
-        File::open(parent)?.sync_all()
+        rua_core::fs::sync_directory(parent)
     })();
     if result.is_err() {
         let _ = fs::remove_file(temp);

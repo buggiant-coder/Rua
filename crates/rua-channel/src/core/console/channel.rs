@@ -233,6 +233,7 @@ impl ConsoleStopOutcome {
 pub enum ConsoleSubmitKind {
     Started,
     Queued,
+    Unconfirmed,
     Rejected,
 }
 

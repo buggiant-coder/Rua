@@ -1,4 +1,4 @@
-use rua_desktop::user_notification::{
+use rua_desktop_lib::user_notification::{
     notification_body, valid_rua_uri, UserNotificationRequest, UserNotificationSender,
 };
 
