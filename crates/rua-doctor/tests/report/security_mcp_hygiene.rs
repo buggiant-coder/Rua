@@ -64,6 +64,49 @@ fn mcp_client_registered() {
 }
 
 #[test]
+fn diagnostics_read_active_agent_policy_and_mcp_instead_of_retired_root_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("workspaces/active");
+    std::fs::create_dir_all(&workspace).unwrap();
+    rua_config::atomic_write_json(
+        &dir.path().join("config.json"),
+        &serde_json::json!({
+            "agents": {"active_agent": "active", "profiles": {
+                "active": {"id": "active", "workspace_dir": workspace}
+            }},
+            "mcp": {"clients": {}},
+            "security": {"tool_guard": {"enabled": true}, "file_guard": {"enabled": true}}
+        }),
+    )
+    .unwrap();
+    rua_config::atomic_write_json(&workspace.join("agent.json"), &serde_json::json!({
+        "id": "active", "name": "Active", "workspace_dir": workspace,
+        "mcp": {"clients": {"broken": {"enabled": true, "transport": "stdio", "command": "/missing-rua-test-command"}}}
+    })).unwrap();
+    rua_config::atomic_write_json(
+        &workspace.join("security.json"),
+        &serde_json::json!({
+            "tool_guard": {"enabled": false}, "file_guard": {"enabled": false}
+        }),
+    )
+    .unwrap();
+    let paths = Paths::new(dir.path().to_str());
+    let ctx = CheckContext { paths: &paths };
+    for check in inventory::iter::<rua_doctor::registry::RegisteredCheck> {
+        if check.name == "security_baseline" {
+            let result = (check.run)(&ctx);
+            let details = result.details.unwrap();
+            assert_eq!(details["tool_guard_enabled"], false);
+            assert_eq!(details["file_guard_enabled"], false);
+        } else if check.name == "mcp_client" {
+            let result = (check.run)(&ctx);
+            assert_ne!(result.status, CheckStatus::Pass);
+            assert_eq!(result.details.unwrap()["clients"][0]["name"], "broken");
+        }
+    }
+}
+
+#[test]
 fn workspace_hygiene_registered() {
     let paths = Paths::new(Some("/tmp/rua-doctor-hyg-test"));
     let ctx = CheckContext { paths: &paths };

@@ -47,17 +47,36 @@ fn check_security_baseline(ctx: &CheckContext) -> CheckResult {
         };
     }
 
-    let sec: rua_config::types::security::SecurityConfig = std::fs::read(&config_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|root| root.get("security").cloned())
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_default();
+    let security = (|| -> std::io::Result<_> {
+        let root = rua_config::load_config(&config_path, wd)?;
+        let agent = rua_config::load_agent_config(&root.agents.active_agent, wd)?;
+        let path = std::path::Path::new(&agent.workspace_dir).join("security.json");
+        let sec: rua_config::SecurityConfig = match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Default::default(),
+            Err(error) => return Err(error),
+        };
+        Ok((
+            sec,
+            root.security.map(|s| s.skill_scanner).unwrap_or_default(),
+        ))
+    })();
+    let (sec, scanner) = match security {
+        Ok(config) => config,
+        Err(error) => {
+            return CheckResult {
+                name: "security_baseline".into(),
+                status: CheckStatus::Fail,
+                message: error.to_string(),
+                details: None,
+            }
+        }
+    };
 
     let details = SecurityBaselineDetails {
         tool_guard_enabled: sec.tool_guard.enabled,
         file_guard_enabled: sec.file_guard.enabled,
-        skill_scanner_mode: sec.skill_scanner.mode.clone(),
+        skill_scanner_mode: scanner.mode.clone(),
     };
 
     let (status, message) = evaluate_security(

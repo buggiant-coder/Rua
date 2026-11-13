@@ -20,7 +20,10 @@ fn build_state(tmp: &TempDir) -> AppState {
 
 fn build_test_app(state: AppState) -> Router {
     Router::new()
-        .nest("/api", register_scanner_routes())
+        .nest(
+            "/api",
+            register_scanner_routes().merge(rua_server::endpoints::security::router()),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             agent_context_middleware,
@@ -270,4 +273,177 @@ async fn delete_returns_404_when_entry_missing() {
         .as_str()
         .unwrap_or_default()
         .contains("alpha-skill"));
+}
+
+struct ScanEnvGuard {
+    root: Option<std::ffi::OsString>,
+    mode: Option<std::ffi::OsString>,
+}
+
+impl Drop for ScanEnvGuard {
+    fn drop(&mut self) {
+        for (key, value) in [
+            ("RUA_ROOT", &self.root),
+            ("RUA_SKILL_SCAN_MODE", &self.mode),
+        ] {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+}
+
+async fn scanner_request(app: &Router, method: &str, path: &str, body: Value) -> Value {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header("Content-Type", "application/json")
+                .header("X-Agent-Id", "default")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = read_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn manual_scan_uses_saved_settings_and_reloads_them_without_restart() {
+    let tmp = TempDir::new().unwrap();
+    let _env = ScanEnvGuard {
+        root: std::env::var_os("RUA_ROOT"),
+        mode: std::env::var_os("RUA_SKILL_SCAN_MODE"),
+    };
+    // Keep scanner history isolated, and ensure configuration comes from AppState's root.
+    std::env::set_var("RUA_ROOT", tmp.path().join("ambient-root"));
+    std::env::remove_var("RUA_SKILL_SCAN_MODE");
+    let app = build_test_app(build_state(&tmp));
+    let fixtures = [
+        (
+            "workspace-probe",
+            tmp.path().join("workspaces/default/skills/workspace-probe"),
+        ),
+        ("pool-probe", tmp.path().join("skill_pool/pool-probe")),
+    ];
+    for (name, dir) in &fixtures {
+        std::fs::create_dir_all(dir).unwrap();
+        rua_config::atomic_write(
+            &dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: scanner fixture\n---\n# Probe\n").as_bytes(),
+        )
+        .unwrap();
+        // Static input only; the scanner must never execute this file.
+        rua_config::atomic_write(
+            &dir.join("main.py"),
+            b"import subprocess\nsubprocess.call('echo hi', shell=True)\n",
+        )
+        .unwrap();
+    }
+    let settings = "/api/config/security/skill-scanner";
+    let scan = "/api/skills/scanner/scan";
+    scanner_request(
+        &app,
+        "PUT",
+        settings,
+        json!({"mode":"warn", "timeout":7, "whitelist":[]}),
+    )
+    .await;
+    let warned = scanner_request(&app, "POST", scan, Value::Null).await;
+    assert!(
+        warned["issues"].as_u64().unwrap() > 0,
+        "fixture must trigger findings"
+    );
+    assert!(warned["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r["action"] == "warned"));
+
+    scanner_request(
+        &app,
+        "PUT",
+        settings,
+        json!({"mode":"off", "timeout":7, "whitelist":[]}),
+    )
+    .await;
+    let off = scanner_request(&app, "POST", scan, Value::Null).await;
+    assert_eq!(off["issues"], 0, "saved off mode must skip scanning");
+    assert_eq!(off["results"], json!([]));
+
+    let whitelist: Vec<_> = fixtures
+        .iter()
+        .map(|(name, dir)| {
+            json!({
+                "skill_name": name, "content_hash": compute_hash(dir), "added_at":""
+            })
+        })
+        .collect();
+    scanner_request(
+        &app,
+        "PUT",
+        settings,
+        json!({"mode":"warn", "timeout":7, "whitelist":whitelist}),
+    )
+    .await;
+    let trusted = scanner_request(&app, "POST", scan, Value::Null).await;
+    assert_eq!(
+        trusted["issues"], 0,
+        "saved content whitelist must be applied"
+    );
+    rua_config::atomic_write(&fixtures[0].1.join("changed.txt"), b"changed bundle").unwrap();
+    let changed = scanner_request(&app, "POST", scan, Value::Null).await;
+    assert!(changed["issues"].as_u64().unwrap() > 0);
+    assert!(changed["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r["skill_name"] == "workspace-probe"));
+
+    scanner_request(
+        &app,
+        "PUT",
+        settings,
+        json!({"mode":"block", "timeout":7, "whitelist":[]}),
+    )
+    .await;
+    let blocked = scanner_request(&app, "POST", scan, Value::Null).await;
+    assert!(blocked["issues"].as_u64().unwrap() > 0);
+    assert!(blocked["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r["action"] == "blocked"));
+
+    let path = tmp.path().join("config.json");
+    let mut config: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    config["security"]["skill_scanner"]["timeout"] = json!("invalid");
+    rua_config::atomic_write_json(&path, &config).unwrap();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(scan)
+                .header("X-Agent-Id", "default")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        read_json(response).await["detail"].is_string(),
+        "invalid settings must not silently fall back"
+    );
+}
+
+fn compute_hash(dir: &std::path::Path) -> String {
+    rua_skills_scanner::compute_skill_content_hash(dir).unwrap()
 }

@@ -47,7 +47,8 @@ async fn export_reads_portable_root_config_files() {
                         "workspace_dir": "/Users/desktop/.rua/workspaces/default"
                     }
                 },
-                "agent_order": ["default"]
+                "agent_order": ["default"],
+                "defaults": {"tools": {}}, "running": {"max_iters": 1}
             },
             "security": {
                 "file_guard": {"enabled": false},
@@ -90,7 +91,7 @@ async fn export_reads_portable_root_config_files() {
         .iter()
         .find(|change| change.record_id == ROOT_CONFIG_RECORD_SECURITY)
         .expect("security root config snapshot");
-    assert_eq!(security.payload["file_guard"]["enabled"], false);
+    assert!(security.payload.get("file_guard").is_none());
     assert!(
         security.payload.get("allow_no_auth_hosts").is_none(),
         "allow_no_auth_hosts is device-local and must not export"
@@ -99,6 +100,8 @@ async fn export_reads_portable_root_config_files() {
         .iter()
         .find(|change| change.record_id == ROOT_CONFIG_RECORD_AGENTS)
         .expect("agents root config snapshot");
+    assert!(agents.payload.get("defaults").is_none());
+    assert!(agents.payload.get("running").is_none());
     assert!(
         agents.payload["profiles"]["default"]
             .get("workspace_dir")
@@ -250,7 +253,8 @@ async fn inbound_agents_record_updates_only_config_agents_section() {
                     "workspace_dir": "/Users/desktop/.rua/workspaces/remote"
                 }
             },
-            "agent_order": ["remote"]
+            "agent_order": ["remote"],
+            "defaults": {"tools": {}}, "heartbeat": {"enabled": true}
         }),
         "device-a",
         hlc(150),
@@ -283,6 +287,8 @@ async fn inbound_agents_record_updates_only_config_agents_section() {
         )
     );
     assert_eq!(file["agents"]["agent_order"][0], "remote");
+    assert!(file["agents"].get("defaults").is_none());
+    assert!(file["agents"].get("heartbeat").is_none());
 }
 
 #[tokio::test]
@@ -637,11 +643,7 @@ async fn inbound_security_record_merges_portable_policy_and_preserves_auth_bypas
     assert_eq!(result.status, RegistryApplyStatus::Applied);
     let file: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-    assert_eq!(file["security"]["file_guard"]["enabled"], false);
-    assert_eq!(
-        file["security"]["file_guard"]["paths"],
-        serde_json::json!(["**/.env"])
-    );
+    assert!(file["security"].get("file_guard").is_none());
     assert_eq!(file["security"]["skill_scanner"]["mode"], "block");
     assert_eq!(
         file["security"]["allow_no_auth_hosts"],

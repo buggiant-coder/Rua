@@ -21,12 +21,33 @@ fn missing_config_returns_defaults() {
     let dir = fresh_data_dir("missing-config");
     let store = SecurityConfigStore::new(dir.clone());
 
-    let file = store.get_file_guard().expect("get_file_guard");
+    let file = store.load("default").unwrap().file_guard;
     let skill = store.get_skill_scanner().expect("get_skill_scanner");
 
     assert!(file.sensitive_files.is_empty());
     assert!(skill.whitelist.is_empty());
     assert_eq!(skill.timeout, 30);
+}
+
+#[test]
+fn fresh_root_with_unset_security_uses_process_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SecurityConfigStore::new(dir.path().to_path_buf());
+    rua_config::save_config(&rua_config::RootConfig::default(), &store.config_path()).unwrap();
+    assert_eq!(
+        store.get_allow_no_auth_hosts().unwrap(),
+        vec!["127.0.0.1", "::1"]
+    );
+    assert!(store.get_skill_scanner().unwrap().whitelist.is_empty());
+    rua_config::atomic_write_json(&store.config_path(), &json!({"security": null})).unwrap();
+    assert_eq!(
+        store.get_allow_no_auth_hosts().unwrap(),
+        vec!["127.0.0.1", "::1"]
+    );
+    store
+        .update_allow_no_auth_hosts(vec!["::1".into()])
+        .unwrap();
+    assert_eq!(store.get_allow_no_auth_hosts().unwrap(), vec!["::1"]);
 }
 
 #[test]
@@ -40,9 +61,41 @@ fn update_file_guard_persists() {
         ..Default::default()
     };
 
-    let saved = store.update_file_guard(cfg).expect("update_file_guard");
+    let mut security = store.load("default").unwrap();
+    security.file_guard = cfg;
+    store.save("default", &security).unwrap();
+    let saved = store.load("default").unwrap().file_guard;
     assert!(saved.enabled);
     assert_eq!(saved.sensitive_files.len(), 2);
+}
+
+#[test]
+fn process_settings_discard_retired_guard_policy_and_preserve_extensions() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SecurityConfigStore::new(dir.path().to_path_buf());
+    rua_config::atomic_write_json(
+        &store.config_path(),
+        &json!({
+            "future_root": 9,
+            "security": {"tool_guard": {"enabled": false}, "file_guard": {"enabled": false},
+                "skill_scanner": {"mode": "warn"}, "future_security": 7}
+        }),
+    )
+    .unwrap();
+    store
+        .update_allow_no_auth_hosts(vec!["::1".into()])
+        .unwrap();
+    let root: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(store.config_path()).unwrap()).unwrap();
+    assert!(root["security"].get("tool_guard").is_none());
+    assert!(root["security"].get("file_guard").is_none());
+    assert_eq!(root["security"]["future_security"], 7);
+    assert_eq!(root["future_root"], 9);
+    assert!(store.load("default").unwrap().tool_guard.enabled);
+    assert!(
+        !dir.path().join("workspaces").exists(),
+        "no implicit Agent migration"
+    );
 }
 
 #[test]

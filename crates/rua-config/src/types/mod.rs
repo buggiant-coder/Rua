@@ -2,6 +2,7 @@ pub mod acp;
 pub mod agents;
 pub mod channels;
 pub mod cron;
+mod root_scope;
 pub mod security;
 pub mod session;
 pub mod settings;
@@ -41,10 +42,6 @@ pub use workspace::{
 
 use crate::serde_helpers::deserialize_null_default;
 use serde::{Deserialize, Serialize};
-
-fn default_mcp_value() -> serde_json::Value {
-    serde_json::json!({ "clients": {} })
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ObservabilityConfig {
@@ -91,31 +88,17 @@ impl Default for MetricsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RootConfig {
     #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub channels: ChannelConfig,
-
-    #[serde(
-        default = "default_mcp_value",
-        deserialize_with = "deserialize_null_default"
-    )]
-    pub mcp: serde_json::Value,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub tools: ToolsConfig,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub agents: AgentsConfig,
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub observability: ObservabilityConfig,
     #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub acp: AcpConfig,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
     pub task_runtime: TaskRuntimeConfig,
-    #[serde(default)]
-    pub last_dispatch: Option<LastDispatchConfig>,
-    #[serde(default)]
-    pub show_tool_details: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security: Option<security::ProcessSecurityConfig>,
     #[serde(default)]
     pub user_timezone: Option<String>,
 
-    #[serde(flatten)]
+    #[serde(flatten, with = "root_scope::root")]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -203,16 +186,4 @@ impl Default for TaskRuntimeConfig {
             extra: Default::default(),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct LastDispatchConfig {
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub channel: String,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub user_id: String,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
-    pub session_id: String,
-    #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
 }

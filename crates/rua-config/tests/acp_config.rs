@@ -160,20 +160,19 @@ fn root_config_with_acp_field() {
         }
     });
     let config: rua_config::types::RootConfig = serde_json::from_value(json).unwrap();
-    assert_eq!(config.acp.agents.len(), 1);
-    assert_eq!(config.acp.agents["opencode"].command, "opencode");
+    assert!(serde_json::to_value(config).unwrap().get("acp").is_none());
 }
 
 #[test]
 fn root_config_missing_acp_defaults_empty() {
     let json = serde_json::json!({});
     let config: rua_config::types::RootConfig = serde_json::from_value(json).unwrap();
-    assert!(config.acp.agents.is_empty());
+    assert!(serde_json::to_value(config).unwrap().get("acp").is_none());
 }
 
 #[test]
 fn root_config_null_acp_defaults_empty() {
     let json = serde_json::json!({"acp": null});
     let config: rua_config::types::RootConfig = serde_json::from_value(json).unwrap();
-    assert!(config.acp.agents.is_empty());
+    assert!(serde_json::to_value(config).unwrap().get("acp").is_none());
 }

@@ -125,7 +125,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Chat(args) => rua_cli::chat::run(args, format, base_url, agent_id),
         Commands::Chats(args) => rua_cli::console::run(args, format, base_url, agent_id),
         Commands::Clean(args) => rua_cli::clean::run(args, &paths),
-        Commands::Config(args) => rua_cli::config::run(args, format),
+        Commands::Config(args) => rua_cli::config::run(args, format, &paths.rua_root),
         Commands::Cron(args) => rua_cli::cron::run(args, format, base_url, agent_id),
         Commands::Daemon(args) => rua_cli::daemon::run(args, &paths),
         Commands::Desktop(args) => rua_cli::desktop::run(args),

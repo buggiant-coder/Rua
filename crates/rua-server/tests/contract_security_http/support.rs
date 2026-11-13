@@ -14,6 +14,7 @@ use rua_server::{AppState, ServerProfile};
 
 pub struct TestApp {
     pub app: Router,
+    pub state: AppState,
     _tmp: TempDir,
 }
 
@@ -30,9 +31,13 @@ pub fn build_app() -> TestApp {
             state.clone(),
             agent_context_middleware,
         ))
-        .with_state(state);
+        .with_state(state.clone());
 
-    TestApp { app, _tmp: tmp }
+    TestApp {
+        app,
+        state,
+        _tmp: tmp,
+    }
 }
 
 pub async fn request(

@@ -426,10 +426,10 @@ pub(crate) async fn write_llm_routing_cells(
 
 use crate::endpoints::security::{
     approval_mode_to_dto, build_store, builtin_rules_payload, canonical_approval_mode,
-    dto_to_file_guard, dto_to_skill_scanner, dto_to_tool_guard, file_guard_to_dto,
-    get_allow_no_auth_hosts_from_store, map_store_error, publish_process_security_config,
+    dto_to_skill_scanner, dto_to_tool_guard, get_allow_no_auth_hosts_from_store,
+    get_file_guard_for_agent, map_store_error, publish_process_security_config,
     skill_scanner_to_dto, tool_guard_to_dto, update_allow_no_auth_hosts_in_store,
-    validate_tool_guard_config,
+    update_file_guard_for_agent, validate_tool_guard_config,
 };
 
 async fn get_tool_guard(
@@ -526,17 +526,9 @@ async fn update_approval_mode(
 
 async fn get_file_guard(
     State(state): State<AppState>,
-    AxumPath(_agent_id): AxumPath<String>,
+    AxumPath(agent_id): AxumPath<String>,
 ) -> Response {
-    let store = match build_store(&state).await {
-        Ok(s) => s,
-        Err(e) => return e.into_response(),
-    };
-    let secret_dir = state.security.secret_dir();
-    match store.get_file_guard() {
-        Ok(cfg) => (StatusCode::OK, Json(file_guard_to_dto(&cfg, secret_dir))).into_response(),
-        Err(e) => map_store_error(e).into_response(),
-    }
+    get_file_guard_for_agent(&state, &agent_id)
 }
 
 async fn get_allow_no_auth_hosts(
@@ -570,26 +562,10 @@ async fn update_allow_no_auth_hosts(
 
 async fn update_file_guard(
     State(state): State<AppState>,
-    AxumPath(_agent_id): AxumPath<String>,
+    AxumPath(agent_id): AxumPath<String>,
     Json(body): Json<dto::FileGuardConfig>,
 ) -> Response {
-    let store = match build_store(&state).await {
-        Ok(s) => s,
-        Err(e) => return e.into_response(),
-    };
-    let existing = match store.get_file_guard() {
-        Ok(c) => c,
-        Err(e) => return map_store_error(e).into_response(),
-    };
-    let merged = dto_to_file_guard(&body, &existing);
-    let secret_dir = state.security.secret_dir();
-    match store.update_file_guard(merged) {
-        Ok(saved) => {
-            publish_process_security_config(&state, &store).await;
-            (StatusCode::OK, Json(file_guard_to_dto(&saved, secret_dir))).into_response()
-        }
-        Err(e) => map_store_error(e).into_response(),
-    }
+    update_file_guard_for_agent(&state, &agent_id, body).await
 }
 
 async fn get_skill_scanner(

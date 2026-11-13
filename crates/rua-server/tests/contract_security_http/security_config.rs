@@ -562,7 +562,7 @@ async fn agent_scoped_file_guard_and_skill_scanner_routes_use_rust_config_contra
         Method::GET,
         "/api/config/security/file-guard",
         None,
-        None,
+        Some(agent_a),
     )
     .await;
     assert_eq!(root_file.status(), StatusCode::OK);
@@ -576,8 +576,34 @@ async fn agent_scoped_file_guard_and_skill_scanner_routes_use_rust_config_contra
     assert_eq!(scoped_file_b.status(), StatusCode::OK);
     assert_eq!(
         read_json(scoped_file_b).await["paths"],
-        json!(["**/secrets.toml"]),
-        "file guard is a process-wide safety policy exposed through scoped aliases"
+        json!([]),
+        "Agent A's file guard must not leak into Agent B"
+    );
+    let store = app.state.security.config_store();
+    assert_eq!(
+        store.load(agent_a).unwrap().file_guard.sensitive_files,
+        vec!["**/secrets.toml"]
+    );
+    let root: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(store.config_path()).unwrap()).unwrap();
+    assert!(root["security"].get("file_guard").is_none());
+
+    let root_put = request(
+        &app.app,
+        Method::PUT,
+        "/api/config/security/file-guard",
+        Some(json!({"enabled": false, "paths": ["b-secret"], "disabled_patterns": []})),
+        Some(agent_b),
+    )
+    .await;
+    assert_eq!(root_put.status(), StatusCode::OK);
+    assert_eq!(
+        store.load(agent_b).unwrap().file_guard.sensitive_files,
+        vec!["b-secret"]
+    );
+    assert_eq!(
+        store.load(agent_a).unwrap().file_guard.sensitive_files,
+        vec!["**/secrets.toml"]
     );
 
     let scanner_path = format!("/api/agents/{agent_b}/config/security/skill-scanner");

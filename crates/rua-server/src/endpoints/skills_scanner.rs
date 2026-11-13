@@ -6,7 +6,6 @@ use axum::{Json, Router};
 use serde_json::json;
 use tracing::warn;
 
-use rua_security::config_store::SecurityConfigStore;
 use rua_skills_scanner::history::{
     blocked_history_path, clear_blocked_history, get_blocked_history, remove_blocked_entry,
 };
@@ -59,6 +58,12 @@ pub async fn scanner_blocked_remove_handler(
 
 pub async fn scanner_manual_scan_handler(State(state): State<AppState>) -> Response {
     let data_dir = &state.rua_root;
+    let store = state.security.config_store();
+    // Capture the current process settings once for this scan batch.
+    let config = match store.get_skill_scanner() {
+        Ok(config) => config,
+        Err(error) => return super::security::map_store_error(error).into_response(),
+    };
 
     let mut skill_dirs: Vec<(String, std::path::PathBuf, String)> = Vec::new();
 
@@ -117,10 +122,16 @@ pub async fn scanner_manual_scan_handler(State(state): State<AppState>) -> Respo
         let name = skill_name.clone();
         let dir = skill_dir.clone();
         let src = source.clone();
+        let config = &config;
         async move {
-            let outcome =
-                rua_skills_scanner::scan_skill_directory_with_config(&dir, &name, None, None, None)
-                    .await;
+            let outcome = rua_skills_scanner::scan_skill_directory_with_config(
+                &dir,
+                &name,
+                None,
+                None,
+                Some(config),
+            )
+            .await;
             (name, dir, src, outcome)
         }
     });
@@ -128,7 +139,6 @@ pub async fn scanner_manual_scan_handler(State(state): State<AppState>) -> Respo
 
     let mut results = Vec::new();
     let mut total_issues: usize = 0;
-    let store = SecurityConfigStore::new(data_dir.clone());
     let mut new_entries: Vec<serde_json::Value> = Vec::new();
 
     for (skill_name, skill_dir, source, outcome) in scan_results {

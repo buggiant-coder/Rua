@@ -5,6 +5,20 @@ fn default_allow_no_auth_hosts() -> Vec<String> {
     vec!["127.0.0.1".to_string(), "::1".to_string()]
 }
 
+/// Process settings; executable Tool/File Guard policy belongs to each Agent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProcessSecurityConfig {
+    #[serde(default, deserialize_with = "deserialize_null_default")]
+    pub skill_scanner: SkillScannerConfig,
+    #[serde(
+        default = "default_allow_no_auth_hosts",
+        deserialize_with = "deserialize_null_default"
+    )]
+    pub allow_no_auth_hosts: Vec<String>,
+    #[serde(flatten, with = "super::root_scope::process_security")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SecurityConfig {
     #[serde(default, deserialize_with = "deserialize_null_default")]

@@ -462,41 +462,60 @@ async fn update_allow_no_auth_hosts(
 
 async fn get_file_guard(
     State(state): State<AppState>,
-    Extension(_ctx): Extension<AgentExtractorContext>,
+    Extension(ctx): Extension<AgentExtractorContext>,
 ) -> Response {
-    let store = match build_store(&state).await {
-        Ok(s) => s,
-        Err(e) => return e.into_response(),
-    };
-    let secret_dir = state.security.secret_dir();
-    match store.get_file_guard() {
-        Ok(cfg) => (StatusCode::OK, Json(file_guard_to_dto(&cfg, secret_dir))).into_response(),
-        Err(e) => map_store_error(e).into_response(),
-    }
+    get_file_guard_for_agent(&state, &ctx.agent_id)
 }
 
 async fn update_file_guard(
     State(state): State<AppState>,
-    Extension(_ctx): Extension<AgentExtractorContext>,
+    Extension(ctx): Extension<AgentExtractorContext>,
     Json(body): Json<dto::FileGuardConfig>,
 ) -> Response {
-    let store = match build_store(&state).await {
-        Ok(s) => s,
-        Err(e) => return e.into_response(),
-    };
-    let existing = match store.get_file_guard() {
-        Ok(c) => c,
-        Err(e) => return map_store_error(e).into_response(),
-    };
-    let merged = dto_to_file_guard(&body, &existing);
-    let secret_dir = state.security.secret_dir();
-    match store.update_file_guard(merged) {
-        Ok(saved) => {
-            publish_process_security_config(&state, &store).await;
-            (StatusCode::OK, Json(file_guard_to_dto(&saved, secret_dir))).into_response()
-        }
+    update_file_guard_for_agent(&state, &ctx.agent_id, body).await
+}
+
+pub(crate) fn get_file_guard_for_agent(state: &AppState, agent_id: &str) -> Response {
+    match state.security.config_store().load(agent_id) {
+        Ok(cfg) => (
+            StatusCode::OK,
+            Json(file_guard_to_dto(
+                &cfg.file_guard,
+                state.security.secret_dir(),
+            )),
+        )
+            .into_response(),
         Err(e) => map_store_error(e).into_response(),
     }
+}
+
+pub(crate) async fn update_file_guard_for_agent(
+    state: &AppState,
+    agent_id: &str,
+    body: dto::FileGuardConfig,
+) -> Response {
+    let mut cfg = match state.security.config_store().load(agent_id) {
+        Ok(cfg) => cfg,
+        Err(e) => return map_store_error(e).into_response(),
+    };
+    cfg.file_guard = dto_to_file_guard(&body, &cfg.file_guard);
+    if let Err(e) = state.security.save_and_invalidate(agent_id, &cfg) {
+        return map_store_error(e).into_response();
+    }
+    crate::sync_publication::publish_agent_security_committed(
+        state,
+        agent_id,
+        serde_json::to_value(&cfg).unwrap_or_default(),
+    )
+    .await;
+    (
+        StatusCode::OK,
+        Json(file_guard_to_dto(
+            &cfg.file_guard,
+            state.security.secret_dir(),
+        )),
+    )
+        .into_response()
 }
 
 async fn get_skill_scanner(

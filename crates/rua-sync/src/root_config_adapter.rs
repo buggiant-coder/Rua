@@ -257,7 +257,12 @@ fn write_record_value(record_id: &str, path: &Path, value: &serde_json::Value) -
         let root_obj = root
             .as_object_mut()
             .ok_or_else(|| SyncError::Store("config.json root must be object".to_string()))?;
-        root_obj.insert("agents".to_string(), value.clone());
+        let agents: rua_config::AgentsConfig = serde_json::from_value(value.clone())
+            .map_err(|error| SyncError::Store(format!("invalid Agent registry: {error}")))?;
+        root_obj.insert(
+            "agents".to_string(),
+            serde_json::to_value(agents).map_err(|error| SyncError::Store(error.to_string()))?,
+        );
         rua_config::atomic_write_json(path, &root)?;
         return Ok(());
     }
@@ -286,10 +291,15 @@ fn write_record_value(record_id: &str, path: &Path, value: &serde_json::Value) -
             SyncError::Store("root security config payload must be object".to_string())
         })?;
         for (key, value) in incoming {
-            if key != "allow_no_auth_hosts" {
+            if !matches!(
+                key.as_str(),
+                "allow_no_auth_hosts" | "file_guard" | "tool_guard"
+            ) {
                 next_obj.insert(key.clone(), value.clone());
             }
         }
+        next_obj.remove("file_guard");
+        next_obj.remove("tool_guard");
         root_obj.insert("security".to_string(), next_security);
         rua_config::atomic_write_json(path, &root)?;
         return Ok(());
@@ -403,6 +413,18 @@ fn merge_agents_registry(
 }
 
 fn sanitize_agents_registry(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(fields) = value.as_object_mut() {
+        for key in [
+            "defaults",
+            "running",
+            "language",
+            "system_prompt_files",
+            "heartbeat",
+            "active_hours",
+        ] {
+            fields.remove(key);
+        }
+    }
     if let Some(profiles) = value
         .get_mut("profiles")
         .and_then(|profiles| profiles.as_object_mut())
@@ -499,6 +521,8 @@ fn localize_agent_profile_workspace_dirs(value: &mut serde_json::Value, data_dir
 fn strip_device_local_security(mut value: serde_json::Value) -> serde_json::Value {
     if let Some(obj) = value.as_object_mut() {
         obj.remove("allow_no_auth_hosts");
+        obj.remove("file_guard");
+        obj.remove("tool_guard");
     }
     value
 }

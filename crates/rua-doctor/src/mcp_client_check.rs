@@ -105,7 +105,19 @@ fn check_mcp_client(ctx: &CheckContext) -> CheckResult {
             }
         }
     };
-    let clients_val = config.mcp.get("clients");
+    let agent_id = &config.agents.active_agent;
+    let agent = match rua_config::load_agent_config(agent_id, wd) {
+        Ok(agent) => agent,
+        Err(error) => {
+            return CheckResult {
+                name: "mcp_client".into(),
+                status: CheckStatus::Fail,
+                message: format!("Agent {agent_id}: {error}"),
+                details: None,
+            }
+        }
+    };
+    let clients_val = agent.mcp.as_ref().and_then(|mcp| mcp.get("clients"));
 
     let clients_map = match clients_val.and_then(|v| v.as_object()) {
         Some(m) => m,

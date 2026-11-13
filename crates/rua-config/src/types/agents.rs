@@ -952,21 +952,7 @@ pub struct AgentsConfig {
     pub agent_order: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_null_default")]
     pub profiles: serde_json::Map<String, serde_json::Value>,
-    #[serde(default)]
-    pub active_hours: Option<ActiveHoursConfig>,
-    #[serde(default)]
-    pub heartbeat: Option<HeartbeatConfig>,
-
-    #[serde(default)]
-    pub defaults: Option<serde_json::Value>,
-    #[serde(default)]
-    pub running: Option<serde_json::Value>,
-    #[serde(default)]
-    pub language: Option<String>,
-    #[serde(default)]
-    pub system_prompt_files: Option<Vec<String>>,
-
-    #[serde(flatten)]
+    #[serde(flatten, with = "super::root_scope::agents")]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -980,12 +966,6 @@ impl Default for AgentsConfig {
             active_agent: default_active_agent(),
             agent_order: vec!["default".into()],
             profiles: serde_json::Map::new(),
-            active_hours: None,
-            heartbeat: None,
-            defaults: None,
-            running: None,
-            language: None,
-            system_prompt_files: None,
             extra: serde_json::Map::new(),
         }
     }

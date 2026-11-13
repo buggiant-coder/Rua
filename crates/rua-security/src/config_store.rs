@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use rua_config::types::security::{
-    FileGuardConfig, SecurityConfig, SkillScannerConfig, SkillScannerWhitelistEntry,
+    ProcessSecurityConfig, SecurityConfig, SkillScannerConfig, SkillScannerWhitelistEntry,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -84,18 +84,22 @@ impl SecurityConfigStore {
         self.data_dir.join("skill_scanner_blocked.json")
     }
 
-    pub(crate) fn load_security_section(&self) -> Result<SecurityConfig, StoreError> {
+    pub(crate) fn load_security_section(&self) -> Result<ProcessSecurityConfig, StoreError> {
         let path = self.config_path();
         let raw: Option<serde_json::Value> = read_json(&path)?;
         let root_val = raw.unwrap_or_else(|| serde_json::json!({}));
         let sec_val = root_val
             .get("security")
+            .filter(|value| !value.is_null())
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
         serde_json::from_value(sec_val).map_err(|source| StoreError::Json { path, source })
     }
 
-    pub(crate) fn save_security_section(&self, sec: &SecurityConfig) -> Result<(), StoreError> {
+    pub(crate) fn save_security_section(
+        &self,
+        sec: &ProcessSecurityConfig,
+    ) -> Result<(), StoreError> {
         let path = self.config_path();
         let mut root_val: serde_json::Value =
             read_json(&path)?.unwrap_or_else(|| serde_json::json!({}));
@@ -111,7 +115,7 @@ impl SecurityConfigStore {
             .map_err(|source| StoreError::Io { path, source })
     }
 
-    pub fn get_security_config(&self) -> Result<SecurityConfig, StoreError> {
+    pub fn get_security_config(&self) -> Result<ProcessSecurityConfig, StoreError> {
         self.load_security_section()
     }
 
@@ -127,20 +131,6 @@ impl SecurityConfigStore {
         sec.allow_no_auth_hosts = hosts;
         self.save_security_section(&sec)?;
         Ok(sec.allow_no_auth_hosts)
-    }
-
-    pub fn get_file_guard(&self) -> Result<FileGuardConfig, StoreError> {
-        Ok(self.load_security_section()?.file_guard)
-    }
-
-    pub fn update_file_guard(
-        &self,
-        new_cfg: FileGuardConfig,
-    ) -> Result<FileGuardConfig, StoreError> {
-        let mut sec = self.load_security_section()?;
-        sec.file_guard = new_cfg;
-        self.save_security_section(&sec)?;
-        Ok(sec.file_guard)
     }
 
     pub fn get_skill_scanner(&self) -> Result<SkillScannerConfig, StoreError> {

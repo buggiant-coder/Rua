@@ -32,7 +32,8 @@ fn init_rua_root(target: &Path) -> anyhow::Result<()> {
     if !config_path.exists() {
         rua_config::save_config(&rua_config::RootConfig::default(), &config_path)?;
     }
-    rua_config::load_config(&config_path, target)?;
+    let config = rua_config::load_config(&config_path, target)?;
+    rua_config::save_config(&config, &config_path)?;
     let report = rua_server::seed::agents::ensure_builtin_agents_seeded(target);
     if report
         .outcomes

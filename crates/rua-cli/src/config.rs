@@ -40,28 +40,25 @@ pub enum ConfigCommands {
     },
 }
 
-pub fn run(args: ConfigArgs, format: OutputFormat) -> anyhow::Result<()> {
+pub fn run(args: ConfigArgs, format: OutputFormat, rua_root: &Path) -> anyhow::Result<()> {
     match args.command {
-        None | Some(ConfigCommands::Show) => show_config(format),
+        None | Some(ConfigCommands::Show) => show_config(format, rua_root),
         Some(ConfigCommands::Path) => {
-            println!(
-                "{}",
-                rua_config::get_config_path(&rua_config::dirs::rua_root()).display()
-            );
+            println!("{}", rua_config::get_config_path(rua_root).display());
             Ok(())
         }
-        Some(ConfigCommands::Get { key }) => get_config(&key, format),
-        Some(ConfigCommands::Set { key, value }) => set_config(&key, &value, format),
+        Some(ConfigCommands::Get { key }) => get_config(&key, format, rua_root),
+        Some(ConfigCommands::Set { key, value }) => set_config(&key, &value, format, rua_root),
         Some(ConfigCommands::Init {
             force,
             defaults,
             accept_security,
-        }) => run_init(force, defaults, accept_security),
+        }) => run_init(force, defaults, accept_security, rua_root),
     }
 }
 
-fn show_config(format: OutputFormat) -> anyhow::Result<()> {
-    let config_path = rua_config::get_config_path(&rua_config::dirs::rua_root());
+fn show_config(format: OutputFormat, rua_root: &Path) -> anyhow::Result<()> {
+    let config_path = rua_config::get_config_path(rua_root);
 
     if !config_path.is_file() {
         eprintln!("Config file not found: {}", config_path.display());
@@ -82,8 +79,8 @@ fn show_config(format: OutputFormat) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn get_config(key: &str, format: OutputFormat) -> anyhow::Result<()> {
-    let config_path = rua_config::get_config_path(&rua_config::dirs::rua_root());
+fn get_config(key: &str, format: OutputFormat, rua_root: &Path) -> anyhow::Result<()> {
+    let config_path = rua_config::get_config_path(rua_root);
     if !config_path.is_file() {
         anyhow::bail!("Config file not found: {}", config_path.display());
     }
@@ -111,14 +108,14 @@ fn get_config(key: &str, format: OutputFormat) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn set_config(key: &str, value: &str, format: OutputFormat) -> anyhow::Result<()> {
-    let config_path = rua_config::get_config_path(&rua_config::dirs::rua_root());
+fn set_config(key: &str, value: &str, format: OutputFormat, rua_root: &Path) -> anyhow::Result<()> {
+    let config_path = rua_config::get_config_path(rua_root);
     if !config_path.is_file() {
         anyhow::bail!("Config file not found: {}", config_path.display());
     }
 
     let content = std::fs::read_to_string(&config_path)?;
-    let mut root: serde_json::Value = serde_json::from_str(&content)?;
+    let mut root = serde_json::to_value(serde_json::from_str::<rua_config::RootConfig>(&content)?)?;
 
     let parsed_value: serde_json::Value = serde_json::from_str(value)
         .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
@@ -144,8 +141,14 @@ fn set_config(key: &str, value: &str, format: OutputFormat) -> anyhow::Result<()
         }
     }
 
-    let output = serde_json::to_string_pretty(&root)?;
-    std::fs::write(&config_path, output)?;
+    let config: rua_config::RootConfig = serde_json::from_value(root.clone())?;
+    let canonical = serde_json::to_value(&config)?;
+    if contains_discarded_fields(&root, &canonical) {
+        anyhow::bail!(
+            "Key '{key}' contains retired Agent settings; configure the Agent workspace instead"
+        );
+    }
+    rua_config::save_config(&config, &config_path)?;
 
     match format {
         OutputFormat::Json => {
@@ -157,6 +160,18 @@ fn set_config(key: &str, value: &str, format: OutputFormat) -> anyhow::Result<()
         OutputFormat::Human => println!("Set {key} = {parsed_value}"),
     }
     Ok(())
+}
+
+fn contains_discarded_fields(input: &serde_json::Value, output: &serde_json::Value) -> bool {
+    input.as_object().is_some_and(|fields| {
+        fields.iter().any(|(key, value)| {
+            // Explicit null can clear an optional section; it is not a setting to retain.
+            !value.is_null()
+                && output
+                    .get(key)
+                    .is_none_or(|retained| contains_discarded_fields(value, retained))
+        })
+    })
 }
 
 pub const SECURITY_WARNING: &str = "\
@@ -260,13 +275,18 @@ fn prompt_choice(prompt: &str, options: &[&str], default: &str) -> io::Result<St
     Ok(default.to_string())
 }
 
-fn run_init(force: bool, use_defaults: bool, accept_security: bool) -> anyhow::Result<()> {
-    let config_path = rua_config::get_config_path(&rua_config::dirs::rua_root());
+fn run_init(
+    force: bool,
+    use_defaults: bool,
+    accept_security: bool,
+    rua_root: &Path,
+) -> anyhow::Result<()> {
+    let config_path = rua_config::get_config_path(rua_root);
     let working_dir = config_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
-    let heartbeat_path = rua_config::get_heartbeat_query_path(&rua_config::dirs::rua_root());
+    let heartbeat_path = rua_config::get_heartbeat_query_path(rua_root);
 
     println!("Working dir: {}", working_dir.display());
 
@@ -301,33 +321,22 @@ fn run_init(force: bool, use_defaults: bool, accept_security: bool) -> anyhow::R
     if !write_config {
         println!("Skipping configuration.");
     } else {
-        let mut config = if config_path.is_file() {
-            rua_config::load_config(&config_path, &working_dir)?
-        } else {
-            rua_config::RootConfig::default()
-        };
-
+        crate::init::run(crate::init::InitArgs {}, &working_dir)?;
+        let mut config = rua_config::load_agent_config("default", &working_dir)?;
         if use_defaults {
-            configure_defaults(&mut config);
+            configure_defaults(&mut config)?;
         } else {
             configure_interactive(&mut config)?;
         }
-
-        rua_config::save_config(&config, &config_path)?;
+        let workspace = rua_config::dirs::shellexpand_path(&config.workspace_dir);
+        rua_config::loader::save_agent_config(&config, &workspace)?;
         println!(
-            "\n\u{2713} Configuration saved to {}",
-            config_path.display()
+            "\n✓ Configuration saved to {}",
+            workspace.join("agent.json").display()
         );
     }
 
-    let current_lang = {
-        let cfg = if config_path.is_file() {
-            rua_config::load_config(&config_path, &working_dir)?
-        } else {
-            rua_config::RootConfig::default()
-        };
-        cfg.agents.language.unwrap_or_else(|| "zh".to_string())
-    };
+    let current_lang = rua_config::load_agent_config("default", &working_dir)?.language;
     let default_hb_content = default_heartbeat_md(&current_lang);
 
     let mut write_heartbeat = true;
@@ -374,7 +383,7 @@ fn run_init(force: bool, use_defaults: bool, accept_security: bool) -> anyhow::R
         if let Some(parent) = heartbeat_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&heartbeat_path, content.trim())?;
+        rua_config::atomic_write(&heartbeat_path, content.trim().as_bytes())?;
         println!(
             "\u{2713} Heartbeat query saved to {}",
             heartbeat_path.display()
@@ -385,7 +394,7 @@ fn run_init(force: bool, use_defaults: bool, accept_security: bool) -> anyhow::R
     Ok(())
 }
 
-pub fn configure_defaults(config: &mut rua_config::RootConfig) {
+pub fn configure_defaults(config: &mut rua_config::AgentProfileConfig) -> io::Result<()> {
     let hb = HeartbeatConfig {
         enabled: true,
         every: DEFAULT_HEARTBEAT_EVERY.to_string(),
@@ -393,11 +402,11 @@ pub fn configure_defaults(config: &mut rua_config::RootConfig) {
         active_hours: None,
         extra: serde_json::Map::new(),
     };
-    config.agents.heartbeat = Some(hb);
-    config.show_tool_details = Some(true);
+    config.heartbeat = Some(serde_json::to_value(hb).map_err(io::Error::other)?);
+    set_tool_details(config, true)
 }
 
-fn configure_interactive(config: &mut rua_config::RootConfig) -> io::Result<()> {
+fn configure_interactive(config: &mut rua_config::AgentProfileConfig) -> io::Result<()> {
     println!("\n=== Heartbeat Configuration ===");
     let every = prompt_with_default("Heartbeat interval (e.g. 30m, 1h)", DEFAULT_HEARTBEAT_EVERY)?;
     let target = prompt_choice("Heartbeat target:", &["main", "last"], "main")?;
@@ -422,20 +431,24 @@ fn configure_interactive(config: &mut rua_config::RootConfig) -> io::Result<()> 
         active_hours,
         extra: serde_json::Map::new(),
     };
-    config.agents.heartbeat = Some(hb);
+    config.heartbeat = Some(serde_json::to_value(hb).map_err(io::Error::other)?);
 
-    config.show_tool_details = Some(prompt_confirm(
-        "Show tool call/result details in channel messages?",
-        true,
-    )?);
+    set_tool_details(
+        config,
+        prompt_confirm("Show tool call/result details in channel messages?", true)?,
+    )?;
 
-    let current_lang = config.agents.language.as_deref().unwrap_or("zh");
+    let current_lang = if config.language.is_empty() {
+        "zh"
+    } else {
+        &config.language
+    };
     let language = prompt_choice(
         "Select language for MD files:",
         &["zh", "en", "ru"],
         current_lang,
     )?;
-    config.agents.language = Some(language);
+    config.language = language;
 
     let configure_ch = prompt_confirm(
         "Configure channels? (iMessage/Discord/DingTalk/Feishu/QQ/Console)",
@@ -450,5 +463,22 @@ fn configure_interactive(config: &mut rua_config::RootConfig) -> io::Result<()> 
         println!("  (Environment variables can be managed via `rua env` commands)");
     }
 
+    Ok(())
+}
+
+fn set_tool_details(config: &mut rua_config::AgentProfileConfig, enabled: bool) -> io::Result<()> {
+    let channels = config.channels.get_or_insert_with(|| serde_json::json!({}));
+    let channels = channels
+        .as_object_mut()
+        .ok_or_else(|| io::Error::other("channels must be an object"))?;
+    for channel in rua_config::channel_catalog::channel_types() {
+        let value = channels
+            .entry(channel)
+            .or_insert_with(|| serde_json::json!({}));
+        let value = value
+            .as_object_mut()
+            .ok_or_else(|| io::Error::other("channel settings must be an object"))?;
+        value.insert("show_tool_details".into(), enabled.into());
+    }
     Ok(())
 }

@@ -366,17 +366,6 @@ fn print_channels_status(wd: &Path) {
         }
     };
 
-    let enabled = collect_enabled_channels(&config.channels);
-    if enabled.is_empty() {
-        println!("  enabled channels: (none)");
-    } else {
-        println!("  enabled channels: {}", enabled.join(", "));
-    }
-
-    if config.channels.voice.enabled {
-        check_voice_credentials(&config.channels.voice);
-    }
-
     for (agent_id, profile_val) in &config.agents.profiles {
         let profile_ref: Option<AgentProfileRef> = serde_json::from_value(profile_val.clone()).ok();
         if let Some(pr) = profile_ref {
@@ -397,7 +386,10 @@ fn print_channels_status(wd: &Path) {
                 if let Ok(ch) = serde_json::from_value::<ChannelConfig>(ch_val.clone()) {
                     let agent_enabled = collect_enabled_channels(&ch);
                     if !agent_enabled.is_empty() {
-                        println!("  {agent_id} overrides: {}", agent_enabled.join(", "));
+                        println!("  {agent_id} channels: {}", agent_enabled.join(", "));
+                    }
+                    if ch.voice.enabled {
+                        check_voice_credentials(&ch.voice);
                     }
                 }
             }
