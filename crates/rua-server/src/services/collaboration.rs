@@ -1128,7 +1128,7 @@ impl CollaborationService {
                 .transpose()
                 .map_err(|e| e.to_string())?
                 .unwrap_or_default();
-            let configuration = self
+            let mut configuration = self
                 .hooks
                 .resolve_complete_chat_configuration(
                     &target,
@@ -1179,10 +1179,6 @@ impl CollaborationService {
                 archived: false,
                 preview: None,
             });
-            header.extra.insert(
-                CHAT_HOOK_CONFIGURATION_META_KEY.into(),
-                serde_json::to_value(&configuration).map_err(|e| e.to_string())?,
-            );
             header
                 .extra
                 .insert("selected_agent_id".into(), serde_json::json!(agent_id));
@@ -1197,17 +1193,25 @@ impl CollaborationService {
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| "Source Project Chat header is missing".to_string())?;
                 let directory_key = super::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY;
-                header.extra.insert(
-                    directory_key.into(),
-                    source_header
-                        .extra
-                        .get(directory_key)
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            serde_json::json!(rua_project::INITIAL_PROJECT_DIRECTORY_ID)
-                        }),
-                );
+                let directory_id = source_header
+                    .extra
+                    .get(directory_key)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        serde_json::json!(rua_project::INITIAL_PROJECT_DIRECTORY_ID)
+                    });
+                configuration
+                    .capability_configuration
+                    .as_mut()
+                    .ok_or("Project Chat configuration requires captured capabilities")?
+                    .extra
+                    .insert(directory_key.into(), directory_id.clone());
+                header.extra.insert(directory_key.into(), directory_id);
             }
+            header.extra.insert(
+                CHAT_HOOK_CONFIGURATION_META_KEY.into(),
+                serde_json::to_value(&configuration).map_err(|e| e.to_string())?,
+            );
             if let Some(model) = configuration.model.as_ref() {
                 header.extra.insert("model".into(), model.clone());
             }

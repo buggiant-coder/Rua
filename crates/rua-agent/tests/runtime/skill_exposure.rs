@@ -208,10 +208,6 @@ async fn configuration_selection_is_offline_and_recovers_without_updating_the_ch
         .await
         .unwrap();
     assert!(configuration.mcp_servers.contains_key("desktop"));
-    assert!(!configuration
-        .tools
-        .iter()
-        .any(|tool| tool.starts_with("mcp__")));
     assert_eq!(manager.discovery_calls.load(Ordering::SeqCst), 0);
     let request = || {
         let mut request = base_request(workspace.path().into(), "console");
@@ -244,23 +240,16 @@ async fn configuration_selection_is_offline_and_recovers_without_updating_the_ch
             .unwrap(),
         configuration
     );
-    let mut legacy = request();
-    legacy.metadata.insert(
+    let mut invalid = request();
+    invalid.metadata.insert(
         rua_agent::runtime::CHAT_CAPABILITY_CONFIGURATION_METADATA_KEY.into(),
-        serde_json::json!({"tools":[],"skills":[]}),
+        serde_json::json!({"skills":[]}),
     );
-    runtime
-        .stream(legacy)
-        .await
-        .unwrap()
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .for_each(|event| {
-            event.unwrap();
-        });
-    assert!(!tool_names(captured.lock().unwrap().last().unwrap())
-        .contains(&"mcp__desktop__echo".into()));
+    let error = match runtime.stream(invalid).await {
+        Ok(_) => panic!("policy is required"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("selection_policy"), "{error}");
 }
 
 impl MutableMcpManager {
@@ -1403,11 +1392,11 @@ async fn chat_skill_configuration_keeps_references_and_loads_current_body() {
     let mut request = base_request(workspace.path().to_path_buf(), "console");
     request.metadata.insert(
         rua_agent::runtime::CHAT_SKILLS_SNAPSHOT_METADATA_KEY.to_string(),
-        serde_json::to_value(configuration.skills).unwrap(),
+        serde_json::to_value(&configuration.skills).unwrap(),
     );
     request.metadata.insert(
-        rua_agent::runtime::CHAT_TOOL_ALLOWLIST_METADATA_KEY.to_string(),
-        serde_json::to_value(configuration.tools).unwrap(),
+        rua_agent::runtime::CHAT_CAPABILITY_CONFIGURATION_METADATA_KEY.to_string(),
+        serde_json::to_value(&configuration).unwrap(),
     );
     let events = runtime
         .stream(request)
@@ -1474,7 +1463,7 @@ async fn skill_configuration_rejects_missing_and_escaping_resource_references() 
     for relative in ["skills/missing", "../outside"] {
         let mut request = base_request(workspace.path().into(), "console");
         request.metadata.insert(rua_agent::runtime::CHAT_CAPABILITY_CONFIGURATION_METADATA_KEY.into(), serde_json::json!({
-            "tools":["skill"], "skills":[{"name":"review","description":"review","project":false,"relative_dir":relative}]
+            "selection_policy":{"mode":"restricted","allowed_tools":[{"kind":"builtin","name":"skill"}]}, "skills":[{"name":"review","description":"review","project":false,"relative_dir":relative}]
         }));
         let rejected = match runtime.stream(request).await {
             Err(_) => true,
@@ -2116,4 +2105,375 @@ async fn acp_session_stdio_mcp_tools_are_exposed_for_the_turn() {
         "ACP session MCP tool missing from model request: {:?}",
         tool_names(&requests[0])
     );
+}
+
+#[tokio::test]
+async fn selection_policy_keeps_discovery_and_execution_consistent_for_new_product_tools() {
+    use rua_config::types::tools::{ToolIdentity, ToolSelectionPolicy};
+    for restricted in [false, true] {
+        let workspace = tempfile::tempdir().unwrap();
+        let toolkit = rua_agent::toolkit::build_core_toolkit_with_recall(
+            rua_tool::default_command_executor(),
+            rua_tool::ToolProfile::DesktopFull,
+        );
+        let mut toolkit = toolkit.create_filtered(&[]);
+        toolkit.register_with_disclosure(
+            agent_types::ToolDefinition {
+                name: "new_product_tool".into(),
+                description: "New product Tool".into(),
+                parameters: serde_json::json!({"type":"object"}),
+                strict: None,
+                annotations: Default::default(),
+                metadata: Default::default(),
+            },
+            Arc::new(react_agent::toolkit::MockToolExecutor::new(
+                "new tool executed",
+            )),
+            rua_agent::tool_disclosure::builtin_tool_disclosure("new_product_tool"),
+        );
+        let (runtime, captured) = make_runtime(Some(ToolCall::new(
+            "discover",
+            "list_tools",
+            serde_json::json!({}),
+        )))
+        .await;
+        let runtime = runtime.with_toolkit(Arc::new(toolkit));
+        let mut configuration = runtime
+            .capability_resolver()
+            .configuration(workspace.path(), None, "console")
+            .await
+            .unwrap();
+        configuration.selection_policy = if restricted {
+            ToolSelectionPolicy::restricted(vec![
+                ToolIdentity::builtin("list_tools"),
+                ToolIdentity::builtin("read"),
+            ])
+        } else {
+            ToolSelectionPolicy::default_enabled()
+        };
+        let mut request = base_request(workspace.path().into(), "console");
+        request.metadata.insert(
+            rua_agent::runtime::CHAT_CAPABILITY_CONFIGURATION_METADATA_KEY.into(),
+            serde_json::to_value(configuration).unwrap(),
+        );
+        let events = runtime
+            .stream(request)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+        assert!(events.iter().all(Result::is_ok), "{events:?}");
+        let requests = captured.lock().unwrap();
+        assert!(requests.len() >= 2);
+        assert_eq!(
+            tool_names(&requests[0]).contains(&"new_product_tool".into()),
+            !restricted
+        );
+        let listed = tool_message_text(&requests[1]);
+        assert_eq!(
+            listed.contains("**new_product_tool**"),
+            !restricted,
+            "{listed}"
+        );
+        assert!(listed.contains("**read**"));
+    }
+}
+
+#[test]
+fn product_and_external_sources_keep_stable_identity_and_restriction_boundaries() {
+    use react_agent::toolkit::ToolSourceKind;
+    use rua_config::types::tools::{ToolIdentity, ToolSelectionPolicy};
+    let mut configuration: rua_agent::runtime::ChatCapabilityConfiguration = serde_json::from_value(serde_json::json!({
+        "selection_policy":{"mode":"default_enabled","disabled_tools":[],"disabled_capabilities":[]},"skills":[]
+    })).unwrap();
+    let mut meta = rua_agent::tool_disclosure::mcp_tool_disclosure(Some("rua_browser".into()));
+    meta.original_name = Some("navigate".into());
+    // A familiar server name alone never enrolls an external source.
+    assert!(!configuration.selects_tool("mcp__rua_browser__navigate", None, Some(&meta)));
+    meta.product_capability = Some("browser_use".into());
+    assert!(configuration.selects_tool("mcp__rua_browser__navigate", None, Some(&meta)));
+    configuration.selection_policy =
+        ToolSelectionPolicy::restricted(vec![ToolIdentity::builtin("read")]);
+    assert!(!configuration.selects_tool("mcp__rua_browser__navigate", None, Some(&meta)));
+    configuration.selection_policy =
+        ToolSelectionPolicy::restricted(vec![ToolIdentity::mcp("rua_browser", "navigate")]);
+    assert!(configuration.selects_tool("mcp__rua_browser__navigate", None, Some(&meta)));
+    let mut policy = ToolSelectionPolicy::default_enabled();
+    if let ToolSelectionPolicy::DefaultEnabled {
+        disabled_capabilities,
+        ..
+    } = &mut policy
+    {
+        disabled_capabilities.push("browser_use".into());
+    }
+    configuration.selection_policy = policy;
+    assert!(!configuration.selects_tool("mcp__rua_browser__navigate", None, Some(&meta)));
+    meta.source_kind = ToolSourceKind::Builtin;
+    meta.product_capability = Some("phone_use".into());
+    assert!(configuration.selects_tool("phone_observe", None, Some(&meta)));
+}
+
+#[tokio::test]
+async fn disconnected_phone_actions_are_excluded_while_status_stays_discoverable() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mut registry = rua_tool::ToolRegistry::new();
+    registry
+        .register(
+            Arc::new(rua_tool::builtin::phone_use::PhoneStatusTool),
+            rua_tool::builtin::phone_use::PhoneStatusTool::spec(),
+            rua_tool::ToolNamespace::Builtin,
+        )
+        .unwrap();
+    registry
+        .register(
+            Arc::new(rua_tool::builtin::phone_use::PhoneObserveTool),
+            rua_tool::builtin::phone_use::PhoneObserveTool::spec(),
+            rua_tool::ToolNamespace::Builtin,
+        )
+        .unwrap();
+    let mut toolkit = react_agent::AgentToolkit::new();
+    rua_agent::tool_disclosure::populate_toolkit_from_registry(&mut toolkit, &registry);
+    let (runtime, captured) = make_runtime(None).await;
+    let runtime = runtime.with_toolkit(Arc::new(toolkit));
+    let configuration = runtime
+        .capability_resolver()
+        .configuration(workspace.path(), None, "console")
+        .await
+        .unwrap();
+    let mut request = base_request(workspace.path().into(), "console");
+    request.metadata.insert(
+        rua_agent::runtime::CHAT_CAPABILITY_CONFIGURATION_METADATA_KEY.into(),
+        serde_json::to_value(configuration).unwrap(),
+    );
+    let events = runtime
+        .stream(request)
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.iter().all(Result::is_ok), "{events:?}");
+    let requests = captured.lock().unwrap();
+    let names = tool_names(&requests[0]);
+    assert!(names.contains(&"phone_status".into()));
+    assert!(!names.contains(&"phone_observe".into()));
+}
+
+#[test]
+fn bundled_mcp_ownership_comes_from_the_registered_transport() {
+    let mut status = MutableMcpManager::new(true).status();
+    status.key = "rua_browser".into();
+    assert!(rua_agent::toolkit::product_mcp_sources(&[status.clone()]).is_empty());
+    status.transport_type = "bundled_browser".into();
+    assert_eq!(
+        rua_agent::toolkit::product_mcp_sources(&[status.clone()])["rua_browser"],
+        "browser_use"
+    );
+    status.transport_type = "bundled_computer".into();
+    assert_eq!(
+        rua_agent::toolkit::product_mcp_sources(&[status])["rua_browser"],
+        "computer_use"
+    );
+}
+
+struct PolicyWriteProbe(Arc<AtomicUsize>);
+
+#[async_trait]
+impl react_agent::toolkit::ToolExecutor for PolicyWriteProbe {
+    async fn execute(
+        &self,
+        call: &ToolCall,
+        _ctx: &rua_core::tool::ToolContext,
+    ) -> Result<agent_types::ToolResult, react_agent::AgentError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(agent_types::ToolResult::text(
+            call.id.clone(),
+            "write executed",
+        ))
+    }
+}
+
+fn policy_probe_toolkit(writes: Arc<AtomicUsize>) -> Arc<react_agent::AgentToolkit> {
+    let mut toolkit = react_agent::AgentToolkit::new();
+    for name in ["read", "write", "future_product_tool"] {
+        let executor: Arc<dyn react_agent::toolkit::ToolExecutor> = if name == "write" {
+            Arc::new(PolicyWriteProbe(writes.clone()))
+        } else {
+            Arc::new(react_agent::toolkit::MockToolExecutor::new("ok"))
+        };
+        toolkit.register_with_disclosure(
+            agent_types::ToolDefinition {
+                name: name.into(),
+                description: name.into(),
+                parameters: serde_json::json!({"type":"object"}),
+                strict: None,
+                annotations: Default::default(),
+                metadata: Default::default(),
+            },
+            executor,
+            rua_agent::tool_disclosure::builtin_tool_disclosure(name),
+        );
+    }
+    Arc::new(toolkit)
+}
+
+async fn policy_cells(
+    root: &std::path::Path,
+    policy: serde_json::Value,
+) -> Arc<rua_agent::AgentCells> {
+    let cells = Arc::new(rua_agent::AgentCells::new(
+        Arc::new(cell_store::FileSystemCellStore::new()),
+        root.join("workspaces"),
+    ));
+    cells
+        .section::<serde_json::Value>("research", "tools")
+        .write(serde_json::json!({
+            "selection_policy":policy,
+            "builtin_tools":{"read":{"max_bytes":123,"future_behavior":true}}
+        }))
+        .await
+        .unwrap();
+    cells
+}
+
+#[tokio::test]
+async fn agent_policy_is_captured_at_runtime_boundary_for_unconfigured_channel_requests() {
+    use rua_config::types::tools::{ToolIdentity, ToolSelectionPolicy};
+    for (restricted, allowlist) in [(true, false), (true, true), (false, false), (false, true)] {
+        let workspace = tempfile::tempdir().unwrap();
+        let policy = if restricted {
+            ToolSelectionPolicy::restricted(vec![ToolIdentity::builtin("read")])
+        } else {
+            ToolSelectionPolicy::default_enabled()
+        };
+        let cells = policy_cells(workspace.path(), serde_json::to_value(policy).unwrap()).await;
+        let writes = Arc::new(AtomicUsize::new(0));
+        let (runtime, captured) =
+            make_runtime(Some(ToolCall::new("write", "write", serde_json::json!({})))).await;
+        let runtime = runtime
+            .with_toolkit(policy_probe_toolkit(writes.clone()))
+            .with_agent_tool_configuration("research", cells, workspace.path().into());
+        let mut request = base_request(workspace.path().into(), "dingtalk");
+        if allowlist {
+            request.metadata.insert(
+                rua_agent::runtime::CHAT_TOOL_ALLOWLIST_METADATA_KEY.into(),
+                serde_json::json!(["read", "write"]),
+            );
+        }
+        let events = runtime
+            .stream(request)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+        assert!(events.iter().all(Result::is_ok), "{events:?}");
+        let requests = captured.lock().unwrap();
+        let names = tool_names(&requests[0]);
+        assert!(names.contains(&"read".into()));
+        assert_eq!(names.contains(&"write".into()), !restricted);
+        assert_eq!(
+            names.contains(&"future_product_tool".into()),
+            !restricted && !allowlist
+        );
+        assert_eq!(writes.load(Ordering::SeqCst), usize::from(!restricted));
+    }
+}
+
+#[tokio::test]
+async fn agent_runtime_requires_explicit_policy_without_overwriting_captured_chat_policy() {
+    use rua_config::types::tools::{ToolIdentity, ToolSelectionPolicy};
+    let workspace = tempfile::tempdir().unwrap();
+    let cells = policy_cells(workspace.path(), serde_json::Value::Null).await;
+    let (runtime, captured) = make_runtime(None).await;
+    let runtime = runtime
+        .with_toolkit(policy_probe_toolkit(Arc::new(AtomicUsize::new(0))))
+        .with_agent_tool_configuration("research", cells.clone(), workspace.path().into());
+    let error = match runtime
+        .stream(base_request(workspace.path().into(), "cron"))
+        .await
+    {
+        Ok(_) => panic!("missing policy must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("required"), "{error}");
+    assert!(captured.lock().unwrap().is_empty());
+    let mut configuration = runtime
+        .capability_resolver()
+        .configuration(workspace.path(), None, "console")
+        .await
+        .unwrap();
+    configuration.selection_policy =
+        ToolSelectionPolicy::restricted(vec![ToolIdentity::builtin("read")]);
+    cells
+        .section::<serde_json::Value>("research", "tools")
+        .write(serde_json::json!({
+            "selection_policy":ToolSelectionPolicy::default_enabled(), "builtin_tools":{}
+        }))
+        .await
+        .unwrap();
+    let mut request = base_request(workspace.path().into(), "console");
+    request.metadata.insert(
+        rua_agent::runtime::CHAT_CAPABILITY_CONFIGURATION_METADATA_KEY.into(),
+        serde_json::to_value(configuration).unwrap(),
+    );
+    let events = runtime
+        .stream(request)
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.iter().all(Result::is_ok), "{events:?}");
+    assert_eq!(tool_names(&captured.lock().unwrap()[0]), ["read"]);
+}
+
+#[tokio::test]
+async fn acp_session_sources_require_the_bound_agent_policy_and_preserve_chat_enrollment() {
+    use rua_config::types::tools::{ToolIdentity, ToolSelectionPolicy};
+    if !python3_available() {
+        return;
+    }
+    for (allow_mcp, frozen_chat) in [(false, false), (true, false), (true, true)] {
+        let workspace = tempfile::tempdir().unwrap();
+        let policy = ToolSelectionPolicy::restricted(if allow_mcp {
+            vec![ToolIdentity::mcp("acp_0_mock", "echo")]
+        } else {
+            vec![ToolIdentity::builtin("read")]
+        });
+        let cells = policy_cells(workspace.path(), serde_json::to_value(policy).unwrap()).await;
+        let (runtime, captured) = make_runtime(None).await;
+        let runtime =
+            runtime.with_agent_tool_configuration("research", cells, workspace.path().into());
+        let mut request = base_request(workspace.path().into(), "acp");
+        if frozen_chat {
+            let configuration = runtime
+                .capability_resolver()
+                .configuration(workspace.path(), None, "acp")
+                .await
+                .unwrap();
+            request.metadata.insert(
+                rua_agent::runtime::CHAT_CAPABILITY_CONFIGURATION_METADATA_KEY.into(),
+                serde_json::to_value(configuration).unwrap(),
+            );
+        }
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../rua-mcp/tests/fixtures/mock_mcp_server.py");
+        let handle = rua_acp::server::register_request_mcp_config(serde_json::json!({"clients":{
+            "acp_0_mock":{"name":"mock","enabled":true,"transport":"stdio","command":"python3","args":[fixture],
+                "env":{"MOCK_SCENARIO":"fifo"},"cwd":workspace.path(),"auto_connect":"manual"}
+        }}));
+        request.metadata.insert(
+            rua_acp::server::ACP_MCP_CONFIG_HANDLE_META_KEY.into(),
+            serde_json::json!(handle),
+        );
+        let events = runtime
+            .stream(request)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+        assert!(events.iter().all(Result::is_ok), "{events:?}");
+        assert_eq!(
+            tool_names(&captured.lock().unwrap()[0]).contains(&"mcp__acp_0_mock__echo".into()),
+            allow_mcp && !frozen_chat
+        );
+    }
 }

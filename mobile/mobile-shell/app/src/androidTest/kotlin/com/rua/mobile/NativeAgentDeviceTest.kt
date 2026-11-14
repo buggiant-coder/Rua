@@ -15,7 +15,8 @@ import java.net.URL
 @RunWith(AndroidJUnit4::class)
 class NativeAgentDeviceTest {
     internal fun api(token: String, method: String, path: String, body: String? = null, binary: ByteArray? = null, timeoutMillis: Int = 10000): JSONObject {
-        val connection = URL("http://127.0.0.1:8090/api$path").openConnection() as HttpURLConnection
+        val port = PhoneUseBridge.awaitResidentPort(5000) ?: error("Native resident has not published its HTTP port")
+        val connection = URL("http://127.0.0.1:$port/api$path").openConnection() as HttpURLConnection
         try {
             connection.requestMethod = method
             connection.connectTimeout = 5000

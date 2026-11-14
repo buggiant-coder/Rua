@@ -1980,11 +1980,8 @@ async fn automation_inventory_is_adopted_only_by_target_chat_and_future_turns() 
             "{preview}"
         );
     }
-    assert!(capabilities["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|name| !name.as_str().unwrap().starts_with("mcp__")));
+    assert!(capabilities["tools"].is_null());
+    assert_eq!(capabilities["selection_policy"]["mode"], "default_enabled");
     assert!(manager
         .list_servers()
         .await

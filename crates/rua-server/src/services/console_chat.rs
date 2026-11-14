@@ -3983,10 +3983,6 @@ impl ConsoleChatService {
                     rua_agent::runtime::CHAT_CAPABILITY_CONFIGURATION_METADATA_KEY.to_string(),
                     serde_json::to_value(allowed).expect("capability configuration serializes"),
                 );
-                metadata.insert(
-                    rua_agent::runtime::CHAT_TOOL_ALLOWLIST_METADATA_KEY.to_string(),
-                    serde_json::json!(allowed.tools),
-                );
             }
             if let Some(configuration) = captured_configuration.as_ref() {
                 metadata.insert(
@@ -4248,75 +4244,12 @@ struct ResolvedConsoleAgentContext {
     disabled_tools: Vec<String>,
 }
 
-pub fn extract_disabled_tools(tools: &Option<serde_json::Value>) -> Vec<String> {
-    let tools_value = match tools {
-        Some(v) => v,
-        None => {
-            debug!("extract_disabled_tools: tools is None");
-            return Vec::new();
-        }
-    };
-    let builtin_tools = match tools_value.get("builtin_tools").and_then(|v| v.as_object()) {
-        Some(m) => m,
-        None => {
-            debug!("extract_disabled_tools: no builtin_tools key");
-            return Vec::new();
-        }
-    };
-    let disabled: Vec<String> = builtin_tools
-        .iter()
-        .filter_map(|(name, value)| {
-            let enabled = value
-                .get("enabled")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            if !enabled {
-                Some(name.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-    debug!(?disabled, "extract_disabled_tools: result");
-    disabled
-}
-
-pub fn extract_disabled_mcp_tools(mcp: &Option<serde_json::Value>) -> Vec<String> {
-    let Some(clients) = mcp
-        .as_ref()
-        .and_then(|value| value.get("clients"))
-        .and_then(|value| value.as_object())
-    else {
-        return Vec::new();
-    };
-
-    let mut disabled = Vec::new();
-    for (server_id, client) in clients {
-        let Some(tool_names) = client
-            .get("disabled_tools")
-            .and_then(|value| value.as_array())
-        else {
-            continue;
-        };
-        disabled.extend(tool_names.iter().filter_map(|value| {
-            value
-                .as_str()
-                .map(|tool_name| format!("mcp__{server_id}__{tool_name}"))
-        }));
-    }
-    disabled
-}
-
 pub fn turn_agent_assignment_from_agent(
     agent: &crate::endpoints::dto::AgentDetail,
 ) -> Result<rua_chat::TurnAgentAssignment, String> {
     if !agent.enabled {
         return Err(format!("Agent '{}' is disabled", agent.id));
     }
-    let mut disabled_tools = extract_disabled_tools(&agent.tools);
-    disabled_tools.extend(extract_disabled_mcp_tools(&agent.mcp));
-    disabled_tools.sort();
-    disabled_tools.dedup();
     Ok(rua_chat::TurnAgentAssignment {
         agent_id: agent.id.clone(),
         agent_name: agent.name.clone(),
@@ -4327,13 +4260,15 @@ pub fn turn_agent_assignment_from_agent(
             .and_then(serde_json::Value::as_str)
             .map(str::to_string),
         system_prompt_files: agent.system_prompt_files.clone(),
-        disabled_tools,
+        disabled_tools: Vec::new(),
     })
 }
 
 pub async fn collaboration_agent_inventory(
     manager: &AgentManager,
 ) -> Result<serde_json::Value, String> {
+    let catalog = crate::services::collaboration_runtime::server_tool_catalog()
+        .map_err(|error| error.to_string())?;
     let mut entries = Vec::new();
     for summary in manager
         .list_agents()
@@ -4353,19 +4288,22 @@ pub async fn collaboration_agent_inventory(
         if !agent.enabled {
             continue;
         }
-        let tools = agent
+        let policy = agent
             .tools
             .as_ref()
-            .and_then(|value| value.get("builtin_tools"))
-            .and_then(serde_json::Value::as_object);
-        let mut enabled = tools
-            .into_iter()
-            .flat_map(|tools| tools.iter())
-            .filter(|(_, value)| {
-                value
-                    .get("enabled")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(true)
+            .and_then(|tools| tools.get("selection_policy"))
+            .cloned()
+            .ok_or_else(|| format!("Agent '{}' tools.selection_policy is required", agent.id))?;
+        let policy: rua_config::types::tools::ToolSelectionPolicy =
+            serde_json::from_value(policy).map_err(|error| error.to_string())?;
+        policy.validate()?;
+        let mut enabled = catalog
+            .iter()
+            .filter(|(name, tool)| {
+                policy.selects(
+                    &rua_config::types::tools::ToolIdentity::builtin(name.as_str()),
+                    tool.get("capability").and_then(serde_json::Value::as_str),
+                )
             })
             .map(|(name, _)| name.clone())
             .collect::<Vec<_>>();
@@ -4438,13 +4376,6 @@ fn runtime_turn_agent_assignment(agent_id: &str) -> rua_chat::TurnAgentAssignmen
 fn resolve_agent_context_from_detail(
     agent: &crate::endpoints::dto::AgentDetail,
 ) -> ResolvedConsoleAgentContext {
-    let mut disabled_tools = extract_disabled_tools(&agent.tools);
-    disabled_tools.extend(extract_disabled_mcp_tools(&agent.mcp));
-    debug!(
-        agent_id = %agent.id,
-        ?disabled_tools,
-        "resolve_agent_context: resolved disabled tools"
-    );
     ResolvedConsoleAgentContext {
         system_prompt: agent
             .extra
@@ -4452,7 +4383,7 @@ fn resolve_agent_context_from_detail(
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
         active_prompt_files: agent.system_prompt_files.clone(),
-        disabled_tools,
+        disabled_tools: Vec::new(),
     }
 }
 

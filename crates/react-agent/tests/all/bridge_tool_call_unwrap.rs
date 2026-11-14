@@ -29,6 +29,8 @@ fn meta(class: DisclosureClass) -> ToolDisclosureMeta {
         source_name: Some("test".into()),
         category: Some("test".into()),
         schema_tokens: Some(10),
+        original_name: None,
+        product_capability: None,
     }
 }
 
@@ -70,6 +72,8 @@ fn toolkit_with_two_deferred_tools() -> AgentToolkit {
             source_name: Some("jira".into()),
             category: Some("external".into()),
             schema_tokens: Some(10),
+            original_name: None,
+            product_capability: None,
         },
     );
     toolkit
@@ -381,4 +385,42 @@ async fn direct_tool_calls_still_execute_unchanged() {
             iteration: 3
         } if tool_name == "read"
     )));
+}
+
+#[tokio::test]
+async fn list_tools_uses_the_same_filtered_snapshot_as_dispatch() {
+    let mut registry = rua_tool::ToolRegistry::new();
+    rua_tool::register_all_builtin_tools(&mut registry, rua_tool::default_command_executor(), None)
+        .unwrap();
+    rua_tool::register_extended_tools(&mut registry, rua_tool::ToolProfile::DesktopFull).unwrap();
+    let mut toolkit = AgentToolkit::new();
+    toolkit.populate_from_registry(&registry);
+    toolkit.register_with_disclosure(
+        tool_definition("hidden_secret"),
+        Arc::new(MockToolExecutor::new("hidden")),
+        meta(DisclosureClass::Hidden),
+    );
+    let toolkit = toolkit.create_filtered(&["bash".into(), "python".into()]);
+    let hook: Arc<dyn AgentHook> = Arc::new(RecordingHook::new());
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    let result = execute_single_tool(
+        &ToolCall::new("list-current", "list_tools", serde_json::json!({})),
+        &toolkit,
+        &hook,
+        &ToolContext::default(),
+        &ToolDisclosureConfig::default(),
+        0,
+        &CancellationToken::new(),
+        std::time::Duration::from_secs(5),
+        &tx,
+    )
+    .await
+    .unwrap();
+    assert!(!result.is_error, "{}", result.text_content());
+    let text = result.text_content();
+    assert!(!text.contains("**bash**"), "filtered Tool leaked: {text}");
+    assert!(!text.contains("**python**"));
+    assert!(!text.contains("hidden_secret"));
+    assert!(text.contains("**read**"));
+    assert!(text.contains("**list_tools**"));
 }

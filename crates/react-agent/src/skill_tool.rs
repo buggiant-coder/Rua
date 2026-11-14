@@ -97,6 +97,8 @@ pub fn register_skill_pseudo_tool(
             source_name: Some("skill".to_string()),
             category: Some("skill".to_string()),
             schema_tokens: None,
+            original_name: None,
+            product_capability: None,
         },
     );
     Ok(())

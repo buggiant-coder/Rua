@@ -39,6 +39,12 @@ fn context(agent: &str) -> McpCallContext {
                 serde_json::to_value(ChatAddress::agent(agent, "chat")).unwrap(),
             ),
             (MODEL_SUPPORTS_IMAGE_METADATA_KEY.into(), json!(true)),
+            (
+                "chat_capability_configuration".into(),
+                json!({
+                    "selection_policy":rua_config::types::tools::ToolSelectionPolicy::default_enabled()
+                }),
+            ),
         ]),
         ..Default::default()
     }
@@ -858,23 +864,15 @@ async fn failed_new_observation_invalidates_the_previous_window_reference() {
 
 #[tokio::test]
 #[cfg(unix)]
-async fn captured_leaf_disablement_survives_manager_reload() {
-    use rua_core::tool::EFFECTIVE_DISABLED_TOOLS_METADATA_KEY;
+async fn captured_leaf_policy_survives_manager_reload() {
+    use rua_config::types::tools::{ToolIdentity, ToolSelectionPolicy};
     let temp = tempfile::tempdir().unwrap();
     let options = fixture(temp.path());
     let id = McpServerId::new(SERVER_ID);
-    let mut config = options.defaults(McpConfig::default());
-    config.clients.get_mut(&id).unwrap().disabled_tools = vec!["type_text".into()];
     let manager = McpManagerImpl::new(McpMobilePolicy::new(PlatformProfile::Desktop))
         .with_bundled_computer(options);
-    manager.load_config(config.clone()).await.unwrap();
+    manager.load_config(McpConfig::default()).await.unwrap();
     let mut captured = context("a");
-    captured
-        .metadata
-        .insert("chat_configuration_epoch".into(), json!("old-allowed"));
-    captured
-        .metadata
-        .insert(EFFECTIVE_DISABLED_TOOLS_METADATA_KEY.into(), json!([]));
     let observed = manager
         .call_tool(
             &id,
@@ -886,7 +884,6 @@ async fn captured_leaf_disablement_survives_manager_reload() {
         .unwrap()
         .structured_content
         .unwrap();
-    // New Agent defaults cannot revoke the old Chat's captured leaf enablement.
     let result = manager
         .call_tool(
             &id,
@@ -898,15 +895,78 @@ async fn captured_leaf_disablement_survives_manager_reload() {
         .unwrap();
     assert!(!result.is_error, "{result:?}");
     assert_eq!(input_calls(temp.path()).len(), 4);
-
-    config.clients.get_mut(&id).unwrap().disabled_tools.clear();
-    manager.reload(config).await.unwrap();
-    captured
-        .metadata
-        .insert("chat_configuration_epoch".into(), json!("captured-denied"));
+    let mut policy = ToolSelectionPolicy::default_enabled();
+    policy.set_tool_enabled(ToolIdentity::mcp(SERVER_ID, "type_text"), false);
     captured.metadata.insert(
-        EFFECTIVE_DISABLED_TOOLS_METADATA_KEY.into(),
-        json!(["mcp__rua_computer__type_text"]),
+        "chat_capability_configuration".into(),
+        json!({"selection_policy":policy}),
+    );
+    manager.reload(McpConfig::default()).await.unwrap();
+    let observed = manager
+        .call_tool(
+            &id,
+            "get_window_state",
+            json!({"pid":100,"window_id":200}),
+            captured.clone(),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let error = manager
+        .call_tool(
+            &id,
+            "interact",
+            sequence(&observed, "must not run"),
+            captured.clone(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("disabled"));
+    assert_eq!(input_calls(temp.path()).len(), 4);
+    captured.metadata.remove("chat_capability_configuration");
+    let error = manager
+        .call_tool(
+            &id,
+            "interact",
+            sequence(&observed, "must not run"),
+            captured,
+        )
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("requires captured Tool selection policy"));
+    assert_eq!(input_calls(temp.path()).len(), 4);
+    manager.shutdown_all().await.unwrap();
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn computer_sequence_enforces_captured_tool_selection_for_each_leaf() {
+    use rua_config::types::tools::{ToolIdentity, ToolSelectionPolicy};
+    let temp = tempfile::tempdir().unwrap();
+    let manager = McpManagerImpl::new(McpMobilePolicy::new(PlatformProfile::Desktop))
+        .with_bundled_computer(fixture(temp.path()));
+    manager.load_config(McpConfig::default()).await.unwrap();
+    let id = McpServerId::new(SERVER_ID);
+    let mut captured = context("a");
+    captured.metadata.insert(
+        "chat_configuration_epoch".into(),
+        json!("captured-restricted"),
+    );
+    captured.metadata.insert(
+        rua_core::tool::EFFECTIVE_DISABLED_TOOLS_METADATA_KEY.into(),
+        json!([]),
+    );
+    let restricted = ToolSelectionPolicy::restricted(vec![
+        ToolIdentity::mcp(SERVER_ID, "interact"),
+        ToolIdentity::mcp(SERVER_ID, "get_window_state"),
+        ToolIdentity::mcp(SERVER_ID, "press_key"),
+    ]);
+    captured.metadata.insert(
+        "chat_capability_configuration".into(),
+        json!({"selection_policy":restricted}),
     );
     let observed = manager
         .call_tool(
@@ -919,32 +979,62 @@ async fn captured_leaf_disablement_survives_manager_reload() {
         .unwrap()
         .structured_content
         .unwrap();
-    // Re-enabling the Agent default cannot grant input to a restricted Chat.
     let error = manager
         .call_tool(
             &id,
             "interact",
-            sequence(&observed, "must not run"),
+            sequence(&observed, "blocked"),
             captured.clone(),
         )
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("disabled"));
-    assert_eq!(input_calls(temp.path()).len(), 4);
-    captured
-        .metadata
-        .remove(EFFECTIVE_DISABLED_TOOLS_METADATA_KEY);
+    assert!(error.to_string().contains("type_text"));
+    assert!(input_calls(temp.path()).is_empty());
+
+    let policy:ToolSelectionPolicy=serde_json::from_value(json!({"mode":"default_enabled","disabled_tools":[],"disabled_capabilities":["computer_use"]})).unwrap();
+    captured.metadata.insert(
+        "chat_capability_configuration".into(),
+        json!({"selection_policy":policy}),
+    );
     assert!(manager
         .call_tool(
             &id,
             "interact",
-            sequence(&observed, "must not run"),
-            captured
+            sequence(&observed, "blocked"),
+            captured.clone()
         )
         .await
-        .unwrap_err()
-        .to_string()
-        .contains("captured Chat tool restrictions"));
-    assert_eq!(input_calls(temp.path()).len(), 4);
+        .is_err());
+    assert!(input_calls(temp.path()).is_empty());
+
+    captured
+        .metadata
+        .remove(rua_core::tool::EFFECTIVE_DISABLED_TOOLS_METADATA_KEY);
+    captured.metadata.insert(
+        "chat_capability_configuration".into(),
+        json!({"selection_policy":ToolSelectionPolicy::default_enabled()}),
+    );
+    let result = manager
+        .call_tool(
+            &id,
+            "interact",
+            sequence(&observed, "allowed"),
+            captured.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(!result.is_error, "{result:?}");
+    let allowed_input_count = input_calls(temp.path()).len();
+    assert!(allowed_input_count > 0);
+
+    captured.metadata.insert(
+        "chat_capability_configuration".into(),
+        json!({"selection_policy":null}),
+    );
+    assert!(manager
+        .call_tool(&id, "interact", sequence(&observed, "invalid"), captured)
+        .await
+        .is_err());
+    assert_eq!(input_calls(temp.path()).len(), allowed_input_count);
     manager.shutdown_all().await.unwrap();
 }

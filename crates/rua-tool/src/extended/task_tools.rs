@@ -260,7 +260,11 @@ impl Tool for TaskCreateTool {
             });
         }
         if let rua_task::TaskRunnerSpec::Tool { tool_name, .. } = &args.runner {
-            if let Some(value) = ctx.metadata.get("chat_tool_allowlist") {
+            if let Some(value) = ctx
+                .metadata
+                .get(super::introspect::EFFECTIVE_TOOL_NAMES_METADATA_KEY)
+                .or_else(|| ctx.metadata.get("chat_tool_allowlist"))
+            {
                 let allowed: Vec<String> =
                     serde_json::from_value(value.clone()).map_err(|error| {
                         rua_core::RuaError::Security {

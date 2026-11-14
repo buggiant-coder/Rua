@@ -1,0 +1,47 @@
+.panel {
+  margin: 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card-bg);
+  color: var(--text);
+
+  h2 {
+    margin: 0 0 8px;
+    font-size: 16px;
+  }
+  h4 {
+    margin-bottom: 8px;
+  }
+  code {
+    overflow-wrap: anywhere;
+  }
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+
+  :global(.rua-ui-select) {
+    min-width: min(240px, 100%);
+  }
+}
+
+.hint {
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.preview {
+  overflow-wrap: anywhere;
+
+  pre {
+    white-space: pre-wrap;
+    max-height: 32vh;
+    overflow: auto;
+  }
+}

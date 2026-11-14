@@ -12,6 +12,7 @@ import {
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import ChatHeader from "./ChatHeader";
+import { ChatConfigurationUpdateButton } from "./ChatConfigurationUpdateButton";
 import { androidRuntimeActions } from "@/utils/androidRuntime";
 import { configurationChanges } from "./configurationDiff";
 import {
@@ -777,6 +778,12 @@ export function ChatOptionsModal({
       className="rua-owned-chat-options-modal"
       footer={
         <>
+          <ChatConfigurationUpdateButton
+            target={conversationTarget}
+            chatId={chatId ?? ""}
+            disabled={loading || saving || applyingDefaults}
+            onApplied={onClose}
+          />
           <Btn
             variant="outline"
             onClick={() => void applyGlobalRunningConfig()}

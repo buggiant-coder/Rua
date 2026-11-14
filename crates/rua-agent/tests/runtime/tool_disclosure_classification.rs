@@ -168,3 +168,43 @@ fn running_config_resolves_to_react_tool_disclosure_config() {
     assert_eq!(config.search_default_limit, 2);
     assert_eq!(config.search_max_limit, 8);
 }
+
+#[test]
+fn phone_readiness_keeps_status_and_separate_permissions() {
+    let mut status = rua_core::phone_use::PhoneStatus {
+        generation: "test".into(),
+        platform: "android".into(),
+        state: "ready".into(),
+        accessibility: false,
+        camera_permission: false,
+        extra: Default::default(),
+    };
+    let reason = rua_agent::tool_disclosure::phone_tool_unavailability;
+    assert!(reason("phone_status", &status).is_none());
+    assert!(reason("phone_list_apps", &status).is_none());
+    assert!(reason("phone_list_cameras", &status).is_none());
+    assert!(reason("phone_observe", &status).is_some());
+    assert!(reason("phone_take_photo", &status).is_some());
+    status.camera_permission = true;
+    assert!(reason("phone_observe", &status).is_some());
+    assert!(reason("phone_take_photo", &status).is_none());
+    status.accessibility = true;
+    assert!(reason("phone_observe", &status).is_none());
+}
+
+#[test]
+fn registry_namespace_cannot_claim_product_ownership_through_a_tool_name() {
+    let mut registry = rua_tool::ToolRegistry::new();
+    registry
+        .register(
+            Arc::new(rua_tool::builtin::phone_use::PhoneStatusTool),
+            rua_tool::builtin::phone_use::PhoneStatusTool::spec(),
+            rua_tool::ToolNamespace::Mcp,
+        )
+        .unwrap();
+    let mut toolkit = react_agent::AgentToolkit::new();
+    rua_agent::tool_disclosure::populate_toolkit_from_registry(&mut toolkit, &registry);
+    let meta = toolkit.disclosure_for("phone_status").unwrap();
+    assert_eq!(meta.source_kind, ToolSourceKind::Unknown);
+    assert!(meta.product_capability.is_none());
+}

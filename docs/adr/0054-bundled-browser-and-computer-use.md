@@ -54,6 +54,10 @@ Python、npm、pip 或独立 Cua App，也不需要经过通用 Plugin 安装器
 服务定义并解析 Rua 管理的驱动路径，不要求用户手写 MCP JSON；执行仍使用 ADR-0013 的
 per-Agent `McpManagerImpl`，不建立第二套 Plugin 生命周期或全局 MCP manager。
 
+ADR-0058 以可信产品来源身份将两项能力纳入普通 Agent/Chat 的 Default-Enabled
+选择，保留整项能力和单个工具的禁用；Restricted 模式仍要求精确允许工具。
+新增产品工具不需要向旧配置补写清单；任意外部 MCP 不因此自动启用。
+
 内置分发不绕过现有能力与授权规则。工具进入 Effective Capability Snapshot，
 真实工具名称和参数经过 Tool Guard；授权依据是 ADR-0012/0028 的有效 Chat /
 Turn 快照。驱动宿主、Agent 决策、审批和任务状态均由 resident Runtime 拥有。

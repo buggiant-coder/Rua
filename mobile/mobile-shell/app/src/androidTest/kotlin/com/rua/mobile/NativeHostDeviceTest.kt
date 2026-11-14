@@ -101,8 +101,11 @@ class NativeHostDeviceTest {
                     val init = NativePayload.process(context, listOf("init", "--rua-root", initRoot.path)).start()
                     assertTrue(init.waitFor(30, java.util.concurrent.TimeUnit.SECONDS))
                     assertEquals(0, init.exitValue())
-                    val tools = JSONObject(File(initRoot, "workspaces/default/agent.json").readText()).getJSONObject("tools").getJSONObject("builtin_tools")
-                    assertTrue("First-install init must seed Phone Use before the handshake", tools.has("phone_observe"))
+                    val tools = JSONObject(File(initRoot, "workspaces/default/agent.json").readText()).getJSONObject("tools")
+                    val policy = tools.getJSONObject("selection_policy")
+                    assertEquals("default_enabled", policy.getString("mode"))
+                    assertEquals(0, policy.getJSONArray("disabled_tools").length())
+                    assertFalse("New Phone Tools must not require persisted inventory entries", tools.getJSONObject("builtin_tools").has("phone_observe"))
                 } finally { initRoot.deleteRecursively() }
             } finally {
                 fixture.api(token, "DELETE", "/terminal/sessions/$terminal?browser_viewer_id=native-power-viewer")

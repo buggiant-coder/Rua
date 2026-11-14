@@ -482,8 +482,8 @@ instantiate, special executor kinds, or ACP substitutes. Multiple independent
 collaboration Chats may use either Agent without creating temporary Agent
 identities or sharing conversation history. Keep the user's primary Agent intact.
 
-Implement the read-only preset with the existing Agent Tool availability configuration:
-expose reading and retrieval Tools such as read, grep, glob,
+Implement the read-only preset with ADR-0058's ordinary Restricted Tool Selection
+Policy: exact allowed identities expose reading and retrieval Tools such as read, grep, glob,
 web_search, and web_fetch. Do not expose Shell, file editing, Memory mutation,
 general code execution, or other writable Tools. Do not add a special read-only
 Agent type, runtime permission mode, filesystem sandbox, or new security layer
@@ -497,7 +497,9 @@ blanket grant of every web/browser/MCP capability. Reuse ordinary configuration
 management and existing authorization checks. Default Tool backfill, new builtins,
 MCP/plugin exposure, and configuration reload must not silently broaden the
 read-only Tool set. Unknown or newly available capabilities are not an implicit
-grant to this preset.
+grant to this preset. Restricted selection is preserved in its Chat/Turn snapshots,
+independently of the caller's inherited authorization. It is not converted to the
+Default-Enabled mode used by ordinary Agents when migrating configuration.
 
 The writable preset exposes the reading, editing, command execution, and
 verification Tools needed for implementation, subject to ordinary Tool Guard,

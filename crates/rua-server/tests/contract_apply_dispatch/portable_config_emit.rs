@@ -144,27 +144,26 @@ fn per_agent_mcp_mutations_publish_agent_config_facts() {
     );
 
     for name in [
-        "toggle_client_tool",
+        "set_mcp_tool_selection",
         "create_client",
         "update_client",
         "toggle_client",
         "delete_client",
         "register_client_compat",
         "delete_client_compat",
-        "toggle_client_tool_agent",
         "create_client_agent",
         "update_client_agent",
         "toggle_client_agent",
         "delete_client_agent",
     ] {
         let body = src
-            .split(&format!("async fn {name}"))
+            .split(&format!("async fn {name}("))
             .nth(1)
             .and_then(|tail| tail.split("async fn").next())
             .expect("MCP mutation handler should exist");
         assert!(
             body.contains("publish_agent_config_after_mcp_write"),
-            "{name} must publish an agent_config fact after mutating agent MCP config"
+            "{name} must publish an agent_config fact after mutating Agent configuration"
         );
     }
 }

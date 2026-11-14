@@ -4,3 +4,6 @@ mod agent_profile_io;
 mod root_scope;
 #[path = "unit_agents_config/running.rs"]
 mod running;
+
+#[path = "unit_agents_config/tool_selection.rs"]
+mod tool_selection;

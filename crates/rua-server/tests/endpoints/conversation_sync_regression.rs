@@ -157,7 +157,8 @@ fn build_sync_enabled_app() -> (Router, AppState, TempDir) {
             "description": "",
             "workspace_dir": ws,
             "language": "",
-            "system_prompt_files": []
+            "system_prompt_files": [],
+            "tools":{"selection_policy":rua_config::types::tools::ToolSelectionPolicy::default_enabled(),"builtin_tools":{}}
         }))
         .expect("agent json"),
     )

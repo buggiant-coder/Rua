@@ -34,7 +34,9 @@ Disclosure Bridge 也不能解决问题：Deferred 仍然表示当前可调用�
 Skill names、不可用 diagnostics 和 capability state。
 
 snapshot 在该 Model Call 的 response Tool Calls 完成前保持不变。
-下一个 Model Call 可以因配置或运行时可用性变化获得新 generation。
+下一个 Model Call 可以因产品目录或运行时可用性变化获得新 generation；
+选择策略与授权仍使用 claimed Turn 的配置，不重新读取 Agent 默认值。
+ADR-0058 定义 Default-Enabled 与 Restricted 两种 Tool Selection Policy。
 
 ### 2. 配置身份与本机可执行性分离
 
@@ -58,7 +60,9 @@ fingerprint 变化会使 prepared cache 失效，即使磁盘配置未改变。
 - `Hidden`：不进入直接 schema 或 deferred index。
 
 `AgentToolkit` 同时保存 definition、executor 和 disclosure metadata。
-模型 schema、Deferred catalog 和执行 lookup 必须来自同一个 toolkit。
+模型 schema、`list_tools`、Deferred search/describe/call 和执行 lookup 必须来自
+同一个完成策略过滤的 toolkit；不能使用注册时捕获的全局工具清单。
+`list_tools` 不将 Hidden、未选择或 unavailable 的 Tool 声称为可用。
 
 Hidden 只表示模型不可见，不等价于 security deny。
 Unavailable 不是 Deferred；它根本不在 callable snapshot 中。
@@ -108,8 +112,9 @@ generation 变化可产生 Capability State Runtime Note，用于解释某能力
 
 - 配置侧能力来自 claimed Chat Configuration Snapshot，设备可用性仍在 Model
   Call Boundary 解析；不能因读取 Agent 最新默认值改变已有 Chat 的工具配置。
-- 只读研究 Agent 是普通工具配置，只开放 Read/Grep/Glob 和检索工具，不开放
-  Shell、写入及通用执行入口；不新增特殊 Subagent/只读 runtime。
+- 普通 Agent 默认使用 ADR-0058 的 Default-Enabled 策略；只读研究 Agent 使用
+  Restricted 精确选择，只开放 Read/Grep/Glob 和检索工具，不开放 Shell、写入
+  及通用执行入口；不新增特殊 Subagent/只读 runtime。
 - generic dispatch 和后台 Tool Task 不能调用该快照禁用的工具；可见性隐藏与
   disabled 不同，真实执行仍受 ADR-0012 的来源 Chat 授权快照约束。
 
@@ -132,8 +137,8 @@ Runtime Authority 和各 runtime manager 提供 Device-local availability。
 `AgentToolkit` 拥有该 snapshot 的 definition/executor 对应关系。
 Tool Disclosure 只拥有 visibility planning。
 
-prepared cache 是可丢弃优化，以 generation、channel、workspace/project root
-和 MCP fingerprint 为 key。它不是持久化 authority。
+prepared cache 是可丢弃优化，以 generation、channel、workspace/project root、
+产品目录 revision、捕获的选择策略和 MCP fingerprint 为 key。它不是持久化 authority。
 Capability State Runtime Note 可持久化变化事实，但不能重建执行 registry。
 
 单个 MCP/Plugin/Skill 失败会降低 capability 并产生诊断；
@@ -202,3 +207,4 @@ snapshot 构造只有在核心准备无法完成时才使 Model Call 失败。
 - ADR 0015: Skill Bundle 安装来源与扫描信任
 - ADR 0026: Context Projection owns model-call assembly
 - ADR 0029: Two-layer Product Hooks
+- [ADR 0058: Tool selection policies](0058-tool-selection-policies-and-default-enablement.md)

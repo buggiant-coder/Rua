@@ -23,7 +23,9 @@ pub use annotations::{
     foreground_wait_limit, tool_transfer_contract, ApprovalPolicy, ExtendedToolAnnotations,
     ToolTransferContract, ToolTransferPolicy, TOOL_TRANSFER_CONTRACT_METADATA_KEY,
 };
-pub use config_store::{ToolConfigError, ToolConfigStore, ToolInfo as ToolStoreInfo};
+pub use config_store::{
+    ToolConfigError, ToolConfigStore, ToolInfo as ToolStoreInfo, ToolSelectionPolicyPreview,
+};
 pub use context::{SecurityContext, ToolExecutionContext, ToolExecutionLimits};
 pub use core::{EditFileTool, ReadFileTool, ShellTool};
 pub use error::ToolError;

@@ -36,6 +36,8 @@ async fn toolkit_preserves_registration_execution_export_and_internal_disclosure
         source_name: Some("core".to_string()),
         category: Some("core".to_string()),
         schema_tokens: Some(42),
+        original_name: None,
+        product_capability: None,
     };
 
     toolkit.register_with_disclosure(

@@ -17,6 +17,7 @@ rua-agent = { path = "../rua-agent" }
 rua-acp.workspace = true
 rua-config = { path = "../rua-config" }
 rua-session = { path = "../rua-session" }
+rua-project.workspace = true
 rua-provider = { path = "../rua-provider" }
 rua-tool = { path = "../rua-tool" }
 rua-task.workspace = true

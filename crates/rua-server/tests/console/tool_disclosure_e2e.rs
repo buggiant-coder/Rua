@@ -105,6 +105,8 @@ fn meta(class: DisclosureClass, source_kind: ToolSourceKind) -> ToolDisclosureMe
         source_name: Some("e2e".into()),
         category: Some("e2e".into()),
         schema_tokens: Some(50),
+        original_name: None,
+        product_capability: None,
     }
 }
 

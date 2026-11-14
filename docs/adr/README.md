@@ -1,10 +1,10 @@
 # Architecture decision records
 
-This directory is the public index of the 57 architecture records. The
+This directory is the public index of the 58 architecture records. The
 records are grouped by domain for discovery; their numbers are stable
 identifiers, not a required reading order.
 
-The set contains 49 accepted decisions, seven proposed
+The set contains 50 accepted decisions, seven proposed
 decisions (ADR 0007, 0021, 0029, 0036, 0041, 0046, and 0051),
 and one withdrawn record (ADR 0055).
 
@@ -43,6 +43,7 @@ stable identifiers, and existing identifiers are not reassigned.
 | [0015 - Skill Bundle 安装来源与扫描信任](0015-skill-bundle-install-sources-and-scan-trust.md) | Accepted | Treats a Skill as a directory bundle with explicit provenance, staged installation, bounded discovery, and content scanning before activation. |
 | [0016 - Channel Trait、实现隔离与 Feature Gates](0016-channel-traits-implementation-isolation-and-feature-gates.md) | Accepted | Keeps Channel contracts and platform implementations isolated while distinguishing compile availability, configuration enablement, and runtime health. |
 | [0017 - Slash Command 多层调度与 Discovery](0017-slash-command-layered-dispatch-and-discovery.md) | Accepted | Defines deterministic dispatch across built-in, conversation, and Agent commands with discovery generated from the executable registries. |
+| [0058 - Tool selection policies with default enablement and explicit restrictions](0058-tool-selection-policies-and-default-enablement.md) | Accepted | Defaults ordinary Agents/Chats to product Tool enablement with explicit disables, preserves Restricted exact selection, and requires discovery/dispatch consistency; implementation pending. |
 
 ## Chat, conversation state, projection, hooks, and media
 

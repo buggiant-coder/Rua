@@ -88,14 +88,7 @@ export function MCPClientCard({
   const [oauthBusy, setOauthBusy] = useState(false);
 
   useEffect(() => {
-    if (!client.enabled) {
-      setTools([]);
-      return;
-    }
-    agentsApi
-      .listAgentMCPClientTools(agentId, client.key)
-      .then(setTools)
-      .catch(() => setTools([]));
+    setTools([]);
   }, [agentId, client.key, client.enabled]);
 
   const isRemote =
@@ -192,7 +185,7 @@ export function MCPClientCard({
     event?: React.ChangeEvent<HTMLInputElement>,
   ) => {
     event?.stopPropagation();
-    if (toolToggleBusy) return;
+    if (toolToggleBusy || tool.capability_enabled === false) return;
     const nextEnabled = tool.enabled === false;
     setToolToggleBusy(tool.name);
     setTools((prev) =>
@@ -210,8 +203,10 @@ export function MCPClientCard({
       toast.success(
         nextEnabled ? t("mcp.toolEnableSuccess") : t("mcp.toolDisableSuccess"),
       );
-    } catch {
-      toast.error(t("mcp.toolToggleError"));
+    } catch (error: unknown) {
+      toast.error(
+        error instanceof Error ? error.message : t("mcp.toolToggleError"),
+      );
       await refreshTools();
     } finally {
       setToolToggleBusy(null);
@@ -339,8 +334,13 @@ export function MCPClientCard({
       title: t("mcp.toolColumnDescription"),
       dataIndex: "description",
       width: "minmax(260px, 1.5fr)",
-      render: (description: string | undefined) => (
-        <div className={styles.toolsModalItemDesc}>{description || "-"}</div>
+      render: (description: string | undefined, tool) => (
+        <div className={styles.toolsModalItemDesc}>
+          {description || "-"}
+          {tool.capability_enabled === false && (
+            <p>{t("tools.selectionPolicy.capabilityDisabled")}</p>
+          )}
+        </div>
       ),
     },
     {
@@ -362,7 +362,9 @@ export function MCPClientCard({
         <div className={styles.toolExposureCell}>
           <Toggle
             checked={tool.enabled !== false}
-            disabled={toolToggleBusy === tool.name}
+            disabled={
+              toolToggleBusy === tool.name || tool.capability_enabled === false
+            }
             aria-label={t("mcp.toolColumnExposure")}
             onClick={(e) => e.stopPropagation()}
             onChange={(e) => handleToggleTool(tool, e)}
@@ -551,7 +553,8 @@ export function MCPClientCard({
                 handleOpenTools();
               }}
             >
-              {t("mcp.toolsList")} ({enabledToolCount}/{tools.length})
+              {t("tools.selectionPolicy.discoverTools")} ({enabledToolCount}/
+              {tools.length})
             </Btn>
           </div>
         )}
@@ -615,7 +618,16 @@ export function MCPClientCard({
         title={`${client.name} - ${t("mcp.toolsList")}`}
         open={toolsModalOpen}
         onClose={() => setToolsModalOpen(false)}
-        footer={null}
+        footer={
+          <Btn
+            variant="outline"
+            loading={toolsLoading}
+            disabled={!client.enabled}
+            onClick={() => void refreshTools()}
+          >
+            {t("tools.selectionPolicy.discoverTools")}
+          </Btn>
+        }
         width={960}
       >
         {toolsLoading ? (

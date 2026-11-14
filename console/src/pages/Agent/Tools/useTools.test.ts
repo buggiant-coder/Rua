@@ -144,6 +144,86 @@ describe("useTools", () => {
     );
   });
 
+  it("skips capability-disabled Tools during bulk enable and preserves their restrictions", async () => {
+    const blocked = tool({
+      name: "phone_observe",
+      enabled: false,
+      capability_enabled: false,
+    });
+    const editable = tool({ name: "Read", enabled: false });
+    listAgentToolsMock.mockResolvedValueOnce([blocked, editable]);
+    toggleAgentToolMock.mockResolvedValueOnce({ ...editable, enabled: true });
+    const { result } = renderHook(() => useTools());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      await result.current.enableAll();
+    });
+    expect(toggleAgentToolMock).toHaveBeenCalledTimes(1);
+    expect(toggleAgentToolMock).toHaveBeenCalledWith("agent-a", "Read");
+    expect(
+      result.current.tools.find((entry) => entry.name === blocked.name)
+        ?.enabled,
+    ).toBe(false);
+  });
+
+  it("does not claim bulk success when every disabled Tool belongs to a disabled capability", async () => {
+    listAgentToolsMock.mockResolvedValueOnce([
+      tool({
+        name: "phone_observe",
+        enabled: false,
+        capability_enabled: false,
+      }),
+    ]);
+    const { result } = renderHook(() => useTools());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      await result.current.enableAll();
+    });
+    expect(toggleAgentToolMock).not.toHaveBeenCalled();
+    expect(toastMock.success).not.toHaveBeenCalled();
+    expect(toastMock.info).toHaveBeenCalledWith(
+      "tools.selectionPolicy.capabilityDisabled",
+    );
+  });
+
+  it.each(["enableAll", "disableAll"] as const)(
+    "serializes %s mutations of one policy revision",
+    async (operation) => {
+      const enabled = operation === "disableAll";
+      const first = tool({ name: "Bash", enabled });
+      const second = tool({ name: "Read", enabled });
+      listAgentToolsMock.mockResolvedValueOnce([first, second]);
+      let finishFirst!: (value: ToolInfo) => void;
+      toggleAgentToolMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishFirst = resolve;
+          }),
+      );
+      toggleAgentToolMock.mockResolvedValueOnce({
+        ...second,
+        enabled: !enabled,
+      });
+      const { result } = renderHook(() => useTools());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      let pending!: Promise<void>;
+      act(() => {
+        pending = result.current[operation]();
+      });
+      expect(toggleAgentToolMock).toHaveBeenCalledTimes(1);
+      expect(toggleAgentToolMock).toHaveBeenCalledWith("agent-a", "Bash");
+      await act(async () => {
+        finishFirst({ ...first, enabled: !enabled });
+        await pending;
+      });
+      expect(toggleAgentToolMock).toHaveBeenCalledTimes(2);
+      expect(toggleAgentToolMock).toHaveBeenLastCalledWith("agent-a", "Read");
+      expect(
+        result.current.tools.every((entry) => entry.enabled === !enabled),
+      ).toBe(true);
+    },
+  );
+
   it("batch-enables only disabled tools while preserving async execution state", async () => {
     toggleAgentToolMock.mockResolvedValueOnce(
       tool({ name: "Read", enabled: true, async_execution: false }),

@@ -41,6 +41,7 @@ export function useTools(initialData?: ToolsInitialData) {
 
   const toggleEnabled = useCallback(
     async (tool: ToolInfo) => {
+      if (tool.capability_enabled === false) return;
       setTools((prev) =>
         prev.map((t) =>
           t.name === tool.name ? { ...t, enabled: !t.enabled } : t,
@@ -111,21 +112,33 @@ export function useTools(initialData?: ToolsInitialData) {
   );
 
   const enableAll = useCallback(async () => {
-    const disabledTools = tools.filter((tool) => !tool.enabled);
+    const disabledTools = tools.filter(
+      (tool) => !tool.enabled && tool.capability_enabled !== false,
+    );
     if (disabledTools.length === 0) {
-      toast.info(t("tools.allEnabled"));
+      toast.info(
+        t(
+          tools.some((tool) => tool.capability_enabled === false)
+            ? "tools.selectionPolicy.capabilityDisabled"
+            : "tools.allEnabled",
+        ),
+      );
       return;
     }
 
-    setTools((prev) => prev.map((t) => ({ ...t, enabled: true })));
+    setTools((prev) =>
+      prev.map((tool) =>
+        tool.capability_enabled === false ? tool : { ...tool, enabled: true },
+      ),
+    );
 
     setBatchLoading(true);
     try {
-      const results = await Promise.all(
-        disabledTools.map((tool) =>
-          agentsApi.toggleAgentTool(selectedAgent, tool.name),
-        ),
-      );
+      // Each toggle updates the same Agent selection policy revision.
+      const results: ToolInfo[] = [];
+      for (const tool of disabledTools) {
+        results.push(await agentsApi.toggleAgentTool(selectedAgent, tool.name));
+      }
       toast.success(t("tools.enableAllSuccess"));
 
       setTools((prev) =>
@@ -144,21 +157,27 @@ export function useTools(initialData?: ToolsInitialData) {
   }, [tools, t, loadTools, selectedAgent]);
 
   const disableAll = useCallback(async () => {
-    const enabledTools = tools.filter((tool) => tool.enabled);
+    const enabledTools = tools.filter(
+      (tool) => tool.enabled && tool.capability_enabled !== false,
+    );
     if (enabledTools.length === 0) {
       toast.info(t("tools.allDisabled"));
       return;
     }
 
-    setTools((prev) => prev.map((t) => ({ ...t, enabled: false })));
+    setTools((prev) =>
+      prev.map((tool) =>
+        tool.capability_enabled === false ? tool : { ...tool, enabled: false },
+      ),
+    );
 
     setBatchLoading(true);
     try {
-      const results = await Promise.all(
-        enabledTools.map((tool) =>
-          agentsApi.toggleAgentTool(selectedAgent, tool.name),
-        ),
-      );
+      // Each toggle updates the same Agent selection policy revision.
+      const results: ToolInfo[] = [];
+      for (const tool of enabledTools) {
+        results.push(await agentsApi.toggleAgentTool(selectedAgent, tool.name));
+      }
       toast.success(t("tools.disableAllSuccess"));
 
       setTools((prev) =>

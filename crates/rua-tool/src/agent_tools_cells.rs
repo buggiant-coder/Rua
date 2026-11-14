@@ -38,6 +38,31 @@ pub struct AgentToolsCell<'a> {
 }
 
 impl<'a> AgentToolsCell<'a> {
+    pub async fn read_document(&self) -> Result<Option<serde_json::Value>, ToolConfigError> {
+        self.cells
+            .store
+            .read::<serde_json::Value>(&self.cells.agent_json_path(&self.agent_id), "$")
+            .await
+            .map_err(cell_err_to_tool)
+    }
+
+    pub async fn compare_exchange_document(
+        &self,
+        expected: Option<serde_json::Value>,
+        replacement: serde_json::Value,
+    ) -> Result<bool, ToolConfigError> {
+        self.cells
+            .store
+            .compare_exchange(
+                &self.cells.agent_json_path(&self.agent_id),
+                "$",
+                expected,
+                replacement,
+            )
+            .await
+            .map_err(cell_err_to_tool)
+    }
+
     pub async fn read_value(&self) -> Result<Option<serde_json::Value>, ToolConfigError> {
         self.cells
             .store
@@ -56,6 +81,23 @@ impl<'a> AgentToolsCell<'a> {
                 &self.cells.agent_json_path(&self.agent_id),
                 AGENT_TOOLS_SECTION,
                 value,
+            )
+            .await
+            .map_err(cell_err_to_tool)
+    }
+
+    pub async fn compare_exchange(
+        &self,
+        expected: Option<serde_json::Value>,
+        replacement: serde_json::Value,
+    ) -> Result<bool, ToolConfigError> {
+        self.cells
+            .store
+            .compare_exchange(
+                &self.cells.agent_json_path(&self.agent_id),
+                AGENT_TOOLS_SECTION,
+                expected,
+                replacement,
             )
             .await
             .map_err(cell_err_to_tool)

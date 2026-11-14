@@ -49,8 +49,10 @@ consumed per Turn.
 The config is not a sparse override. Execution never overlays current Agent
 defaults onto a saved snapshot. New Chat creation follows D9 and completes before
 execution. Materialize Harness,
-Hook revisions, model/reasoning, available Tools, security policy and environment
-binding in one complete immutable snapshot; a coherent current head identifies its epoch.
+Hook revisions, model/reasoning, Tool Selection Policy and external source selections,
+security policy and environment binding in one complete immutable snapshot; a coherent
+current head identifies its epoch. Under ADR-0058, complete Tool configuration freezes
+selection intent, not an expanded inventory of the current product catalog.
 
 ### D3 - Both Chat scopes use the same rule
 
@@ -77,7 +79,10 @@ source Chat Running Config to preserve behavioral continuity.
 When Conversation Authority claims an input and creates the Active Turn, it
 captures the complete Chat configuration epoch, including effective authorization.
 Every model call, Tool call, retry, context projection, and runtime decision in
-that Turn uses this same immutable value.
+that Turn uses this same immutable value. ADR-0058 permits product catalog and
+Device-readiness changes to affect later Model Call capability snapshots under
+that frozen policy; it does not permit changes to the claimed configuration or
+authorization, or replacement of an already captured Tool executor.
 
 An edit while a Turn is active does not restart, mutate, or interrupt that Turn.
 It applies when a later queued or newly submitted input is claimed.
@@ -176,9 +181,10 @@ does not relax control-command epoch validation or rewrite configuration epochs.
 
 An explicit **Update Configuration** remains a preview/confirm operation, bound
 to the exact previewed current value and epoch. Configuration replacement and
-Turn claim are serialized. Reading options never writes configuration. No
-historical format detection, migration, or field-wise default overlay is retained.
-This code change does not delete stored conversation files.
+Turn claim are serialized. Reading options never writes configuration. ADR-0058
+requires the current Tool policy format at every configuration write boundary;
+normal reads/execution do not detect-and-repair historical formats or
+apply field-wise default overlays. Stored conversation history is preserved.
 
 ### D10 - Configuration selection is independent of live tool discovery
 
@@ -187,20 +193,27 @@ static validation. It never starts an MCP connection, waits for startup, calls
 `tools/list`, or probes a plugin. MCP management and connection diagnostics
 remain on the Agent MCP surface, not in Chat runtime options.
 
-New capability configurations copy enabled MCP server identities and their
-disabled-tool selections, alongside registered plugin identities and local
-Tool/Skill settings. These are declarations, not callable tool schemas. No
-transport command, environment, URL, credential, connection state or discovered
-schema is saved in those selections. An offline source remains selected and can
-recover without replacing the Chat configuration. A newly configured source is
-not adopted by an existing Chat until an explicit configuration update.
+Capability configurations copy the Agent's explicit Tool Selection Policy,
+external MCP server identities and disabled-tool selections, registered plugin
+identities, and local Tool/Skill settings. These are declarations, not callable
+schemas. No transport command, environment, URL, credential, connection state or
+discovered schema is saved in those selections. An offline selected source can
+recover without replacing Chat configuration. A newly configured external source
+is not adopted by an existing Chat until an explicit configuration update.
 
-At the Model Call Boundary, intersect that frozen selection with the live
-registry to produce both exposed schemas and executable tools. Unavailable or
-currently disabled capabilities remain unavailable; selection does not grant
-permission. Match MCP tools by their registered server identity and original
-tool name, not ambiguous string-prefix wildcards. Previously persisted exact
-tool allowlists retain exact semantics when source selections are absent.
+Rua-owned product capabilities follow ADR-0058: Default-Enabled selects newly
+provided product Tools unless disabled, including bundled Browser/Computer and
+native Phone Use on supported execution Devices. Restricted requires exact allowed
+Tool identities. Catalog growth under a saved policy does not reread Agent defaults,
+rewrite Chat epochs, or automatically enroll arbitrary external sources.
+
+At the Model Call Boundary, resolve that frozen policy and source selection against
+the live registry to produce both exposed schemas and executable tools. Unavailable,
+disabled, or not-allowed Tools are excluded; selection does not grant permission.
+Match MCP Tools by their registered server identity and original Tool name, not
+ambiguous string-prefix wildcards. Old exact inventories are not implicitly empty
+blacklists. ADR-0058 requires a one-time data cutover outside the application;
+old-format compatibility is not retained.
 
 ## Hard invariants
 
@@ -208,7 +221,8 @@ tool allowlists retain exact semantics when source selections are absent.
 - Agent defaults are copied, not inherited dynamically.
 - Agent and Project scopes use the same Chat config model.
 - No Project Running Config layer exists.
-- One Active Turn uses one immutable effective snapshot.
+- One Active Turn uses one immutable configuration/policy snapshot; each Model Call
+  resolves its own immutable capability snapshot from that policy.
 - Mid-Turn edits never change in-flight behavior.
 - Immutable complete snapshots and current head are portable Chat state;
   device-local credentials and resource paths are resolved by explicit bindings.
@@ -271,6 +285,9 @@ Current implementation anchors include:
 
 ### Current implementation gaps
 
+ADR-0058's policy representation, current-format Agent/Chat edits, and product
+catalog growth now use the same configuration epoch and capability snapshot paths.
+
 The current storage uses immutable complete snapshots and a current head.
 Running-config reads project that snapshot, and writes publish a new epoch.
 New Agent/Project Chats and branches must supply the complete configuration;
@@ -289,6 +306,7 @@ sync round trip. Relevant suites include
 
 ## Related decisions
 
+- [ADR 0058: Tool selection policies](0058-tool-selection-policies-and-default-enablement.md).
 - ADR 0018: Lazy Chat materialization.
 - ADR 0019: Project-Scoped Chat Agent selection.
 - ADR 0020: Session storage boundaries.

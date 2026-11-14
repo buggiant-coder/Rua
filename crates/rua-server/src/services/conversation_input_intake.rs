@@ -2690,6 +2690,7 @@ impl ConversationInputIntake {
                                 ),
                                 Some(&crate::services::project_chat::working_directory(&binding, Some(&header), None)?),
                                 crate::services::chat_configuration_capture::ChatConfigurationSelection {
+project_working_directory_id: Some(header.extra.get(crate::services::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY).and_then(serde_json::Value::as_str).unwrap_or(rua_project::INITIAL_PROJECT_DIRECTORY_ID).to_string()),
                                     model: header.extra.get("model").cloned(),
                                     thinking: header.extra.get("thinking").cloned(),
                                     collaboration_mode: header
@@ -4199,6 +4200,7 @@ impl ConversationInputIntake {
                                     rua_config::ChatRunningConfig::from_agent_defaults(&running),
                                     None,
                                     crate::services::chat_configuration_capture::ChatConfigurationSelection {
+project_working_directory_id: None,
                                         model: initial_model.clone(),
                                         thinking: None,
                                         collaboration_mode: serde_json::to_value(collaboration_mode).map_err(|error| error.to_string())?,
@@ -4842,6 +4844,7 @@ impl ConversationInputIntake {
                         running,
                         Some(&working_dir),
                         crate::services::chat_configuration_capture::ChatConfigurationSelection {
+                            project_working_directory_id: Some(directory_id.clone()),
                             model: initial_model.clone(),
                             thinking: request.extra.get(rua_chat::TURN_THINKING_KEY).cloned(),
                             collaboration_mode: request
@@ -5919,6 +5922,14 @@ impl ConversationInputIntake {
             running_config,
             project_root.as_deref(),
             crate::services::chat_configuration_capture::ChatConfigurationSelection {
+                project_working_directory_id: address.project_id().map(|_| {
+                    header
+                        .extra
+                        .get(crate::services::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY)
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(rua_project::INITIAL_PROJECT_DIRECTORY_ID)
+                        .to_string()
+                }),
                 model: match field("model") {
                     Some(model) => Some(model),
                     None => self.default_authority_chat_model().await,
@@ -7247,6 +7258,7 @@ impl ConversationInputIntake {
                                     .project_id()
                                     .map(|_| working_dir.as_path()),
                                 crate::services::chat_configuration_capture::ChatConfigurationSelection {
+project_working_directory_id: request.metadata.get(crate::services::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY).and_then(serde_json::Value::as_str).map(str::to_string),
                                     model: initial_model.clone(),
                                     thinking: None,
                                     collaboration_mode: serde_json::to_value(collaboration_mode).map_err(|error| error.to_string())?,

@@ -216,6 +216,7 @@ pub fn model_slot_provider_model(slot: &serde_json::Value) -> Option<(String, St
 pub struct ReactAgentRuntime {
     provider_manager: Arc<ProviderManager>,
     rua_root: Option<std::path::PathBuf>,
+    agent_tool_configuration: Option<(String, Arc<crate::AgentCells>, PathBuf)>,
     model_factory: ModelFactory,
     usage_recorder: Option<Arc<dyn UsageRecorder>>,
     toolkit: Option<Arc<AgentToolkit>>,
@@ -270,10 +271,9 @@ pub struct ChatSkillSnapshot {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ChatCapabilityConfiguration {
-    pub tools: Vec<String>,
+    pub selection_policy: rua_config::types::tools::ToolSelectionPolicy,
     pub skills: Vec<ChatSkillSnapshot>,
     /// Configured sources, not a snapshot of whichever tools happen to be online.
-    /// Missing fields preserve the exact allowlist of previously saved Chats.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub mcp_servers: BTreeMap<String, ChatMcpToolSelection>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -284,28 +284,65 @@ pub struct ChatCapabilityConfiguration {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ChatMcpToolSelection {
-    pub disabled_tools: Vec<String>,
     #[serde(default, flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 impl ChatCapabilityConfiguration {
-    fn selects_external_tool(
+    pub fn validate_selection_policy(&self) -> Result<()> {
+        self.selection_policy
+            .validate()
+            .map_err(|message| RuaError::Validation { message })
+    }
+
+    pub fn selects_tool(
         &self,
+        name: &str,
         mcp_source: Option<&(String, String)>,
         disclosure: Option<&react_agent::toolkit::ToolDisclosureMeta>,
     ) -> bool {
-        mcp_source.is_some_and(|(server, tool)| {
-            self.mcp_servers
-                .get(server)
-                .is_some_and(|selection| !selection.disabled_tools.contains(tool))
-        }) || disclosure.is_some_and(|source| {
-            source.source_kind == react_agent::toolkit::ToolSourceKind::Plugin
-                && source
-                    .source_name
+        use react_agent::toolkit::ToolSourceKind;
+        use rua_config::types::tools::{ToolIdentity, ToolIdentityKind};
+        let policy = &self.selection_policy;
+        let capability = disclosure.and_then(|meta| meta.product_capability.as_deref());
+        let identity = if let Some((server, original)) = mcp_source {
+            ToolIdentity::mcp(server, original)
+        } else {
+            let Some(meta) = disclosure else {
+                return false;
+            };
+            match meta.source_kind {
+                ToolSourceKind::Builtin | ToolSourceKind::Skill => ToolIdentity::builtin(name),
+                ToolSourceKind::Mcp | ToolSourceKind::Plugin => {
+                    let (Some(source), Some(original)) =
+                        (meta.source_name.as_ref(), meta.original_name.as_ref())
+                    else {
+                        return false;
+                    };
+                    if meta.source_kind == ToolSourceKind::Mcp {
+                        ToolIdentity::mcp(source, original)
+                    } else {
+                        ToolIdentity::plugin(source, original)
+                    }
+                }
+                _ => return false,
+            }
+        };
+        let enrolled = match identity.kind {
+            ToolIdentityKind::Builtin => true,
+            ToolIdentityKind::Mcp => {
+                let source = identity
+                    .source
                     .as_ref()
-                    .is_some_and(|plugin| self.plugin_ids.contains(plugin))
-        })
+                    .expect("MCP source was constructed");
+                capability.is_some() || self.mcp_servers.contains_key(source)
+            }
+            ToolIdentityKind::Plugin => identity
+                .source
+                .as_ref()
+                .is_some_and(|source| self.plugin_ids.contains(source)),
+        };
+        enrolled && policy.selects(&identity, capability)
     }
 }
 
@@ -391,6 +428,7 @@ struct PreparedCacheKey {
 #[derive(Clone)]
 pub struct EffectiveCapabilityResolver {
     base_toolkit: Option<Arc<AgentToolkit>>,
+    cancel: CancellationToken,
     memory_manager: Option<Arc<dyn crate::memory_manager::MemoryManager>>,
     mcp_manager: Arc<std::sync::RwLock<Option<Arc<dyn McpManager>>>>,
     security: Option<Arc<rua_security::SecurityModule>>,
@@ -591,6 +629,7 @@ impl ReactAgentRuntime {
         Self {
             provider_manager,
             rua_root: None,
+            agent_tool_configuration: None,
             model_factory: ModelFactory::new().with_fallback(FallbackPolicy::default(), resolver),
             usage_recorder: None,
             toolkit: None,
@@ -645,6 +684,7 @@ impl ReactAgentRuntime {
     pub fn capability_resolver(&self) -> EffectiveCapabilityResolver {
         EffectiveCapabilityResolver {
             base_toolkit: self.toolkit.clone(),
+            cancel: self.plugin_listener_cancel.clone(),
             memory_manager: self.memory_manager.clone(),
             mcp_manager: Arc::clone(&self.mcp_manager),
             security: self.security.clone(),
@@ -659,6 +699,40 @@ impl ReactAgentRuntime {
 }
 
 impl EffectiveCapabilityResolver {
+    pub async fn task_toolkit_for_configuration(
+        &self,
+        workspace_dir: &Path,
+        project_root: Option<&Path>,
+        session_id: &SessionId,
+        conversation_store_dir: Option<&Path>,
+        turn_id: Option<&str>,
+        configuration: &ChatCapabilityConfiguration,
+    ) -> Result<Arc<AgentToolkit>> {
+        configuration.validate_selection_policy()?;
+        let snapshot = ModelCallCapabilityProvider {
+            resolver: self.clone(),
+            workspace_dir: Some(workspace_dir.to_path_buf()),
+            project_root: project_root.map(Path::to_path_buf),
+            channel: "console".into(),
+            session_id: session_id.clone(),
+            conversation_store_dir: conversation_store_dir.map(Path::to_path_buf),
+            turn_id: turn_id.map(str::to_string),
+            request_mcp_toolkit: None,
+            disabled_tools: Vec::new(),
+            allowed_tools: None,
+            configuration: Some(configuration.clone()),
+            skills_snapshot: Some(configuration.skills.clone()),
+        }
+        .capture()
+        .await
+        .map_err(|error| RuaError::Runtime {
+            message: error.to_string(),
+        })?;
+        snapshot.toolkit.ok_or_else(|| RuaError::Runtime {
+            message: "Capability snapshot has no toolkit".into(),
+        })
+    }
+
     pub async fn configuration(
         &self,
         workspace_dir: &Path,
@@ -679,18 +753,14 @@ impl EffectiveCapabilityResolver {
                     server: "all".to_string(),
                     message: error.to_string(),
                 })?;
-            for (id, config) in configured
+            for (id, _config) in configured
                 .clients
                 .into_iter()
                 .filter(|(_, config)| config.enabled)
             {
-                let mut disabled_tools = config.disabled_tools;
-                disabled_tools.sort();
-                disabled_tools.dedup();
                 mcp_servers.insert(
                     id.to_string(),
                     ChatMcpToolSelection {
-                        disabled_tools,
                         extra: BTreeMap::new(),
                     },
                 );
@@ -715,23 +785,6 @@ impl EffectiveCapabilityResolver {
             channel,
             &SessionId::new("configuration-preview"),
         )?;
-        let mut names = snapshot
-            .toolkit
-            .as_deref()
-            .or(self.base_toolkit.as_deref())
-            .map(|toolkit| {
-                toolkit
-                    .tool_names()
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        if manager.is_some() {
-            names.retain(|name| !name.starts_with("mcp__"));
-        }
-        names.sort();
-        names.dedup();
         let mut skills = Vec::new();
         for skill in &snapshot.skills {
             let project = skill.source == react_agent::SkillRuntimeSource::Project;
@@ -761,12 +814,69 @@ impl EffectiveCapabilityResolver {
             });
         }
         Ok(ChatCapabilityConfiguration {
-            tools: names,
+            selection_policy: rua_config::types::tools::ToolSelectionPolicy::default_enabled(),
             skills,
             mcp_servers,
             plugin_ids,
             extra: BTreeMap::new(),
         })
+    }
+
+    pub async fn configuration_for_agent(
+        &self,
+        agent_cells: &crate::AgentCells,
+        agent_id: &str,
+        workspace_dir: &Path,
+        project_root: Option<&Path>,
+        channel: &str,
+    ) -> Result<ChatCapabilityConfiguration> {
+        let tools = agent_cells
+            .section::<rua_config::types::tools::ToolsConfig>(agent_id, "tools")
+            .read()
+            .await
+            .map_err(|error| RuaError::Config {
+                message: error.to_string(),
+            })?
+            .unwrap_or_default();
+        let policy = tools.selection_policy.ok_or_else(|| RuaError::Config {
+            message: "Agent Tool selection policy is required".into(),
+        })?;
+        policy
+            .validate()
+            .map_err(|message| RuaError::Config { message })?;
+        let mut configuration = self
+            .configuration(workspace_dir, project_root, channel)
+            .await?;
+        let mut behaviors = tools.builtin_tools;
+        for entry in behaviors.values_mut() {
+            if let Some(fields) = entry.as_object_mut() {
+                fields.retain(|key, _| {
+                    !matches!(
+                        key.as_str(),
+                        "name"
+                            | "enabled"
+                            | "description"
+                            | "display_group"
+                            | "config"
+                            | "parameters"
+                            | "input_schema"
+                            | "schema"
+                            | "annotations"
+                            | "namespace"
+                            | "strict"
+                            | "capability"
+                            | "identity"
+                            | "configured"
+                    )
+                });
+            }
+        }
+        configuration.extra.insert(
+            "tool_behaviors".into(),
+            serde_json::Value::Object(behaviors),
+        );
+        configuration.selection_policy = policy;
+        Ok(configuration)
     }
 
     fn build_configured_context(
@@ -948,7 +1058,7 @@ impl EffectiveCapabilityResolver {
             if let Some(ref security) = self.security {
                 bridge = bridge.with_security(Arc::clone(security));
             }
-            match bridge.discover_tools().await {
+            match bridge.discover_catalog_tools().await {
                 Ok(mcp_tools) if !mcp_tools.is_empty() => {
                     for tool in &mcp_tools {
                         snapshot.mcp_tool_sources.insert(
@@ -962,11 +1072,13 @@ impl EffectiveCapabilityResolver {
                             ),
                         );
                     }
-                    let contract_tools: Vec<Arc<dyn rua_contract::Tool>> = mcp_tools
-                        .into_iter()
-                        .map(|t| Arc::new(t) as Arc<dyn rua_contract::Tool>)
-                        .collect();
-                    let count = crate::toolkit::register_mcp_tools(&mut toolkit, contract_tools);
+                    let statuses = manager.list_servers().await.unwrap_or_default();
+                    let product_sources = crate::toolkit::product_mcp_sources(&statuses);
+                    let count = crate::toolkit::register_discovered_mcp_tools(
+                        &mut toolkit,
+                        mcp_tools,
+                        &product_sources,
+                    );
                     debug!(count, session = %session_id, "injected MCP tools into agent toolkit");
                 }
                 Ok(_) => {
@@ -1207,22 +1319,65 @@ impl ModelCallCapabilityProvider {
         if !self.disabled_tools.is_empty() {
             toolkit = toolkit.create_filtered(&self.disabled_tools);
         }
-        if let Some(allowed) = self.allowed_tools.as_ref() {
+        if let Some(configuration) = self.configuration.as_ref() {
+            configuration
+                .validate_selection_policy()
+                .map_err(|error| react_agent::AgentError::Internal(error.to_string()))?;
             let excluded = toolkit
                 .tool_names()
                 .into_iter()
                 .filter(|name| {
-                    !allowed.contains(*name)
-                        && !self.configuration.as_ref().is_some_and(|configuration| {
-                            configuration.selects_external_tool(
-                                snapshot.mcp_tool_sources.get(*name),
-                                toolkit.disclosure_for(name),
-                            )
-                        })
+                    !configuration.selects_tool(
+                        name,
+                        snapshot.mcp_tool_sources.get(*name),
+                        toolkit.disclosure_for(name),
+                    )
                 })
                 .map(str::to_string)
                 .collect::<Vec<_>>();
             toolkit = toolkit.create_filtered(&excluded);
+        }
+        if let Some(allowed) = self.allowed_tools.as_ref() {
+            let excluded = toolkit
+                .tool_names()
+                .into_iter()
+                .filter(|name| !allowed.contains(*name))
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            toolkit = toolkit.create_filtered(&excluded);
+        }
+        let phone_tools = toolkit
+            .disclosure_inventory()
+            .into_iter()
+            .filter(|entry| entry.disclosure.product_capability.as_deref() == Some("phone_use"))
+            .map(|entry| entry.definition.name)
+            .collect::<Vec<_>>();
+        if !phone_tools.is_empty() {
+            let status = match rua_core::phone_use::bridge() {
+                Some(bridge) => bridge.status(&self.resolver.cancel).await,
+                None => Err("Phone Use is not connected on this execution device".into()),
+            };
+            let mut unavailable = Vec::new();
+            for name in phone_tools {
+                if name == "phone_status" {
+                    continue;
+                }
+                let reason = match &status {
+                    Ok(status) => crate::tool_disclosure::phone_tool_unavailability(&name, status)
+                        .map(str::to_string),
+                    Err(reason) => Some(reason.clone()),
+                };
+                if let Some(reason) = reason {
+                    snapshot.diagnostics.push(EffectiveCapabilityDiagnostic {
+                        capability_type: "tool".into(),
+                        name: name.clone(),
+                        state: "unavailable".into(),
+                        reason: Some(reason),
+                    });
+                    unavailable.push(name);
+                }
+            }
+            toolkit = toolkit.create_filtered(&unavailable);
         }
         snapshot.toolkit = Some(Arc::new(toolkit));
         Ok(snapshot)
@@ -1419,11 +1574,8 @@ impl ReactAgentRuntime {
         }
 
         let mut toolkit = AgentToolkit::new();
-        let contract_tools: Vec<Arc<dyn rua_contract::Tool>> = mcp_tools
-            .into_iter()
-            .map(|tool| Arc::new(tool) as Arc<dyn rua_contract::Tool>)
-            .collect();
-        let count = crate::toolkit::register_mcp_tools(&mut toolkit, contract_tools);
+        let count =
+            crate::toolkit::register_discovered_mcp_tools(&mut toolkit, mcp_tools, &HashMap::new());
         debug!(
             count,
             session = %session_id,
@@ -1497,6 +1649,16 @@ impl ReactAgentRuntime {
 
     pub fn with_rua_root(mut self, rua_root: std::path::PathBuf) -> Self {
         self.rua_root = Some(rua_root);
+        self
+    }
+
+    pub fn with_agent_tool_configuration(
+        mut self,
+        agent_id: impl Into<String>,
+        agent_cells: Arc<crate::AgentCells>,
+        workspace_dir: PathBuf,
+    ) -> Self {
+        self.agent_tool_configuration = Some((agent_id.into(), agent_cells, workspace_dir));
         self
     }
 
@@ -2192,7 +2354,7 @@ impl AgentRuntime for ReactAgentRuntime {
         let request_mcp_toolkit = self
             .request_mcp_toolkit(&req.metadata, req.working_dir(), &req.session_id)
             .await?;
-        let configuration: Option<ChatCapabilityConfiguration> = req
+        let mut configuration: Option<ChatCapabilityConfiguration> = req
             .metadata
             .get(CHAT_CAPABILITY_CONFIGURATION_METADATA_KEY)
             .cloned()
@@ -2201,6 +2363,48 @@ impl AgentRuntime for ReactAgentRuntime {
             .map_err(|error| RuaError::Validation {
                 message: format!("invalid Chat capability configuration: {error}"),
             })?;
+        if configuration.is_none() && req.metadata.contains_key("chat_configuration_epoch") {
+            return Err(RuaError::Validation {
+                message: "Captured Chat capability configuration is required".into(),
+            });
+        }
+        if configuration.is_none() {
+            if let Some((agent_id, agent_cells, workspace_dir)) = &self.agent_tool_configuration {
+                let mut captured = self
+                    .capability_resolver()
+                    .configuration_for_agent(
+                        agent_cells,
+                        agent_id,
+                        workspace_dir,
+                        project_skills_root.as_deref(),
+                        &channel,
+                    )
+                    .await?;
+                if let Some(toolkit) = request_mcp_toolkit.as_ref() {
+                    for entry in toolkit.disclosure_inventory() {
+                        if entry.disclosure.source_kind == react_agent::toolkit::ToolSourceKind::Mcp
+                        {
+                            if let Some(source) = entry.disclosure.source_name {
+                                captured.mcp_servers.entry(source).or_insert_with(|| {
+                                    ChatMcpToolSelection {
+                                        extra: BTreeMap::new(),
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+                req.metadata.insert(
+                    CHAT_CAPABILITY_CONFIGURATION_METADATA_KEY.into(),
+                    serde_json::to_value(&captured).map_err(|error| RuaError::Config {
+                        message: format!("cannot capture Agent Tool configuration: {error}"),
+                    })?,
+                );
+                req.workspace_dir
+                    .get_or_insert_with(|| workspace_dir.clone());
+                configuration = Some(captured);
+            }
+        }
         let capability_provider = Arc::new(ModelCallCapabilityProvider {
             resolver: self.capability_resolver(),
             workspace_dir: req.workspace_dir.clone(),
@@ -2237,12 +2441,7 @@ impl AgentRuntime for ReactAgentRuntime {
                 .transpose()
                 .map_err(|error| RuaError::Validation {
                     message: format!("invalid Chat tool allowlist: {error}"),
-                })?
-                .or_else(|| {
-                    configuration
-                        .as_ref()
-                        .map(|configuration| configuration.tools.iter().cloned().collect())
-                }),
+                })?,
             configuration,
         });
         let initial_capabilities =

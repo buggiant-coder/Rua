@@ -714,37 +714,32 @@ async fn create_agent_applies_selected_template_prompt_files_to_workspace() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn created_agent_persists_tools_and_missing_tools_never_inherit_another_agent() {
+async fn created_agent_persists_policy_and_missing_policy_is_rejected_without_rewrite() {
     let app = build_app();
     let id = "explicit-tool-inventory";
     create_agent(&app.app, id, "Explicit tools").await;
     let path = app.data_dir.join("workspaces").join(id).join("agent.json");
     let mut profile: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     let builtin = profile["tools"]["builtin_tools"].as_object().unwrap();
+    assert!(builtin.is_empty());
     assert_eq!(
-        builtin.len(),
-        rua_server::services::collaboration_runtime::server_tool_catalog()
+        profile["tools"]["selection_policy"],
+        serde_json::to_value(rua_config::types::tools::ToolSelectionPolicy::default_enabled())
             .unwrap()
-            .len()
     );
-    assert!(builtin.values().all(|entry| entry["enabled"].is_boolean()));
     profile.as_object_mut().unwrap().remove("tools");
     let bytes = serde_json::to_vec_pretty(&profile).unwrap();
     std::fs::write(&path, &bytes).unwrap();
-    assert!(app
+    let error = app
         .state
         .tool_config_store
         .list_tools(Some(id))
         .await
-        .unwrap()
-        .is_empty());
+        .unwrap_err();
+    assert!(error.to_string().contains("required"));
     let runtime = app.state.registry.get_or_create(id).await.unwrap();
-    assert!(runtime
-        .capability_configuration(None)
-        .await
-        .unwrap()
-        .tools
-        .is_empty());
+    let error = runtime.capability_configuration(None).await.unwrap_err();
+    assert!(error.to_string().contains("required"));
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     delete_agent(&app.app, id).await;
 }

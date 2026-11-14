@@ -6,26 +6,12 @@ use rua_core::tool::{ToolContext, ToolResult, ToolSchema};
 use crate::annotations::{ApprovalPolicy, ExtendedToolAnnotations};
 use crate::schema::ToolSpec;
 
-#[derive(Debug, Clone)]
-struct ToolSummary {
-    name: String,
-    description: String,
-}
+pub const EFFECTIVE_TOOL_CATALOG_METADATA_KEY: &str = "effective_tool_catalog";
+pub const EFFECTIVE_TOOL_NAMES_METADATA_KEY: &str = "effective_tool_names";
 
-pub struct ListToolsTool {
-    summaries: Vec<ToolSummary>,
-}
+pub struct ListToolsTool;
 
 impl ListToolsTool {
-    pub fn new(tool_list: Vec<(String, String)>) -> Self {
-        let mut summaries: Vec<ToolSummary> = tool_list
-            .into_iter()
-            .map(|(name, description)| ToolSummary { name, description })
-            .collect();
-        summaries.sort_by(|a, b| a.name.cmp(&b.name));
-        Self { summaries }
-    }
-
     pub fn spec() -> ToolSpec {
         ToolSpec {
             name: "list_tools".to_string(),
@@ -66,15 +52,31 @@ impl Tool for ListToolsTool {
     async fn call(
         &self,
         _args: serde_json::Value,
-        _ctx: ToolContext,
+        ctx: ToolContext,
     ) -> rua_core::Result<ToolResult> {
-        let total = self.summaries.len();
-        let mut lines = Vec::with_capacity(total + 2);
-        lines.push(format!("Available tools ({total}):"));
-        lines.push(String::new());
-        for s in &self.summaries {
-            let desc = truncate_description(&s.description, 120);
-            lines.push(format!("- **{}**: {}", s.name, desc));
+        let value = ctx
+            .metadata
+            .get(EFFECTIVE_TOOL_CATALOG_METADATA_KEY)
+            .ok_or_else(|| rua_core::RuaError::Tool {
+                tool: "list_tools".into(),
+                message: "Current capability snapshot is unavailable".into(),
+            })?;
+        let mut summaries: Vec<(String, String)> =
+            serde_json::from_value(value.clone()).map_err(|error| rua_core::RuaError::Tool {
+                tool: "list_tools".into(),
+                message: format!("Invalid capability catalog: {error}"),
+            })?;
+        summaries.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut lines = vec![
+            format!("Available tools ({}):", summaries.len()),
+            String::new(),
+        ];
+        for (name, description) in summaries {
+            lines.push(format!(
+                "- **{}**: {}",
+                name,
+                truncate_description(&description, 120)
+            ));
         }
         Ok(ToolResult::text("list_tools", lines.join("\n")))
     }
@@ -82,9 +84,12 @@ impl Tool for ListToolsTool {
 
 fn truncate_description(desc: &str, max_len: usize) -> String {
     let first_line = desc.lines().next().unwrap_or(desc);
-    if first_line.len() <= max_len {
+    if first_line.chars().count() <= max_len {
         first_line.to_string()
     } else {
-        format!("{}...", &first_line[..max_len])
+        format!(
+            "{}...",
+            first_line.chars().take(max_len).collect::<String>()
+        )
     }
 }

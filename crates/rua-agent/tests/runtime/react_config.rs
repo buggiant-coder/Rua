@@ -409,7 +409,7 @@ async fn captured_security_deny_prevents_real_tool_executor() {
     let workspace = tempfile::tempdir().unwrap();
     let observed = Arc::new(Mutex::new(None));
     let mut toolkit = AgentToolkit::new();
-    toolkit.register(
+    toolkit.register_with_disclosure(
         ToolDefinition {
             name: "bash".into(),
             description: "record only".into(),
@@ -421,6 +421,7 @@ async fn captured_security_deny_prevents_real_tool_executor() {
         Arc::new(RecordingWorkingDirTool {
             observed: observed.clone(),
         }),
+        rua_agent::tool_disclosure::builtin_tool_disclosure("bash"),
     );
     let mut events = named_tool_round("denied-call", "bash");
     for event in &mut events {
@@ -442,7 +443,16 @@ async fn captured_security_deny_prevents_real_tool_executor() {
     let runtime = runtime.with_security(security);
     let mut config = rua_config::types::security::SecurityConfig::default();
     config.tool_guard.custom_rules.push(serde_json::from_value(serde_json::json!({"id": "deny-echo", "tools": ["bash"], "command_set": ["echo"], "action": "deny"})).unwrap());
+    let configuration = runtime
+        .capability_resolver()
+        .configuration(workspace.path(), None, "console")
+        .await
+        .unwrap();
     let mut input = request(workspace.path().to_path_buf());
+    input.metadata.insert(
+        rua_agent::runtime::CHAT_CAPABILITY_CONFIGURATION_METADATA_KEY.into(),
+        serde_json::to_value(configuration).unwrap(),
+    );
     input.metadata.insert(
         "chat_configuration_epoch".into(),
         serde_json::json!("captured"),
@@ -551,11 +561,16 @@ async fn chat_mcp_selection_keeps_restrictions_and_dispatches_only_selected_tool
     )
     .await;
     let runtime = runtime.with_mcp_manager(manager.clone());
-    let captured = runtime
+    let mut captured = runtime
         .capability_resolver()
         .configuration(workspace.path(), None, "console")
         .await
         .unwrap();
+    // A Chat freezes typed policy, independently of live source defaults.
+    captured.selection_policy.set_tool_enabled(
+        rua_config::types::tools::ToolIdentity::mcp("restricted", "echo"),
+        false,
+    );
     assert!(!start_log.exists(), "configuration must not spawn MCP");
     assert_eq!(
         captured.mcp_servers.keys().cloned().collect::<Vec<_>>(),
@@ -668,10 +683,11 @@ async fn configuration_does_not_discover_active_plugin_tools() {
 }
 
 #[test]
-fn old_chat_capability_configuration_round_trips_without_adding_permissions() {
+fn chat_capability_configuration_requires_policy_and_preserves_unknown_fields() {
     use rua_agent::runtime::ChatCapabilityConfiguration;
     use serde_json::json;
-    let value = json!({"tools":["mcp__saved__echo"],"skills":[],"future_field":{"keep":true}});
+    assert!(serde_json::from_value::<ChatCapabilityConfiguration>(json!({"skills":[]})).is_err());
+    let value = json!({"selection_policy":{"mode":"restricted","allowed_tools":[]},"skills":[],"future_field":{"keep":true}});
     let configuration: ChatCapabilityConfiguration = serde_json::from_value(value.clone()).unwrap();
     assert!(configuration.mcp_servers.is_empty());
     assert!(configuration.plugin_ids.is_empty());
@@ -1877,7 +1893,16 @@ async fn browser_chat_acceptance(with_computer: bool) {
         .with_rua_root(root.path().into())
         .with_security(security)
         .with_mcp_manager(manager.clone());
+    let configuration = runtime
+        .capability_resolver()
+        .configuration(&workspace, None, "console")
+        .await
+        .unwrap();
     let mut req = request(workspace.clone());
+    req.metadata.insert(
+        rua_agent::runtime::CHAT_CAPABILITY_CONFIGURATION_METADATA_KEY.into(),
+        serde_json::to_value(configuration).unwrap(),
+    );
     req.metadata.insert(
         rua_security::models::EFFECTIVE_SECURITY_CONFIG_METADATA_KEY.into(),
         serde_json::to_value(rua_config::types::security::SecurityConfig::default()).unwrap(),
@@ -2113,7 +2138,16 @@ async fn bundled_computer_normal_chat_consumes_observation_and_projects_action_i
         .with_rua_root(root.path().into())
         .with_security(security)
         .with_mcp_manager(manager.clone());
+    let configuration = runtime
+        .capability_resolver()
+        .configuration(&workspace, None, "console")
+        .await
+        .unwrap();
     let mut req = request(workspace);
+    req.metadata.insert(
+        rua_agent::runtime::CHAT_CAPABILITY_CONFIGURATION_METADATA_KEY.into(),
+        serde_json::to_value(configuration).unwrap(),
+    );
     req.metadata.insert(
         rua_security::models::EFFECTIVE_SECURITY_CONFIG_METADATA_KEY.into(),
         serde_json::to_value(rua_config::types::security::SecurityConfig::default()).unwrap(),
@@ -2186,4 +2220,40 @@ async fn bundled_computer_normal_chat_consumes_observation_and_projects_action_i
         assert_eq!(calls[0]["args"]["session"], calls[1]["args"]["session"]);
     }
     assert!(manager.shutdown_all().await.unwrap().errors.is_empty());
+}
+
+#[tokio::test]
+async fn captured_chat_requires_capability_configuration_before_provider_call() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (runtime, requests) = runtime_with_sequences_and_toolkit_recording(
+        vec![text_round("must not run")],
+        Arc::new(AgentToolkit::new()),
+    )
+    .await;
+    let runtime = runtime.with_security(Arc::new(rua_security::SecurityModule::new(
+        Arc::new(rua_security::SecurityConfigStore::new(
+            workspace.path().into(),
+        )),
+        None,
+    )));
+    let mut input = request(workspace.path().into());
+    input.metadata.insert(
+        "chat_configuration_epoch".into(),
+        serde_json::json!("captured"),
+    );
+    input.metadata.insert(
+        rua_security::models::EFFECTIVE_SECURITY_CONFIG_METADATA_KEY.into(),
+        serde_json::to_value(rua_config::types::security::SecurityConfig::default()).unwrap(),
+    );
+    let error = match runtime.stream(input).await {
+        Ok(_) => panic!("Captured Chat requires its configuration"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("capability configuration is required"),
+        "{error}"
+    );
+    assert!(requests.lock().unwrap().is_empty());
 }

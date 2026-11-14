@@ -145,13 +145,8 @@ pub fn register_extended_tools(
         ToolNamespace::Builtin,
     )?;
 
-    let tool_list: Vec<(String, String)> = registry
-        .list_specs()
-        .iter()
-        .map(|spec| (spec.name.clone(), spec.description.clone()))
-        .collect();
     registry.register(
-        Arc::new(introspect::ListToolsTool::new(tool_list)),
+        Arc::new(introspect::ListToolsTool),
         introspect::ListToolsTool::spec(),
         ToolNamespace::Builtin,
     )?;

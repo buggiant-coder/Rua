@@ -62,7 +62,7 @@ class Handler(BaseHTTPRequestHandler):
         elif mode and mode.startswith('phone'):
             observed = list(observations([m.get('content') for m in body.get('messages', []) if m.get('role') == 'tool']))
             if mode == 'phone-denied':
-                tool, arguments = ('phone_observe', {'include_screenshot': False}) if not results else (None, None)
+                tool, arguments = ('phone_status', {}) if not results else (None, None)
             elif not results:
                 tool, arguments = 'phone_status', {}
             elif len(results) == 1:
@@ -134,7 +134,10 @@ class Handler(BaseHTTPRequestHandler):
             elif mode == 'phone':
                 passed = 'clicks=1' in combined and ('refused' in combined or 'stale' in combined.lower() or 'expired' in combined.lower())
             elif mode == 'phone-denied':
-                passed = 'accessibility' in combined.lower() and 'permission' in combined.lower()
+                exposed = {tool.get('function', {}).get('name') for tool in body.get('tools', [])}
+                status = json.loads(next(m['content'] for m in body.get('messages', []) if m.get('role') == 'tool'))
+                passed = (status.get('accessibility') is False
+                          and 'phone_observe' not in exposed and 'phone_click' not in exposed)
             elif mode in ('phone-terminate', 'phone-stop'):
                 passed = 'cancel' in combined.lower() or 'outcome_unknown' in combined
             if mode == 'skills':

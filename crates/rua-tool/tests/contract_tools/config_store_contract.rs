@@ -71,6 +71,20 @@ fn make_encrypted_store(tmp: &TempDir) -> ToolConfigStore {
 }
 
 fn write_agent(tmp: &TempDir, agent_id: &str, builtin_tools: serde_json::Value) {
+    let allowed_tools = builtin_tools
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(_, entry)| {
+            entry
+                .get("enabled")
+                .and_then(|enabled| enabled.as_bool())
+                .unwrap_or(true)
+        })
+        .map(|(name, _)| rua_config::types::tools::ToolIdentity::builtin(name))
+        .collect();
+    let policy = rua_config::types::tools::ToolSelectionPolicy::restricted(allowed_tools);
+
     let agent_dir = tmp.path().join("workspaces").join(agent_id);
     fs::create_dir_all(&agent_dir).expect("agent dir");
     fs::write(
@@ -83,6 +97,7 @@ fn write_agent(tmp: &TempDir, agent_id: &str, builtin_tools: serde_json::Value) 
             "language": "",
             "system_prompt_files": [],
             "tools": {
+                "selection_policy": policy,
                 "builtin_tools": builtin_tools,
             },
         }))

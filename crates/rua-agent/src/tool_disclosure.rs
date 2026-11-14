@@ -17,6 +17,8 @@ pub fn builtin_tool_disclosure(name: &str) -> ToolDisclosureMeta {
             source_name: Some("builtin".to_string()),
             category: Some("core".to_string()),
             schema_tokens: None,
+            original_name: None,
+            product_capability: None,
         };
     }
 
@@ -31,6 +33,8 @@ pub fn builtin_tool_disclosure(name: &str) -> ToolDisclosureMeta {
         source_name: Some("builtin".to_string()),
         category: Some("bundled".to_string()),
         schema_tokens: None,
+        original_name: None,
+        product_capability: None,
     }
 }
 
@@ -41,6 +45,8 @@ pub fn mcp_tool_disclosure(source_name: Option<String>) -> ToolDisclosureMeta {
         source_name,
         category: Some("external".to_string()),
         schema_tokens: None,
+        original_name: None,
+        product_capability: None,
     }
 }
 
@@ -51,6 +57,8 @@ pub fn plugin_tool_disclosure(plugin_id: &str) -> ToolDisclosureMeta {
         source_name: Some(plugin_id.to_string()),
         category: Some("external".to_string()),
         schema_tokens: None,
+        original_name: None,
+        product_capability: None,
     }
 }
 
@@ -77,6 +85,33 @@ pub fn populate_toolkit_from_registry(
     for (name, definition, tool) in registry.iter_tools() {
         let executor: Arc<dyn ToolExecutor> =
             Arc::new(ContractToolExecutor::new(tool).with_schema(definition.parameters.clone()));
-        toolkit.register_with_disclosure(definition, executor, builtin_tool_disclosure(name));
+        let mut disclosure =
+            if registry.namespace_for(name) == Some(&rua_tool::ToolNamespace::Builtin) {
+                builtin_tool_disclosure(name)
+            } else {
+                ToolDisclosureMeta::default()
+            };
+        disclosure.original_name = Some(name.to_string());
+        if disclosure.source_kind == ToolSourceKind::Builtin {
+            disclosure.product_capability =
+                rua_tool::registry::builtin_product_capability(name).map(str::to_string);
+        }
+        toolkit.register_with_disclosure(definition, executor, disclosure);
+    }
+}
+
+/// Readiness supplements selection; execution must still recheck native permissions.
+pub fn phone_tool_unavailability(
+    name: &str,
+    status: &rua_core::phone_use::PhoneStatus,
+) -> Option<&'static str> {
+    match name {
+        "phone_status" | "phone_list_apps" | "phone_list_cameras" => None,
+        "phone_take_photo" if !status.camera_permission => {
+            Some("Phone Use requires camera permission")
+        }
+        "phone_take_photo" => None,
+        _ if !status.accessibility => Some("Phone Use requires the Android accessibility service"),
+        _ => None,
     }
 }

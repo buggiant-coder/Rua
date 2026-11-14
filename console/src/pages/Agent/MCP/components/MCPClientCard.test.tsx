@@ -134,29 +134,41 @@ describe("MCPClientCard", () => {
     expect(listAgentMCPClientToolsMock).not.toHaveBeenCalled();
 
     fireEvent.click(
-      screen.getByRole("button", { name: "mcp.toolsList (0/0)" }),
+      screen.getByRole("button", {
+        name: "tools.selectionPolicy.discoverTools (0/0)",
+      }),
     );
 
     expect(await screen.findByText("mcp.clientDisabled")).toBeInTheDocument();
     expect(listAgentMCPClientToolsMock).not.toHaveBeenCalled();
   });
 
+  it("does not discover live tools when an enabled saved source mounts", async () => {
+    renderCard();
+    await Promise.resolve();
+    expect(listAgentMCPClientToolsMock).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", {
+        name: "tools.selectionPolicy.discoverTools (0/0)",
+      }),
+    ).toBeInTheDocument();
+  });
+
   it("loads and toggles tools through selected-agent Rust MCP routes", async () => {
     renderCard();
 
+    expect(listAgentMCPClientToolsMock).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "tools.selectionPolicy.discoverTools (0/0)",
+      }),
+    );
     await waitFor(() => {
       expect(listAgentMCPClientToolsMock).toHaveBeenCalledWith(
         "agent-a",
         "docs",
       );
     });
-    expect(
-      await screen.findByRole("button", { name: "mcp.toolsList (1/2)" }),
-    ).toBeInTheDocument();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "mcp.toolsList (1/2)" }),
-    );
     expect(await screen.findByText("search_docs")).toBeInTheDocument();
     expect(await screen.findByText("read_doc")).toBeInTheDocument();
 
@@ -172,6 +184,29 @@ describe("MCPClientCard", () => {
       );
     });
     expect(toastSuccessMock).toHaveBeenCalledWith("mcp.toolEnableSuccess");
+  });
+
+  it("shows whole-capability exclusion separately and prevents individual toggles", async () => {
+    listAgentMCPClientToolsMock.mockResolvedValue([
+      tool({
+        enabled: false,
+        capability: "browser_use",
+        capability_enabled: false,
+      }),
+    ]);
+    renderCard();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "tools.selectionPolicy.discoverTools (0/0)",
+      }),
+    );
+    expect(
+      await screen.findByText("tools.selectionPolicy.capabilityDisabled"),
+    ).toBeInTheDocument();
+    const toggle = screen.getByLabelText("mcp.toolColumnExposure");
+    expect(toggle).toBeDisabled();
+    fireEvent.click(toggle);
+    expect(toggleAgentMCPClientToolMock).not.toHaveBeenCalled();
   });
 
   it("opens OAuth externally and completes through backend status polling", async () => {

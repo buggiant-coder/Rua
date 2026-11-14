@@ -78,6 +78,10 @@ impl ToolRegistry {
         self.tools.get(name).map(|e| &e.spec)
     }
 
+    pub fn namespace_for(&self, name: &str) -> Option<&ToolNamespace> {
+        self.tools.get(name).map(|entry| &entry.namespace)
+    }
+
     pub fn enable(&mut self, name: &str) -> bool {
         if let Some(entry) = self.tools.get_mut(name) {
             entry.enabled = true;
@@ -177,6 +181,16 @@ impl Default for ToolRegistry {
     }
 }
 
+/// Product capability membership for trusted built-in registrations only.
+pub fn builtin_product_capability(name: &str) -> Option<&'static str> {
+    match name {
+        "phone_status" | "phone_observe" | "phone_click" | "phone_list_apps"
+        | "phone_list_cameras" | "phone_take_photo" | "phone_long_press" | "phone_type_text"
+        | "phone_swipe" | "phone_back" | "phone_home" | "phone_launch_app" => Some("phone_use"),
+        _ => None,
+    }
+}
+
 pub fn tool_catalog_from_specs<'a>(
     specs: impl IntoIterator<Item = &'a ToolSpec>,
 ) -> serde_json::Map<String, serde_json::Value> {
@@ -189,17 +203,20 @@ pub fn tool_catalog_from_specs<'a>(
                 .and_then(|value| value.get("display_group"))
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
-            (
-                spec.name.clone(),
-                serde_json::json!({
-                    "name": spec.name,
-                    "enabled": true,
-                    "description": spec.description,
-                    "display_to_user": true,
-                    "async_execution": false,
-                    "display_group": display_group,
-                }),
-            )
+            let mut entry = serde_json::json!({
+                "name": spec.name,
+                "enabled": true,
+                "description": spec.description,
+                "display_to_user": true,
+                "async_execution": false,
+                "display_group": display_group,
+            });
+            if spec.namespace == "builtin" {
+                if let Some(capability) = builtin_product_capability(&spec.name) {
+                    entry["capability"] = capability.into();
+                }
+            }
+            (spec.name.clone(), entry)
         })
         .collect()
 }

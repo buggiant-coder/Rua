@@ -41,7 +41,8 @@ Details: [runtime paths](docs/adr/0002-runtime-layout-and-agent-path-contract.md
 Details: [Agent resolution](docs/adr/0005-agent-profile-running-config-and-resolved-agent.md),
 [work contract](docs/adr/0008-agent-work-contract-and-collaboration-mode.md),
 [execution bounds](docs/adr/0009-shared-agent-execution-budget.md),
-[Chat snapshots](docs/adr/0028-chat-running-config-and-turn-stable-snapshot.md).
+[Chat snapshots](docs/adr/0028-chat-running-config-and-turn-stable-snapshot.md),
+[Tool selection](docs/adr/0058-tool-selection-policies-and-default-enablement.md).
 
 | Term | Meaning and boundary |
 |---|---|
@@ -49,7 +50,9 @@ Details: [Agent resolution](docs/adr/0005-agent-profile-running-config-and-resol
 | **AgentsRunningConfig / Agent Running Config** | Agent runtime-behavior configuration and creation-time template for Chats. Later template edits do not silently change existing Chat snapshots. `max_iters` counts Tool rounds; `0` removes that round limit. |
 | **ResolvedAgent** | Registry result combining `AgentProfile` and `Arc<AgentsRunningConfig>` coherently. Pass this value through execution routes rather than separate arguments. |
 | **Explicit Configuration Loading** | Read the explicitly selected current-schema configuration and propagate errors. Creation/seed owns defaults; reads preserve unknown extension fields and do not repair invalid JSON or synthesize fallback Agents. |
-| **Agent Tool Configuration** | Explicit Agent-owned tool inventory. Missing or empty entries grant no builtin tools; catalog additions and reads do not backfill unrelated tools. |
+| **Agent Tool Configuration** | Agent-owned Tool Selection Policy and per-Tool behavioral settings, copied into Chats at materialization. Product catalog growth does not require inventory backfill or change saved user settings. |
+| **Tool Selection Policy** | Explicit Default-Enabled or Restricted selection. Default-Enabled excludes saved disables from eligible Tools; Restricted admits only exact allowed identities. Selection is separate from Device readiness, disclosure, and authorization. |
+| **Product Tool Capability** | Stable Rua-owned capability identity grouping product Tools, including Phone Use and bundled Browser/Computer Use. Disabling it excludes its current and future Tools; it is not a UI presentation group or arbitrary external source. |
 | **Workspace Prompt Directory** | Per-Agent `workspaces/{agent}/prompts/` containing ordinary prompt files. Prompt selections are relative to it; the workspace root is not scanned as prompt context. |
 | **Agent Prompt File Sync** | Committed per-Agent prompt Markdown publication, separate from global Prompt Library and Structured Memory. Explicit deletion/rename facts remain recoverable through Full Export. |
 | **Prompt Library File Commit** | Global library owns per-file Markdown writes/publication, including explicit builtin restoration. Bulk operations validate first but commit per file; startup seed and non-Markdown attachments retain local-only semantics. |

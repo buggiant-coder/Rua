@@ -64,7 +64,9 @@ MCP manager 不成为 config persistence authority。
 
 manager 的只读 `configuration()` 返回已接受的配置，不连接、不检查可用性，
 也不发现工具。Chat 配置读取、初始化和预览只从中复制 server identity 与
-工具禁用选择，不复制 transport 或凭据；实时 `list_tools` 仅属于能力执行
+工具禁用选择，不复制 transport 或凭据。ADR-0058 的产品能力选择由保存的
+Tool Selection Policy 表达，不能重新展开成固定 MCP 工具白名单；任意外部
+source 的显式 enrollment 保持不变。实时 `list_tools` 仅属于能力执行
 解析或显式 MCP 管理操作，不得成为打开对话选项的前提。
 
 ### 5. 可用性进入 Agent capability snapshot

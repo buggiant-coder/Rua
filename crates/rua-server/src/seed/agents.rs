@@ -289,8 +289,8 @@ fn tools_for_preset(preset: AgentSeedToolPreset) -> serde_json::Value {
     match preset {
         AgentSeedToolPreset::Default | AgentSeedToolPreset::Named(_) => {
             serde_json::json!({
-                "builtin_tools": crate::services::collaboration_runtime::server_tool_catalog()
-                    .expect("server Tool Registry must build for Agent seed")
+                "selection_policy": rua_config::types::tools::ToolSelectionPolicy::default_enabled(),
+                "builtin_tools": {}
             })
         }
         AgentSeedToolPreset::ReadOnlyResearch | AgentSeedToolPreset::Implementation => {
@@ -316,12 +316,13 @@ fn tools_for_preset(preset: AgentSeedToolPreset) -> serde_json::Value {
                     "update_plan",
                 ]);
             }
-            let mut tools = crate::services::collaboration_runtime::server_tool_catalog()
-                .expect("server Tool Registry must build for Research Agent seed");
-            for (name, value) in &mut tools {
-                value["enabled"] = serde_json::Value::Bool(allowed.contains(&name.as_str()));
-            }
-            serde_json::json!({ "default_enabled": false, "builtin_tools": tools })
+            let policy = rua_config::types::tools::ToolSelectionPolicy::restricted(
+                allowed
+                    .into_iter()
+                    .map(rua_config::types::tools::ToolIdentity::builtin)
+                    .collect(),
+            );
+            serde_json::json!({ "selection_policy": policy, "builtin_tools": {} })
         }
     }
 }

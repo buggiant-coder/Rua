@@ -31,6 +31,8 @@ fn meta(class: DisclosureClass, schema_tokens: usize) -> ToolDisclosureMeta {
         source_name: Some("test".into()),
         category: Some("test".into()),
         schema_tokens: Some(schema_tokens),
+        original_name: None,
+        product_capability: None,
     }
 }
 
@@ -74,6 +76,8 @@ fn register_deferred_tool(
             source_name: Some("test-plugin".into()),
             category: Some("external".into()),
             schema_tokens: Some(10),
+            original_name: None,
+            product_capability: None,
         },
     );
 }

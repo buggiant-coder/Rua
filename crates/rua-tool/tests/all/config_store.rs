@@ -28,6 +28,20 @@ fn read_default_agent(tmp: &TempDir) -> serde_json::Value {
 }
 
 fn agent_skeleton(builtin_tools: serde_json::Value) -> serde_json::Value {
+    let allowed_tools = builtin_tools
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(_, entry)| {
+            entry
+                .get("enabled")
+                .and_then(|enabled| enabled.as_bool())
+                .unwrap_or(true)
+        })
+        .map(|(name, _)| rua_config::types::tools::ToolIdentity::builtin(name))
+        .collect();
+    let policy = rua_config::types::tools::ToolSelectionPolicy::restricted(allowed_tools);
+
     json!({
         "id": "default",
         "name": "default",
@@ -36,6 +50,7 @@ fn agent_skeleton(builtin_tools: serde_json::Value) -> serde_json::Value {
         "language": "",
         "system_prompt_files": [],
         "tools": {
+            "selection_policy": policy,
             "builtin_tools": builtin_tools,
         },
     })
@@ -66,7 +81,7 @@ async fn missing_tools_never_inherit_defaults_or_write_configuration() {
         let bytes = serde_json::to_vec(&agent).unwrap();
         fs::write(target.join("agent.json"), &bytes).unwrap();
         let store = make_store(&tmp);
-        assert!(store.list_tools(Some("target")).await.unwrap().is_empty());
+        assert!(store.list_tools(Some("target")).await.is_err());
         assert!(store
             .list_configs_unmasked(Some("target"))
             .await
@@ -94,8 +109,12 @@ async fn set_enabled_persists_change_and_returns_updated_dto() {
     assert!(!updated.enabled);
 
     let on_disk = read_default_agent(&tmp);
-    let bash = &on_disk["tools"]["builtin_tools"]["bash"];
-    assert_eq!(bash["enabled"], false);
+    let policy: rua_config::types::tools::ToolSelectionPolicy =
+        serde_json::from_value(on_disk["tools"]["selection_policy"].clone()).unwrap();
+    assert!(!policy.selects(
+        &rua_config::types::tools::ToolIdentity::builtin("bash"),
+        None
+    ));
 }
 
 #[tokio::test]
@@ -183,6 +202,7 @@ async fn tools_section_external_edit_takes_effect() {
 
     let mut on_disk = read_default_agent(&tmp);
     on_disk["tools"]["builtin_tools"]["bash"]["enabled"] = json!(false);
+    on_disk["tools"]["selection_policy"] = json!({"mode":"restricted","allowed_tools":[]});
     let path = tmp.path().join("workspaces/default/agent.json");
     fs::write(&path, serde_json::to_string_pretty(&on_disk).unwrap()).unwrap();
 
@@ -204,7 +224,7 @@ async fn tools_section_does_not_affect_other_sections() {
         "system_prompt_files": [],
         "channels": {"telegram": {}},
         "mcp": {"clients": {"foo": {}}},
-        "tools": {"builtin_tools": {"bash":entry("bash", true)}},
+        "tools": {"selection_policy":{"mode":"restricted","allowed_tools":[{"kind":"builtin","name":"bash"}]},"builtin_tools": {"bash":entry("bash", true)}},
     });
     write_default_agent(&tmp, body);
     let store = make_store(&tmp);

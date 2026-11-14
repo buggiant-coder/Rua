@@ -4,3 +4,6 @@ mod client_lifecycle;
 mod oauth_boundary;
 #[path = "contract_mcp_http/support.rs"]
 mod support;
+
+#[path = "contract_mcp_http/selection_policy.rs"]
+mod selection_policy;

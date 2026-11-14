@@ -59,7 +59,10 @@ async fn enable_agent_tool(state: &rua_server::AppState, agent_id: &str, tool_na
     state
         .agent_tools_cells
         .cell(agent_id)
-        .write_value(serde_json::json!({"builtin_tools": tools}))
+        .write_value(serde_json::json!({
+            "selection_policy": rua_config::types::tools::ToolSelectionPolicy::restricted(vec![rua_config::types::tools::ToolIdentity::builtin(tool_name)]),
+            "builtin_tools": tools
+        }))
         .await
         .unwrap();
 }

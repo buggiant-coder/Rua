@@ -124,6 +124,30 @@ impl FileSystemCellStore {
         Ok(())
     }
 
+    /// Replaces one Cell only while its value still matches the captured preview.
+    pub async fn compare_exchange(
+        &self,
+        file: &Path,
+        path: &str,
+        expected: Option<Value>,
+        replacement: Value,
+    ) -> Result<bool, CellStoreError> {
+        let segments = json_path::parse(path)?;
+        let lock = self.lock_for(file);
+        let _guard = lock.lock().await;
+        let current = self.load_value(file).await?;
+        let observed = current
+            .as_ref()
+            .and_then(|value| json_path::get(value, &segments));
+        if observed != expected.as_ref() {
+            return Ok(false);
+        }
+        let mut value = current.map(|value| (*value).clone()).unwrap_or(Value::Null);
+        json_path::set(&mut value, &segments, replacement, path)?;
+        self.store_value(file, value).await?;
+        Ok(true)
+    }
+
     pub fn cache_len(&self) -> usize {
         self.cache.len()
     }

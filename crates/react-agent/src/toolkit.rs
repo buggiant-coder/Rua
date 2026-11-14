@@ -46,6 +46,8 @@ pub struct ToolDisclosureMeta {
     pub source_name: Option<String>,
     pub category: Option<String>,
     pub schema_tokens: Option<usize>,
+    pub original_name: Option<String>,
+    pub product_capability: Option<String>,
 }
 
 impl Default for ToolDisclosureMeta {
@@ -56,6 +58,8 @@ impl Default for ToolDisclosureMeta {
             source_name: None,
             category: None,
             schema_tokens: None,
+            original_name: None,
+            product_capability: None,
         }
     }
 }
@@ -152,6 +156,20 @@ impl AgentToolkit {
 
     pub fn disclosure_for(&self, name: &str) -> Option<&ToolDisclosureMeta> {
         self.entries.get(name).map(|entry| &entry.disclosure)
+    }
+
+    pub fn set_source_identity(
+        &mut self,
+        name: &str,
+        source: String,
+        original_name: String,
+        product_capability: Option<String>,
+    ) {
+        if let Some(entry) = self.entries.get_mut(name) {
+            entry.disclosure.source_name = Some(source);
+            entry.disclosure.original_name = Some(original_name);
+            entry.disclosure.product_capability = product_capability;
+        }
     }
 
     pub fn disclosure_inventory(&self) -> Vec<ToolDisclosureEntry> {

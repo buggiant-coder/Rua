@@ -311,46 +311,6 @@ impl McpClientStore {
         Self::value_to_dto_masked(client_key, &updated_value)
     }
 
-    pub async fn set_tool_enabled(
-        &self,
-        agent_id: Option<&str>,
-        client_key: &str,
-        tool_name: &str,
-        enabled: bool,
-    ) -> Result<McpClientConfig> {
-        let mut loaded = self.load(agent_id).await?;
-        let entry = loaded
-            .clients
-            .get_mut(client_key)
-            .ok_or_else(|| RuaError::NotFound {
-                resource: "mcp_client".into(),
-                id: client_key.into(),
-            })?;
-        if let serde_json::Value::Object(ref mut map) = entry {
-            let mut disabled: Vec<String> = map
-                .get("disabled_tools")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(ToString::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            if enabled {
-                disabled.retain(|name| name != tool_name);
-            } else if !disabled.iter().any(|name| name == tool_name) {
-                disabled.push(tool_name.to_string());
-            }
-            map.insert(
-                "disabled_tools".into(),
-                serde_json::to_value(disabled).unwrap_or(serde_json::Value::Array(vec![])),
-            );
-        }
-        let updated_value = entry.clone();
-        self.save(agent_id, loaded).await?;
-        Self::value_to_dto_masked(client_key, &updated_value)
-    }
-
     pub async fn delete_client(&self, agent_id: Option<&str>, client_key: &str) -> Result<()> {
         let mut loaded = self.load(agent_id).await?;
         if loaded.clients.remove(client_key).is_none() {

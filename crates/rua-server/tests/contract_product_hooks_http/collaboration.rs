@@ -3155,15 +3155,11 @@ async fn registered_tools_create_and_send_using_trusted_call_context() {
 #[tokio::test]
 async fn agent_tool_toggle_filters_chat_tools_in_new_configuration_epochs() {
     let test = build_app();
-    let mut catalog = (*test.state.tool_catalog).clone();
-    catalog["chat_send"]["enabled"] = json!(false);
     test.state
-        .agent_tools_cells
-        .cell("default")
-        .write_value(json!({"builtin_tools": catalog}))
+        .tool_config_store
+        .set_enabled(Some("default"), "chat_send", false)
         .await
         .unwrap();
-
     let source = caller(&test, "chat-tool-filter").await;
     let configuration = test
         .state
@@ -3171,12 +3167,18 @@ async fn agent_tool_toggle_filters_chat_tools_in_new_configuration_epochs() {
         .chat_configuration(&source.address)
         .await
         .expect("Chat configuration");
-    let tools = &configuration
+    let capabilities = configuration
         .capability_configuration
-        .expect("capability configuration")
-        .tools;
-    assert!(!tools.iter().any(|name| name == "chat_send"));
-    assert!(tools.iter().any(|name| name == "chat_read"));
+        .expect("capability configuration");
+    let policy = capabilities.selection_policy;
+    assert!(!policy.selects(
+        &rua_config::types::tools::ToolIdentity::builtin("chat_send"),
+        None
+    ));
+    assert!(policy.selects(
+        &rua_config::types::tools::ToolIdentity::builtin("chat_read"),
+        None
+    ));
 }
 
 #[tokio::test]
@@ -3196,8 +3198,8 @@ async fn research_preset_collaboration_keeps_readonly_capability_inventory() {
         .await
         .unwrap();
     let capabilities = configuration.capability_configuration.unwrap();
-    assert!(capabilities.tools.iter().any(|name| name == "read"));
-    let allowed = [
+    let policy = capabilities.selection_policy;
+    for name in [
         "read",
         "grep",
         "glob",
@@ -3205,31 +3207,28 @@ async fn research_preset_collaboration_keeps_readonly_capability_inventory() {
         "web_fetch",
         "conversation_search",
         "conversation_read_span",
-    ];
-    assert!(
-        capabilities
-            .tools
-            .iter()
-            .all(|name| allowed.contains(&name.as_str())),
-        "{:?}",
-        capabilities.tools
-    );
-    assert!(capabilities.mcp_servers.is_empty());
-    assert!(capabilities.plugin_ids.is_empty());
-    let assignment = configuration.agent_assignment.unwrap();
-    for tool in [
+    ] {
+        assert!(policy.selects(&rua_config::types::tools::ToolIdentity::builtin(name), None));
+    }
+    for name in [
         "bash",
         "edit",
         "python",
         "task_create",
         "chat_send",
         "memory_write",
+        "future_write_tool",
     ] {
-        assert!(
-            assignment.disabled_tools.contains(&tool.to_string()),
-            "{tool}"
-        );
+        assert!(!policy.selects(&rua_config::types::tools::ToolIdentity::builtin(name), None));
     }
+    assert!(!policy.selects(
+        &rua_config::types::tools::ToolIdentity::mcp("bundled", "new_tool"),
+        Some("browser_use")
+    ));
+    assert!(!policy.selects(
+        &rua_config::types::tools::ToolIdentity::plugin("new_plugin", "tool"),
+        None
+    ));
 }
 
 #[tokio::test]
@@ -3256,11 +3255,19 @@ async fn implementation_preset_retains_source_security_and_scoped_tools() {
         .unwrap();
     assert_eq!(configuration.security_config, parent.security_config);
     let capabilities = configuration.capability_configuration.unwrap();
+    let policy = capabilities.selection_policy;
     for tool in ["read", "edit", "bash", "task_create", "task_read"] {
-        assert!(capabilities.tools.contains(&tool.to_string()), "{tool}");
+        assert!(
+            policy.selects(&rua_config::types::tools::ToolIdentity::builtin(tool), None),
+            "{tool}"
+        );
     }
-    assert!(!capabilities.tools.contains(&"chat_send".into()));
-    assert!(!capabilities.tools.contains(&"sync_send".into()));
+    for tool in ["chat_send", "sync_send", "future_write_tool"] {
+        assert!(
+            !policy.selects(&rua_config::types::tools::ToolIdentity::builtin(tool), None),
+            "{tool}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -3293,7 +3300,13 @@ async fn collaboration_inventory_uses_current_configured_agents_and_tools() {
         .await
         .unwrap()
         .unwrap();
-    tools["builtin_tools"]["read"]["enabled"] = false.into();
+    let mut policy: rua_config::types::tools::ToolSelectionPolicy =
+        serde_json::from_value(tools["selection_policy"].clone()).unwrap();
+    policy.set_tool_enabled(
+        rua_config::types::tools::ToolIdentity::builtin("read"),
+        false,
+    );
+    tools["selection_policy"] = serde_json::to_value(policy).unwrap();
     test.state
         .agent_tools_cells
         .cell("research")
@@ -3404,11 +3417,30 @@ async fn collaboration_presets_enforce_permissions_through_real_task_execution()
         .await
         .expect("controlled execution must not wait indefinitely");
         if agent == "research" {
-            assert!(result.unwrap_err().contains("disabled"));
+            assert!(result
+                .unwrap_err()
+                .contains("not available in the Task configuration"));
             assert!(!target.exists());
             let readable = workspace.join("read-fixture.txt");
             rua_config::atomic_write_json(&readable, &json!("research can inspect evidence"))
                 .unwrap();
+            let missing_epoch = execution
+                .execute(rua_tool::ToolTaskExecutionRequest {
+                    task_id: "missing-epoch".into(),
+                    attempt_no: 1,
+                    owner: rua_task::TaskOwner::from_address(child.chat.clone()),
+                    authorization_agent_id: agent.into(),
+                    configuration_epoch: None,
+                    tool_name: "read".into(),
+                    arguments: json!({"file_path":readable}),
+                    origin_turn_id: None,
+                    dependencies: Vec::new(),
+                    cancel: tokio_util::sync::CancellationToken::new(),
+                    session: rua_task::TaskRunnerSession::bound("missing-epoch", 1),
+                })
+                .await
+                .unwrap_err();
+            assert!(missing_epoch.contains("no captured Chat configuration epoch"));
             let read = execution
                 .execute(rua_tool::ToolTaskExecutionRequest {
                     task_id: "research-read".into(),
@@ -4794,6 +4826,21 @@ async fn create_preserves_chat_reference_when_first_submission_fails() {
 #[tokio::test]
 async fn project_collaboration_keeps_resource_root_and_rejects_archived_project() {
     let test = build_app();
+    let mut tools = test
+        .state
+        .agent_tools_cells
+        .cell("default")
+        .read_value()
+        .await
+        .unwrap()
+        .unwrap();
+    tools["builtin_tools"]["read"] = json!({"name":"read","enabled":false});
+    test.state
+        .agent_tools_cells
+        .cell("default")
+        .write_value(tools)
+        .await
+        .unwrap();
     let template = caller(&test, "project-template").await;
     let original_scope = ChatScopeStore::resolve(&test.state.rua_root, template.address.clone());
     let mut header = WorkspaceSessionStore::new(original_scope.root())
@@ -4849,6 +4896,76 @@ async fn project_collaboration_keeps_resource_root_and_rejects_archived_project(
         .await
         .unwrap();
     assert_eq!(child.chat.project_id(), Some(&project.project_id));
+    rua_config::atomic_write_json(
+        &resource.path().join("task-resource.json"),
+        &json!({"scope":"project task resource"}),
+    )
+    .unwrap();
+    let configuration = test
+        .state
+        .product_hooks
+        .chat_configuration(&child.chat)
+        .await
+        .unwrap();
+    assert!(!configuration
+        .agent_assignment
+        .as_ref()
+        .unwrap()
+        .disabled_tools
+        .contains(&"read".into()));
+
+    assert_eq!(
+        configuration
+            .capability_configuration
+            .as_ref()
+            .unwrap()
+            .extra["project_working_directory_id"],
+        json!(rua_project::INITIAL_PROJECT_DIRECTORY_ID)
+    );
+    let task_scope = ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone());
+    let task_store = WorkspaceSessionStore::new(task_scope.root());
+    task_store
+        .update_chat_header(child.chat.chat_id().as_str(), |header| {
+            header.extra.insert(
+                "project_working_directory_id".into(),
+                json!("newer-live-directory"),
+            );
+        })
+        .await
+        .unwrap();
+    let registry: Arc<dyn rua_workspace::WorkspaceRegistry> = test.state.registry.clone();
+    let execution = rua_workspace::task_tool_execution::WorkspaceToolTaskExecution::new(
+        Arc::downgrade(&registry),
+    );
+    use rua_tool::ToolTaskExecution;
+    let read = execution
+        .execute(rua_tool::ToolTaskExecutionRequest {
+            task_id: "project-resource-read".into(),
+            attempt_no: 1,
+            owner: rua_task::TaskOwner::from_address(child.chat.clone()),
+            authorization_agent_id: "default".into(),
+            configuration_epoch: Some(configuration.epoch),
+            tool_name: "read".into(),
+            arguments: json!({"file_path":"task-resource.json"}),
+            origin_turn_id: None,
+            dependencies: Vec::new(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            session: rua_task::TaskRunnerSession::bound("project-resource-read", 1),
+        })
+        .await
+        .unwrap();
+    assert!(!read.is_error, "{}", read.text_content());
+    assert!(read.text_content().contains("project task resource"));
+
+    task_store
+        .update_chat_header(child.chat.chat_id().as_str(), |header| {
+            header.extra.insert(
+                "project_working_directory_id".into(),
+                json!(rua_project::INITIAL_PROJECT_DIRECTORY_ID),
+            );
+        })
+        .await
+        .unwrap();
     let requests = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     test.state
         .registry

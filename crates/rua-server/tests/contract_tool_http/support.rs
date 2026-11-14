@@ -50,6 +50,15 @@ pub fn build_app() -> TestApp {
     );
     seed_agent(&tmp, "tool_contract_other_agent", json!({}));
     let state = AppState::from_tempdir(tmp.path().to_path_buf(), ServerProfile::Test);
+    let config_path = tmp.path().join("config.json");
+    let mut config = rua_config::load_config(&config_path, tmp.path()).unwrap();
+    for id in ["tool_contract_agent", "tool_contract_other_agent"] {
+        config.agents.profiles.insert(
+            id.into(),
+            json!({"id":id,"workspace_dir":tmp.path().join("workspaces").join(id),"enabled":true}),
+        );
+    }
+    rua_config::save_config(&config, &config_path).unwrap();
     let app = Router::new()
         .nest("/api", agent_scoped_router())
         .layer(axum::middleware::from_fn_with_state(
@@ -78,10 +87,11 @@ fn seed_agent(tmp: &TempDir, agent_id: &str, builtin_tools: Value) {
             "id": agent_id,
             "name": agent_id,
             "description": "",
-            "workspace_dir": "",
+            "workspace_dir": agent_dir,
             "language": "",
             "system_prompt_files": [],
             "tools": {
+                "selection_policy": rua_config::types::tools::ToolSelectionPolicy::default_enabled(),
                 "builtin_tools": builtin_tools,
             },
         }))

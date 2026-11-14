@@ -68,6 +68,8 @@ export interface MCPToolInfo {
   name: string;
   description: string;
   enabled?: boolean;
+  capability?: string;
+  capability_enabled?: boolean;
   schema?: unknown;
 }
 

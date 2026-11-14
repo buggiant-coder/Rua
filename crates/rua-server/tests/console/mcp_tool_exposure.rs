@@ -1,30 +1,20 @@
-use rua_server::services::console_chat::extract_disabled_mcp_tools;
+use rua_server::services::console_chat::turn_agent_assignment_from_agent;
 
 #[test]
-fn disabled_mcp_tools_are_projected_to_agent_tool_names() {
-    let mcp = Some(serde_json::json!({
-        "clients": {
-            "github": {
-                "disabled_tools": ["search", "create_issue"]
-            },
-            "filesystem": {
-                "disabled_tools": ["read_doc"]
-            },
-            "empty": {
-                "disabled_tools": []
-            }
+fn agent_assignment_does_not_copy_tool_selection_into_a_second_authority() {
+    let agent = serde_json::from_value(serde_json::json!({
+        "id": "policy-agent",
+        "name": "Policy Agent",
+        "enabled": true,
+        "tools": {
+            "selection_policy": {"mode":"default_enabled","disabled_tools":[],"disabled_capabilities":[]},
+            "builtin_tools": {"read":{"enabled":false}}
+        },
+        "mcp": {
+            "clients": {"catalog":{"disabled_tools":["lookup"]}}
         }
-    }));
+    })).unwrap();
 
-    let mut disabled = extract_disabled_mcp_tools(&mcp);
-    disabled.sort();
-
-    assert_eq!(
-        disabled,
-        vec![
-            "mcp__filesystem__read_doc".to_string(),
-            "mcp__github__create_issue".to_string(),
-            "mcp__github__search".to_string(),
-        ]
-    );
+    let assignment = turn_agent_assignment_from_agent(&agent).unwrap();
+    assert!(assignment.disabled_tools.is_empty());
 }

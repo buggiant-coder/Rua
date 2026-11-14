@@ -9188,6 +9188,7 @@ dependencies = [
  "rua-mcp",
  "rua-memory",
  "rua-plugin-runtime",
+ "rua-project",
  "rua-prompts",
  "rua-provider",
  "rua-security",

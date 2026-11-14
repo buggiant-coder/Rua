@@ -300,3 +300,21 @@ fn llm_tool_definitions_preserve_schema_and_annotations() {
     assert_eq!(edit.annotations.destructive, Some(true));
     assert_eq!(edit.annotations.requires_approval, Some(true));
 }
+
+#[test]
+fn namespace_lookup_uses_registration_metadata() {
+    let mut registry = ToolRegistry::new();
+    registry
+        .register(
+            Arc::new(rua_tool::ReadFileTool::new()),
+            rua_tool::ReadFileTool::spec(),
+            rua_tool::ToolNamespace::Mcp,
+        )
+        .unwrap();
+    assert_eq!(registry.get_spec("read").unwrap().namespace, "builtin");
+    assert_eq!(
+        registry.namespace_for("read"),
+        Some(&rua_tool::ToolNamespace::Mcp)
+    );
+    assert_eq!(registry.namespace_for("missing"), None);
+}

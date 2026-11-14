@@ -1081,6 +1081,34 @@ impl WorkspaceRuntime {
         self.task_toolkit.read().await.clone()
     }
 
+    pub async fn task_toolkit_for_configuration(
+        &self,
+        scope_root: &std::path::Path,
+        project_root: Option<&std::path::Path>,
+        chat_id: &str,
+        turn_id: Option<&str>,
+        configuration: &rua_agent::runtime::ChatCapabilityConfiguration,
+    ) -> rua_core::Result<Arc<react_agent::AgentToolkit>> {
+        let resolver = self
+            .capability_resolver
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| rua_core::RuaError::Runtime {
+                message: "Capability resolver is unavailable".into(),
+            })?;
+        resolver
+            .task_toolkit_for_configuration(
+                &self.workspace_dir(),
+                project_root,
+                &rua_core::SessionId::new(chat_id),
+                Some(scope_root),
+                turn_id,
+                configuration,
+            )
+            .await
+    }
+
     pub async fn capability_configuration(
         &self,
         project_root: Option<&std::path::Path>,
@@ -1093,65 +1121,15 @@ impl WorkspaceRuntime {
             .ok_or_else(|| rua_core::RuaError::Runtime {
                 message: "Capability resolver is unavailable".to_string(),
             })?;
-        let mut configuration = resolver
-            .configuration(&self.workspace_dir(), project_root, "console")
-            .await?;
-        let enabled = self
-            .ctx
-            .tool_config_store
-            .list_tools(Some(&self.agent_id))
+        resolver
+            .configuration_for_agent(
+                &self.ctx.agent_cells,
+                &self.agent_id,
+                &self.workspace_dir(),
+                project_root,
+                "console",
+            )
             .await
-            .map_err(|error| rua_core::RuaError::Config {
-                message: error.to_string(),
-            })?
-            .into_iter()
-            .filter(|tool| tool.enabled)
-            .map(|tool| tool.name)
-            .collect::<std::collections::HashSet<_>>();
-        configuration.tools.retain(|name| enabled.contains(name));
-        let tools = self
-            .ctx
-            .agent_cells
-            .section::<serde_json::Value>(&self.agent_id, "tools")
-            .read()
-            .await
-            .map_err(|error| rua_core::RuaError::Config {
-                message: error.to_string(),
-            })?;
-        if tools
-            .as_ref()
-            .and_then(|tools| tools.get("default_enabled"))
-            .and_then(serde_json::Value::as_bool)
-            == Some(false)
-        {
-            let explicit_mcp = self
-                .ctx
-                .agent_cells
-                .section::<serde_json::Value>(&self.agent_id, "mcp")
-                .read()
-                .await
-                .map_err(|error| rua_core::RuaError::Config {
-                    message: error.to_string(),
-                })?;
-            let explicit_mcp = match explicit_mcp {
-                Some(value) => {
-                    rua_mcp::McpConfigLoader::load_from_value(value).map_err(|error| {
-                        rua_core::RuaError::Config {
-                            message: error.to_string(),
-                        }
-                    })?
-                }
-                None => mcp_manager::types::McpConfig::default(),
-            };
-            configuration.mcp_servers.retain(|id, _| {
-                explicit_mcp
-                    .clients
-                    .iter()
-                    .any(|(key, config)| key.as_str() == id && config.enabled)
-            });
-            configuration.plugin_ids.clear();
-        }
-        Ok(configuration)
     }
 
     pub async fn compactor(&self) -> Option<Arc<ConversationCompactor>> {
@@ -1723,6 +1701,11 @@ impl WorkspaceRuntime {
         let mut rt = ReactAgentRuntime::new(Arc::clone(&self.ctx.provider_manager))
             .with_mcp_manager_slot(Arc::clone(&self.mcp_manager))
             .with_rua_root(self.ctx.rua_root.clone())
+            .with_agent_tool_configuration(
+                self.agent_id.clone(),
+                Arc::clone(&self.ctx.agent_cells),
+                ws_dir.clone(),
+            )
             .with_toolkit(toolkit)
             .with_task_runtime(Arc::clone(&self.ctx.task_runtime))
             .with_collaboration_runtime(Arc::clone(&self.ctx.collaboration_runtime))

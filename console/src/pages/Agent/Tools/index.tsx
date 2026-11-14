@@ -27,6 +27,8 @@ import { Btn, Dropdown, TextInput } from "@/ui";
 import { WebSearchConfigModal } from "./WebSearchConfigModal";
 import { routeAgentId } from "@/routes/routeAgent";
 import { groupTools } from "./toolGroups";
+import { ToolSelectionPolicyPanel } from "./ToolSelectionPolicyPanel";
+import { useAgentStore } from "@/stores/agentStore";
 
 const SORT_MODE_KEY = "rua.tools.sortField";
 const SORT_ORDER_KEY = "rua.tools.sortOrder";
@@ -78,6 +80,7 @@ export function RouteComponent() {
 
 export default function ToolsPage({ initialData }: ToolsPageProps) {
   const { t } = useTranslation();
+  const { selectedAgent } = useAgentStore();
   const {
     tools,
     loading,
@@ -184,6 +187,13 @@ export default function ToolsPage({ initialData }: ToolsPageProps) {
         ]}
       />
       <PageBody>
+        {!loading && (
+          <ToolSelectionPolicyPanel
+            agentId={initialData?.agentId ?? selectedAgent}
+            tools={tools}
+            onSaved={loadTools}
+          />
+        )}
         {loading ? (
           <Skeleton variant="card" count={6} />
         ) : tools.length === 0 ? (
@@ -348,6 +358,7 @@ export default function ToolsPage({ initialData }: ToolsPageProps) {
                                   <Btn
                                     variant="outline"
                                     onClick={() => handleToggle(tool)}
+                                    disabled={tool.capability_enabled === false}
                                     icon={tool.enabled ? <EyeOff /> : <Eye />}
                                   >
                                     {tool.enabled
@@ -357,6 +368,13 @@ export default function ToolsPage({ initialData }: ToolsPageProps) {
                                 </>
                               }
                             >
+                              {tool.capability_enabled === false && (
+                                <p>
+                                  {t(
+                                    "tools.selectionPolicy.capabilityDisabled",
+                                  )}
+                                </p>
+                              )}
                               <p className={styles.toolDescription}>
                                 {resolveToolDescription(
                                   tool.name,

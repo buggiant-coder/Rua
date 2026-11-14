@@ -53,7 +53,8 @@ pub fn populate_plugin_tools(toolkit: &mut AgentToolkit, registry: &Arc<PluginRe
             annotations: Default::default(),
             metadata: Default::default(),
         };
-        let disclosure = crate::tool_disclosure::plugin_tool_disclosure(&plugin_id);
+        let mut disclosure = crate::tool_disclosure::plugin_tool_disclosure(&plugin_id);
+        disclosure.original_name = Some(spec.name.clone());
         let executor: Arc<dyn ToolExecutor> = Arc::new(PluginToolHandler::new(
             Arc::clone(registry),
             plugin_id,
@@ -119,7 +120,8 @@ pub async fn populate_active_plugin_tools(
             annotations: Default::default(),
             metadata: Default::default(),
         };
-        let disclosure = crate::tool_disclosure::plugin_tool_disclosure(&plugin_id);
+        let mut disclosure = crate::tool_disclosure::plugin_tool_disclosure(&plugin_id);
+        disclosure.original_name = Some(tool_info.name.clone());
         let executor: Arc<dyn ToolExecutor> = Arc::new(PluginClientToolHandler::new(
             Arc::clone(active_registry),
             plugin_id,

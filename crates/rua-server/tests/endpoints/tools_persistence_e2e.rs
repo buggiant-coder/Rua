@@ -3,6 +3,7 @@ use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::Router;
 use http_body_util::BodyExt;
+use rua_config::types::tools::{ToolIdentity, ToolSelectionPolicy};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -30,6 +31,7 @@ fn agent_skeleton(builtin_tools: Value) -> Value {
         "language": "",
         "system_prompt_files": [],
         "tools": {
+            "selection_policy": ToolSelectionPolicy::default_enabled(),
             "builtin_tools": builtin_tools,
         },
     })
@@ -167,10 +169,13 @@ async fn tools_endpoint_write_persists_then_external_read_sees() {
     let raw: Value =
         serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
 
-    assert_eq!(
-        raw["tools"]["builtin_tools"]["bash"]["enabled"], false,
+    let policy: ToolSelectionPolicy =
+        serde_json::from_value(raw["tools"]["selection_policy"].clone()).unwrap();
+    assert!(
+        !policy.selects(&ToolIdentity::builtin("bash"), None),
         "external reader must see the disabled bash tool"
     );
+    assert!(raw["tools"]["builtin_tools"]["bash"]["enabled"].is_null());
 
     assert_eq!(raw["name"], "default");
     assert_eq!(raw["description"], "");
@@ -203,7 +208,10 @@ async fn tools_toggle_and_async_execution_emit_agent_config_v4_when_sync_enabled
     assert!(
         toggle_change.is_some_and(|change| {
             change.kind == "upsert"
-                && change.payload["tools"]["builtin_tools"]["bash"]["enabled"] == false
+                && serde_json::from_value::<ToolSelectionPolicy>(
+                    change.payload["tools"]["selection_policy"].clone(),
+                )
+                .is_ok_and(|policy| !policy.selects(&ToolIdentity::builtin("bash"), None))
         }),
         "tool toggle must append an agent_config v4 change with tools payload; got {changes:#?}"
     );

@@ -98,6 +98,8 @@ fn meta(class: DisclosureClass, tokens: usize) -> ToolDisclosureMeta {
         source_name: Some("test".into()),
         category: Some("test".into()),
         schema_tokens: Some(tokens),
+        original_name: None,
+        product_capability: None,
     }
 }
 

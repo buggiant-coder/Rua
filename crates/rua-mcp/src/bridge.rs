@@ -174,9 +174,25 @@ impl McpToolBridge {
     }
 
     pub async fn discover_tools(&self) -> rua_core::Result<Vec<McpBridgedTool>> {
+        self.discover_with_filter(ToolFilter::default()).await
+    }
+
+    /// Resolve all candidates from enrolled sources; the captured policy selects tools.
+    pub async fn discover_catalog_tools(&self) -> rua_core::Result<Vec<McpBridgedTool>> {
+        self.discover_with_filter(ToolFilter {
+            include_disabled: true,
+            ..Default::default()
+        })
+        .await
+    }
+
+    async fn discover_with_filter(
+        &self,
+        filter: ToolFilter,
+    ) -> rua_core::Result<Vec<McpBridgedTool>> {
         let tools = self
             .manager
-            .list_tools(ToolFilter::default())
+            .list_tools(filter)
             .await
             .map_err(|e| RuaError::Mcp {
                 server: "all".to_string(),

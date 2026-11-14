@@ -548,9 +548,10 @@ impl AgentManager {
             mcp: None,
             heartbeat: None,
             last_dispatch: None,
-            tools: Some(
-                serde_json::json!({"builtin_tools": crate::services::collaboration_runtime::server_tool_catalog().map_err(|error| rua_core::RuaError::Config { message: error.to_string() })?}),
-            ),
+            tools: Some(serde_json::json!({
+                "selection_policy": rua_config::types::tools::ToolSelectionPolicy::default_enabled(),
+                "builtin_tools": {}
+            })),
             extra: spec.extra,
         };
 

@@ -154,3 +154,64 @@ async fn update_returns_new_value_to_caller() {
         .unwrap();
     assert_eq!(returned, "minted-by-mutator");
 }
+
+#[tokio::test]
+async fn compare_exchange_rejects_stale_values_without_writing() {
+    use cell_store::{CellStore, FileSystemCellStore};
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("agent.json");
+    let store = FileSystemCellStore::new();
+    store
+        .write(&path, "$.tools", json!({"revision":1}))
+        .await
+        .unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(!store
+        .compare_exchange(
+            &path,
+            "$.tools",
+            Some(json!({"revision":0})),
+            json!({"revision":2})
+        )
+        .await
+        .unwrap());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(store
+        .compare_exchange(
+            &path,
+            "$.tools",
+            Some(json!({"revision":1})),
+            json!({"revision":2})
+        )
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn compare_exchange_has_one_winner_for_concurrent_writers() {
+    use cell_store::{CellStore, FileSystemCellStore};
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("agent.json");
+    let store = FileSystemCellStore::new();
+    store
+        .write(&path, "$.tools", json!({"revision":1}))
+        .await
+        .unwrap();
+    let (first, second) = tokio::join!(
+        store.compare_exchange(
+            &path,
+            "$.tools",
+            Some(json!({"revision":1})),
+            json!({"revision":2})
+        ),
+        store.compare_exchange(
+            &path,
+            "$.tools",
+            Some(json!({"revision":1})),
+            json!({"revision":3})
+        )
+    );
+    assert_ne!(first.unwrap(), second.unwrap());
+}

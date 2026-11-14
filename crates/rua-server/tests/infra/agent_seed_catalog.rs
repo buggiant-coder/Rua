@@ -1,3 +1,4 @@
+use rua_config::types::tools::{ToolIdentity, ToolSelectionPolicy};
 use rua_server::seed::agents::{
     builtin_agent_seed_catalog, ensure_builtin_agents_seeded, AgentSeedToolPreset,
 };
@@ -57,16 +58,21 @@ fn builtin_agent_seed_materializes_catalog_entries_and_records_manifest() {
 
     let research = read_agent(tmp.path(), "research");
     let implementation = read_agent(tmp.path(), "implementation");
-    assert_eq!(implementation["tools"]["default_enabled"], false);
+    let implementation_policy: ToolSelectionPolicy =
+        serde_json::from_value(implementation["tools"]["selection_policy"].clone()).unwrap();
+    assert!(matches!(
+        implementation_policy,
+        ToolSelectionPolicy::Restricted { .. }
+    ));
     for tool in ["read", "edit", "bash", "task_create", "task_read"] {
-        assert_eq!(
-            implementation["tools"]["builtin_tools"][tool]["enabled"], true,
+        assert!(
+            implementation_policy.selects(&ToolIdentity::builtin(tool), None),
             "{tool}"
         );
     }
     for tool in ["chat_send", "sync_send", "memory_write"] {
-        assert_eq!(
-            implementation["tools"]["builtin_tools"][tool]["enabled"], false,
+        assert!(
+            !implementation_policy.selects(&ToolIdentity::builtin(tool), None),
             "{tool}"
         );
     }
@@ -87,8 +93,9 @@ fn builtin_agent_seed_materializes_catalog_entries_and_records_manifest() {
             "93_RESEARCH_PROFILE.md"
         ])
     );
-    let tools = research["tools"]["builtin_tools"].as_object().unwrap();
-    assert_eq!(research["tools"]["default_enabled"], false);
+    let policy: ToolSelectionPolicy =
+        serde_json::from_value(research["tools"]["selection_policy"].clone()).unwrap();
+    assert!(matches!(policy, ToolSelectionPolicy::Restricted { .. }));
     for allowed in [
         "read",
         "grep",
@@ -98,7 +105,10 @@ fn builtin_agent_seed_materializes_catalog_entries_and_records_manifest() {
         "conversation_search",
         "conversation_read_span",
     ] {
-        assert_eq!(tools[allowed]["enabled"], true, "{allowed} must be enabled");
+        assert!(
+            policy.selects(&ToolIdentity::builtin(allowed), None),
+            "{allowed} must be enabled"
+        );
     }
     for forbidden in [
         "bash",
@@ -115,24 +125,18 @@ fn builtin_agent_seed_materializes_catalog_entries_and_records_manifest() {
         "sync_send",
     ] {
         assert!(
-            tools
-                .get(forbidden)
-                .is_none_or(|tool| tool["enabled"] == false),
-            "{forbidden} must be absent or disabled"
+            !policy.selects(&ToolIdentity::builtin(forbidden), None),
+            "{forbidden} must be disabled"
         );
     }
-    let allowed = [
-        "read",
-        "grep",
-        "glob",
-        "web_search",
-        "web_fetch",
-        "conversation_search",
-        "conversation_read_span",
-    ];
-    assert!(tools
-        .iter()
-        .all(|(name, tool)| allowed.contains(&name.as_str()) || tool["enabled"] == false));
+    assert!(!policy.selects(&ToolIdentity::builtin("future_write_tool"), None));
+    assert!(research["tools"]["builtin_tools"]
+        .as_object()
+        .unwrap()
+        .is_empty());
+    let default_policy: ToolSelectionPolicy =
+        serde_json::from_value(default_agent["tools"]["selection_policy"].clone()).unwrap();
+    assert!(default_policy.selects(&ToolIdentity::builtin("future_tool"), None));
 
     let qa_agent = read_agent(tmp.path(), "rua_qa");
     assert_eq!(qa_agent["id"], "rua_qa");
@@ -269,7 +273,7 @@ fn startup_preserves_existing_research_policy_even_when_seed_hash_matches() {
     previous["tools"]
         .as_object_mut()
         .unwrap()
-        .remove("default_enabled");
+        .remove("selection_policy");
     rua_config::atomic_write_json(&path, &previous).unwrap();
     rua_core::seed_manifest::record_seed_entry(
         tmp.path(),

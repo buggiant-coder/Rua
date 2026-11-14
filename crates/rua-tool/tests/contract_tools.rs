@@ -26,3 +26,6 @@ mod time_tool_contract;
 mod token_usage_tool_contract;
 #[path = "contract_tools/web_tools_contract.rs"]
 mod web_tools_contract;
+
+#[path = "contract_tools/selection_policy.rs"]
+mod selection_policy;

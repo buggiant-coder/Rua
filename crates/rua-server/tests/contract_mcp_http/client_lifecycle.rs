@@ -295,7 +295,7 @@ async fn qwenpaw_compat_toggle_and_tools_aliases_delegate_to_rust_canonical_rout
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_scoped_tool_toggle_persists_disabled_tools() {
+async fn agent_scoped_tool_toggle_persists_typed_selection_without_changing_source() {
     let app = build_app();
     let client_key = "contract_mcp_tool_toggle";
 
@@ -309,6 +309,17 @@ async fn agent_scoped_tool_toggle_persists_disabled_tools() {
     .await;
     assert_eq!(create.status(), StatusCode::CREATED);
 
+    let tools = json!({
+        "selection_policy":rua_config::types::tools::ToolSelectionPolicy::default_enabled(),
+        "builtin_tools":{}
+    });
+    app.state
+        .agent_tools_cells
+        .cell(AGENT_ID)
+        .write_value(tools)
+        .await
+        .unwrap();
+
     let disable = request(
         &app.app,
         Method::PATCH,
@@ -321,7 +332,17 @@ async fn agent_scoped_tool_toggle_persists_disabled_tools() {
     let disable_body = read_text(disable).await;
     assert_eq!(disable_status, StatusCode::OK, "{disable_body}");
     let disabled: Value = serde_json::from_str(&disable_body).expect("disable response json");
-    assert_eq!(disabled["disabled_tools"], json!(["echo"]));
+    assert_eq!(disabled["disabled_tools"], json!([]));
+    assert!(!app
+        .state
+        .tool_config_store
+        .selection_policy(Some(AGENT_ID))
+        .await
+        .unwrap()
+        .selects(
+            &rua_config::types::tools::ToolIdentity::mcp(client_key, "echo"),
+            None
+        ));
 
     let get_after_disable = request(
         &app.app,
@@ -334,7 +355,7 @@ async fn agent_scoped_tool_toggle_persists_disabled_tools() {
     assert_eq!(get_after_disable.status(), StatusCode::OK);
     assert_eq!(
         read_json(get_after_disable).await["disabled_tools"],
-        json!(["echo"])
+        json!([])
     );
 
     let enable = request(
@@ -347,6 +368,16 @@ async fn agent_scoped_tool_toggle_persists_disabled_tools() {
     .await;
     assert_eq!(enable.status(), StatusCode::OK);
     assert_eq!(read_json(enable).await["disabled_tools"], json!([]));
+    assert!(app
+        .state
+        .tool_config_store
+        .selection_policy(Some(AGENT_ID))
+        .await
+        .unwrap()
+        .selects(
+            &rua_config::types::tools::ToolIdentity::mcp(client_key, "echo"),
+            None
+        ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

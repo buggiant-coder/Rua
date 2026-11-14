@@ -750,16 +750,27 @@ impl McpManager for McpManagerImpl {
                 .map_err(|error| McpError::ConfigInvalid {
                     message: format!("Invalid captured tool disablements: {error}"),
                 })?;
-            if captured.is_none() && ctx.metadata.contains_key("chat_configuration_epoch") {
-                return Err(McpError::PermissionDenied {
-                    message: "Computer input requires captured Chat tool restrictions".into(),
-                });
-            }
+            let value = ctx
+                .metadata
+                .get("chat_capability_configuration")
+                .and_then(|configuration| configuration.get("selection_policy"))
+                .ok_or_else(|| McpError::PermissionDenied {
+                    message: "Computer input requires captured Tool selection policy".into(),
+                })?;
+            let policy: rua_config::types::tools::ToolSelectionPolicy =
+                serde_json::from_value(value.clone()).map_err(|error| McpError::ConfigInvalid {
+                    message: format!("Invalid captured Tool selection policy: {error}"),
+                })?;
+            policy
+                .validate()
+                .map_err(|message| McpError::ConfigInvalid { message })?;
             for (name, _) in crate::computer_control::action_calls(&args)? {
-                let disabled = match &captured {
-                    Some(disabled) => disabled.contains(&format!("mcp__{server}__{name}")),
-                    None => entry.config.is_tool_disabled(&name),
-                };
+                let disabled = !policy.selects(
+                    &rua_config::types::tools::ToolIdentity::mcp(server.as_str(), &name),
+                    Some("computer_use"),
+                ) || captured
+                    .as_ref()
+                    .is_some_and(|disabled| disabled.contains(&format!("mcp__{server}__{name}")));
                 if disabled {
                     return Err(McpError::PermissionDenied {
                         message: format!("Computer sequence action '{name}' is disabled"),

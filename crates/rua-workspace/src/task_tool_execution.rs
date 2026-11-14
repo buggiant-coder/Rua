@@ -114,80 +114,95 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
                 "Agent runtime is shutting down and cannot execute new Tool Tasks".to_string(),
             );
         }
-        let toolkit = runtime
-            .task_toolkit()
-            .await
-            .ok_or_else(|| "agent toolkit is unavailable".to_string())?;
-        if !toolkit.has_tool(&request.tool_name) {
-            return Err(format!("tool '{}' is not available", request.tool_name));
-        }
-
         let scope = rua_core::ChatScopeStore::resolve(
             &runtime.rua_root(),
             request.owner.chat_address.clone(),
         );
         let store = rua_session::WorkspaceSessionStore::new(scope.root());
-        let snapshot = match request.configuration_epoch.as_deref() {
-            Some(epoch) => Some(
-                store
-                    .load_configuration_snapshot(&chat_id, epoch)
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .ok_or("Task configuration snapshot is unavailable")?,
-            ),
-            None => {
-                if store
-                    .load_chat_header(&chat_id)
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .is_some_and(|header| header.extra.contains_key("hook_configuration"))
-                {
-                    return Err("Task has no captured Chat configuration epoch".to_string());
-                }
-                None
-            }
-        };
-        let mut disabled_tools = Vec::new();
-        let security_snapshot = if let Some(snapshot) = snapshot.as_ref() {
-            let assignment = serde_json::from_value::<rua_chat::TurnAgentAssignment>(
+        let epoch = request
+            .configuration_epoch
+            .as_deref()
+            .ok_or("Task has no captured Chat configuration epoch")?;
+        let snapshot = store
+            .load_configuration_snapshot(&chat_id, epoch)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("Task configuration snapshot is unavailable")?;
+        let assignment: rua_chat::TurnAgentAssignment = serde_json::from_value(
+            snapshot
+                .get("agent_assignment")
+                .cloned()
+                .ok_or("Task configuration has no Agent assignment")?,
+        )
+        .map_err(|error| format!("invalid Task Agent assignment: {error}"))?;
+        if assignment.agent_id != execution_agent_id {
+            return Err("Task Agent does not match the captured Chat configuration".into());
+        }
+        let configuration: rua_agent::runtime::ChatCapabilityConfiguration =
+            serde_json::from_value(
                 snapshot
-                    .get("agent_assignment")
+                    .get("capability_configuration")
                     .cloned()
-                    .ok_or("Task configuration has no Agent assignment")?,
+                    .ok_or("Task configuration has no Tool selection policy")?,
             )
-            .map_err(|error| format!("invalid Task Agent assignment: {error}"))?;
-            disabled_tools = assignment.disabled_tools;
-            if disabled_tools.contains(&request.tool_name) {
-                return Err(format!(
-                    "tool '{}' is disabled in the Task configuration",
-                    request.tool_name
-                ));
+            .map_err(|error| format!("invalid Task capability configuration: {error}"))?;
+        let project_root = match request.owner.chat_address.project_id() {
+            Some(project_id) => {
+                let stores = rua_project::ProjectStores::open(runtime.rua_root().join("projects"))
+                    .map_err(|error| error.to_string())?;
+                let binding = stores
+                    .bindings
+                    .get(project_id)
+                    .map_err(|error| error.to_string())?
+                    .ok_or("Task Project Resource Binding is unavailable")?;
+                let directory_id = configuration.extra.get("project_working_directory_id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or("Task configuration has no captured Project working directory; update this Chat configuration")?;
+                let directory = binding
+                    .resources
+                    .directory(directory_id)
+                    .map_err(|error| error.to_string())?;
+                rua_project::validate_project_directory(&directory.resource_root)
+                    .map_err(|error| error.to_string())?;
+                Some(directory.resource_root.clone())
             }
-            let tools: Vec<String> = serde_json::from_value(
-                snapshot
-                    .pointer("/capability_configuration/tools")
-                    .cloned()
-                    .ok_or("Task configuration has no allowed tool inventory")?,
-            )
-            .map_err(|error| format!("invalid Task tool inventory: {error}"))?;
-            if !tools.contains(&request.tool_name) {
-                return Err(format!(
-                    "tool '{}' is not in the Task configuration",
-                    request.tool_name
-                ));
-            }
-            Some(Arc::new(
-                serde_json::from_value::<rua_config::types::security::SecurityConfig>(
-                    snapshot
-                        .get("security_config")
-                        .cloned()
-                        .ok_or("Task security snapshot is missing")?,
-                )
-                .map_err(|error| format!("invalid Task security snapshot: {error}"))?,
-            ))
-        } else {
-            None
+            None => None,
         };
+        let working_dir = project_root
+            .clone()
+            .unwrap_or_else(|| runtime.workspace_dir());
+        let toolkit = runtime
+            .task_toolkit_for_configuration(
+                scope.root(),
+                project_root.as_deref(),
+                &chat_id,
+                request.origin_turn_id.as_deref(),
+                &configuration,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        if !toolkit.has_tool(&request.tool_name) {
+            return Err(format!(
+                "tool '{}' is not available in the Task configuration",
+                request.tool_name
+            ));
+        }
+        let disabled_tools = assignment.disabled_tools;
+        if disabled_tools.contains(&request.tool_name) {
+            return Err(format!(
+                "tool '{}' is disabled in the Task configuration",
+                request.tool_name
+            ));
+        }
+        let security_snapshot = Arc::new(
+            serde_json::from_value::<rua_config::types::security::SecurityConfig>(
+                snapshot
+                    .get("security_config")
+                    .cloned()
+                    .ok_or("Task security snapshot is missing")?,
+            )
+            .map_err(|error| format!("invalid Task security snapshot: {error}"))?,
+        );
 
         let security = runtime
             .security_module()
@@ -197,10 +212,8 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             .with_session_id(&chat_id)
             .with_agent_id(&execution_agent_id)
             .with_chat_address(request.owner.chat_address.clone())
-            .with_working_dir(runtime.workspace_dir().to_string_lossy().to_string());
-        if let Some(config) = security_snapshot.as_ref() {
-            security_hook = security_hook.with_security_snapshot(Arc::clone(config));
-        }
+            .with_working_dir(working_dir.to_string_lossy().to_string())
+            .with_security_snapshot(Arc::clone(&security_snapshot));
         if let Some(turn_id) = request.origin_turn_id.as_ref() {
             security_hook = security_hook.with_turn_id(turn_id);
         }
@@ -243,25 +256,25 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             "user_timezone".to_string(),
             serde_json::json!(config.user_timezone),
         );
-        if snapshot.is_some() {
-            metadata.insert(
-                rua_core::tool::EFFECTIVE_DISABLED_TOOLS_METADATA_KEY.into(),
-                serde_json::json!(disabled_tools),
-            );
-        }
-        if let Some(snapshot) = snapshot.as_ref() {
-            let running: rua_config::AgentsRunningConfig = serde_json::from_value(
-                snapshot
-                    .get("running_config")
-                    .cloned()
-                    .ok_or("Task configuration has no Running snapshot")?,
-            )
-            .map_err(|error| format!("invalid Task Running snapshot: {error}"))?;
-            metadata.insert(
-                "memory_search_mode".to_string(),
-                serde_json::json!(running.memory_summary.search_mode),
-            );
-        }
+        metadata.insert(
+            rua_agent::runtime::CHAT_CAPABILITY_CONFIGURATION_METADATA_KEY.into(),
+            serde_json::to_value(&configuration).map_err(|error| error.to_string())?,
+        );
+        metadata.insert(
+            rua_core::tool::EFFECTIVE_DISABLED_TOOLS_METADATA_KEY.into(),
+            serde_json::json!(disabled_tools),
+        );
+        let running: rua_config::AgentsRunningConfig = serde_json::from_value(
+            snapshot
+                .get("running_config")
+                .cloned()
+                .ok_or("Task configuration has no Running snapshot")?,
+        )
+        .map_err(|error| format!("invalid Task Running snapshot: {error}"))?;
+        metadata.insert(
+            "memory_search_mode".into(),
+            serde_json::json!(running.memory_summary.search_mode),
+        );
         metadata.insert(
             rua_agent::hooks::SECURITY_CHAT_ADDRESS_METADATA_KEY.to_string(),
             serde_json::to_value(&request.owner.chat_address).map_err(|error| error.to_string())?,
@@ -269,12 +282,10 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
         if let Some(turn_id) = request.origin_turn_id {
             metadata.insert("turn_id".to_string(), serde_json::json!(turn_id));
         }
-        if let Some(config) = security_snapshot {
-            metadata.insert(
-                rua_security::models::EFFECTIVE_SECURITY_CONFIG_METADATA_KEY.to_string(),
-                serde_json::to_value(config.as_ref()).map_err(|error| error.to_string())?,
-            );
-        }
+        metadata.insert(
+            rua_security::models::EFFECTIVE_SECURITY_CONFIG_METADATA_KEY.to_string(),
+            serde_json::to_value(security_snapshot.as_ref()).map_err(|error| error.to_string())?,
+        );
         if let Some(epoch) = request.configuration_epoch {
             metadata.insert(
                 "chat_configuration_epoch".to_string(),
@@ -290,7 +301,7 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
         let tool_context = rua_core::tool::ToolContext {
             agent_id: execution_agent_id,
             session_id: chat_id,
-            working_dir: runtime.workspace_dir(),
+            working_dir,
             tool_result_store_dir: Some(tool_result_scope_root.join("tool_call_logs")),
             metadata,
             cancel: Some(cancel_rx),

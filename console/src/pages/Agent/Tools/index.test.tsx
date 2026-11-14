@@ -38,6 +38,9 @@ vi.mock("./useTools", () => ({
 }));
 
 vi.mock("./WebSearchConfigModal", () => ({ WebSearchConfigModal: () => null }));
+vi.mock("./ToolSelectionPolicyPanel", () => ({
+  ToolSelectionPolicyPanel: () => null,
+}));
 
 describe("ToolsPage groups", () => {
   beforeEach(() => {

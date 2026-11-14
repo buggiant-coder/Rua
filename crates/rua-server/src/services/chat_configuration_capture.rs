@@ -14,6 +14,7 @@ pub(crate) struct ChatConfigurationSelection {
     pub collaboration_mode: Value,
     pub harness_configuration: Option<Value>,
     pub authority_device_id: String,
+    pub project_working_directory_id: Option<String>,
 }
 
 /// Captures resources without persisting or adopting the candidate configuration.
@@ -30,10 +31,19 @@ pub(crate) async fn capture_chat_configuration(
         .config_store()
         .load(&assignment.agent_id)
         .map_err(|error| error.to_string())?;
-    let capability_configuration = runtime
+    let mut capability_configuration = runtime
         .capability_configuration(project_root)
         .await
         .map_err(|error| error.to_string())?;
+    if project_root.is_some() {
+        let directory_id = selection
+            .project_working_directory_id
+            .ok_or("Project configuration requires a captured working directory identity")?;
+        capability_configuration.extra.insert(
+            super::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY.into(),
+            serde_json::json!(directory_id),
+        );
+    }
     let prompt_file_content = super::console_chat::prompt_file_fragment_for_entries(
         &runtime.workspace_dir(),
         &assignment.system_prompt_files,

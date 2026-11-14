@@ -2063,6 +2063,24 @@ async fn execute_approved_tool(
     };
 
     let mut enriched_ctx = tool_ctx.clone();
+    if call.name == "list_tools" {
+        let catalog = toolkit
+            .disclosure_inventory()
+            .into_iter()
+            .filter(|entry| entry.disclosure.class != crate::toolkit::DisclosureClass::Hidden)
+            .map(|entry| (entry.definition.name, entry.definition.description))
+            .collect::<Vec<_>>();
+        enriched_ctx.metadata.insert(
+            rua_tool::extended::introspect::EFFECTIVE_TOOL_CATALOG_METADATA_KEY.into(),
+            serde_json::json!(catalog),
+        );
+    }
+    if call.name == "task_create" {
+        enriched_ctx.metadata.insert(
+            rua_tool::extended::introspect::EFFECTIVE_TOOL_NAMES_METADATA_KEY.into(),
+            serde_json::json!(toolkit.tool_names()),
+        );
+    }
     enriched_ctx.metadata.insert(
         "tool_use_id".to_string(),
         serde_json::Value::String(call.id.clone()),

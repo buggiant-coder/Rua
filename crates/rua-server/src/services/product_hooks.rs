@@ -204,6 +204,11 @@ impl ChatHookConfiguration {
             return Err("Chat configuration epoch is empty".to_string());
         }
         self.running_config.validate()?;
+        if let Some(configuration) = self.capability_configuration.as_ref() {
+            configuration
+                .validate_selection_policy()
+                .map_err(|error| error.to_string())?;
+        }
         if let Some(rules) = self.security_config.extra.get("permission_rules") {
             serde_json::from_value::<
                 Vec<rua_security::approval_authority::StoredApprovalReuseRule>,
