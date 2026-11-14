@@ -411,7 +411,7 @@ internal class PhoneUseSession(private val state: PhoneUseBridgeState) {
                 val params = request.params ?: JSONObject()
                 var reservation:PhoneOperation?=null
                 val operation = java.util.concurrent.FutureTask {
-                    val active=PhoneDeviceControl.begin(invocation!!,params.getString("operation_id"),state.generation)
+                    val active=PhoneDeviceControl.begin(invocation!!,params.getString("operation_id"),state.generation,"observe")
                     reservation=active
                     try {
                     val service = MobileAccessibilityService.instance ?: throw IllegalStateException("accessibility permission is required")

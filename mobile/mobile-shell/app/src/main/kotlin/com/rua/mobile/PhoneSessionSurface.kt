@@ -6,6 +6,7 @@ import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
@@ -29,6 +30,10 @@ internal object PhoneDeviceControl {
     private var manager: WindowManager? = null
     private var windowContext: Context? = null
     private var renderedSessionId: String? = null
+    private var activityLabel: TextView? = null
+    private var recentOperation: PhoneOperation? = null
+    private var activityStartedAt = 0L
+    private const val MIN_ACTIVITY_MS = 700L
 
     fun initialize(context: Context, generation: String, onStopped: (PhoneInvocation) -> Unit) = synchronized(lifecycleLock) {
         clear()
@@ -38,18 +43,23 @@ internal object PhoneDeviceControl {
         stopped = onStopped
         sessions.reset()
         sessions.onChanged = { handler.post { refreshSurface() } }
+        state.onOperationChanged = { handler.post { refreshSurface() } }
     }
 
-    fun begin(invocation: PhoneInvocation, requestId: String, expectedGeneration: String): PhoneOperation {
+    fun begin(invocation: PhoneInvocation, requestId: String, expectedGeneration: String, action: String? = null): PhoneOperation {
         val operation = synchronized(lifecycleLock) {
             requireGeneration(expectedGeneration)
             val app = context ?: error("Phone Use host unavailable")
             check(MobileAccessibilityService.instance != null || Settings.canDrawOverlays(app)) {
                 "Phone Use requires system overlay permission when the accessibility service is unavailable"
             }
-            val reserved = state.begin(invocation, requestId)
+            val reserved = state.begin(invocation, requestId, action)
             try { sessions.activate(invocation) }
             catch (error: Exception) { state.cancel(invocation, requestId); state.finish(reserved); throw error }
+            recentOperation = reserved
+            activityStartedAt = SystemClock.uptimeMillis()
+            // Even a synchronous observation must remain visible for a rendered frame.
+            handler.postDelayed({ refreshSurface() }, MIN_ACTIVITY_MS)
             reserved
         }
         try {
@@ -130,6 +140,7 @@ internal object PhoneDeviceControl {
     fun clear() = synchronized(lifecycleLock) {
         val invocation = sessions.current()?.invocation
         sessions.clear()
+        recentOperation = null
         invocation?.let(::cancelOperation)
         state.current()?.let { state.cancel(it.invocation, it.requestId); state.finish(it) }
         handler.post { refreshSurface() }
@@ -139,6 +150,7 @@ internal object PhoneDeviceControl {
         if (generation != expectedGeneration) return@synchronized
         clear()
         sessions.onChanged = null
+        state.onOperationChanged = null
         stopped = null
         context = null
         generation = null
@@ -146,7 +158,7 @@ internal object PhoneDeviceControl {
         val oldManager = manager
         handler.post {
             oldPanel?.let { runCatching { oldManager?.removeView(it) } }
-            if (panel === oldPanel) { panel = null; manager = null; windowContext = null; renderedSessionId = null }
+            if (panel === oldPanel) { panel = null; manager = null; windowContext = null; renderedSessionId = null; activityLabel = null }
         }
     }
 
@@ -168,7 +180,10 @@ internal object PhoneDeviceControl {
         if (lease == null || app == null) { hide(); return@synchronized }
         val service = MobileAccessibilityService.instance
         val displayContext = service ?: app
-        if (panel != null && windowContext === displayContext && renderedSessionId == lease.sessionId) return@synchronized
+        if (panel != null && windowContext === displayContext && renderedSessionId == lease.sessionId) {
+            activityLabel?.text = activityText(lease.invocation)
+            return@synchronized
+        }
         hide()
         try {
             check(service != null || Settings.canDrawOverlays(app)) {
@@ -177,22 +192,32 @@ internal object PhoneDeviceControl {
             val density = displayContext.resources.displayMetrics.density
             fun dp(value: Int) = (value * density).toInt()
             val view = LinearLayout(displayContext).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(12), dp(4), dp(4), dp(4))
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(4), dp(4), dp(10))
                 background = GradientDrawable().apply { setColor(0xff353238.toInt()); cornerRadius = dp(24).toFloat() }
                 elevation = dp(4).toFloat()
-                addView(TextView(displayContext).apply {
-                    text = "Rua 正在操作手机"
-                    contentDescription = "Rua 正在操作手机"
-                    textSize = 14f
-                    setTextColor(android.graphics.Color.WHITE)
+                addView(LinearLayout(displayContext).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(TextView(displayContext).apply {
+                        text = "Rua 正在操作手机"
+                        contentDescription = "Rua 正在操作手机"
+                        textSize = 14f
+                        setTextColor(android.graphics.Color.WHITE)
+                    })
+                    addView(Button(displayContext).apply {
+                        text = "停止"
+                        contentDescription = "停止当前 Phone Use 会话"
+                        isAllCaps = false
+                        setOnClickListener { stopSession(lease.sessionId) }
+                    })
                 })
-                addView(Button(displayContext).apply {
-                    text = "停止"
-                    contentDescription = "停止当前 Phone Use 会话"
-                    isAllCaps = false
-                    setOnClickListener { stopSession(lease.sessionId) }
+                addView(TextView(displayContext).apply {
+                    text = activityText(lease.invocation)
+                    textSize = 12f
+                    setTextColor(0xffdedbe2.toInt())
+                    setPadding(0, 0, dp(8), 0)
+                    activityLabel = this
                 })
             }
             val type = if (service != null) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
@@ -215,6 +240,25 @@ internal object PhoneDeviceControl {
         }
     }
 
+    private fun activityText(invocation: PhoneInvocation): String {
+        val operation = (state.current() ?: recentOperation?.takeIf {
+            SystemClock.uptimeMillis() - activityStartedAt < MIN_ACTIVITY_MS
+        })?.takeIf { it.invocation == invocation && !it.cancelled.get() }
+            ?: return "Agent 正在等待下一步"
+        return when (operation.action) {
+            "observe", "screenshot" -> "Agent 正在观看屏幕"
+            "click" -> "Agent 正在点击屏幕"
+            "long_press" -> "Agent 正在长按屏幕"
+            "type_text" -> "Agent 正在输入文字"
+            "swipe" -> "Agent 正在滑动屏幕"
+            "back" -> "Agent 正在返回上一页"
+            "home" -> "Agent 正在返回桌面"
+            "launch_app" -> "Agent 正在打开应用"
+            "take_photo" -> "Agent 正在拍照"
+            else -> "Agent 正在操作手机"
+        }
+    }
+
     private fun requireGeneration(expected: String) {
         check(generation == expected) { "Phone Use bridge generation changed" }
     }
@@ -225,6 +269,7 @@ internal object PhoneDeviceControl {
         manager = null
         windowContext = null
         renderedSessionId = null
+        activityLabel = null
     }
 
     private fun onMain(action: () -> Unit) {

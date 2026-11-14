@@ -49,7 +49,7 @@ internal object PhoneCamera {
         check(ContextCompat.checkSelfPermission(service,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED) { "Grant camera permission in Rua before taking a photo" }
         val cameras=list(service).getJSONArray("cameras")
         check((0 until cameras.length()).any { cameras.getJSONObject(it).getString("camera_id")==cameraId }) { "Unknown camera" }
-        val op=PhoneDeviceControl.begin(invocation,id,generation)
+        val op=PhoneDeviceControl.begin(invocation,id,generation,"take_photo")
         val request=PhonePhotoRequest(UUID.randomUUID().toString(),cameraId,op)
         try {
             synchronized(this) {

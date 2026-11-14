@@ -13,7 +13,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-internal class PhoneOperation(val invocation: PhoneInvocation, val requestId: String) {
+internal class PhoneOperation(val invocation: PhoneInvocation, val requestId: String, val action: String? = null) {
     val owner: String get() = invocation.owner
     var expectedPackage: String? = null
     var previousWindow: Int? = null
@@ -28,11 +28,11 @@ internal class PhoneControlState(private val sessionIsCurrent: (PhoneInvocation)
     var onOperationChanged: (() -> Unit)? = null
     fun current(): PhoneOperation? = active.get()
     @Synchronized
-    fun begin(invocation: PhoneInvocation, id: String): PhoneOperation {
+    fun begin(invocation: PhoneInvocation, id: String, action: String? = null): PhoneOperation {
         val owner = invocation.owner
         require(owner.isNotBlank() && owner.length <= 128 && id.isNotBlank() && id.length <= 200) { "Invalid invocation identity" }
         check(!cancelledIds.contains(invocation to id)) { "Phone Use request was cancelled" }
-        val operation = PhoneOperation(invocation, id)
+        val operation = PhoneOperation(invocation, id, action)
         check(active.compareAndSet(null, operation)) { "Phone Use busy; observe again before retrying" }
         onOperationChanged?.invoke()
         return operation
@@ -88,7 +88,7 @@ internal class PhoneController(private val service: MobileAccessibilityService) 
     fun interact(invocation: PhoneInvocation, requestId: String, action: String, params: JSONObject, generation: String): CompletableFuture<JSONObject> {
         val owner = invocation.owner
         require(action in setOf("click", "long_press", "type_text", "swipe", "back", "home", "launch_app")) { "Unsupported action" }
-        val op = PhoneDeviceControl.begin(invocation, requestId, generation)
+        val op = PhoneDeviceControl.begin(invocation, requestId, generation, action)
         handler.post {
             try {
                 check(!op.cancelled.get()) { "Phone Use cancelled" }

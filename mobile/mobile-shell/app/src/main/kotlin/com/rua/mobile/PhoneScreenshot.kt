@@ -19,7 +19,7 @@ internal object PhoneScreenshot {
     }
     fun capture(service: MobileAccessibilityService, invocation: PhoneInvocation, requestId: String, maxNodes: Int, maxDepth: Int, generation: String): CompletableFuture<JSONObject> {
         val owner = invocation.owner
-        val operation = PhoneDeviceControl.begin(invocation, requestId, generation)
+        val operation = PhoneDeviceControl.begin(invocation, requestId, generation, "screenshot")
         val handler = Handler(Looper.getMainLooper())
         handler.post {
             try {
