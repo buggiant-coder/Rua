@@ -70,10 +70,23 @@ internal class PhoneObservations(
 
 internal object PhoneTreeCapture {
     @Suppress("DEPRECATION")
+    fun targetRoot(service: AccessibilityService): android.view.accessibility.AccessibilityNodeInfo? {
+        val windows = service.windows
+        val target = windows.firstOrNull { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION && it.isActive }
+            ?: windows.firstOrNull { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION && it.isFocused }
+        target?.root?.let { return it }
+        val root = service.rootInActiveWindow ?: return null
+        if (windows.any { it.id == root.windowId && it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY }) {
+            root.recycle()
+            return null
+        }
+        return root
+    }
+    @Suppress("DEPRECATION")
     fun capture(service: AccessibilityService, maxNodes: Int, maxDepth: Int): JSONObject {
         require(maxNodes in 1..PhoneObservations.MAX_NODES) { "invalid node limit" }
         require(maxDepth in 1..PhoneObservations.MAX_DEPTH) { "invalid depth limit" }
-        val root = service.rootInActiveWindow ?: throw IllegalStateException("no accessible foreground window")
+        val root = targetRoot(service) ?: throw IllegalStateException("no accessible foreground window")
         try {
             val display = (service.getSystemService(android.content.Context.WINDOW_SERVICE) as WindowManager).defaultDisplay
             val size = android.graphics.Point()
@@ -108,7 +121,7 @@ internal object PhoneTreeCapture {
                 }
             }
             visit(root, emptyList(), 0)
-            val current = service.rootInActiveWindow ?: throw IllegalStateException("window changed during observation")
+            val current = targetRoot(service) ?: throw IllegalStateException("window changed during observation")
             try {
                 check(current.windowId == windowId && current.packageName?.toString().orEmpty() == packageName) { "window changed during observation" }
                 check(display.rotation == rotation) { "display changed during observation" }

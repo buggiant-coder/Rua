@@ -3,21 +3,18 @@ package com.rua.mobile
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
-import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
-import android.widget.Button
-import android.graphics.drawable.GradientDrawable
 import org.json.JSONObject
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-internal class PhoneOperation(val owner: String, val requestId: String) {
+internal class PhoneOperation(val invocation: PhoneInvocation, val requestId: String) {
+    val owner: String get() = invocation.owner
     var expectedPackage: String? = null
     var previousWindow: Int? = null
     val cancelled = AtomicBoolean(false)
@@ -25,25 +22,26 @@ internal class PhoneOperation(val owner: String, val requestId: String) {
     val result = CompletableFuture<JSONObject>()
 }
 
-internal class PhoneControlState {
+internal class PhoneControlState(private val sessionIsCurrent: (PhoneInvocation) -> Boolean) {
     private val active = AtomicReference<PhoneOperation?>(null)
-    private val cancelledIds = LinkedHashSet<Pair<String, String>>()
+    private val cancelledIds = LinkedHashSet<Pair<PhoneInvocation, String>>()
     var onOperationChanged: (() -> Unit)? = null
     fun current(): PhoneOperation? = active.get()
     @Synchronized
-    fun begin(owner: String, id: String): PhoneOperation {
+    fun begin(invocation: PhoneInvocation, id: String): PhoneOperation {
+        val owner = invocation.owner
         require(owner.isNotBlank() && owner.length <= 128 && id.isNotBlank() && id.length <= 200) { "Invalid invocation identity" }
-        check(!cancelledIds.contains(owner to id)) { "Phone Use request was cancelled" }
-        val operation = PhoneOperation(owner, id)
+        check(!cancelledIds.contains(invocation to id)) { "Phone Use request was cancelled" }
+        val operation = PhoneOperation(invocation, id)
         check(active.compareAndSet(null, operation)) { "Phone Use busy; observe again before retrying" }
         onOperationChanged?.invoke()
         return operation
     }
     @Synchronized
-    fun cancel(owner: String, id: String) {
-        cancelledIds.add(owner to id)
+    fun cancel(invocation: PhoneInvocation, id: String) {
+        cancelledIds.add(invocation to id)
         while (cancelledIds.size > 256) cancelledIds.remove(cancelledIds.first())
-        active.get()?.takeIf { it.owner == owner && it.requestId == id }?.let {
+        active.get()?.takeIf { it.invocation == invocation && it.requestId == id }?.let {
             it.cancelled.set(true)
             it.result.complete(JSONObject().put("state", if (it.submitted.get()) "outcome_unknown" else "cancelled").put("submitted", it.submitted.get()))
             onOperationChanged?.invoke()
@@ -51,101 +49,53 @@ internal class PhoneControlState {
     }
     @Synchronized
     fun cancelCurrent() {
-        active.get()?.let { cancel(it.owner, it.requestId) }
+        active.get()?.let { cancel(it.invocation, it.requestId) }
     }
     @Synchronized
     fun <T> dispatch(operation: PhoneOperation, send: () -> T): T {
-        check(active.get() === operation && !operation.cancelled.get()) { "Phone Use cancelled" }
+        check(active.get() === operation && !operation.cancelled.get() && sessionIsCurrent(operation.invocation)) { "Phone Use cancelled" }
         operation.submitted.set(true)
         return send()
     }
     fun finish(operation: PhoneOperation) {
         if (active.compareAndSet(operation, null)) onOperationChanged?.invoke()
     }
+    @Synchronized
+    fun ifCurrent(operation: PhoneOperation, action: () -> Unit) {
+        if (active.get() === operation) action()
+    }
+    @Synchronized
+    fun reset() {
+        active.get()?.let { cancel(it.invocation, it.requestId); finish(it) }
+        cancelledIds.clear()
+    }
 }
-
-internal object PhoneDeviceControl { val state = PhoneControlState() }
 
 internal class PhoneController(private val service: MobileAccessibilityService) {
     val state = PhoneDeviceControl.state
     private val handler = Handler(Looper.getMainLooper())
-    private var panel: Button? = null
-    private var attached = false
 
     fun attach() {
-        attached = true
-        state.onOperationChanged = {
-            if (Looper.myLooper() == Looper.getMainLooper()) refreshControl()
-            else handler.post { if (attached) refreshControl() }
-        }
-        refreshControl()
-    }
-
-    private fun refreshControl() {
-        val operation = state.current()?.takeUnless { it.cancelled.get() || it.result.isDone }
-        hide()
-        if (!attached || operation == null) return
-        val density = service.resources.displayMetrics.density
-        fun dp(value: Int) = (value * density).toInt()
-        val view = Button(service).apply {
-            text = "终止"
-            contentDescription = "终止当前 Phone Use 操作"
-            textSize = 14f
-            isAllCaps = false
-            setTextColor(android.graphics.Color.WHITE)
-            minWidth = dp(72)
-            minimumWidth = dp(72)
-            minHeight = dp(48)
-            minimumHeight = dp(48)
-            setPadding(dp(16), 0, dp(16), 0)
-            background = GradientDrawable().apply {
-                setColor(0xffb3261e.toInt())
-                cornerRadius = dp(24).toFloat()
-            }
-            elevation = dp(4).toFloat()
-            setOnClickListener {
-                state.cancel(operation.owner, operation.requestId)
-                service.observations.invalidateOwner(operation.owner)
-                hide()
-            }
-        }
-        val params = WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT)
-        params.gravity = Gravity.TOP or Gravity.END
-        params.x = dp(12)
-        params.y = dp(56)
-        try {
-            (service.getSystemService(android.content.Context.WINDOW_SERVICE) as WindowManager).addView(view, params)
-            panel = view
-        } catch (error: Exception) {
-            state.cancel(operation.owner, operation.requestId)
-            android.util.Log.e("PhoneControl", "Termination control unavailable", error)
-        }
-    }
-
-    private fun hide() {
-        panel?.let { runCatching { (service.getSystemService(android.content.Context.WINDOW_SERVICE) as WindowManager).removeView(it) } }
-        panel = null
+        PhoneDeviceControl.refresh()
     }
 
     fun close() {
-        attached = false
-        state.onOperationChanged = null
-        state.cancelCurrent(); service.observations.clear()
-        hide()
+        if (MobileAccessibilityService.instance === service) PhoneDeviceControl.clear()
+        service.observations.clear()
     }
 
     @Suppress("DEPRECATION")
-    fun interact(owner: String, requestId: String, action: String, params: JSONObject): CompletableFuture<JSONObject> {
+    fun interact(invocation: PhoneInvocation, requestId: String, action: String, params: JSONObject, generation: String): CompletableFuture<JSONObject> {
+        val owner = invocation.owner
         require(action in setOf("click", "long_press", "type_text", "swipe", "back", "home", "launch_app")) { "Unsupported action" }
-        val op = state.begin(owner, requestId)
+        val op = PhoneDeviceControl.begin(invocation, requestId, generation)
         handler.post {
             try {
                 check(!op.cancelled.get()) { "Phone Use cancelled" }
-                check(panel != null) { "Phone Use stop control unavailable" }
+                check(PhoneDeviceControl.hasSurface(invocation)) { "Phone Use session control unavailable" }
                 val record = service.observations.consume(owner, params.getString("observation_id"))
                 val snapshot = record.result
-                val root = service.rootInActiveWindow ?: error("No active window")
+                val root = PhoneTreeCapture.targetRoot(service) ?: error("No active window")
                 try {
                     val display = (service.getSystemService(android.content.Context.WINDOW_SERVICE) as WindowManager).defaultDisplay
                     check(root.windowId == snapshot.getInt("window_id") && root.packageName?.toString() == snapshot.getString("package_name") && display.rotation == snapshot.getInt("rotation")) { "Window changed; observe again" }
@@ -195,12 +145,7 @@ internal class PhoneController(private val service: MobileAccessibilityService) 
                     }
                     try {
                         check(x.isFinite() && y.isFinite() && x >= 0 && y >= 0 && x < snapshot.getInt("width") && y < snapshot.getInt("height")) { "Invalid coordinates" }
-                        val overlay = Rect()
-                        panel?.let { view ->
-                            val location = IntArray(2)
-                            view.getLocationOnScreen(location)
-                            overlay.set(location[0],location[1],location[0]+view.width,location[1]+view.height)
-                        }
+                        val overlay = PhoneDeviceControl.bounds()
                         check(!overlay.contains(x.toInt(), y.toInt())) { "Phone Use cannot click its stop controls" }
                         check(!op.cancelled.get()) { "Phone Use cancelled" }
                         if (action == "type_text") {
@@ -239,21 +184,22 @@ internal class PhoneController(private val service: MobileAccessibilityService) 
                 } finally { root.recycle() }
             } catch (e: Exception) {
                 op.result.complete(JSONObject().put("state", if(op.submitted.get()) "outcome_unknown" else "refused").put("submitted",op.submitted.get()).put("detail",e.message.orEmpty().take(300)))
+                PhoneDeviceControl.fail(op)
                 state.finish(op)
             }
         }
-        handler.postDelayed({ if(!op.result.isDone) state.cancel(owner, requestId); state.finish(op) }, 3_000)
+        handler.postDelayed({ if(!op.result.isDone) { PhoneDeviceControl.fail(op); state.ifCurrent(op) { state.cancel(invocation, requestId) } }; state.finish(op) }, 3_000)
         return op.result
     }
 
     private fun complete(op: PhoneOperation, accepted: Boolean, remaining: Int = 12) {
-        if (op.cancelled.get()) { state.cancel(op.owner, op.requestId); state.finish(op); return }
+        if (op.cancelled.get()) { state.ifCurrent(op) { state.cancel(op.invocation, op.requestId) }; state.finish(op); return }
         handler.postDelayed({
             val result = JSONObject().put("state", if(accepted) "submitted" else "outcome_unknown").put("submitted",op.submitted.get()).put("effect_confirmed",false)
             if (!op.cancelled.get()) {
                 if (op.previousWindow != null) {
                     @Suppress("DEPRECATION")
-                    val settled = service.rootInActiveWindow?.let { current ->
+                    val settled = PhoneTreeCapture.targetRoot(service)?.let { current ->
                         try { if(op.expectedPackage != null) current.packageName?.toString() == op.expectedPackage else current.windowId != op.previousWindow }
                         finally { current.recycle() }
                     } ?: false

@@ -136,7 +136,6 @@ class NativeHostDeviceTest {
                 assertTrue(api("GET", "/agents/default/tools").toString().contains("phone_observe"))
                 fixture.api(token, "POST", "/models/custom-providers", """{"id":"$provider","name":"Phone Fixture","base_url":"http://127.0.0.1:18099/v1","api_key":"fixture-key","chat_model":"OpenAIChatModel","models":[{"id":"native-runtime-model","name":"Phone Fixture"}]}""")
                 try {
-                    fixture.api(token, "PUT", "/models/active", """{"provider_id":"$provider","model":"native-runtime-model"}""")
                     for (mode in listOf("phone", "phone-terminate", "phone-stop", "phone-denied")) {
                         context.startActivity(Intent().setComponent(ComponentName("com.rua.mobile.test", "com.rua.mobile.PhoneFixtureJavaActivity")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
                         instrumentation.waitForIdleSync()
@@ -148,7 +147,7 @@ class NativeHostDeviceTest {
                         }
                         val chat = api("POST", "/agents/default/chats", """{"name":"$mode","user_id":"native-host-e2e","channel":"console","meta":{},"model":{"provider_id":"$provider","model":"native-runtime-model","thinking_strength":"off"}}""")
                         val id = chat.getString("id")
-                        api("POST", "/agents/default/chats/$id/console/submit", """{"message":"native-runtime-$mode"}""")
+                        api("POST", "/agents/default/chats/$id/console/submit", """{"message":"native-runtime-$mode","model":{"provider_id":"$provider","model":"native-runtime-model","thinking_strength":"off"}}""")
                         var terminated = false
                         var snapshot = ""
                         await("$mode did not finish: $snapshot", 60) {
@@ -161,7 +160,8 @@ class NativeHostDeviceTest {
                             if (!terminated && op != null && op.submitted.get() && mode in listOf("phone-terminate", "phone-stop")) {
                                 if (mode == "phone-terminate") {
                                     val windows = automation.windows
-                                    val stop = windows.asSequence().mapNotNull { it.root }.flatMap { it.findAccessibilityNodeInfosByText("终止").asSequence() }.firstOrNull()
+                                    val stop = windows.asSequence().mapNotNull { it.root }.flatMap { it.findAccessibilityNodeInfosByText("停止").asSequence() }
+                                        .firstOrNull { it.contentDescription?.toString() == "停止当前 Phone Use 会话" }
                                     if (stop != null) {
                                         assertTrue(stop.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK))
                                         terminated = true
@@ -178,7 +178,14 @@ class NativeHostDeviceTest {
                             }
                             snapshot = api("GET", "/agents/default/chats/$id").toString()
                             if (snapshot.contains("NATIVE_AGENT_FAILED")) error("$mode: " + snapshot.substringAfterLast("NATIVE_AGENT_FAILED").take(2000))
-                            if (mode == "phone-stop") terminated && PhoneDeviceControl.state.current() == null else snapshot.contains("NATIVE_AGENT_ALL_PASS")
+                            if (mode in listOf("phone-terminate", "phone-stop")) {
+                                val messages = JSONObject(snapshot).getJSONArray("messages")
+                                val statuses = (0 until messages.length()).map { messages.getJSONObject(it).optString("turn_status") }
+                                terminated && PhoneDeviceControl.state.current() == null &&
+                                    !api("GET", "/platform/phone").getBoolean("session_active") &&
+                                    statuses.any { it in listOf("completed", "interrupted", "interjected", "failed") } &&
+                                    statuses.none { it == "in_progress" }
+                            } else snapshot.contains("NATIVE_AGENT_ALL_PASS")
                         }
                         if (mode in listOf("phone-terminate", "phone-stop")) assertTrue("Actual operation never terminated", terminated)
                         assertEquals(resident, MobileRuntimeProcess.findRuaServerPids())
@@ -186,8 +193,8 @@ class NativeHostDeviceTest {
                     }
                 } finally {
                     fixture.api(token, "DELETE", "/agents/$agentId")
-                    if (previous.optString("provider_id").isEmpty()) fixture.api(token, "DELETE", "/models/active")
-                    else fixture.api(token, "PUT", "/models/active", previous.getJSONObject("default_llm").toString())
+                    fixture.api(token, "DELETE", "/models/providers/$provider")
+                    assertEquals(previous.toString(), fixture.api(token, "GET", "/models/active").toString())
                 }
             }
         } finally {

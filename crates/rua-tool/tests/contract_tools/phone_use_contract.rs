@@ -184,3 +184,27 @@ fn camera_capture_is_independently_guarded_and_not_read_only() {
         false
     );
 }
+
+#[tokio::test]
+async fn release_requires_trusted_session_and_cannot_choose_an_owner() {
+    let tool = rua_tool::builtin::phone_use::PhoneReleaseTool;
+    assert_eq!(tool.schema().name, "phone_release");
+    for args in [
+        json!({"owner":"other"}),
+        json!({"turn_id":"other"}),
+        json!({"device_id":"remote"}),
+    ] {
+        assert!(tool.call(args, ToolContext::default()).await.is_err());
+    }
+    assert!(tool
+        .call(json!({}), ToolContext::default())
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("trusted ChatAddress"));
+    assert!(
+        !rua_tool::builtin::phone_use::PhoneReleaseTool::spec()
+            .annotations
+            .read_only
+    );
+}

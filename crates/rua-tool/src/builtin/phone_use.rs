@@ -5,6 +5,7 @@ use rua_core::tool::{ToolContext, ToolResult, ToolSchema};
 use rua_core::{Result, RuaError};
 
 pub struct PhoneStatusTool;
+pub struct PhoneReleaseTool;
 pub struct PhoneObserveTool;
 pub struct PhoneClickTool;
 pub struct PhoneListAppsTool;
@@ -43,7 +44,7 @@ impl Tool for PhoneCameraTool {
     async fn call(&self, args: serde_json::Value, ctx: ToolContext) -> Result<ToolResult> {
         crate::schema::validate_args(self.name(), &args, &self.schema().parameters)
             .map_err(|e| invalid(e.to_string()))?;
-        let owner = invocation_owner(&ctx)?;
+        let session = invocation_session(&ctx)?;
         if self.capture
             && ctx
                 .metadata
@@ -64,7 +65,7 @@ impl Tool for PhoneCameraTool {
                     .ok_or_else(|| invalid("Invalid camera id"))?;
                 let image = bridge
                     .take_photo(
-                        &owner,
+                        &session,
                         ctx.metadata["tool_call_id"]
                             .as_str()
                             .expect("trusted invocation"),
@@ -141,7 +142,7 @@ impl Tool for PhoneListAppsTool {
     async fn call(&self, args: serde_json::Value, ctx: ToolContext) -> Result<ToolResult> {
         crate::schema::validate_args(self.name(), &args, &self.schema().parameters)
             .map_err(|e| invalid(e.to_string()))?;
-        invocation_owner(&ctx)?;
+        invocation_session(&ctx)?;
         let bridge =
             rua_core::phone_use::bridge().ok_or_else(|| invalid("Phone Use is not connected"))?;
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -207,7 +208,7 @@ impl PhoneActionTool {
                 required = vec!["observation_id", "x", "y", "end_x", "end_y"];
             }
         }
-        ToolSpec { name:tool.name().into(),description:"Perform one bounded action on a freshly observed Android window. Never target Rua controls or system permission surfaces. Submitted effects may be unknown; inspect the returned observation, never replay after cancellation. The floating Terminate button cancels the current operation and disappears; new calls require no resume.".into(),parameters:serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false}),annotations:ExtendedToolAnnotations::default(),namespace:"builtin".into() }
+        ToolSpec { name:tool.name().into(),description:"Perform one bounded action on a freshly observed Android window. Never target Rua controls or system permission surfaces. Submitted effects may be unknown; inspect the returned observation, never replay after cancellation. The floating Stop control ends this Phone Use session and cancels its Turn; do not retry Phone Use in that Turn. Release the session with phone_release when finished.".into(),parameters:serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false}),annotations:ExtendedToolAnnotations::default(),namespace:"builtin".into() }
     }
 }
 
@@ -270,14 +271,14 @@ impl Tool for PhoneActionTool {
             .as_str()
             .ok_or_else(|| invalid("Missing observation"))?;
         uuid::Uuid::parse_str(observation).map_err(|_| invalid("Invalid observation"))?;
-        let owner = invocation_owner(&ctx)?;
+        let session = invocation_session(&ctx)?;
         let operation = ctx.metadata["tool_call_id"]
             .as_str()
             .expect("validated invocation");
         let bridge =
             rua_core::phone_use::bridge().ok_or_else(|| invalid("Phone Use is not connected"))?;
         let cancel = tokio_util::sync::CancellationToken::new();
-        let request = bridge.interact(self.action(), &owner, operation, args, &cancel);
+        let request = bridge.interact(self.action(), &session, operation, args, &cancel);
         let result = if let Some(mut receiver) = ctx.cancel.clone() {
             tokio::select! {biased;
                 _=async {if !*receiver.borrow(){let _=receiver.changed().await;}}=>{cancel.cancel();return Err(invalid("Phone action cancelled; submitted outcome may be unknown"));},
@@ -297,39 +298,66 @@ impl PhoneClickTool {
     pub fn spec() -> ToolSpec {
         ToolSpec {
             name: "phone_click".into(),
-            description: "Execute one bounded click on the observed Android screen. Requires a fresh Chat-owned observation_id and exactly one node token or x/y pair. Never target Rua termination/approval controls or system authorization surfaces. Submitted is not proof of app effect; inspect the returned observation. Floating Terminate cancels this operation only; never retry an unknown outcome.".into(),
+            description: "Execute one bounded click on the observed Android screen. Requires a fresh Chat-owned observation_id and exactly one node token or x/y pair. Never target Rua termination/approval controls or system authorization surfaces. Submitted is not proof of app effect; inspect the returned observation. Floating Stop ends the Phone Use session and cancels its Turn; do not retry in that Turn or retry an unknown outcome. Call phone_release when finished.".into(),
             parameters: serde_json::json!({"type":"object","properties":{"observation_id":{"type":"string"},"element_token":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"}},"required":["observation_id"],"additionalProperties":false}),
             annotations: ExtendedToolAnnotations::default(), namespace:"builtin".into(),
         }
     }
 }
 
-fn invocation_owner(ctx: &ToolContext) -> Result<String> {
-    use sha2::{Digest, Sha256};
-    let address: rua_core::ChatAddress = serde_json::from_value(
-        ctx.metadata
-            .get("security_chat_address")
-            .cloned()
-            .ok_or_else(|| invalid("Missing trusted ChatAddress"))?,
-    )
-    .map_err(|_| invalid("Invalid trusted ChatAddress"))?;
-    for key in ["turn_id", "tool_call_id", "chat_configuration_epoch"] {
-        if ctx
-            .metadata
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-            .is_none_or(str::is_empty)
-        {
-            return Err(invalid(format!("Missing trusted invocation {key}")));
+fn invocation_session(ctx: &ToolContext) -> Result<rua_core::phone_use::PhoneSessionContext> {
+    let session =
+        rua_core::phone_use::PhoneSessionContext::from_metadata(&ctx.agent_id, &ctx.metadata)
+            .map_err(invalid)?;
+    if ctx
+        .metadata
+        .get("tool_call_id")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err(invalid("Missing trusted invocation tool_call_id"));
+    }
+    Ok(session)
+}
+
+impl PhoneReleaseTool {
+    pub fn spec() -> ToolSpec {
+        ToolSpec {
+            name: "phone_release".into(),
+            description: "Release this Chat's persistent Phone Use session and hide its operation indicator when finished using the phone. Safe to repeat. Does not cancel the conversation or reverse actions. Status and app/camera listings do not start a session.".into(),
+            parameters: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+            annotations: ExtendedToolAnnotations { idempotent: true, ..Default::default() },
+            namespace: "builtin".into(),
         }
     }
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(
-            serde_json::to_vec(&(ctx.agent_id.as_str(), address))
-                .map_err(|e| invalid(e.to_string()))?
-        )
-    ))
+}
+
+#[async_trait]
+impl Tool for PhoneReleaseTool {
+    fn name(&self) -> &str {
+        "phone_release"
+    }
+    fn schema(&self) -> ToolSchema {
+        let spec = Self::spec();
+        ToolSchema {
+            name: spec.name,
+            description: spec.description,
+            parameters: spec.parameters,
+        }
+    }
+    async fn call(&self, args: serde_json::Value, ctx: ToolContext) -> Result<ToolResult> {
+        crate::schema::validate_args(self.name(), &args, &self.schema().parameters)
+            .map_err(|e| invalid(e.to_string()))?;
+        let session = invocation_session(&ctx)?;
+        let bridge =
+            rua_core::phone_use::bridge().ok_or_else(|| invalid("Phone Use is not connected"))?;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let value = bridge.release(&session, &cancel).await.map_err(invalid)?;
+        Ok(ToolResult::text(
+            self.name(),
+            serde_json::to_string(&value).map_err(|e| invalid(e.to_string()))?,
+        ))
+    }
 }
 
 #[async_trait]
@@ -376,14 +404,14 @@ impl Tool for PhoneClickTool {
         {
             return Err(invalid("Provide exactly one element_token or x/y pair"));
         }
-        let owner = invocation_owner(&ctx)?;
+        let session = invocation_session(&ctx)?;
         let operation_id = ctx.metadata["tool_call_id"]
             .as_str()
             .expect("validated invocation");
         let bridge =
             rua_core::phone_use::bridge().ok_or_else(|| invalid("Phone Use is not connected"))?;
         let cancel = tokio_util::sync::CancellationToken::new();
-        let request = bridge.interact("click", &owner, operation_id, args, &cancel);
+        let request = bridge.interact("click", &session, operation_id, args, &cancel);
         let result = if let Some(mut receiver) = ctx.cancel.clone() {
             tokio::select! {biased;
                 _=async {if !*receiver.borrow() {let _=receiver.changed().await;}} => {cancel.cancel(); return Err(invalid("Phone click cancelled; submitted outcome may be unknown"));},
@@ -425,7 +453,6 @@ impl Tool for PhoneObserveTool {
         }
     }
     async fn call(&self, args: serde_json::Value, ctx: ToolContext) -> Result<ToolResult> {
-        use sha2::{Digest, Sha256};
         let object = args
             .as_object()
             .ok_or_else(|| invalid("Expected observation options"))?;
@@ -447,30 +474,7 @@ impl Tool for PhoneObserveTool {
                     .ok_or_else(|| invalid("Invalid observation limit")),
             }
         };
-        let address: rua_core::ChatAddress = serde_json::from_value(
-            ctx.metadata
-                .get("security_chat_address")
-                .cloned()
-                .ok_or_else(|| invalid("Missing trusted ChatAddress"))?,
-        )
-        .map_err(|_| invalid("Invalid trusted ChatAddress"))?;
-        for key in ["turn_id", "tool_call_id", "chat_configuration_epoch"] {
-            if ctx
-                .metadata
-                .get(key)
-                .and_then(serde_json::Value::as_str)
-                .is_none_or(str::is_empty)
-            {
-                return Err(invalid(format!("Missing trusted invocation {key}")));
-            }
-        }
-        let owner = format!(
-            "{:x}",
-            Sha256::digest(
-                serde_json::to_vec(&(ctx.agent_id.as_str(), address))
-                    .map_err(|e| invalid(e.to_string()))?
-            )
-        );
+        let session = invocation_session(&ctx)?;
         let capture = match object.get("include_screenshot") {
             None => false,
             Some(v) => v
@@ -495,7 +499,7 @@ impl Tool for PhoneObserveTool {
             if capture {
                 bridge
                     .screenshot(
-                        &owner,
+                        &session,
                         ctx.metadata["tool_call_id"]
                             .as_str()
                             .expect("trusted invocation"),
@@ -507,7 +511,7 @@ impl Tool for PhoneObserveTool {
             } else {
                 bridge
                     .observe(
-                        &owner,
+                        &session,
                         ctx.metadata["tool_call_id"]
                             .as_str()
                             .expect("trusted invocation"),

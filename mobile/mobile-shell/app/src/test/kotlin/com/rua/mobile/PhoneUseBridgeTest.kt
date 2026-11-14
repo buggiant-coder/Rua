@@ -339,7 +339,7 @@ class PhoneUseBridgeTest {
         assertEquals(2, afterHello.size)
 
         val helloResult = afterHello.first { it.optString("id") == "h" }.getJSONObject("result")
-        assertEquals(1, helloResult.getInt("protocol_version"))
+        assertEquals(2, helloResult.getInt("protocol_version"))
         assertEquals(state.generation, helloResult.getString("generation"))
         assertEquals(64, helloResult.getString("auth_token").length)
 
@@ -348,6 +348,23 @@ class PhoneUseBridgeTest {
         assertTrue(statusResult.getBoolean("accessibility"))
         assertFalse(statusResult.getBoolean("camera_permission"))
         assertEquals("android", statusResult.getString("platform"))
+    }
+
+    @Test
+    fun releaseWithoutAnActiveSessionIsIdempotent() {
+        val state = newState()
+        PhoneDeviceControl.initialize(org.robolectric.RuntimeEnvironment.getApplication(), state.generation) {}
+        val invocation = """{"owner":"fixture-owner","chat_address":{"scope":{"kind":"agent","agent_id":"default"},"chat_id":"fixture-chat"},"turn_id":"fixture-turn","authority_epoch":"fixture-authority","chat_configuration_epoch":"fixture-configuration"}"""
+        val responses = runSession(PhoneUseSession(state), peerPid = 101,
+            input = frame("""{"id":"h","method":"hello","params":{}}""") +
+                frame("""{"id":"r1","method":"release","params":{"generation":"${state.generation}","invocation":$invocation}}""") +
+                frame("""{"id":"r2","method":"release","params":{"generation":"${state.generation}","invocation":$invocation}}"""))
+        for (id in listOf("r1", "r2")) {
+            val response = responses.first { it.optString("id") == id }
+            assertFalse("Session release must be supported: $response", response.has("error"))
+            assertFalse(response.getJSONObject("result").getBoolean("released"))
+        }
+        PhoneDeviceControl.close(state.generation)
     }
 
     @Test

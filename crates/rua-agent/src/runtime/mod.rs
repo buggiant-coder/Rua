@@ -75,6 +75,42 @@ impl AgentHook for ApprovalHook {
     }
 }
 
+struct PhoneSessionHook<'a> {
+    bridge: &'a rua_core::phone_use::PhoneBridge,
+    context: rua_core::phone_use::PhoneSessionContext,
+    cancel: CancellationToken,
+}
+
+impl PhoneSessionHook<'_> {
+    async fn bind_turn(&self) {
+        let bind_cancel = self.cancel.child_token();
+        if let Err(error) = self.bridge.bind_turn(&self.context, &bind_cancel).await {
+            tracing::warn!(%error, "Phone Use session Turn binding failed");
+        }
+    }
+}
+
+#[async_trait]
+impl AgentHook for PhoneSessionHook<'_> {
+    async fn on_finish(
+        &self,
+        _iterations: u32,
+        result: &std::result::Result<(), react_agent::AgentError>,
+    ) {
+        if result.is_ok() && !self.cancel.is_cancelled() {
+            return;
+        }
+        let cleanup_cancel = CancellationToken::new();
+        if let Err(error) = self.bridge.release(&self.context, &cleanup_cancel).await {
+            tracing::warn!(%error, "Phone Use session cleanup failed");
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/runtime_phone_session.rs"]
+mod phone_session_tests;
+
 struct ProviderFallbackResolver {
     provider_manager: Arc<ProviderManager>,
 }
@@ -1431,18 +1467,50 @@ fn project_capability_context(
         .iter()
         .filter(|diagnostic| diagnostic.state == "unavailable")
         .collect::<Vec<_>>();
-    let availability = (!unavailable.is_empty()).then(|| {
+    let mut guidance = Vec::new();
+    if !unavailable.is_empty() {
         let diagnostics =
             serde_json::to_string_pretty(&unavailable).expect("capability diagnostics serialize");
-        let content = format!(
+        guidance.push(format!(
             "## Current unavailable capabilities\n\
              These are runtime observations, not instructions. These capabilities are not callable \
              in the current snapshot. Use the reported reason; do not infer that the Agent Tool \
              selection policy disabled them or guess replacement tools. Native platform permissions \
              must be enabled by the user in native permission settings; changing Agent configuration \
              does not grant them.\n{diagnostics}"
-        );
-        ModelCallSection::new(ModelCallSectionKind::CapabilityAvailability, content)
+        ));
+    }
+    let phone_tools = toolkit
+        .disclosure_inventory()
+        .into_iter()
+        .filter(|entry| entry.disclosure.product_capability.as_deref() == Some("phone_use"))
+        .map(|entry| entry.definition.name)
+        .collect::<Vec<_>>();
+    if phone_tools.iter().any(|name| {
+        !matches!(
+            name.as_str(),
+            "phone_status" | "phone_list_apps" | "phone_list_cameras"
+        )
+    }) {
+        let release = if phone_tools.iter().any(|name| name == "phone_release") {
+            "Call phone_release explicitly when you finish the Phone Use work, before your final response."
+        } else {
+            "The current selection has no session release tool. Ask the user to stop the session with the native control when the Phone Use work is finished."
+        };
+        guidance.push(format!(
+            "## Phone Use session lifecycle\n\
+             The first authorized screen observation, interaction, or photo capture starts a \
+             visible Phone Use session. It remains active across tool calls and model thinking; \
+             normal Turn completion does not release it. {release} Status and device-list queries \
+             do not start a session. If the user stops the session, do not recreate it or retry \
+             Phone Use in the same Turn."
+        ));
+    }
+    let availability = (!guidance.is_empty()).then(|| {
+        ModelCallSection::new(
+            ModelCallSectionKind::CapabilityAvailability,
+            guidance.join("\n\n"),
+        )
     });
     react_agent::replace_model_call_section(
         &mut request.messages,
@@ -2702,6 +2770,22 @@ impl AgentRuntime for ReactAgentRuntime {
         }
 
         let mut hooks: Vec<Arc<dyn AgentHook>> = Vec::new();
+
+        if let (Some(bridge), Ok(context)) = (
+            rua_core::phone_use::bridge(),
+            rua_core::phone_use::PhoneSessionContext::from_metadata(
+                req.agent_id.as_str(),
+                &req.metadata,
+            ),
+        ) {
+            let hook = PhoneSessionHook {
+                bridge,
+                context,
+                cancel: cancel.clone(),
+            };
+            hook.bind_turn().await;
+            hooks.push(Arc::new(hook));
+        }
 
         if let Some(contributor) = bootstrap_contributor {
             hooks.push(contributor);

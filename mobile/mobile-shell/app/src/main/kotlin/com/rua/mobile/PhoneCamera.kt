@@ -45,17 +45,26 @@ internal object PhoneCamera {
         }
         return JSONObject().put("cameras",cameras)
     }
-    @Synchronized fun take(service: Context, owner: String, id: String, cameraId: String): CompletableFuture<JSONObject> {
+    fun take(service: Context, invocation: PhoneInvocation, id: String, cameraId: String, generation: String): CompletableFuture<JSONObject> {
         check(ContextCompat.checkSelfPermission(service,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED) { "Grant camera permission in Rua before taking a photo" }
         val cameras=list(service).getJSONArray("cameras")
         check((0 until cameras.length()).any { cameras.getJSONObject(it).getString("camera_id")==cameraId }) { "Unknown camera" }
-        val op=PhoneDeviceControl.state.begin(owner,id)
+        val op=PhoneDeviceControl.begin(invocation,id,generation)
         val request=PhonePhotoRequest(UUID.randomUUID().toString(),cameraId,op)
-        pending=request
+        try {
+            synchronized(this) {
+                check(pending == null) { "Phone camera is still releasing its previous request" }
+                pending=request
+            }
+        } catch (error: Exception) {
+            PhoneDeviceControl.fail(op)
+            PhoneDeviceControl.state.finish(op)
+            throw error
+        }
         val handler=Handler(Looper.getMainLooper())
         handler.post {
             if(op.cancelled.get()) {finish(request,IllegalStateException("Camera cancelled"));return@post}
-            try {service.startActivity(Intent(service,PhoneCameraActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("request",request.token))}
+            try {PhoneDeviceControl.state.dispatch(op) { service.startActivity(Intent(service,PhoneCameraActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("request",request.token)) }}
             catch(e:Exception){finish(request,e)}
         }
         handler.postDelayed({ if(!op.result.isDone) finish(request,IllegalStateException("Open Rua camera preview; capture timed out")) },12_000)
@@ -64,6 +73,10 @@ internal object PhoneCamera {
     fun claim(token:String?):PhonePhotoRequest?=pending?.takeIf {it.token==token && !it.operation.result.isDone}
     fun attach(value:PhoneCameraActivity) { activity=value }
     fun detach(value:PhoneCameraActivity) { if(activity === value) activity=null }
+    fun cancel(invocation: PhoneInvocation, requestId: String) {
+        pending?.takeIf { it.operation.invocation == invocation && it.operation.requestId == requestId }
+            ?.let { request -> Handler(Looper.getMainLooper()).post { finish(request, IllegalStateException("Phone Use cancelled")) } }
+    }
     @Synchronized fun finish(request:PhonePhotoRequest,error:Throwable?=null,image:JSONObject?=null){
         if(pending !== request) return
         if(Looper.myLooper()!=Looper.getMainLooper()) {
@@ -71,7 +84,7 @@ internal object PhoneCamera {
             return
         }
         activity?.releaseCamera()
-        if(error!=null) request.operation.result.completeExceptionally(error)
+        if(error!=null) { request.operation.result.completeExceptionally(error); PhoneDeviceControl.fail(request.operation) }
         else request.operation.result.complete(JSONObject().put("image",image).put("camera_id",request.cameraId))
         PhoneDeviceControl.state.finish(request.operation)
         pending=null
@@ -93,7 +106,11 @@ class PhoneCameraActivity : ComponentActivity() {
         val previewView=PreviewView(this)
         column.addView(previewView,LinearLayout.LayoutParams(-1,0,1f))
         if (MobileAccessibilityService.instance == null) {
-            column.addView(Button(this).apply {text="终止";contentDescription="终止当前拍照";setOnClickListener {PhoneDeviceControl.state.cancel(r.operation.owner,r.operation.requestId);PhoneCamera.finish(r,IllegalStateException("Photo cancelled by user"));finish()}})
+            val sessionId = PhoneDeviceControl.sessions.current()?.takeIf { it.invocation == r.operation.invocation }?.sessionId
+            column.addView(Button(this).apply {text="停止";contentDescription="停止当前 Phone Use 会话";setOnClickListener {
+                sessionId?.let { PhoneDeviceControl.stopSession(it) }
+                finish()
+            }})
         }
         setContentView(column)
         val future=ProcessCameraProvider.getInstance(this)

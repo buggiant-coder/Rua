@@ -117,6 +117,7 @@ android-signing.properties
 /scripts/tests/*
 !/scripts/tests/android-native-runtime-e2e.py
 !/scripts/tests/android-native-runtime-model.py
+!/scripts/tests/android-phone-session-model.py
 !/scripts/tests/android-runtime-acp-registry.py
 !/scripts/tests/android-runtime-recovery.py
 !/scripts/tests/android-runtime-skills.py

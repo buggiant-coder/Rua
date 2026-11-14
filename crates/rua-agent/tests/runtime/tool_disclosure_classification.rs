@@ -183,6 +183,7 @@ fn phone_readiness_keeps_status_and_separate_permissions() {
     assert!(reason("phone_status", &status).is_none());
     assert!(reason("phone_list_apps", &status).is_none());
     assert!(reason("phone_list_cameras", &status).is_none());
+    assert!(reason("phone_release", &status).is_none());
     assert!(reason("phone_observe", &status).is_some());
     assert!(reason("phone_take_photo", &status).is_some());
     status.camera_permission = true;

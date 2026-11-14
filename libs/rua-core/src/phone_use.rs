@@ -29,6 +29,53 @@ pub struct PhoneStatus {
     pub extra: BTreeMap<String, Value>,
 }
 
+/// Trusted ownership for a visible Phone Use session; never supplied by model arguments.
+#[derive(Clone, Debug, Serialize)]
+pub struct PhoneSessionContext {
+    pub owner: String,
+    pub chat_address: crate::ChatAddress,
+    pub turn_id: String,
+    pub authority_epoch: String,
+    pub chat_configuration_epoch: String,
+}
+
+impl PhoneSessionContext {
+    pub fn from_metadata(
+        agent_id: &str,
+        metadata: &std::collections::HashMap<String, Value>,
+    ) -> Result<Self, String> {
+        use sha2::{Digest, Sha256};
+        let chat_address: crate::ChatAddress = serde_json::from_value(
+            metadata
+                .get("security_chat_address")
+                .cloned()
+                .ok_or("Missing trusted ChatAddress")?,
+        )
+        .map_err(|_| "Invalid trusted ChatAddress")?;
+        let field = |key: &str| {
+            metadata
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| format!("Missing trusted invocation {key}"))
+        };
+        let owner = format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&(agent_id, &chat_address)).map_err(|e| e.to_string())?
+            )
+        );
+        Ok(Self {
+            owner,
+            chat_address,
+            turn_id: field("turn_id")?,
+            authority_epoch: field("authority_epoch")?,
+            chat_configuration_epoch: field("chat_configuration_epoch")?,
+        })
+    }
+}
+
 pub struct PhoneBridge {
     socket: PathBuf,
     host_pid: u32,
@@ -128,7 +175,7 @@ impl PhoneBridge {
             return Err("Invalid private Phone Use endpoint".into());
         }
         let hello = Self::exchange(&socket, host_pid, "hello", json!({}), cancel).await?;
-        if hello["protocol_version"] != 1 {
+        if hello["protocol_version"] != 2 {
             return Err("Unsupported Phone Use protocol".into());
         }
         let generation = hello["generation"]
@@ -221,14 +268,46 @@ impl PhoneBridge {
         .await
     }
 
+    /// Update an existing session's Turn target without acquiring a new session.
+    pub async fn bind_turn(
+        &self,
+        session: &PhoneSessionContext,
+        cancel: &CancellationToken,
+    ) -> Result<Value, String> {
+        Self::exchange(
+            &self.socket,
+            self.host_pid,
+            "bind_turn",
+            json!({"generation":self.generation,"invocation":session}),
+            cancel,
+        )
+        .await
+    }
+
+    /// Relinquish only this exact session invocation. A late cleanup cannot release a newer Turn.
+    pub async fn release(
+        &self,
+        session: &PhoneSessionContext,
+        cancel: &CancellationToken,
+    ) -> Result<Value, String> {
+        Self::exchange(
+            &self.socket,
+            self.host_pid,
+            "release",
+            json!({"generation":self.generation,"invocation":session}),
+            cancel,
+        )
+        .await
+    }
+
     pub async fn take_photo(
         &self,
-        owner: &str,
+        session: &PhoneSessionContext,
         operation_id: &str,
         camera_id: &str,
         cancel: &CancellationToken,
     ) -> Result<PhoneImage, String> {
-        let params = json!({"generation":self.generation,"owner":owner,"operation_id":operation_id,"camera_id":camera_id});
+        let params = json!({"generation":self.generation,"invocation":session,"operation_id":operation_id,"camera_id":camera_id});
         let mut guard = PhoneCallGuard {
             socket: self.socket.clone(),
             host_pid: self.host_pid,
@@ -262,13 +341,13 @@ impl PhoneBridge {
 
     pub async fn screenshot(
         &self,
-        owner: &str,
+        session: &PhoneSessionContext,
         operation_id: &str,
         max_nodes: u32,
         max_depth: u32,
         cancel: &CancellationToken,
     ) -> Result<PhoneObservation, String> {
-        let params = json!({"generation":self.generation,"owner":owner,"operation_id":operation_id,"max_nodes":max_nodes,"max_depth":max_depth});
+        let params = json!({"generation":self.generation,"invocation":session,"operation_id":operation_id,"max_nodes":max_nodes,"max_depth":max_depth});
         let mut guard = PhoneCallGuard {
             socket: self.socket.clone(),
             host_pid: self.host_pid,
@@ -289,20 +368,16 @@ impl PhoneBridge {
 
     pub async fn observe(
         &self,
-        owner: &str,
+        session: &PhoneSessionContext,
         operation_id: &str,
         max_nodes: u32,
         max_depth: u32,
         cancel: &CancellationToken,
     ) -> Result<PhoneObservation, String> {
-        if owner.is_empty()
-            || owner.len() > 128
-            || !(1..=40).contains(&max_nodes)
-            || !(1..=12).contains(&max_depth)
-        {
+        if !(1..=40).contains(&max_nodes) || !(1..=12).contains(&max_depth) {
             return Err("Invalid Phone Use observation limits".into());
         }
-        let params = json!({"generation":self.generation,"owner":owner,"operation_id":operation_id,"max_nodes":max_nodes,"max_depth":max_depth});
+        let params = json!({"generation":self.generation,"invocation":session,"operation_id":operation_id,"max_nodes":max_nodes,"max_depth":max_depth});
         let mut guard = PhoneCallGuard {
             socket: self.socket.clone(),
             host_pid: self.host_pid,
@@ -320,7 +395,7 @@ impl PhoneBridge {
     pub async fn interact(
         &self,
         action: &str,
-        owner: &str,
+        session: &PhoneSessionContext,
         operation_id: &str,
         mut params: Value,
         cancel: &CancellationToken,
@@ -332,13 +407,13 @@ impl PhoneBridge {
             return Err("Unsupported Phone Use action".into());
         }
         let fields = params.as_object_mut().ok_or("Invalid phone interaction")?;
-        fields.insert("owner".into(), json!(owner));
+        fields.insert("invocation".into(), json!(session));
         fields.insert("operation_id".into(), json!(operation_id));
         fields.insert("generation".into(), json!(self.generation));
         let mut guard = PhoneCallGuard {
             socket: self.socket.clone(),
             host_pid: self.host_pid,
-            params: json!({"generation":self.generation,"owner":owner,"operation_id":operation_id}),
+            params: json!({"generation":self.generation,"invocation":session,"operation_id":operation_id}),
             settled: false,
         };
         let mut result = Self::exchange(&self.socket, self.host_pid, action, params, cancel).await;

@@ -64,7 +64,7 @@ async fn fixture(listener: UnixListener, changed: bool) {
         let input: Value = serde_json::from_str(&line).unwrap();
         let result = if step == 0 {
             assert_eq!(input["method"], "hello");
-            json!({"protocol_version":1,"generation":"first","auth_token":"a".repeat(64)})
+            json!({"protocol_version":2,"generation":"first","auth_token":"a".repeat(64)})
         } else {
             assert_eq!(input["params"]["generation"], "first");
             json!({"generation":if changed {"other"} else {"first"},"platform":"android","state":"permission_required","accessibility":false,"camera_permission":true,"future":42})
@@ -124,7 +124,7 @@ async fn private_ready_publishes_the_bound_port_and_validates_acknowledgement() 
                     .unwrap();
                 let input: Value = serde_json::from_str(&line).unwrap();
                 let result = if step == 0 {
-                    json!({"protocol_version":1,"generation":"first","auth_token":"a".repeat(64)})
+                    json!({"protocol_version":2,"generation":"first","auth_token":"a".repeat(64)})
                 } else {
                     assert_eq!(input["method"], "resident_ready");
                     assert_eq!(input["params"]["generation"], "first");
@@ -226,4 +226,162 @@ async fn oversized_frame_and_wrong_response_id_are_rejected() {
         );
         server.await.unwrap();
     }
+}
+
+fn session_metadata() -> std::collections::HashMap<String, Value> {
+    std::collections::HashMap::from([
+        (
+            "security_chat_address".into(),
+            json!({"scope":{"kind":"agent","agent_id":"agent"},"chat_id":"chat"}),
+        ),
+        ("turn_id".into(), json!("turn")),
+        ("authority_epoch".into(), json!("epoch")),
+        ("chat_configuration_epoch".into(), json!("configuration")),
+    ])
+}
+
+#[test]
+fn session_identity_requires_trusted_turn_and_keeps_chat_ownership_across_turns() {
+    use rua_core::phone_use::PhoneSessionContext;
+    let metadata = session_metadata();
+    let session = PhoneSessionContext::from_metadata("agent", &metadata).unwrap();
+    assert_eq!(session.turn_id, "turn");
+    assert_eq!(session.authority_epoch, "epoch");
+    for key in [
+        "security_chat_address",
+        "turn_id",
+        "authority_epoch",
+        "chat_configuration_epoch",
+    ] {
+        let mut missing = metadata.clone();
+        missing.remove(key);
+        assert!(
+            PhoneSessionContext::from_metadata("agent", &missing).is_err(),
+            "{key}"
+        );
+    }
+    let mut next = metadata.clone();
+    next.insert("turn_id".into(), json!("next"));
+    assert_eq!(
+        session.owner,
+        PhoneSessionContext::from_metadata("agent", &next)
+            .unwrap()
+            .owner
+    );
+    assert_ne!(
+        session.owner,
+        PhoneSessionContext::from_metadata("another", &metadata)
+            .unwrap()
+            .owner
+    );
+}
+
+#[tokio::test]
+async fn release_carries_exact_trusted_session_without_an_operation_or_model_identity() {
+    use rua_core::phone_use::PhoneSessionContext;
+    let session = PhoneSessionContext::from_metadata("agent", &session_metadata()).unwrap();
+    let expected = serde_json::to_value(&session).unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("phone-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let path = temp.path().join("bridge.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    let server = tokio::spawn(async move {
+        for step in 0..3 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut line = String::new();
+            BufReader::new(&mut socket)
+                .read_line(&mut line)
+                .await
+                .unwrap();
+            let input: Value = serde_json::from_str(&line).unwrap();
+            let result = if step == 0 {
+                json!({"protocol_version":2,"generation":"first","auth_token":"a".repeat(64)})
+            } else {
+                assert_eq!(input["method"], "release");
+                assert_eq!(input["params"]["generation"], "first");
+                assert_eq!(input["params"]["invocation"], expected);
+                assert!(input["params"].get("operation_id").is_none());
+                json!({"released":step == 1})
+            };
+            socket
+                .write_all(format!("{}\n", json!({"id":input["id"],"result":result})).as_bytes())
+                .await
+                .unwrap();
+        }
+    });
+    let cancel = CancellationToken::new();
+    let bridge = PhoneBridge::connect(path, std::process::id(), &cancel)
+        .await
+        .unwrap();
+    assert_eq!(
+        bridge.release(&session, &cancel).await.unwrap()["released"],
+        true
+    );
+    assert_eq!(
+        bridge.release(&session, &cancel).await.unwrap()["released"],
+        false
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelled_action_fences_native_cancel_to_the_same_session_and_operation() {
+    use rua_core::phone_use::PhoneSessionContext;
+    let session = PhoneSessionContext::from_metadata("agent", &session_metadata()).unwrap();
+    let expected = serde_json::to_value(&session).unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("phone-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let path = temp.path().join("bridge.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    let cancel = CancellationToken::new();
+    let native_cancel = cancel.clone();
+    let server = tokio::spawn(async move {
+        for step in 0..3 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut line = String::new();
+            BufReader::new(&mut socket)
+                .read_line(&mut line)
+                .await
+                .unwrap();
+            let input: Value = serde_json::from_str(&line).unwrap();
+            let result = if step == 0 {
+                json!({"protocol_version":2,"generation":"first","auth_token":"a".repeat(64)})
+            } else {
+                assert_eq!(input["params"]["invocation"], expected);
+                assert_eq!(input["params"]["operation_id"], "operation");
+                if step == 1 {
+                    assert_eq!(input["method"], "home");
+                    native_cancel.cancel();
+                    continue;
+                }
+                assert_eq!(input["method"], "cancel");
+                json!({"cancelled":true})
+            };
+            socket
+                .write_all(format!("{}\n", json!({"id":input["id"],"result":result})).as_bytes())
+                .await
+                .unwrap();
+        }
+    });
+    let bridge = PhoneBridge::connect(path, std::process::id(), &cancel)
+        .await
+        .unwrap();
+    assert!(bridge
+        .interact(
+            "home",
+            &session,
+            "operation",
+            json!({"observation_id":"test"}),
+            &cancel
+        )
+        .await
+        .is_err());
+    tokio::time::timeout(std::time::Duration::from_secs(3), server)
+        .await
+        .unwrap()
+        .unwrap();
 }

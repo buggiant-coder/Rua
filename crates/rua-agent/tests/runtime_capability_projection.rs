@@ -23,6 +23,7 @@ fn phone_snapshot(
             .unwrap();
     };
     register(Arc::new(PhoneStatusTool), PhoneStatusTool::spec());
+    register(Arc::new(PhoneReleaseTool), PhoneReleaseTool::spec());
     register(Arc::new(PhoneObserveTool), PhoneObserveTool::spec());
     register(Arc::new(PhoneClickTool), PhoneClickTool::spec());
     register(Arc::new(PhoneListAppsTool), PhoneListAppsTool::spec());
@@ -156,7 +157,7 @@ fn missing_accessibility_is_explained_to_the_model_without_exposing_action_schem
     assert!(text.contains("native permission settings"));
     assert!(text.contains("Agent configuration"));
     assert!(developer_text(&request).contains("Keep the captured Hook continuation."));
-    assert_eq!(request.tools.len(), 4);
+    assert_eq!(request.tools.len(), 5);
 }
 
 #[test]
@@ -174,7 +175,7 @@ fn current_permission_snapshot_replaces_unavailable_guidance_and_preserves_exist
             Some(32_768),
         );
         let text = developer_text(&request);
-        assert_eq!(availability_section(&request).is_some(), !accessibility);
+        assert!(availability_section(&request).is_some());
         assert_eq!(
             text.contains("Current unavailable capabilities"),
             !accessibility
@@ -196,6 +197,55 @@ fn current_permission_snapshot_replaces_unavailable_guidance_and_preserves_exist
             assert_eq!(text.contains(name), !accessibility);
         }
     }
+}
+
+#[test]
+fn phone_session_guidance_requires_explicit_release_and_follows_selected_capabilities() {
+    use rua_config::types::tools::{ToolIdentity, ToolSelectionPolicy};
+    let mut request = project_capability_context(
+        request_with_guidance(),
+        &phone_snapshot(true, ToolSelectionPolicy::default_enabled()),
+        &react_agent::ToolDisclosureConfig::default(),
+        Some(32_768),
+    );
+    let text = availability_section(&request).expect("Phone Use session guidance");
+    assert!(text.contains("phone_release"));
+    assert!(text.contains("normal Turn completion does not release"));
+    assert!(text.contains("model thinking"));
+    assert!(text.contains("do not recreate"));
+    assert!(developer_text(&request).contains("Keep the captured Hook continuation."));
+    request = project_capability_context(
+        request,
+        &phone_snapshot(
+            true,
+            ToolSelectionPolicy::restricted(vec![
+                ToolIdentity::builtin("phone_status"),
+                ToolIdentity::builtin("phone_list_apps"),
+                ToolIdentity::builtin("phone_list_cameras"),
+            ]),
+        ),
+        &react_agent::ToolDisclosureConfig::default(),
+        Some(32_768),
+    );
+    assert!(availability_section(&request).is_none());
+    assert!(!developer_text(&request).contains("phone_release"));
+
+    request = project_capability_context(
+        request,
+        &phone_snapshot(
+            true,
+            ToolSelectionPolicy::restricted(vec![ToolIdentity::builtin("phone_observe")]),
+        ),
+        &react_agent::ToolDisclosureConfig::default(),
+        Some(32_768),
+    );
+    let text = availability_section(&request).expect("Phone Use session guidance");
+    assert!(!text.contains("phone_release"));
+    assert!(!request
+        .tools
+        .iter()
+        .any(|tool| tool.name == "phone_release"));
+    assert!(text.contains("native control"));
 }
 
 #[test]

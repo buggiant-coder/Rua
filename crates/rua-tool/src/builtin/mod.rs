@@ -27,6 +27,11 @@ pub(crate) fn register_builtin_tools(
             ToolNamespace::Builtin,
         )?;
         registry.register(
+            Arc::new(phone_use::PhoneReleaseTool),
+            phone_use::PhoneReleaseTool::spec(),
+            ToolNamespace::Builtin,
+        )?;
+        registry.register(
             Arc::new(phone_use::PhoneObserveTool),
             phone_use::PhoneObserveTool::spec(),
             ToolNamespace::Builtin,

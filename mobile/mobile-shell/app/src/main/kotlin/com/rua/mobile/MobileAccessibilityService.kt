@@ -48,7 +48,7 @@ class MobileAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
-        controller.state.cancelCurrent()
+        if (instance === this) PhoneDeviceControl.clear()
         observations.clear()
         Log.i(TAG, "AccessibilityService interrupted")
     }
@@ -56,7 +56,7 @@ class MobileAccessibilityService : AccessibilityService() {
     override fun onUnbind(intent: Intent?): Boolean {
         controller.close()
         observations.clear()
-        instance = null
+        if (instance === this) instance = null
         Log.i(TAG, "AccessibilityService unbound")
         return super.onUnbind(intent)
     }

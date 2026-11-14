@@ -55,7 +55,7 @@ object PermissionGuide {
         ),
         Item(
             name = "悬浮窗",
-            description = "AI 操作时显示状态浮窗",
+            description = "显示 Phone Use 会话提示和停止入口；已启用无障碍时无需此权限",
             isGranted = ::hasOverlayPermission,
             jumpTo = ::jumpToOverlayPermission,
         ),

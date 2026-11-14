@@ -17,8 +17,9 @@ internal object PhoneScreenshot {
         for(index in 0 until prior.length()) prior.getJSONObject(index).remove("token")
         return prior.toString() == after.getJSONArray("nodes").toString()
     }
-    fun capture(service: MobileAccessibilityService, owner: String, requestId: String, maxNodes: Int, maxDepth: Int): CompletableFuture<JSONObject> {
-        val operation = service.controller.state.begin(owner, requestId)
+    fun capture(service: MobileAccessibilityService, invocation: PhoneInvocation, requestId: String, maxNodes: Int, maxDepth: Int, generation: String): CompletableFuture<JSONObject> {
+        val owner = invocation.owner
+        val operation = PhoneDeviceControl.begin(invocation, requestId, generation)
         val handler = Handler(Looper.getMainLooper())
         handler.post {
             try {
@@ -46,8 +47,9 @@ internal object PhoneScreenshot {
                                 .put("data",android.util.Base64.encodeToString(bytes.toByteArray(),android.util.Base64.NO_WRAP)))
                             operation.result.complete(before)
                         } catch(e: Exception) {
-                            service.observations.invalidateOwner(owner)
+                            invalidateIfCurrent(service, operation)
                             operation.result.completeExceptionally(e)
+                            PhoneDeviceControl.fail(operation)
                         } finally {
                             if(scaled !== bitmap) scaled?.recycle()
                             bitmap?.recycle(); hardware?.recycle(); buffer.close()
@@ -55,14 +57,19 @@ internal object PhoneScreenshot {
                         }
                     }
                     override fun onFailure(errorCode: Int) {
-                        service.observations.invalidateOwner(owner)
+                        invalidateIfCurrent(service, operation)
                         operation.result.completeExceptionally(IllegalStateException("Screenshot unavailable: $errorCode"))
+                        PhoneDeviceControl.fail(operation)
                         service.controller.state.finish(operation)
                     }
                 }) }
-            } catch(e: Exception) { operation.result.completeExceptionally(e); service.controller.state.finish(operation) }
+            } catch(e: Exception) { operation.result.completeExceptionally(e); PhoneDeviceControl.fail(operation); service.controller.state.finish(operation) }
         }
-        handler.postDelayed({ if(!operation.result.isDone) { service.controller.state.cancel(owner,requestId); service.observations.invalidateOwner(owner) }; service.controller.state.finish(operation) },3000)
+        handler.postDelayed({ if(!operation.result.isDone) { invalidateIfCurrent(service, operation); PhoneDeviceControl.fail(operation); service.controller.state.ifCurrent(operation) { service.controller.state.cancel(invocation,requestId) } }; service.controller.state.finish(operation) },3000)
         return operation.result
+    }
+
+    fun invalidateIfCurrent(service: MobileAccessibilityService, operation: PhoneOperation) {
+        service.controller.state.ifCurrent(operation) { service.observations.invalidateOwner(operation.owner) }
     }
 }

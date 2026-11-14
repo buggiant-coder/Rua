@@ -30,7 +30,7 @@ import org.json.JSONObject
  * `{id, result}` or `{id, error:{code, message}}`.
  */
 internal object PhoneUseProtocol {
-    const val VERSION = 1
+    const val VERSION = 2
     const val MAX_FRAME_BYTES = 64 * 1024
     const val READ_TIMEOUT_MS = 5_000
     const val AUTH_TOKEN_BYTES = 32
@@ -70,6 +70,7 @@ internal object PhoneUseProtocol {
         .put("generation", generation)
         .put("accessibility", status.accessibilityConnected)
         .put("camera_permission", status.cameraPermissionGranted)
+        .put("session_active", PhoneDeviceControl.sessions.current() != null)
         .put("state", if (status.executing) "executing" else if (connected) STATE_READY else STATE_PERMISSION_REQUIRED)
         .put("platform", PLATFORM)
 
@@ -249,11 +250,13 @@ internal class PhoneUseBridgeState(
     private val bindLock = Any()
     private var residentPid: Int? = null
     private var httpPort: Int? = null
+    private var closed = false
 
     fun bindResident(candidatePid: Int): PhoneUseBindResult = synchronized(bindLock) {
+        if (closed) return@synchronized PhoneUseBindResult.CONFLICT
         val current = residentPid
         when (current) {
-            null -> {
+            null -> if (closed) PhoneUseBindResult.CONFLICT else {
                 residentPid = candidatePid
                 PhoneUseBindResult.BOUND
             }
@@ -262,9 +265,11 @@ internal class PhoneUseBridgeState(
         }
     }
 
-    fun isBoundResident(pid: Int): Boolean = synchronized(bindLock) { residentPid == pid }
+    fun isBoundResident(pid: Int): Boolean = synchronized(bindLock) { !closed && residentPid == pid }
 
-    fun isConnected(): Boolean = synchronized(bindLock) { residentPid != null }
+    fun isConnected(): Boolean = synchronized(bindLock) { !closed && residentPid != null }
+
+    fun close() = synchronized(bindLock) { closed = true }
 
     fun matchesGeneration(candidate: String?): Boolean = candidate == generation
 
@@ -313,7 +318,28 @@ internal class PhoneUseSession(private val state: PhoneUseBridgeState) {
             write(writer, PhoneUseProtocol.errorEnvelope("", ex.code, ex.message ?: ""))
             return true
         }
+        val sessionMethods = setOf("observe", "screenshot", "take_photo", "click", "long_press", "type_text", "swipe", "back", "home", "launch_app", "cancel", "release", "bind_turn")
+        val invocation = if (request.method in sessionMethods) {
+            if (!state.isBoundResident(peerPid) || !state.matchesGeneration(request.params?.optString(PhoneUseProtocol.PARAM_GENERATION))) {
+                write(writer, PhoneUseProtocol.errorEnvelope(request.id, "generation_mismatch", "Bound resident required"))
+                return false
+            }
+            try { PhoneInvocation.fromParams(request.params ?: JSONObject()) }
+            catch (error: Exception) {
+                write(writer, PhoneUseProtocol.errorEnvelope(request.id, "bad_request", error.message.orEmpty().take(300)))
+                return true
+            }
+        } else null
         when (request.method) {
+            "release", "bind_turn" -> {
+                try {
+                    val result = if (request.method == "release") JSONObject().put("released", PhoneDeviceControl.release(invocation!!, state.generation))
+                        else JSONObject().put("bound", PhoneDeviceControl.bindTurn(invocation!!, state.generation))
+                    write(writer, PhoneUseProtocol.resultEnvelope(request.id, result))
+                } catch (error: Exception) {
+                    write(writer, PhoneUseProtocol.errorEnvelope(request.id, "session_refused", error.message.orEmpty().take(300)))
+                }
+            }
             PhoneUseProtocol.METHOD_HELLO -> {
                 if (state.bindResident(peerPid) == PhoneUseBindResult.CONFLICT) {
                     write(
@@ -385,22 +411,23 @@ internal class PhoneUseSession(private val state: PhoneUseBridgeState) {
                 val params = request.params ?: JSONObject()
                 var reservation:PhoneOperation?=null
                 val operation = java.util.concurrent.FutureTask {
-                    val active=PhoneDeviceControl.state.begin(params.getString("owner"),params.getString("operation_id"))
+                    val active=PhoneDeviceControl.begin(invocation!!,params.getString("operation_id"),state.generation)
                     reservation=active
                     try {
                     val service = MobileAccessibilityService.instance ?: throw IllegalStateException("accessibility permission is required")
-                    val result=service.observe(params.getString("owner"), params.optInt("max_nodes", 30), params.optInt("max_depth", 10))
+                    val result=service.observe(invocation.owner, params.optInt("max_nodes", 30), params.optInt("max_depth", 10))
                     check(!active.cancelled.get()) {"Phone observation cancelled"}
                     result
-                    } finally {PhoneDeviceControl.state.finish(active)}
+                    } catch (error: Exception) { PhoneDeviceControl.fail(active); throw error }
+                    finally {PhoneDeviceControl.state.finish(active)}
                 }
                 android.os.Handler(android.os.Looper.getMainLooper()).post(operation)
                 try {
                     val result = operation.get(3, java.util.concurrent.TimeUnit.SECONDS)
                     write(writer, PhoneUseProtocol.resultEnvelope(request.id, result))
                 } catch (error: Exception) {
-                    PhoneDeviceControl.state.cancel(params.optString("owner"),params.optString("operation_id"))
-                    reservation?.let {PhoneDeviceControl.state.finish(it)}
+                    if (state.isBoundResident(peerPid)) PhoneDeviceControl.cancel(invocation!!,params.optString("operation_id"),state.generation)
+                    reservation?.let {PhoneDeviceControl.fail(it); PhoneDeviceControl.state.finish(it)}
                     operation.cancel(false)
                     write(writer, PhoneUseProtocol.errorEnvelope(request.id, "observation_failed", (error.cause?.message ?: error.message ?: "observation failed").take(300)))
                 }
@@ -420,9 +447,12 @@ internal class PhoneUseSession(private val state: PhoneUseBridgeState) {
                 try {
                     val params=request.params ?: error("Missing params")
                     val service=MobileAccessibilityService.instance ?: error("Accessibility service not connected")
-                    val result=PhoneScreenshot.capture(service,params.getString("owner"),params.getString("operation_id"),params.optInt("max_nodes",30),params.optInt("max_depth",10)).get(4,java.util.concurrent.TimeUnit.SECONDS)
+                    val result=PhoneScreenshot.capture(service,invocation!!,params.getString("operation_id"),params.optInt("max_nodes",30),params.optInt("max_depth",10),state.generation).get(4,java.util.concurrent.TimeUnit.SECONDS)
                     write(writer,PhoneUseProtocol.resultEnvelope(request.id,result))
-                } catch(e:Exception) {write(writer,PhoneUseProtocol.errorEnvelope(request.id,"screenshot_failed",(e.cause?.message?:e.message?:"Screenshot failed").take(300)))}
+                } catch(e:Exception) {
+                    PhoneDeviceControl.fail(invocation!!, request.params?.optString("operation_id").orEmpty(), state.generation)
+                    write(writer,PhoneUseProtocol.errorEnvelope(request.id,"screenshot_failed",(e.cause?.message?:e.message?:"Screenshot failed").take(300)))
+                }
             }
             "list_cameras", "take_photo" -> {
                 if (!state.isBoundResident(peerPid) || !state.matchesGeneration(request.params?.optString(PhoneUseProtocol.PARAM_GENERATION))) {
@@ -432,9 +462,12 @@ internal class PhoneUseSession(private val state: PhoneUseBridgeState) {
                     val context=PhoneUseBridge.applicationContext() ?: error("Phone Use host unavailable")
                     val params=request.params ?: error("Missing params")
                     val result=if(request.method=="list_cameras")PhoneCamera.list(context)
-                    else PhoneCamera.take(context,params.getString("owner"),params.getString("operation_id"),params.getString("camera_id")).get(13,java.util.concurrent.TimeUnit.SECONDS)
+                    else PhoneCamera.take(context,invocation!!,params.getString("operation_id"),params.getString("camera_id"),state.generation).get(13,java.util.concurrent.TimeUnit.SECONDS)
                     write(writer,PhoneUseProtocol.resultEnvelope(request.id,result))
-                }catch(e:Exception){write(writer,PhoneUseProtocol.errorEnvelope(request.id,"camera_failed",(e.cause?.message?:e.message?:"Camera failed").take(300)))}
+                }catch(e:Exception){
+                    if (request.method == "take_photo") PhoneDeviceControl.fail(invocation!!, request.params?.optString("operation_id").orEmpty(), state.generation)
+                    write(writer,PhoneUseProtocol.errorEnvelope(request.id,"camera_failed",(e.cause?.message?:e.message?:"Camera failed").take(300)))
+                }
             }
             "click", "long_press", "type_text", "swipe", "back", "home", "launch_app", "cancel" -> {
                 if (!state.isBoundResident(peerPid) || !state.matchesGeneration(request.params?.optString(PhoneUseProtocol.PARAM_GENERATION))) {
@@ -442,14 +475,16 @@ internal class PhoneUseSession(private val state: PhoneUseBridgeState) {
                 }
                 try {
                     val params = request.params ?: error("Missing params")
-                    val owner = params.getString("owner")
                     val operationId = params.getString("operation_id")
                     val result = if (request.method == "cancel") {
-                        PhoneDeviceControl.state.cancel(owner, operationId)
+                        PhoneDeviceControl.cancel(invocation!!, operationId,state.generation)
                         JSONObject().put("cancelled",true)
-                    } else (MobileAccessibilityService.instance ?: error("Accessibility service not connected")).controller.interact(owner, operationId, request.method, params).get(4, java.util.concurrent.TimeUnit.SECONDS)
+                    } else (MobileAccessibilityService.instance ?: error("Accessibility service not connected")).controller.interact(invocation!!, operationId, request.method, params,state.generation).get(4, java.util.concurrent.TimeUnit.SECONDS)
                     write(writer, PhoneUseProtocol.resultEnvelope(request.id,result))
-                } catch(e: Exception) { write(writer, PhoneUseProtocol.errorEnvelope(request.id,"interaction_failed",(e.cause?.message?:e.message?:"Interaction failed").take(300))) }
+                } catch(e: Exception) {
+                    if (request.method != "cancel") PhoneDeviceControl.fail(invocation!!, request.params?.optString("operation_id").orEmpty(), state.generation)
+                    write(writer, PhoneUseProtocol.errorEnvelope(request.id,"interaction_failed",(e.cause?.message?:e.message?:"Interaction failed").take(300)))
+                }
             }
             else -> write(
                 writer,
@@ -480,6 +515,7 @@ internal class PhoneUseBridge private constructor(context: Context) {
     private val appContext: Context = context.applicationContext
     private val socketFile: File = socketPath(appContext)
     private val closed = AtomicBoolean(false)
+    private val stopRequests = mutableSetOf<HttpURLConnection>()
 
     @Volatile
     private var server: LocalServerSocket? = null
@@ -494,6 +530,43 @@ internal class PhoneUseBridge private constructor(context: Context) {
     )
 
     val authToken: String get() = state.authToken
+
+    init {
+        PhoneDeviceControl.initialize(appContext, state.generation, ::stopTurn)
+    }
+
+    private fun stopTurn(invocation: PhoneInvocation) {
+        val port = state.residentPort() ?: return
+        if (closed.get()) return
+        val endpoint = ownedOrigin(port) + "/api" + invocation.chatAddress.apiPath() + "/console/stop"
+        val credential = authorizationHeaderFor(endpoint, port, authToken) ?: return
+        thread(name = "PhoneUseStop", isDaemon = true) {
+            val connection = URL(endpoint).openConnection() as HttpURLConnection
+            try {
+                synchronized(stopRequests) {
+                    if (closed.get()) { connection.disconnect(); return@thread }
+                    stopRequests.add(connection)
+                }
+                connection.instanceFollowRedirects = false
+                connection.connectTimeout = 2_000
+                connection.readTimeout = 3_000
+                connection.requestMethod = "POST"
+                connection.doOutput = true
+                connection.setRequestProperty("Authorization", credential)
+                connection.setRequestProperty("Content-Type", "application/json")
+                val body = JSONObject().put("turn_id", invocation.turnId)
+                    .put("authority_epoch", invocation.authorityEpoch).toString().toByteArray(Charsets.UTF_8)
+                connection.setFixedLengthStreamingMode(body.size)
+                connection.outputStream.use { it.write(body) }
+                if (connection.responseCode !in 200..299) Log.w(TAG, "Phone Use Turn Stop refused: HTTP ${connection.responseCode}")
+            } catch (error: Exception) {
+                if (!closed.get()) Log.w(TAG, "Phone Use Turn Stop failed: ${error.javaClass.simpleName}")
+            } finally {
+                synchronized(stopRequests) { stopRequests.remove(connection) }
+                connection.disconnect()
+            }
+        }
+    }
 
     private fun startAccepting(): Boolean = try {
         socketFile.parentFile?.mkdirs()
@@ -516,6 +589,9 @@ internal class PhoneUseBridge private constructor(context: Context) {
 
     fun close() {
         closed.set(true)
+        state.close()
+        PhoneDeviceControl.close(state.generation)
+        synchronized(stopRequests) { stopRequests.forEach { it.disconnect() }; stopRequests.clear() }
         runCatching { server?.close() }
         server = null
         runCatching { boundSocket?.close() }

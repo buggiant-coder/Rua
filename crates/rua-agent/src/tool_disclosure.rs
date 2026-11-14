@@ -106,7 +106,7 @@ pub fn phone_tool_unavailability(
     status: &rua_core::phone_use::PhoneStatus,
 ) -> Option<&'static str> {
     match name {
-        "phone_status" | "phone_list_apps" | "phone_list_cameras" => None,
+        "phone_status" | "phone_list_apps" | "phone_list_cameras" | "phone_release" => None,
         "phone_take_photo" if !status.camera_permission => {
             Some("Phone Use requires camera permission")
         }

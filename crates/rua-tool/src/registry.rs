@@ -184,7 +184,7 @@ impl Default for ToolRegistry {
 /// Product capability membership for trusted built-in registrations only.
 pub fn builtin_product_capability(name: &str) -> Option<&'static str> {
     match name {
-        "phone_status" | "phone_observe" | "phone_click" | "phone_list_apps"
+        "phone_status" | "phone_release" | "phone_observe" | "phone_click" | "phone_list_apps"
         | "phone_list_cameras" | "phone_take_photo" | "phone_long_press" | "phone_type_text"
         | "phone_swipe" | "phone_back" | "phone_home" | "phone_launch_app" => Some("phone_use"),
         _ => None,

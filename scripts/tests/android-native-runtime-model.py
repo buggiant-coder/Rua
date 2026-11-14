@@ -85,6 +85,8 @@ class Handler(BaseHTTPRequestHandler):
             elif len(results) == 4 and mode == 'phone':
                 time.sleep(0.3)
                 tool, arguments = 'phone_observe', {'include_screenshot': False}
+            elif len(results) == 5 and mode == 'phone':
+                tool, arguments = 'phone_release', {}
             else:
                 tool, arguments = None, None
         elif mode == 'mcp-stop':

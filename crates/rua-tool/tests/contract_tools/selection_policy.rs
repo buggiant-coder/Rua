@@ -150,12 +150,16 @@ async fn policy_edits_retain_off_device_identities() {
 #[test]
 fn product_capability_membership_requires_trusted_exact_registration() {
     use rua_tool::registry::builtin_product_capability;
-    let mut spec = rua_tool::builtin::phone_use::PhoneStatusTool::spec();
-    let catalog = rua_tool::tool_catalog_from_specs([&spec]);
-    assert_eq!(catalog["phone_status"]["capability"], "phone_use");
-    spec.namespace = "external".into();
-    let catalog = rua_tool::tool_catalog_from_specs([&spec]);
-    assert!(catalog["phone_status"].get("capability").is_none());
+    for mut spec in [
+        rua_tool::builtin::phone_use::PhoneStatusTool::spec(),
+        rua_tool::builtin::phone_use::PhoneReleaseTool::spec(),
+    ] {
+        let catalog = rua_tool::tool_catalog_from_specs([&spec]);
+        assert_eq!(catalog[&spec.name]["capability"], "phone_use");
+        spec.namespace = "external".into();
+        let catalog = rua_tool::tool_catalog_from_specs([&spec]);
+        assert!(catalog[&spec.name].get("capability").is_none());
+    }
     assert_eq!(builtin_product_capability("phone_new_untrusted"), None);
 }
 
