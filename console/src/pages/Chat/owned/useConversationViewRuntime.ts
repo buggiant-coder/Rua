@@ -1507,13 +1507,15 @@ export function useConversationViewRuntime({
   const applyControlProjection = useCallback(
     (control: ConversationControlView) => {
       if (!convergence.acceptControl(control)) return;
-      setHistory((current) => ({
-        ...(current || { messages: [] }),
-        status: control.active_turn ? "running" : "idle",
-        active_turn: control.active_turn ?? null,
-        ...(control.model !== undefined ? { model: control.model } : {}),
-        control,
-      }));
+      setHistory((current) =>
+        mergeStableHistory(current, {
+          ...(current || { messages: [] }),
+          status: control.active_turn ? "running" : "idle",
+          active_turn: control.active_turn ?? null,
+          ...(control.model !== undefined ? { model: control.model } : {}),
+          control,
+        }),
+      );
       updateQueuedSubmissions((current) =>
         mergeControlQueueSubmissions(current, control),
       );

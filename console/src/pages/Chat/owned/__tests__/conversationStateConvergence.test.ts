@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { projectConversation } from "../projection";
 import type {
   ChatHistory,
   ConversationControlView,
@@ -198,7 +199,10 @@ describe("conversationStateConvergence", () => {
       messages: [],
     };
     const stable: ChatHistory = {
-      messages: turnMessages(turnId, "completed"),
+      messages: completedTurnMessages(turnId).map((message) => ({
+        ...message,
+        status: "completed",
+      })),
     };
 
     const merged = reconcileStableConversationHistory(current, stable);
@@ -269,5 +273,127 @@ describe("conversationStateConvergence", () => {
     expect(merged.active_turn?.turn_id).toBe("turn-new");
     expect(merged.control?.revision).toBe(1);
     expect(merged.control?.placement?.authority_epoch).toBe("epoch-new");
+  });
+  it.each(["completed", "interrupted", "interjected", "failed"])(
+    "settles an old active snapshot from the synced %s Turn lifecycle",
+    (turnStatus) => {
+      const turnId = "turn-current";
+      const current: ChatHistory = {
+        status: "running",
+        active_turn: control(9, turnId).active_turn,
+        control: control(9, turnId),
+        messages: [],
+      };
+      const stable: ChatHistory = {
+        messages: turnMessages(turnId, turnStatus).map((message) => ({
+          ...message,
+          finished_at: "2026-07-31T00:01:00Z",
+        })),
+      };
+      const merged = reconcileStableConversationHistory(current, stable);
+      expect(merged.messages).toEqual(stable.messages);
+      expect(merged.status).toBe("idle");
+      expect(merged.active_turn).toBeNull();
+      expect(merged.control?.active_turn).toBeNull();
+      expect(merged.control?.revision).toBe(9);
+      const projection = projectConversation("chat", merged);
+      expect(projection.turnActivity.kind).toBe("idle");
+      expect(
+        projection.items.find((item) => item.kind === "assistant"),
+      ).toMatchObject({
+        status: turnStatus === "interjected" ? "interrupted" : turnStatus,
+      });
+    },
+  );
+
+  it("does not let an old active snapshot override a terminal Turn during direct projection", () => {
+    const turnId = "turn-current";
+    expect(
+      deriveTurnActivity(
+        {
+          control: control(9, turnId),
+          messages: turnMessages(turnId, "interrupted").map((message) => ({
+            ...message,
+            finished_at: "2026-07-31T00:01:00Z",
+          })),
+        },
+        true,
+      ),
+    ).toEqual({ kind: "idle" });
+  });
+
+  it("does not close another active Turn from an older terminal Turn", () => {
+    const merged = reconcileStableConversationHistory(
+      {
+        control: control(9, "turn-new"),
+        messages: [],
+      },
+      {
+        messages: turnMessages("turn-old", "interrupted").map((message) => ({
+          ...message,
+          finished_at: "2026-07-31T00:01:00Z",
+        })),
+      },
+    );
+    expect(merged.active_turn?.turn_id).toBe("turn-new");
+  });
+
+  it("keeps a later regeneration active when it reuses the terminal Turn id", () => {
+    const turnId = "turn-current";
+    const regenerated = control(10, turnId);
+    regenerated.active_turn!.started_at = "2026-07-31T00:02:00Z";
+    const merged = reconcileStableConversationHistory(
+      {
+        control: regenerated,
+        messages: [],
+      },
+      {
+        messages: turnMessages(turnId, "interrupted").map((message) => ({
+          ...message,
+          finished_at: "2026-07-31T00:01:00Z",
+        })),
+      },
+    );
+    expect(merged.status).toBe("running");
+    expect(deriveTurnActivity(merged).kind).toBe("active");
+  });
+
+  it.each([undefined, "invalid"])(
+    "requires a valid terminal time (%s)",
+    (finishedAt) => {
+      const turnId = "turn-current";
+      const merged = reconcileStableConversationHistory(
+        {
+          control: control(9, turnId),
+          messages: [],
+        },
+        {
+          messages: turnMessages(turnId, "interrupted").map((message) => ({
+            ...message,
+            finished_at: finishedAt,
+          })),
+        },
+      );
+      expect(deriveTurnActivity(merged).kind).toBe("active");
+    },
+  );
+
+  it("keeps a newer same-millisecond regeneration active at Rust timestamp precision", () => {
+    const turnId = "turn-current";
+    const regenerated = control(10, turnId);
+    regenerated.active_turn!.started_at = "2026-07-31T00:01:00.123900123Z";
+    const merged = reconcileStableConversationHistory(
+      {
+        control: regenerated,
+        messages: [],
+      },
+      {
+        messages: turnMessages(turnId, "interrupted").map((message) => ({
+          ...message,
+          finished_at: "2026-07-31T08:01:00.123100456+08:00",
+        })),
+      },
+    );
+    expect(deriveTurnActivity(merged).kind).toBe("active");
   });
 });

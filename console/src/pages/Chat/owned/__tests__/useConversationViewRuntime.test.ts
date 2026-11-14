@@ -1083,6 +1083,237 @@ describe("useConversationViewRuntime", () => {
     unmount();
   });
 
+  describe("durable Turn terminal precedence", () => {
+    const authorityEpoch = "0000000000000002000000000000000000000000";
+    const terminalHistory = {
+      messages: [
+        {
+          id: "user-stopped",
+          role: "user",
+          turn_id: "turn-stopped",
+          turn_status: "interrupted",
+          content: "Inspect the order",
+        },
+        {
+          id: "assistant-stopped",
+          role: "assistant",
+          turn_id: "turn-stopped",
+          turn_status: "interrupted",
+          status: "completed",
+          started_at: "2026-07-30T00:00:01Z",
+          finished_at: "2026-07-30T00:01:00Z",
+          content: "Saved output before Stop",
+        },
+        {
+          id: "tool-stopped",
+          role: "tool",
+          type: "plugin_call_output",
+          turn_id: "turn-stopped",
+          turn_status: "interrupted",
+          status: "completed",
+          finished_at: "2026-07-30T00:01:00Z",
+          content: "Saved tool output",
+        },
+      ],
+    };
+    const runningControl = (revision: number, startedAt: string) => ({
+      type: "conversation_control",
+      reason: "viewer_attached",
+      control: {
+        revision,
+        authority_device_id: "device-b",
+        placement: {
+          authority_device_id: "device-b",
+          authority_epoch: authorityEpoch,
+          switchable: false,
+        },
+        active_turn: {
+          turn_id: "turn-stopped",
+          user_message_id: "user-stopped",
+          phase: "streaming",
+          authority_device_id: "device-b",
+          authority_epoch: authorityEpoch,
+          driver: "rua",
+          started_at: startedAt,
+        },
+        queue: { entries: [], paused: false },
+        acp: { active: false },
+        allowed_controls: {
+          stop: true,
+          queue: true,
+          interject: true,
+          edit_queued_input: false,
+          delete_queued_input: false,
+          switch_authority: false,
+          enter_acp: false,
+          exit_acp: false,
+        },
+      },
+    });
+
+    it("closes synced interrupted execution without a live idle update and rejects late running control", async () => {
+      const history = deferred<typeof terminalHistory>();
+      const live = controlledSseResponse();
+      chatApiMock.getChat.mockReturnValue(history.promise);
+      vi.stubGlobal("fetch", routeFetchWithLiveStreams(live.response));
+      const { result, unmount } = renderHook(() =>
+        useConversationViewRuntime({
+          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          currentDeviceId: "device-a",
+        }),
+      );
+      try {
+        await waitFor(() =>
+          expect(
+            (fetch as ReturnType<typeof vi.fn>).mock.calls.some(([url]) =>
+              String(url).includes("/console/live"),
+            ),
+          ).toBe(true),
+        );
+        await act(async () => {
+          live.send(runningControl(3, "2026-07-30T00:00:00Z"));
+        });
+        await waitFor(() => expect(isTurnActive(result)).toBe(true));
+        await act(async () => {
+          live.send({
+            type: "user_message",
+            message: {
+              id: "user-stopped",
+              role: "user",
+              turn_id: "turn-stopped",
+              content: "Inspect the order",
+            },
+          });
+          live.send({
+            type: "text_delta",
+            turn_id: "turn-stopped",
+            message_id: "assistant-stopped",
+            delta: "Saved output",
+          });
+        });
+        await waitFor(() =>
+          expect(JSON.stringify(result.current.projection.items)).toContain(
+            "Saved output",
+          ),
+        );
+
+        await act(async () => history.resolve(terminalHistory));
+        await waitFor(() => {
+          expect(result.current.history?.messages[1]?.id).toBe(
+            "assistant-stopped",
+          );
+          expect(isTurnActive(result)).toBe(false);
+        });
+        expect(result.current.history?.messages[1]?.content).toBe(
+          "Saved output before Stop",
+        );
+        expect(result.current.history?.active_turn).toBeNull();
+        expect(result.current.history?.control?.active_turn).toBeNull();
+        expect(
+          result.current.projection.items.find(
+            (item) => item.kind === "assistant",
+          ),
+        ).toMatchObject({ status: "interrupted" });
+        expect(result.current.history?.messages[2]?.content).toBe(
+          "Saved tool output",
+        );
+        expect(JSON.stringify(result.current.projection.items)).toContain(
+          "Saved output before Stop",
+        );
+        expect(JSON.stringify(result.current.projection.items)).toContain(
+          "Saved tool output",
+        );
+
+        await act(async () => {
+          live.send(runningControl(4, "2026-07-30T00:00:00Z"));
+        });
+        await waitFor(() =>
+          expect(result.current.history?.control?.revision).toBe(4),
+        );
+        expect(isTurnActive(result)).toBe(false);
+        expect(result.current.history?.control?.active_turn).toBeNull();
+        expect(result.current.history?.messages[1]?.content).toBe(
+          "Saved output before Stop",
+        );
+        const historyReadsBeforeReplay = chatApiMock.getChat.mock.calls.length;
+        await act(async () => {
+          live.send({
+            type: "user_message",
+            message: {
+              id: "user-stopped",
+              role: "user",
+              turn_id: "turn-stopped",
+              content: "Inspect the order",
+            },
+          });
+          live.send({
+            type: "text_delta",
+            turn_id: "turn-stopped",
+            message_id: "assistant-stopped",
+            delta: "Late stale output",
+          });
+        });
+        await waitFor(() =>
+          expect(chatApiMock.getChat.mock.calls.length).toBeGreaterThan(
+            historyReadsBeforeReplay,
+          ),
+        );
+        await waitFor(() => expect(isTurnActive(result)).toBe(false));
+        expect(JSON.stringify(result.current.projection.items)).toContain(
+          "Saved output before Stop",
+        );
+        expect(JSON.stringify(result.current.projection.items)).not.toContain(
+          "Late stale output",
+        );
+        expect(chatApiMock.stopChat).not.toHaveBeenCalled();
+      } finally {
+        unmount();
+      }
+    });
+
+    it("keeps newer regeneration active when earlier terminal history arrives for the same Turn", async () => {
+      const history = deferred<typeof terminalHistory>();
+      const live = controlledSseResponse();
+      chatApiMock.getChat.mockReturnValueOnce(history.promise);
+      vi.stubGlobal("fetch", routeFetchWithLiveStreams(live.response));
+      const { result, unmount } = renderHook(() =>
+        useConversationViewRuntime({
+          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          currentDeviceId: "device-a",
+        }),
+      );
+      try {
+        await waitFor(() =>
+          expect(
+            (fetch as ReturnType<typeof vi.fn>).mock.calls.some(([url]) =>
+              String(url).includes("/console/live"),
+            ),
+          ).toBe(true),
+        );
+        await act(async () => {
+          live.send(runningControl(5, "2026-07-30T00:02:00Z"));
+        });
+        await waitFor(() => expect(isTurnActive(result)).toBe(true));
+        await act(async () => history.resolve(terminalHistory));
+        await waitFor(() =>
+          expect(result.current.history?.messages[1]?.id).toBe(
+            "assistant-stopped",
+          ),
+        );
+        expect(isTurnActive(result)).toBe(true);
+        expect(result.current.history?.control?.active_turn?.started_at).toBe(
+          "2026-07-30T00:02:00Z",
+        );
+        expect(result.current.history?.messages[1]?.content).toBe(
+          "Saved output before Stop",
+        );
+        expect(chatApiMock.stopChat).not.toHaveBeenCalled();
+      } finally {
+        unmount();
+      }
+    });
+  });
+
   it("submits input without treating the viewer model snapshot as authority", async () => {
     chatApiMock.getChat.mockResolvedValueOnce({ status: "idle", messages: [] });
     const { result } = renderHook(() =>

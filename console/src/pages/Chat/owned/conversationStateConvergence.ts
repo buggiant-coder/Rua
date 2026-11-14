@@ -1,9 +1,60 @@
-import type { ChatHistory, Message } from "@/api/types";
+import type { ChatHistory, ConversationActiveTurn, Message } from "@/api/types";
 
 function messageTurnId(message: Message | null | undefined): string | null {
   return typeof message?.turn_id === "string" && message.turn_id
     ? message.turn_id
     : null;
+}
+
+// These fields come from the durable Turn lifecycle, not Message completion.
+// Regeneration may reuse a Turn id, so its later start must survive an old terminal.
+function durableHistoryEndsActiveTurn(
+  history: ChatHistory | null | undefined,
+  activeTurn: ConversationActiveTurn | null | undefined,
+): boolean {
+  if (!activeTurn) return false;
+  const startedAt = Date.parse(activeTurn.started_at);
+  if (!Number.isFinite(startedAt)) return false;
+  return Boolean(
+    history?.messages.some((message) => {
+      if (messageTurnId(message) !== activeTurn.turn_id) return false;
+      if (
+        !["completed", "interrupted", "interjected", "failed"].includes(
+          String(message.turn_status),
+        )
+      )
+        return false;
+      if (typeof message.finished_at !== "string") return false;
+      const finishedAt = Date.parse(message.finished_at);
+      if (!Number.isFinite(finishedAt)) return false;
+      if (finishedAt !== startedAt) return finishedAt > startedAt;
+      // Date.parse truncates the sub-millisecond part of Rust RFC3339 timestamps.
+      const [finishedFraction, startedFraction] = [
+        message.finished_at,
+        activeTurn.started_at,
+      ].map((time) =>
+        (time.match(/\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/i)?.[1] ?? "")
+          .padEnd(9, "0")
+          .slice(3, 9),
+      );
+      return finishedFraction >= startedFraction;
+    }),
+  );
+}
+
+function reconcileDurableTerminal(history: ChatHistory): ChatHistory {
+  const activeTurn = history.control
+    ? history.control.active_turn
+    : history.active_turn;
+  if (!durableHistoryEndsActiveTurn(history, activeTurn)) return history;
+  return {
+    ...history,
+    status: "idle",
+    active_turn: null,
+    ...(history.control
+      ? { control: { ...history.control, active_turn: null } }
+      : {}),
+  };
 }
 
 export type TurnActivity =
@@ -22,6 +73,8 @@ export function deriveTurnActivity(
   const activeTurn = history?.control
     ? history.control.active_turn
     : history?.active_turn ?? null;
+  if (durableHistoryEndsActiveTurn(history, activeTurn))
+    return { kind: "idle" };
   if (!activeTurn) {
     return liveActive
       ? {
@@ -79,7 +132,7 @@ export function reconcileStableConversationHistory(
       ? { ...stable, model: current.model }
       : stable;
   const currentControl = current?.control;
-  if (!currentControl) return mergedStable;
+  if (!currentControl) return reconcileDurableTerminal(mergedStable);
   const stableControl = mergedStable.control;
   if (
     stableControl &&
@@ -90,16 +143,16 @@ export function reconcileStableConversationHistory(
       currentControl.revision,
     )
   ) {
-    return {
+    return reconcileDurableTerminal({
       ...mergedStable,
       status: stableControl.active_turn ? "running" : "idle",
       active_turn: stableControl.active_turn ?? null,
-    };
+    });
   }
-  return {
+  return reconcileDurableTerminal({
     ...mergedStable,
     status: currentControl.active_turn ? "running" : "idle",
     active_turn: currentControl.active_turn ?? null,
     control: currentControl,
-  };
+  });
 }

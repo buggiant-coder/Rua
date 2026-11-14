@@ -484,7 +484,14 @@ function responseStatusFromOutput(
   output: ConversationOutputMessage[],
   fallback: ConversationAssistantResponse["status"],
 ): ConversationAssistantResponse["status"] {
-  if (output.some((msg) => msg.status === "interrupted")) {
+  if (
+    output.some(
+      (msg) =>
+        msg.turn_status === "interrupted" ||
+        msg.turn_status === "interjected" ||
+        msg.status === "interrupted",
+    )
+  ) {
     return "interrupted";
   }
   if (
@@ -496,7 +503,11 @@ function responseStatusFromOutput(
   ) {
     return "interrupted";
   }
-  if (output.some((msg) => msg.status === "failed")) {
+  if (
+    output.some(
+      (msg) => msg.turn_status === "failed" || msg.status === "failed",
+    )
+  ) {
     return "failed";
   }
   if (
