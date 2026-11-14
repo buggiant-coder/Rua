@@ -23,7 +23,7 @@ import java.net.Inet4Address
 
 
 
-class DnsSyncManager(context: Context) {
+class DnsSyncManager(context: Context, private val networkChanged: () -> Unit) {
 
     companion object {
         const val TAG = "DnsSyncManager"
@@ -43,7 +43,10 @@ class DnsSyncManager(context: Context) {
 
     private val workThread = HandlerThread("DnsSyncWorker").also { it.start() }
     private val workHandler = Handler(workThread.looper)
-    private val debouncedUpdate = Runnable { updateResolvConf() }
+    private val debouncedUpdate = Runnable {
+        updateResolvConf()
+        networkChanged()
+    }
 
     private fun scheduleUpdate() {
         workHandler.removeCallbacks(debouncedUpdate)

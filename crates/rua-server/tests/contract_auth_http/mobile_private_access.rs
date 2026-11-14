@@ -29,6 +29,7 @@ async fn mobile_never_uses_disabled_auth_or_public_registration_as_control_bypas
         ("GET", "/ws", ""),
         ("POST", "/voice/asr/transcribe", "{}"),
         ("POST", "/api/platform/lifecycle", "{}"),
+        ("POST", "/api/platform/network-change", "{}"),
     ] {
         let response = app
             .clone()

@@ -1642,7 +1642,10 @@ impl Actor {
         #[cfg(not(target_family = "wasm"))]
         {
             let interfaces = self.local_interfaces_watcher.get();
-            interfaces.default_route_interface.is_some()
+            // Android denies route-table access to ordinary app UIDs. A missing
+            // default_route_interface there means unknown, not offline; waiting
+            // for it delays every QUIC recovery until MAX_WAIT expires.
+            (cfg!(target_os = "android") || interfaces.default_route_interface.is_some())
                 && (interfaces.have_v4 || interfaces.have_v6)
         }
     }

@@ -259,7 +259,19 @@ impl SyncNode {
         };
         let blobs_store_saved = blobs_store.clone();
         let blob_downloader = StatefulBlobDownloader::new(
-            blobs_store.downloader(bootstrap.endpoint()),
+            iroh_blobs::api::downloader::Downloader::new_with_opts(
+                &blobs_store,
+                bootstrap.endpoint(),
+                iroh_blobs::util::connection_pool::Options {
+                    // Match the endpoint handshake budget. The pool's 1 s default
+                    // aborts viable relay/recovery handshakes before QUIC can finish.
+                    connect_timeout: Duration::from_secs(10),
+                    // Share connections during transfers, but do not reuse an idle
+                    // session after a peer may have silently exited or restarted.
+                    idle_timeout: Duration::ZERO,
+                    ..Default::default()
+                },
+            ),
             bootstrap.endpoint().clone(),
         );
         let blobs_protocol = BlobsProtocol::new(&blobs_store, None);
@@ -317,9 +329,7 @@ impl SyncNode {
         recover_proven_own_removals(sync_dir, namespace_secret, device, &doc, &blobs_store_saved)
             .await?;
 
-        doc.start_sync(vec![])
-            .await
-            .map_err(|e| SyncError::Store(format!("start sync: {e}")))?;
+        start_paired_document_sync(&doc, &network_runtime).await?;
 
         let removed_auto_tags = blobs_store_saved
             .tags()
@@ -485,7 +495,19 @@ impl SyncNode {
             iroh_blobs::store::mem::MemStore::default().into();
         let blobs_store_saved = blobs_store.clone();
         let blob_downloader = StatefulBlobDownloader::new(
-            blobs_store.downloader(bootstrap.endpoint()),
+            iroh_blobs::api::downloader::Downloader::new_with_opts(
+                &blobs_store,
+                bootstrap.endpoint(),
+                iroh_blobs::util::connection_pool::Options {
+                    // Match the endpoint handshake budget. The pool's 1 s default
+                    // aborts viable relay/recovery handshakes before QUIC can finish.
+                    connect_timeout: Duration::from_secs(10),
+                    // Share connections during transfers, but do not reuse an idle
+                    // session after a peer may have silently exited or restarted.
+                    idle_timeout: Duration::ZERO,
+                    ..Default::default()
+                },
+            ),
             bootstrap.endpoint().clone(),
         );
         let blobs_protocol = BlobsProtocol::new(&blobs_store, None);
@@ -522,9 +544,7 @@ impl SyncNode {
         recover_proven_own_removals(sync_dir, namespace_secret, device, &doc, &blobs_store_saved)
             .await?;
 
-        doc.start_sync(vec![])
-            .await
-            .map_err(|e| SyncError::Store(format!("start sync: {e}")))?;
+        start_paired_document_sync(&doc, &network_runtime).await?;
 
         let node_id = network_runtime.endpoint().id();
         info!(node_id = %node_id.fmt_short(), "local Device Network Runtime bound with Sync consumer");
@@ -678,6 +698,24 @@ async fn spawn_docs_mem(
     let sync_handle = engine.sync.clone();
     let docs = Docs::new(engine);
     Ok((docs, sync_handle))
+}
+
+async fn start_paired_document_sync(
+    doc: &Doc,
+    network_runtime: &DeviceNetworkRuntime,
+) -> Result<(), SyncError> {
+    // Restore continuous replication for every paired device on each start.
+    // A manual single-peer cycle does not register the caller with Docs' live actor.
+    let peers = network_runtime
+        .peer_directory()
+        .endpoint_addrs()
+        .map_err(|e| SyncError::Store(format!("load paired sync peers: {e}")))?
+        .into_iter()
+        .filter(|peer| peer.id != network_runtime.endpoint().id())
+        .collect();
+    doc.start_sync(peers)
+        .await
+        .map_err(|e| SyncError::Store(format!("start sync: {e}")))
 }
 
 async fn bind_device_network(

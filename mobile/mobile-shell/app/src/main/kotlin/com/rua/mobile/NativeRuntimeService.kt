@@ -38,7 +38,13 @@ class NativeRuntimeService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        dnsSync = DnsSyncManager(this).also { it.start() }
+        dnsSync = DnsSyncManager(this) {
+            PhoneUseBridge.residentPort()?.let { port ->
+                runCatching {
+                    postResidentJson("${PhoneUseBridge.ownedOrigin(port)}/api/platform/network-change", "{}")
+                }.onFailure { Log.w("RuaRuntime", "Network-change notification failed", it) }
+            }
+        }.also { it.start() }
         val manager = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= 26) {
             manager.createNotificationChannel(NotificationChannel(CHANNEL, "手Rua", NotificationManager.IMPORTANCE_LOW))

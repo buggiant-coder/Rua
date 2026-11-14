@@ -191,6 +191,11 @@ impl PathStateSender {
         }
     }
 
+    /// The selected path belonging to this connection.
+    pub(super) fn selected_path_id(&self) -> Option<PathId> {
+        self.shared.state.lock().expect("poisoned").selected
+    }
+
     /// Updates the selected transmission path.
     pub(super) fn record_selected(&self, remote_addr: TransportAddr) {
         let changed = {

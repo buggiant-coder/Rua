@@ -1494,12 +1494,6 @@ async fn read_inbound_frame_fast(
     let should_use_active_download = should_try_active_download && active_blob_download.is_some();
     let read_future = async {
         if let Some(download) = active_blob_download.filter(|_| should_try_active_download) {
-            if fetch_inbound_blob_via_device_session(download, &entry.content_hash).await {
-                return log
-                    .read_frame_by_content_hash_with_diagnostics(&entry.content_hash)
-                    .await
-                    .map(Some);
-            }
             return log
                 .read_frame_by_content_hash_with_peer_download_diagnostics(
                     &entry.content_hash,
@@ -1625,8 +1619,6 @@ fn domain_apply_priority(domain: &str) -> u8 {
 #[derive(Clone)]
 struct ActiveBlobDownload {
     downloader: rua_sync::sync_blob_store::StatefulBlobDownloader,
-    blobs_store: rua_sync::endpoint::BlobsApiStore,
-    session_manager: rua_device_network::DeviceSessionManager,
     providers: Vec<iroh::EndpointId>,
 }
 
@@ -1644,58 +1636,14 @@ struct BlobPeerHealthEntry {
     consecutive_failures: u32,
 }
 
-async fn fetch_inbound_blob_via_device_session(download: &ActiveBlobDownload, hash: &str) -> bool {
-    let Ok(hash) = hash.parse::<rua_sync::endpoint::BlobHash>() else {
-        return false;
-    };
-    for provider in &download.providers {
-        let target_device_id = hex::encode(&provider.as_bytes()[..8]);
-        match crate::services::sync_transfer::read_sync_blob_via_session(
-            &download.session_manager,
-            &target_device_id,
-            hash,
-        )
-        .await
-        {
-            Ok(bytes) => {
-                match rua_sync::opaque_replica_log::store_encrypted_blob_bytes(
-                    &download.blobs_store,
-                    bytes::Bytes::from(bytes),
-                )
-                .await
-                {
-                    Ok(actual) if actual == hash => return true,
-                    Ok(actual) => tracing::warn!(
-                        expected = %hash,
-                        %actual,
-                        "shared Device Session returned mismatched Sync Blob"
-                    ),
-                    Err(error) => tracing::debug!(
-                        peer = %provider.fmt_short(),
-                        %error,
-                        "store shared-session Sync Blob failed"
-                    ),
-                }
-            }
-            Err(error) => tracing::debug!(
-                peer = %provider.fmt_short(),
-                %error,
-                "shared Device Session Sync Blob read failed; falling back to Iroh Blob transfer"
-            ),
-        }
-    }
-    false
-}
-
 async fn build_active_blob_download(
     sync_node: &Arc<tokio::sync::Mutex<Option<rua_sync::endpoint::SyncNode>>>,
     data_dir: &Path,
 ) -> Option<ActiveBlobDownload> {
-    let (downloader, blobs_store, self_pubkey, network_runtime) = {
+    let (downloader, self_pubkey, network_runtime) = {
         let node = sync_node.lock().await.as_ref().cloned()?;
         (
             node.blob_downloader().clone(),
-            node.blobs_store().clone(),
             node.node_id(),
             node.network_runtime().clone(),
         )
@@ -1768,8 +1716,10 @@ async fn build_active_blob_download(
 
     Some(ActiveBlobDownload {
         downloader,
-        blobs_store,
-        session_manager: network_runtime.session_manager().clone(),
         providers,
     })
 }
+
+#[cfg(test)]
+#[path = "../tests/unit_sync_inbound_read.rs"]
+mod local_content_tests;

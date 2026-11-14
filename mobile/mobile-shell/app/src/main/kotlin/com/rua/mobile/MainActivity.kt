@@ -317,7 +317,7 @@ internal object MobilePackageInstallCleanup {
 
 internal class PlatformLifecycleReporter(
     private val endpoint: String? = null,
-    private val postJson: (String, String) -> Unit = ::postLifecycleJson,
+    private val postJson: (String, String) -> Unit = ::postResidentJson,
     private val launchAsync: (Runnable) -> Unit = { task ->
         thread(name = "MobileLifecyclePost") { task.run() }
     },
@@ -414,7 +414,7 @@ internal class PlatformLifecycleReporter(
     }
 }
 
-private fun postLifecycleJson(endpoint: String, body: String) {
+internal fun postResidentJson(endpoint: String, body: String) {
     val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
         requestMethod = "POST"
         connectTimeout = 750

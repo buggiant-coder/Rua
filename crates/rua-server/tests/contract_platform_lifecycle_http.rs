@@ -929,3 +929,57 @@ async fn document_foreground_does_not_start_or_rebind_mobile_runtime() {
     assert_eq!(state.device_network_availability.snapshot(), before);
     assert!(state.device_network.lock().await.is_none());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(device_network_lifecycle)]
+async fn network_change_keeps_the_runtime_and_does_not_resume_a_suspended_host() {
+    let (app, _tmp, state) = build_paired_app(ServerProfile::MobileApk);
+    state.ensure_sync_runtime_active().await.unwrap();
+    let endpoint_id = state
+        .device_network
+        .lock()
+        .await
+        .as_ref()
+        .unwrap()
+        .endpoint()
+        .id();
+    for active in [true, false] {
+        if !active {
+            state.sync_runtime.warm_suspend().await.unwrap();
+            state.suspend_device_network_runtime().await;
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/platform/network-change")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = read_json(response).await;
+        assert_eq!(body["notified"], active);
+        if active {
+            assert_eq!(
+                state
+                    .device_network
+                    .lock()
+                    .await
+                    .as_ref()
+                    .unwrap()
+                    .endpoint()
+                    .id(),
+                endpoint_id
+            );
+        } else {
+            assert!(state.device_network.lock().await.is_none());
+            assert!(matches!(
+                state.sync_runtime.state().await,
+                SyncRuntimeState::WarmSuspended { .. }
+            ));
+        }
+    }
+}

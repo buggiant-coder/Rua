@@ -21,6 +21,7 @@ pub fn router() -> Router<AppState> {
         .merge(super::desktop_control::router())
         .merge(super::phone_use::router())
         .route("/platform/lifecycle", post(handle_lifecycle))
+        .route("/platform/network-change", post(handle_network_change))
         .route(
             "/platform/conversation-activity",
             get(stream_conversation_activity),
@@ -45,6 +46,28 @@ pub fn router() -> Router<AppState> {
             "/platform/user-notifications/events",
             get(stream_user_notifications),
         )
+}
+
+// Android cannot expose route changes to netwatch's native monitor. The APK
+// forwards coalesced host notifications; iroh owns revalidation and path choice.
+async fn handle_network_change(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Response {
+    let runtime = state.device_network.lock().await.as_ref().cloned();
+    let Some(runtime) = runtime else {
+        // A network callback must not resume an intentionally suspended host.
+        return Json(serde_json::json!({ "notified": false })).into_response();
+    };
+    runtime.endpoint().network_change().await;
+    if matches!(state.sync_runtime.state().await, SyncRuntimeState::Active) {
+        if let Err(error) = state.sync_runtime.trigger_app_resume().await {
+            tracing::warn!(
+                detail = error.detail(),
+                "network-change Sync trigger failed"
+            );
+        }
+    }
+    Json(serde_json::json!({ "notified": true })).into_response()
 }
 
 #[derive(Deserialize)]

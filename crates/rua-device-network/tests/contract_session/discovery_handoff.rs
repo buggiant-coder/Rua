@@ -165,9 +165,27 @@ async fn assert_restarted_peer(explicit_address: bool) {
         EndpointAddr::new(server.id())
     };
     let result = tokio::time::timeout(Duration::from_secs(1), async {
-        tokio::join!(client.connect(dial_addr, ALPN), async {
+        let (connected, accepted) = tokio::join!(client.connect(dial_addr, ALPN), async {
             server.accept().await.unwrap().await
-        })
+        });
+        let connected = connected.unwrap();
+        let accepted = accepted.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::join!(
+            async {
+                let (mut send, mut recv) = connected.open_bi().await.unwrap();
+                send.write_all(b"fresh path request").await.unwrap();
+                send.finish().unwrap();
+                assert_eq!(recv.read_to_end(64).await.unwrap(), b"fresh path reply");
+            },
+            async {
+                let (mut send, mut recv) = accepted.accept_bi().await.unwrap();
+                assert_eq!(recv.read_to_end(64).await.unwrap(), b"fresh path request");
+                send.write_all(b"fresh path reply").await.unwrap();
+                send.finish().unwrap();
+                send.stopped().await.unwrap();
+            }
+        );
     })
     .await;
     drop(abandoned);
@@ -175,8 +193,7 @@ async fn assert_restarted_peer(explicit_address: bool) {
         tokio::join!(client.close(), server.close());
     })
     .await;
-    let (connected, accepted) =
-        result.expect("a previous connection must not pin a new handshake to a dead path");
-    connected.unwrap();
-    accepted.unwrap();
+    result.expect(
+        "a previous connection must not pin a new handshake or its application data to a dead path",
+    );
 }

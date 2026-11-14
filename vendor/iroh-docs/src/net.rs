@@ -150,6 +150,29 @@ where
     F: Fn(NamespaceId, PublicKey) -> Fut,
     Fut: Future<Output = AcceptOutcome>,
 {
+    let accepted = handle_connection_protocol(sync, connection, accept_cb, metrics).await?;
+    accepted.close.await?;
+    accepted.result
+}
+
+/// Reconciliation and its transport drain have separate lifetimes. The live
+/// actor can release the peer as soon as reconciliation stops mutating state,
+/// while the original task retains the connection until graceful close ends.
+pub(crate) struct AcceptedSync {
+    pub result: Result<SyncFinished, AcceptError>,
+    pub close: std::pin::Pin<Box<dyn Future<Output = Result<(), AcceptError>> + Send>>,
+}
+
+pub(crate) async fn handle_connection_protocol<F, Fut>(
+    sync: SyncHandle,
+    connection: iroh::endpoint::Connection,
+    accept_cb: F,
+    metrics: Option<&Metrics>,
+) -> Result<AcceptedSync, AcceptError>
+where
+    F: Fn(NamespaceId, PublicKey) -> Fut,
+    Fut: Future<Output = AcceptOutcome>,
+{
     let t_start = Instant::now();
     let peer = connection.remote_id();
     let (mut send_stream, mut recv_stream) = connection
@@ -180,18 +203,6 @@ where
     let namespace = state.namespace();
     let outcome = state.into_outcome();
 
-    send_stream
-        .finish()
-        .map_err(|error| AcceptError::close(peer, namespace, error))?;
-    send_stream
-        .stopped()
-        .await
-        .map_err(|error| AcceptError::close(peer, namespace, error))?;
-    recv_stream
-        .read_to_end(0)
-        .await
-        .map_err(|error| AcceptError::close(peer, namespace, error))?;
-
     let t_process = t_start.elapsed() - t_connect;
     span.in_scope(|| match &res {
         Ok(_res) => {
@@ -208,20 +219,33 @@ where
         }
     });
 
-    let namespace = res?;
-
-    let timings = Timings {
-        connect: t_connect,
-        process: t_process,
-    };
-    let res = SyncFinished {
+    let result = res.map(|namespace| SyncFinished {
         namespace,
         outcome,
         peer,
-        timings,
-    };
+        timings: Timings {
+            connect: t_connect,
+            process: t_process,
+        },
+    });
+    let close = Box::pin(async move {
+        // Keep the connection alive while queued stream data and FIN are drained.
+        let _connection = connection;
+        send_stream
+            .finish()
+            .map_err(|error| AcceptError::close(peer, namespace, error))?;
+        send_stream
+            .stopped()
+            .await
+            .map_err(|error| AcceptError::close(peer, namespace, error))?;
+        recv_stream
+            .read_to_end(0)
+            .await
+            .map_err(|error| AcceptError::close(peer, namespace, error))?;
 
-    Ok(res)
+        Ok(())
+    });
+    Ok(AcceptedSync { result, close })
 }
 
 /// Details of a finished sync operation.
@@ -593,3 +617,7 @@ impl ConnectError {
         Self::RemoteAbort(reason)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit_sync_close.rs"]
+mod sync_close_tests;

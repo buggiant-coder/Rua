@@ -451,6 +451,9 @@ pub fn published_device_address_filter() -> iroh::address_lookup::AddrFilter {
 
 pub fn n0_endpoint_builder() -> iroh::endpoint::Builder {
     let transport_config = iroh::endpoint::QuicTransportConfig::builder()
+        // Android/Mac batch sends can stall after the handshake (Android reports
+        // EIO while iroh retains the original GSO limit). Use individual datagrams.
+        .enable_segmentation_offload(false)
         .keep_alive_interval(Duration::from_secs(10))
         .build();
     let builder = Endpoint::builder(presets::N0)

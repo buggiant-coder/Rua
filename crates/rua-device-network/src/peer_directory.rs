@@ -138,6 +138,14 @@ impl DevicePeerDirectory {
             .find(|entry| &entry.device_id == device_id))
     }
 
+    pub fn endpoint_addrs(&self) -> Result<Vec<EndpointAddr>, DevicePeerDirectoryError> {
+        self.read()?
+            .devices
+            .iter()
+            .map(endpoint_addr_from_entry)
+            .collect()
+    }
+
     pub fn peer_by_public_key(
         &self,
         public_key: &[u8; 32],

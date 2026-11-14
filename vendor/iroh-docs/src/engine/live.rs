@@ -28,8 +28,8 @@ use crate::{
     engine::gossip::GossipState,
     metrics::Metrics,
     net::{
-        connect_and_sync, handle_connection, AbortReason, AcceptError, AcceptOutcome, ConnectError,
-        SyncFinished,
+        connect_and_sync, handle_connection_protocol, AbortReason, AcceptError, AcceptOutcome,
+        ConnectError, SyncFinished,
     },
     AuthorHeads, ContentStatus, NamespaceId, SignedEntry,
 };
@@ -82,6 +82,9 @@ pub enum ToLiveActor {
     },
     HandleConnection {
         conn: iroh::endpoint::Connection,
+    },
+    SyncAcceptFinished {
+        result: SyncAcceptRes,
     },
     AcceptSyncRequest {
         namespace: NamespaceId,
@@ -163,7 +166,7 @@ pub struct LiveActor {
     /// Running sync futures (from connect).
     running_sync_connect: JoinSet<SyncConnectRes>,
     /// Running sync futures (from accept).
-    running_sync_accept: JoinSet<SyncAcceptRes>,
+    running_sync_accept: JoinSet<()>,
     /// Running download futures.
     download_tasks: JoinSet<DownloadRes>,
     /// Content hashes which are wanted but not yet queued because no provider was found.
@@ -275,8 +278,7 @@ impl LiveActor {
                 Some(res) = self.running_sync_accept.join_next(), if !self.running_sync_accept.is_empty() => {
                     trace!(?i, "tick: running_sync_accept");
                     self.metrics.doc_live_tick_running_sync_accept.inc();
-                    let res = res.context("running_sync_accept closed")?;
-                    self.on_sync_via_accept_finished(res).await;
+                    res.context("running_sync_accept closed")?;
                 }
                 Some(res) = self.download_tasks.join_next(), if !self.download_tasks.is_empty() => {
                     trace!(?i, "tick: pending_downloads");
@@ -340,6 +342,9 @@ impl LiveActor {
             }
             ToLiveActor::HandleConnection { conn } => {
                 self.handle_connection(conn).await;
+            }
+            ToLiveActor::SyncAcceptFinished { result } => {
+                self.on_sync_via_accept_finished(result).await;
             }
             ToLiveActor::AcceptSyncRequest {
                 namespace,
@@ -812,9 +817,32 @@ impl LiveActor {
         debug!("incoming connection");
         let sync = self.sync.clone();
         let metrics = self.metrics.clone();
+        let report_tx = self.sync_actor_tx.clone();
         self.running_sync_accept.spawn(
-            async move { handle_connection(sync, conn, accept_request_cb, Some(&metrics)).await }
-                .instrument(Span::current()),
+            async move {
+                let (result, close) =
+                    match handle_connection_protocol(sync, conn, accept_request_cb, Some(&metrics))
+                        .await
+                    {
+                        Ok(accepted) => (accepted.result, Some(accepted.close)),
+                        Err(error) => (Err(error), None),
+                    };
+                if report_tx
+                    .send(ToLiveActor::SyncAcceptFinished { result })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                // A later close error belongs to this completed exchange. It
+                // must not clear or hold the state of a subsequent exchange.
+                if let Some(close) = close {
+                    if let Err(error) = close.await {
+                        debug!(?error, "completed sync transport close failed");
+                    }
+                }
+            }
+            .instrument(Span::current()),
         );
     }
 

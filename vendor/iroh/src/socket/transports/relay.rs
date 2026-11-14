@@ -21,6 +21,10 @@ use crate::endpoint::RelayStatus;
 
 mod actor;
 
+#[cfg(all(test, not(wasm_browser)))]
+#[path = "../../../tests/unit_relay_backpressure.rs"]
+mod backpressure_tests;
+
 pub(crate) use self::actor::{Config as RelayActorConfig, HomeRelayWatch, RelayConnectionState};
 use self::actor::{RelayActor, RelayActorMessage, RelayRecvDatagram, RelaySendItem};
 

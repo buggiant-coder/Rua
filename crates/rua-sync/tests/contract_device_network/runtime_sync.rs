@@ -18,6 +18,95 @@ use rua_sync::opaque_replica_log::{
 use rua_sync::sync_registry::{RegistryApplyStatus, SyncRegistry};
 use tokio::io::AsyncReadExt;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn saved_paired_peers_resume_live_sync_without_manual_cycles() {
+    use rua_sync::device_list::{DeviceEntry, DeviceList};
+
+    let network = NetworkSecret::generate();
+    let left_dir = tempfile::tempdir().unwrap();
+    let right_dir = tempfile::tempdir().unwrap();
+    let left_device = DeviceIdentity::generate();
+    let right_device = DeviceIdentity::generate();
+    let left = SyncNode::bind_local(left_dir.path(), network.namespace_secret(), &left_device)
+        .await
+        .unwrap();
+    let left_addr = left.local_peer_addr();
+    let offline_device = DeviceIdentity::generate();
+    let offline_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    rua_sync::control_store::write_device_list_file(
+        right_dir.path().join("device_list.json"),
+        &DeviceList {
+            devices: vec![
+                DeviceEntry {
+                    device_id: offline_device.device_id_short(),
+                    public_key: *offline_device.public_key().as_bytes(),
+                    label: String::new(),
+                    friendly_name: "offline peer".into(),
+                    added_at_ms: 1,
+                    last_seen_ms: 0,
+                    direct_addrs: vec![offline_socket.local_addr().unwrap().to_string()],
+                },
+                DeviceEntry {
+                    device_id: left_device.device_id_short(),
+                    public_key: *left.node_id().as_bytes(),
+                    label: String::new(),
+                    friendly_name: "paired peer".into(),
+                    added_at_ms: 1,
+                    last_seen_ms: 0,
+                    direct_addrs: left_addr.ip_addrs().map(ToString::to_string).collect(),
+                },
+            ],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // The paired Device List must be sufficient after every process restart.
+    // Do not register peers or invoke the application's single-peer Sync Cycle.
+    for round in 0..2 {
+        let right = tokio::time::timeout(
+            Duration::from_secs(1),
+            SyncNode::bind_local(right_dir.path(), network.namespace_secret(), &right_device),
+        )
+        .await
+        .expect("an offline paired peer must not delay startup")
+        .unwrap();
+        let key = format!("after-start-{round}");
+        for (source, destination, device) in [
+            (&left, &right, &left_device),
+            (&right, &left, &right_device),
+        ] {
+            source
+                .doc()
+                .set_bytes(
+                    device.to_iroh_author().id(),
+                    key.clone(),
+                    b"paired update".as_slice(),
+                )
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if destination
+                        .doc()
+                        .get_exact(device.to_iroh_author().id(), &key, false)
+                        .await
+                        .unwrap()
+                        .is_some()
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("saved paired peers must exchange writes without manual sync");
+        }
+        right.shutdown().await;
+    }
+    left.shutdown().await;
+}
+
 fn seed_chat(data_dir: &std::path::Path, address: &ChatAddress) {
     let scope = ChatScopeStore::resolve(data_dir, address.clone());
     rua_session::chat_index::upsert_sync(
@@ -528,4 +617,247 @@ async fn sync_now_waits_for_a_busy_peer_before_reporting_completion() {
     peer.close().await;
     source.shutdown().await;
     target.shutdown().await;
+}
+
+#[tokio::test]
+async fn concurrent_sync_requests_exchange_both_writes() {
+    let network = NetworkSecret::generate();
+    let left_dir = tempfile::tempdir().unwrap();
+    let right_dir = tempfile::tempdir().unwrap();
+    let left_device = DeviceIdentity::generate();
+    let right_device = DeviceIdentity::generate();
+    let left = SyncNode::bind_local(left_dir.path(), network.namespace_secret(), &left_device)
+        .await
+        .unwrap();
+    let right = SyncNode::bind_local(right_dir.path(), network.namespace_secret(), &right_device)
+        .await
+        .unwrap();
+    for (node, device, key) in [
+        (&left, &left_device, "left"),
+        (&right, &right_device, "right"),
+    ] {
+        node.doc()
+            .set_bytes(device.to_iroh_author().id(), key, key)
+            .await
+            .unwrap();
+    }
+    let (a, b) = tokio::join!(
+        rua_sync::transport::sync_now(&left, right.local_peer_addr(), Duration::from_secs(5)),
+        rua_sync::transport::sync_now(&right, left.local_peer_addr(), Duration::from_secs(5)),
+    );
+    for result in [a.unwrap(), b.unwrap()] {
+        assert!(result.warnings.is_empty());
+        assert_eq!(
+            result.path_observation.route,
+            rua_sync::transport::SyncRouteKind::Direct
+        );
+    }
+    for node in [&left, &right] {
+        assert_eq!(
+            rua_sync::transport::query_all_entry_hashes(node)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+    left.shutdown().await;
+    right.shutdown().await;
+}
+
+#[tokio::test]
+async fn rejected_namespace_preserves_protocol_error_over_stream_close() {
+    let left_dir = tempfile::tempdir().unwrap();
+    let right_dir = tempfile::tempdir().unwrap();
+    let left = SyncNode::bind_local(
+        left_dir.path(),
+        NetworkSecret::generate().namespace_secret(),
+        &DeviceIdentity::generate(),
+    )
+    .await
+    .unwrap();
+    let right = SyncNode::bind_local(
+        right_dir.path(),
+        NetworkSecret::generate().namespace_secret(),
+        &DeviceIdentity::generate(),
+    )
+    .await
+    .unwrap();
+    let error = iroh_docs::net::connect_and_sync(
+        left.endpoint(),
+        left.sync_handle(),
+        left.namespace_id(),
+        right.local_peer_addr(),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            iroh_docs::net::ConnectError::RemoteAbort(iroh_docs::net::AbortReason::NotFound)
+        ),
+        "protocol rejection was masked: {error:?}"
+    );
+    left.shutdown().await;
+    right.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blob_download_survives_a_handshake_longer_than_one_second() {
+    use iroh::protocol::ProtocolHandler;
+    let dir = tempfile::tempdir().unwrap();
+    let network = NetworkSecret::generate();
+    let node = SyncNode::bind_local(
+        dir.path(),
+        network.namespace_secret(),
+        &DeviceIdentity::generate(),
+    )
+    .await
+    .unwrap();
+    let provider = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0")
+        .unwrap()
+        .alpns(vec![iroh_blobs::ALPN.to_vec()])
+        .bind()
+        .await
+        .unwrap();
+    let lookup = iroh::address_lookup::memory::MemoryLookup::new();
+    lookup.add_endpoint_info(
+        iroh::EndpointAddr::new(provider.id()).with_ip_addr(provider.bound_sockets()[0]),
+    );
+    node.endpoint().address_lookup().unwrap().add(lookup);
+    let store: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::default().into();
+    let data = b"handshake progress must survive the pool's one-second default";
+    let tag = store.blobs().add_bytes(data.as_slice()).await.unwrap();
+    let protocol = iroh_blobs::BlobsProtocol::new(&store, None);
+    let transfer = node.blob_downloader().download(
+        tag.hash,
+        vec![provider.id()],
+        Duration::from_secs(5),
+        "slow handshake",
+    );
+    let serve = async {
+        let incoming = provider.accept().await.unwrap();
+        // Model a recovering relay or mobile link before the first handshake response.
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        if let Ok(conn) = incoming.await {
+            protocol.accept(conn).await.ok();
+        }
+    };
+    tokio::pin!(serve);
+    let result = tokio::select! {
+        result = transfer => result,
+        _ = &mut serve => panic!("provider closed before the download completed"),
+    };
+    let downloaded = node.blobs_store().blobs().get_bytes(tag.hash).await;
+    node.shutdown().await;
+    provider.close().await;
+    result.expect("a viable handshake must not be aborted after one second");
+    assert_eq!(downloaded.unwrap().as_ref(), data);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blob_download_after_peer_restart_does_not_reuse_an_idle_dead_connection() {
+    let key = iroh::SecretKey::generate();
+    let old_key = key.clone();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let (kill_tx, kill_rx) = tokio::sync::oneshot::channel();
+    let old_host = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .clear_ip_transports()
+                .bind_addr("127.0.0.1:0")
+                .unwrap()
+                .secret_key(old_key)
+                .bind()
+                .await
+                .unwrap();
+            let store: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::default().into();
+            let tag = store
+                .blobs()
+                .add_bytes(b"before restart".as_slice())
+                .await
+                .unwrap();
+            let router = iroh::protocol::Router::builder(endpoint.clone())
+                .accept(
+                    iroh_blobs::ALPN,
+                    iroh_blobs::BlobsProtocol::new(&store, None),
+                )
+                .spawn();
+            ready_tx
+                .send((endpoint.bound_sockets()[0], tag.hash))
+                .unwrap();
+            kill_rx.await.unwrap();
+            // Shut the runtime down before dropping handles: simulate process death,
+            // with no graceful CONNECTION_CLOSE reaching the downloader.
+            (endpoint, router, store, tag)
+        })
+    });
+    let (old_addr, old_hash) = ready_rx.await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let network = NetworkSecret::generate();
+    let node = SyncNode::bind_local(
+        dir.path(),
+        network.namespace_secret(),
+        &DeviceIdentity::generate(),
+    )
+    .await
+    .unwrap();
+    let lookup = iroh::address_lookup::memory::MemoryLookup::new();
+    lookup.add_endpoint_info(iroh::EndpointAddr::new(key.public()).with_ip_addr(old_addr));
+    node.endpoint()
+        .address_lookup()
+        .unwrap()
+        .add(lookup.clone());
+    node.blob_downloader()
+        .download(
+            old_hash,
+            vec![key.public()],
+            Duration::from_secs(2),
+            "before restart",
+        )
+        .await
+        .unwrap();
+    kill_tx.send(()).unwrap();
+    let abandoned = tokio::task::spawn_blocking(move || old_host.join().unwrap())
+        .await
+        .unwrap();
+    let provider = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0")
+        .unwrap()
+        .secret_key(key)
+        .bind()
+        .await
+        .unwrap();
+    let store: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::default().into();
+    let data = b"after restart";
+    let tag = store.blobs().add_bytes(data.as_slice()).await.unwrap();
+    let router = iroh::protocol::Router::builder(provider.clone())
+        .accept(
+            iroh_blobs::ALPN,
+            iroh_blobs::BlobsProtocol::new(&store, None),
+        )
+        .spawn();
+    lookup.add_endpoint_info(
+        iroh::EndpointAddr::new(provider.id()).with_ip_addr(provider.bound_sockets()[0]),
+    );
+    let result = node
+        .blob_downloader()
+        .download(
+            tag.hash,
+            vec![provider.id()],
+            Duration::from_secs(2),
+            "after restart",
+        )
+        .await;
+    let downloaded = node.blobs_store().blobs().get_bytes(tag.hash).await;
+    drop(abandoned);
+    router.shutdown().await.unwrap();
+    node.shutdown().await;
+    result.expect("an idle connection from the killed process must not stall fresh content");
+    assert_eq!(downloaded.unwrap().as_ref(), data);
 }

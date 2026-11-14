@@ -339,7 +339,9 @@ impl ActiveRelayActor {
                     break;
                 };
                 debug!("retry in {delay:?}");
-                time::sleep(delay).await;
+                if !self.sleep_backoff(delay).await {
+                    break;
+                }
             } else {
                 // If the relay connection remained established long enough so that we received a pong
                 // from the relay server, we reset the backoff and attempt to reconnect immediately.
@@ -347,6 +349,34 @@ impl ActiveRelayActor {
             }
         }
         debug!("exiting");
+    }
+
+    /// Keep route queries responsive while this disconnected relay backs off (upstream #4444).
+    /// Returns false when the actor should shut down instead of retrying.
+    async fn sleep_backoff(&mut self, delay: Duration) -> bool {
+        let sleep = time::sleep(delay);
+        tokio::pin!(sleep);
+        loop {
+            tokio::select! {
+                biased;
+                _ = self.stop_token.cancelled() => {
+                    debug!("Shutdown.");
+                    return false;
+                }
+                msg = self.prio_inbox.recv() => {
+                    let Some(msg) = msg else {
+                        warn!("Priority inbox closed, shutdown.");
+                        return false;
+                    };
+                    match msg {
+                        ActiveRelayPrioMessage::HasEndpointRoute(_peer, sender) => {
+                            sender.send(false).ok();
+                        }
+                    }
+                }
+                _ = &mut sleep => return true,
+            }
+        }
     }
 
     fn build_backoff() -> impl Backoff {
@@ -1385,6 +1415,10 @@ pub(crate) struct RelayRecvDatagram {
     pub(crate) src: EndpointId,
     pub(crate) datagrams: Datagrams,
 }
+
+#[cfg(all(test, not(wasm_browser)))]
+#[path = "../../../../tests/unit_relay_backoff.rs"]
+mod backoff_tests;
 
 #[cfg(test)]
 mod tests {

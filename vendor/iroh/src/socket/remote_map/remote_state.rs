@@ -499,7 +499,7 @@ impl RemoteStateActor {
                 conn_state.add_open_path(path_remote.clone(), PathId::ZERO, &self.metrics);
                 self.paths
                     .insert_open_path(path_remote.clone(), Source::Connection);
-                self.configure_path(conn_id, &path, &path_remote);
+                self.configure_path(&path, &path_remote);
                 self.select_path();
 
                 if path_remote.is_ip() {
@@ -835,31 +835,11 @@ impl RemoteStateActor {
     ///
     /// Relay paths get a longer idle timeout to accommodate transparent reconnection
     /// by the relay actor (see [`RELAY_PATH_MAX_IDLE_TIMEOUT`]).
-    fn configure_path(&self, conn_id: ConnId, path: &noq::Path, addr: &transports::Addr) {
+    fn configure_path(&self, path: &noq::Path, addr: &transports::Addr) {
         if matches!(addr, transports::Addr::Relay(..))
             && let Err(e) = path.set_max_idle_timeout(Some(RELAY_PATH_MAX_IDLE_TIMEOUT))
         {
             debug!(?e, "failed to set relay path idle timeout");
-        }
-
-        let status = if Some(addr) == self.selected_path.as_ref() {
-            PathStatus::Available
-        } else {
-            PathStatus::Backup
-        };
-        let res = path.set_status(status);
-        event!(
-            target: "iroh::_events::path::set_status",
-            Level::DEBUG,
-            remote = %self.endpoint_id.fmt_short(),
-            path_remote = ?addr,
-            ?status,
-            %conn_id,
-            path_id=%path.id(),
-            ?res,
-        );
-        if let Err(e) = res {
-            warn!(?e, ?addr, ?status, "set_status failed");
         }
     }
 
@@ -911,7 +891,7 @@ impl RemoteStateActor {
                         Some(Err(PathError::RemoteCidsExhausted)) => {
                             self.scheduled_open_path =
                                 Some(Instant::now() + Duration::from_millis(333));
-                            self.pending_open_paths.push_back(open_addr.clone());
+                            queue_path_retry(&mut self.pending_open_paths, open_addr);
                             trace!(?open_addr, "scheduling open_path");
                         }
                         _ => warn!(?ret, "Opening path failed"),
@@ -963,7 +943,7 @@ impl RemoteStateActor {
                     conn_state.add_open_path(path_remote.clone(), path_id, &self.metrics);
                     self.paths
                         .insert_open_path(path_remote.clone(), Source::Connection);
-                    self.configure_path(conn_id, &path, &path_remote);
+                    self.configure_path(&path, &path_remote);
                     self.select_path();
                 }
             }
@@ -986,30 +966,6 @@ impl RemoteStateActor {
                     ?reason
                 );
 
-                // If one connection abandons a path, close it on all connections.
-                for (conn_id, conn_state) in self.connections.iter() {
-                    let Some(conn) = conn_state.handle.upgrade() else {
-                        continue;
-                    };
-                    // Close all paths with the remote address that was abandoned.
-                    for path in conn_state
-                        .paths
-                        .iter()
-                        .filter(|(_id, addr)| **addr == path_remote)
-                        .filter_map(|(id, _addr)| conn.path(*id))
-                    {
-                        trace!(?path_remote, %conn_id, path_id=%path.id(), "closing path");
-                        if let Err(err) = path.close() {
-                            trace!(
-                                ?path_remote,
-                                %conn_id,
-                                path_id=%path.id(),
-                                "path close failed: {err:#}"
-                            );
-                        }
-                    }
-                }
-
                 // If the remote closed our selected path, select a new one.
                 self.select_path();
             }
@@ -1027,8 +983,8 @@ impl RemoteStateActor {
     /// If there are direct paths, this selects the direct path with the lowest RTT.  If
     /// there are only relay paths, the relay path with the lowest RTT is chosen.
     ///
-    /// The selected path is added to any connections which do not yet have it.  Any unused
-    /// direct paths are closed for all connections.
+    /// The selected address is shared as a dial hint. Established connections
+    /// select their own working paths independently.
     #[instrument(skip_all)]
     fn select_path(&mut self) {
         // Find the lowest RTT across all connections for each open path.  The long way, so
@@ -1075,22 +1031,42 @@ impl RemoteStateActor {
                 ?rtt,
                 ?prev_remote,
             );
-            self.apply_selected_change(&addr);
             self.open_path(&addr);
         } else {
             trace!(?current_path, "keeping current path");
         }
+        self.select_connection_paths();
     }
 
-    /// Propagates a change of [`Self::selected_path`] to noq.
-    ///
-    /// Iterates over all connections and applies the selected path as follows:
-    /// - Closes non-selected IP paths (but keeps one IP path open still)
-    /// - Sets all non-selected paths to [`PathStatus::Backup`]
-    /// - Sets the selected path to [`PathStatus::Available`]
-    fn apply_selected_change(&self, selected: &transports::Addr) {
+    /// Choose transmission paths from each connection's own RTT measurements.
+    /// A peer-wide address is only a dial hint: another connection may not have
+    /// established that path, or may have lost it while this one still works.
+    fn select_connection_paths(&self) {
         for (conn_id, conn_state) in self.connections.iter() {
             let Some(conn) = conn_state.handle.upgrade() else {
+                continue;
+            };
+
+            let current = conn_state
+                .path_state
+                .selected_path_id()
+                .and_then(|id| conn_state.paths.get(&id));
+            let candidates = conn_state
+                .paths
+                .iter()
+                .filter_map(|(id, addr)| {
+                    conn.path_stats(*id).map(|stats| {
+                        (
+                            addr.clone(),
+                            self.transport_bias.path_selection_data(addr, stats.rtt),
+                        )
+                    })
+                })
+                .collect();
+            let selected = select_best_path(candidates, current)
+                .map(|(addr, _)| addr)
+                .or_else(|| current.cloned());
+            let Some(selected) = selected else {
                 continue;
             };
 
@@ -1111,7 +1087,7 @@ impl RemoteStateActor {
                 // and racing to abandon the last one.
                 if conn.side().is_client()
                     && path_remote.is_ip()
-                    && path_remote != selected
+                    && path_remote != &selected
                     && conn_state.paths.values().filter(|a| a.is_ip()).count() > 1
                 {
                     trace!(?path_remote, %conn_id, %path_id, "closing direct path");
@@ -1133,7 +1109,7 @@ impl RemoteStateActor {
                 }
 
                 // Set path status: The selected path becomes Available, all other paths become Backup.
-                let status = if path_remote == selected {
+                let status = if path_remote == &selected {
                     PathStatus::Available
                 } else {
                     PathStatus::Backup
@@ -1223,6 +1199,13 @@ fn select_best_path(
     }
 }
 
+fn queue_path_retry(pending: &mut VecDeque<transports::Addr>, addr: &transports::Addr) {
+    // There are few distinct addresses per peer; keep one retry per address.
+    if !pending.contains(addr) {
+        pending.push_back(addr.clone());
+    }
+}
+
 fn send_datagram<'a>(
     sender: &'a mut TransportsSender,
     dst: transports::Addr,
@@ -1235,9 +1218,15 @@ fn send_datagram<'a>(
             segment_size: owned_transmit.segment_size,
         };
 
-        Pin::new(&mut *sender)
-            .poll_send(cx, &dst, None, &transmit)
-            .map(|res| res.with_context(|_| format!("failed to send datagram to {dst:?}")))
+        let result = Pin::new(&mut *sender).poll_send(cx, &dst, None, &transmit);
+        if result.is_pending() && dst.is_relay() {
+            // Initial packets are retransmitted by QUIC. A full relay queue must
+            // not hold the peer actor or delay the next direct-address attempt.
+            debug!(?dst, "dropping handshake datagram: relay queue is full");
+            Poll::Ready(Ok(()))
+        } else {
+            result.map(|res| res.with_context(|_| format!("failed to send datagram to {dst:?}")))
+        }
     })
 }
 
@@ -1428,6 +1417,14 @@ async fn maybe_next<S: Stream + Unpin>(maybe_stream: Option<&mut S>) -> Option<O
         Some(s) => Some(s.next().await),
     }
 }
+
+#[cfg(all(test, with_crypto_provider, not(wasm_browser)))]
+#[path = "../../../tests/unit_path_isolation.rs"]
+mod path_isolation_tests;
+
+#[cfg(all(test, not(wasm_browser)))]
+#[path = "../../../tests/unit_path_retry.rs"]
+mod path_retry_tests;
 
 #[cfg(test)]
 mod tests {
