@@ -27,3 +27,6 @@ mod partial_replica_submit;
 
 #[path = "contract_console_http/transport.rs"]
 mod transport;
+
+#[path = "contract_console_http/trusted_phone_invocation.rs"]
+mod trusted_phone_invocation;

@@ -3966,6 +3966,8 @@ impl ConsoleChatService {
                     rua_agent::turn_persistence::LOADED_MESSAGE_COUNT_METADATA_KEY.into(),
                     serde_json::json!(loaded_message_count),
                 );
+            }
+            if active_turn_id.is_some() {
                 metadata.insert(
                     rua_agent::turn_persistence::AUTHORITY_DEVICE_ID_METADATA_KEY.into(),
                     serde_json::json!(authority_placement.device_id.clone()),

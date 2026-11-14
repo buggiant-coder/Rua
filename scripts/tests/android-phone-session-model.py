@@ -22,6 +22,7 @@ import json
 import re
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CASES = {}
@@ -159,7 +160,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if tool:
                 event['requested_tool'] = tool
-                send({'role': 'assistant', 'tool_calls': [{'index': 0, 'id': f'{key}-tool-{len(results)}', 'type': 'function', 'function': {'name': tool, 'arguments': json.dumps(arguments)}}]})
+                send({'role': 'assistant', 'tool_calls': [{'index': 0, 'id': f'{key}-tool-{uuid.uuid4().hex}', 'type': 'function', 'function': {'name': tool, 'arguments': json.dumps(arguments)}}]})
                 send({}, 'tool_calls')
             else:
                 event['final_pass'] = passed
