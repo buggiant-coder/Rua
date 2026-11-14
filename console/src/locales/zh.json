@@ -2404,6 +2404,7 @@
       "loadFailed": "对话选项加载失败",
       "saveSuccess": "对话选项已保存",
       "saveFailed": "对话选项保存失败",
+      "updateConfiguration": "应用全局配置",
       "resetToGlobalDefaults": "重置为全局默认值",
       "resetTitle": "重置对话选项？",
       "resetDescription": "当前对话的运行配置将替换为当前设备上的全局默认配置。",

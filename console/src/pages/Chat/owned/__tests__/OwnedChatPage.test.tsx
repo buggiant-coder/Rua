@@ -2249,18 +2249,10 @@ describe("owned ChatPage route identity", () => {
     });
   });
 
-  it("previews complete configuration before applying the same candidate", async () => {
-    const preview = {
-      current: { epoch: "one", running_config: { max_iters: 10 } },
-      candidate: { epoch: "two", running_config: { max_iters: 20 } },
-      applied: false,
-    };
+  it("opens Chat options without generating a complete configuration candidate", async () => {
     const previewSpy = vi
       .spyOn(conversationApi, "previewConfiguration")
-      .mockResolvedValue(preview);
-    const applySpy = vi
-      .spyOn(conversationApi, "applyConfiguration")
-      .mockResolvedValue({ ...preview, applied: true });
+      .mockImplementation(() => new Promise(() => {}));
     try {
       renderChat("/agents/default/chats/chat-1");
       fireEvent.click(screen.getByLabelText(label("common.more")));
@@ -2269,142 +2261,119 @@ describe("owned ChatPage route identity", () => {
           name: label("chat.options.menu"),
         }),
       );
-      await screen.findByText(label("chat.options.title"));
-      const update = await screen.findByRole("button", {
-        name: "更新完整配置",
+      const save = await screen.findByRole("button", {
+        name: label("common.save"),
       });
-      await waitFor(() => expect(update).not.toBeDisabled());
-      fireEvent.click(update);
-      const dialog = (
-        await screen.findByText("running_config.max_iters")
-      ).closest('[role="dialog"]');
-      expect(applySpy).not.toHaveBeenCalled();
-      fireEvent.click(
-        within(dialog as HTMLElement).getByRole("button", {
-          name: label("common.save"),
-        }),
+      await waitFor(() => expect(save).toBeEnabled());
+      expect(chatApiMock.getRunningConfig).toHaveBeenCalledWith(
+        "chat-1",
+        "default",
       );
-      await waitFor(() =>
-        expect(applySpy).toHaveBeenCalledWith(
-          { scope: "agent", agentId: "default" },
-          "chat-1",
-          preview,
-        ),
-      );
+      expect(previewSpy).not.toHaveBeenCalled();
     } finally {
       previewSpy.mockRestore();
-      applySpy.mockRestore();
     }
   });
 
-  it("keeps configuration controls usable after a transient options read failure", async () => {
-    chatApiMock.getRunningConfig.mockRejectedValueOnce(
-      new Error("Temporary connection failure"),
-    );
-    const preview = {
-      current: { epoch: "current", running_config: { max_iters: 17 } },
-      candidate: {
-        epoch: "complete",
-        running_config: { max_iters: 17 },
-        security_config: { tool_guard: { approval_mode: "ask_first" } },
-      },
-      applied: false,
-    };
-    const previewSpy = vi
-      .spyOn(conversationApi, "previewConfiguration")
-      .mockResolvedValue(preview);
-    const applySpy = vi
-      .spyOn(conversationApi, "applyConfiguration")
-      .mockResolvedValue({ ...preview, applied: true });
-    try {
-      renderChat("/agents/default/chats/chat-1");
-      fireEvent.click(screen.getByLabelText(label("common.more")));
-      fireEvent.click(
-        await screen.findByRole("menuitem", {
-          name: label("chat.options.menu"),
-        }),
-      );
-      const update = await screen.findByRole("button", {
-        name: "更新完整配置",
-      });
-      await waitFor(() => expect(update).toBeEnabled());
-      fireEvent.click(update);
-      let dialog = (await screen.findByText("security_config")).closest(
-        '[role="dialog"]',
-      );
-      expect(applySpy).not.toHaveBeenCalled();
-      fireEvent.click(
-        within(dialog as HTMLElement).getByRole("button", {
-          name: label("common.cancel"),
-        }),
-      );
-      expect(applySpy).not.toHaveBeenCalled();
-      await waitFor(() => expect(update).toBeEnabled());
-      fireEvent.click(update);
-      dialog = (await screen.findByText("security_config")).closest(
-        '[role="dialog"]',
-      );
-      fireEvent.click(
-        within(dialog as HTMLElement).getByRole("button", {
-          name: label("common.save"),
-        }),
-      );
-      await waitFor(() =>
-        expect(applySpy).toHaveBeenCalledWith(
-          { scope: "agent", agentId: "default" },
-          "chat-1",
-          preview,
-        ),
-      );
-      await waitFor(() =>
-        expect(chatApiMock.getRunningConfig).toHaveBeenCalledTimes(2),
-      );
-      expect(chatApiMock.updateRunningConfig).not.toHaveBeenCalled();
-      expect(agentsApiMock.getAgentChatRunningDefaults).not.toHaveBeenCalled();
-    } finally {
-      previewSpy.mockRestore();
-      applySpy.mockRestore();
-    }
-  });
-
-  it("resets Chat options to the current global defaults", async () => {
+  it("applies only global running defaults after confirming their differences", async () => {
     const defaults = { ...runningConfig(), max_iters: 42 };
     agentsApiMock.getAgentChatRunningDefaults.mockResolvedValue(defaults);
-    renderChat("/agents/default/chats/chat-1");
-
-    fireEvent.click(screen.getByLabelText(label("common.more")));
-    fireEvent.click(
-      await screen.findByRole("menuitem", {
-        name: label("chat.options.menu"),
-      }),
-    );
-    await screen.findByText(label("chat.options.title"));
-
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: label("chat.options.resetToGlobalDefaults"),
-      }),
-    );
-    const confirmDialog = (
-      await screen.findByText(label("chat.options.resetTitle"))
-    ).closest('[role="dialog"]');
-    expect(confirmDialog).not.toBeNull();
-    fireEvent.click(
-      within(confirmDialog as HTMLElement).getByRole("button", {
-        name: label("common.reset"),
-      }),
-    );
-
-    await waitFor(() => {
+    const previewSpy = vi
+      .spyOn(conversationApi, "previewConfiguration")
+      .mockRejectedValue(
+        new Error("Complete configuration is outside running options"),
+      );
+    const applySpy = vi.spyOn(conversationApi, "applyConfiguration");
+    try {
+      renderChat("/agents/default/chats/chat-1");
+      fireEvent.click(screen.getByLabelText(label("common.more")));
+      fireEvent.click(
+        await screen.findByRole("menuitem", {
+          name: label("chat.options.menu"),
+        }),
+      );
+      const apply = await screen.findByRole("button", { name: "应用全局配置" });
+      await waitFor(() => expect(apply).toBeEnabled());
+      expect(
+        screen.queryByRole("button", { name: /重置/ }),
+      ).not.toBeInTheDocument();
+      fireEvent.click(apply);
+      const dialog = (await screen.findByText("max_iters")).closest(
+        '[role="dialog"]',
+      );
+      expect(chatApiMock.updateRunningConfig).not.toHaveBeenCalled();
+      expect(within(dialog as HTMLElement).getByText("42")).toBeInTheDocument();
+      fireEvent.click(
+        within(dialog as HTMLElement).getByRole("button", {
+          name: label("common.save"),
+        }),
+      );
+      await waitFor(() =>
+        expect(chatApiMock.updateRunningConfig).toHaveBeenCalledWith(
+          "chat-1",
+          defaults,
+          "default",
+        ),
+      );
       expect(agentsApiMock.getAgentChatRunningDefaults).toHaveBeenCalledWith(
         "default",
       );
+      expect(previewSpy).not.toHaveBeenCalled();
+      expect(applySpy).not.toHaveBeenCalled();
+    } finally {
+      previewSpy.mockRestore();
+      applySpy.mockRestore();
+    }
+  });
+
+  it("can cancel and retry applying running defaults after a transient options read failure", async () => {
+    chatApiMock.getRunningConfig.mockRejectedValueOnce(
+      new Error("Temporary connection failure"),
+    );
+    const defaults = { ...runningConfig(), max_iters: 42 };
+    agentsApiMock.getAgentChatRunningDefaults.mockResolvedValue(defaults);
+    renderChat("/agents/default/chats/chat-1");
+    fireEvent.click(screen.getByLabelText(label("common.more")));
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: label("chat.options.menu") }),
+    );
+    const apply = await screen.findByRole("button", { name: "应用全局配置" });
+    await waitFor(() => expect(apply).toBeEnabled());
+    fireEvent.click(apply);
+    let dialog = (await screen.findByText("max_iters")).closest(
+      '[role="dialog"]',
+    );
+    fireEvent.click(
+      within(dialog as HTMLElement).getByRole("button", {
+        name: label("common.cancel"),
+      }),
+    );
+    expect(chatApiMock.updateRunningConfig).not.toHaveBeenCalled();
+    await waitFor(() => expect(apply).toBeEnabled());
+    fireEvent.click(apply);
+    dialog = (await screen.findByText("max_iters")).closest('[role="dialog"]');
+    fireEvent.click(
+      within(dialog as HTMLElement).getByRole("button", {
+        name: label("common.save"),
+      }),
+    );
+    await waitFor(() =>
       expect(chatApiMock.updateRunningConfig).toHaveBeenCalledWith(
         "chat-1",
         defaults,
         "default",
-      );
-    });
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("dialog")).queryByText(
+          "Temporary connection failure",
+        ),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("button", { name: label("common.save") }),
+    ).toBeEnabled();
   });
 
   it("keeps remote chat options open after authority update failure", async () => {

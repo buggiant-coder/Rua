@@ -21,7 +21,6 @@ import {
   Monitor,
   PencilLine,
   RefreshCw,
-  RotateCcw,
   SlidersHorizontal,
   Wrench,
   ShieldCheck,
@@ -74,7 +73,6 @@ import { acpApi } from "@/api/modules/acp";
 import {
   agentConversationTarget,
   conversationApi,
-  type ChatConfigurationPreview,
   type ConversationApiTarget,
 } from "@/api/modules/conversation";
 import { useAgentStore } from "@/stores/agentStore";
@@ -558,10 +556,8 @@ export function ChatOptionsModal({
   const [original, setOriginal] = useState<ChatRunningConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [resetting, setResetting] = useState(false);
+  const [applyingDefaults, setApplyingDefaults] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [collaborationState, setCollaborationState] =
-    useState<ChatConfigurationPreview["collaboration"]>();
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(
     readOptionSectionOpen,
   );
@@ -585,7 +581,6 @@ export function ChatOptionsModal({
     setLoadError(null);
     setDraft(null);
     setOriginal(null);
-    setCollaborationState(undefined);
     if (!chatId) {
       setLoading(false);
       return;
@@ -606,14 +601,6 @@ export function ChatOptionsModal({
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
-      });
-    void conversationApi
-      .previewConfiguration(conversationTarget, chatId)
-      .then((preview) => {
-        if (!cancelled) setCollaborationState(preview.collaboration);
-      })
-      .catch(() => {
-        // Propagation status is supplementary; running-config options remain usable.
       });
     return () => {
       cancelled = true;
@@ -727,57 +714,18 @@ export function ChatOptionsModal({
     }
   }
 
-  async function resetToGlobalDefaults() {
+  async function applyGlobalRunningConfig() {
     if (!chatId) return;
-    const confirmed = await Modal.confirm({
-      title: t("chat.options.resetTitle"),
-      content: t("chat.options.resetDescription"),
-      okText: t("common.reset"),
-      cancelText: t("common.cancel"),
-    });
-    if (!confirmed) return;
-
-    setResetting(true);
+    setApplyingDefaults(true);
     try {
-      const defaults = await agentsApi.getAgentChatRunningDefaults(
-        selectedAgent,
-      );
-      const updated = await conversationApi.updateRunningConfig(
-        conversationTarget,
-        chatId,
-        defaults,
-      );
-      setDraft(updated);
-      setOriginal(updated);
-      toast.success(t("chat.options.resetSuccess"));
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : t("chat.options.resetFailed");
-      toast.error(message);
-    } finally {
-      setResetting(false);
-    }
-  }
-
-  async function refreshConfiguration() {
-    if (!chatId) return;
-    setResetting(true);
-    try {
-      const preview = await conversationApi.previewConfiguration(
-        conversationTarget,
-        chatId,
-      );
-      const changes = configurationChanges(
-        preview.current,
-        preview.candidate,
-      ).filter(
-        (change) =>
-          change.field !== "epoch" &&
-          change.field !== "agent_assignment.assigned_at",
-      );
+      const [current, defaults] = await Promise.all([
+        conversationApi.getRunningConfig(conversationTarget, chatId),
+        agentsApi.getAgentChatRunningDefaults(selectedAgent),
+      ]);
+      const changes = configurationChanges(current, defaults);
       const confirmed = await Modal.confirm({
         title: t("chat.options.updateConfiguration", {
-          defaultValue: "更新完整配置",
+          defaultValue: "应用全局配置",
         }),
         content: (
           <dl>
@@ -799,15 +747,10 @@ export function ChatOptionsModal({
         cancelText: t("common.cancel"),
       });
       if (!confirmed) return;
-      const applied = await conversationApi.applyConfiguration(
+      const config = await conversationApi.updateRunningConfig(
         conversationTarget,
         chatId,
-        preview,
-      );
-      setCollaborationState(applied.collaboration);
-      const config = await conversationApi.getRunningConfig(
-        conversationTarget,
-        chatId,
+        defaults,
       );
       setDraft(config);
       setOriginal(config);
@@ -818,7 +761,7 @@ export function ChatOptionsModal({
         error instanceof Error ? error.message : t("chat.options.saveFailed"),
       );
     } finally {
-      setResetting(false);
+      setApplyingDefaults(false);
     }
   }
 
@@ -836,33 +779,25 @@ export function ChatOptionsModal({
         <>
           <Btn
             variant="outline"
-            onClick={() => void refreshConfiguration()}
-            disabled={!chatId || loading || saving || resetting}
+            onClick={() => void applyGlobalRunningConfig()}
+            loading={applyingDefaults}
+            disabled={!chatId || loading || saving || applyingDefaults}
           >
             {t("chat.options.updateConfiguration", {
-              defaultValue: "更新完整配置",
+              defaultValue: "应用全局配置",
             })}
           </Btn>
           <Btn
             variant="outline"
-            icon={<RotateCcw size={16} />}
-            onClick={() => void resetToGlobalDefaults()}
-            loading={resetting}
-            disabled={!draft || saving}
-          >
-            {t("chat.options.resetToGlobalDefaults")}
-          </Btn>
-          <Btn
-            variant="outline"
             onClick={onClose}
-            disabled={saving || resetting}
+            disabled={saving || applyingDefaults}
           >
             {t("common.cancel")}
           </Btn>
           <Btn
             onClick={() => void saveOptions()}
             loading={saving}
-            disabled={!draft || resetting}
+            disabled={!draft || applyingDefaults}
           >
             {t("common.save")}
           </Btn>
@@ -870,55 +805,6 @@ export function ChatOptionsModal({
       }
     >
       <ChatOptionsLayout>
-        {collaborationState && (
-          <ChatOptionSection
-            title={t("chat.options.collaborationConfiguration", {
-              defaultValue: "Collaboration configuration",
-            })}
-            summary={<Tag>{collaborationState.status}</Tag>}
-            open={openGroups.collaborationConfiguration ?? true}
-            onToggle={() => toggleGroup("collaborationConfiguration")}
-          >
-            <dl role="status" aria-live="polite">
-              <div>
-                <dt>
-                  {t("chat.options.configurationSource", {
-                    defaultValue: "Source",
-                  })}
-                </dt>
-                <dd>
-                  <code>{JSON.stringify(collaborationState.source)}</code>
-                </dd>
-              </div>
-              <div>
-                <dt>
-                  {t("chat.options.appliedSourceEpoch", {
-                    defaultValue: "Applied source epoch",
-                  })}
-                </dt>
-                <dd>
-                  <code>{collaborationState.applied_source_epoch || "—"}</code>
-                </dd>
-              </div>
-              <div>
-                <dt>
-                  {t("chat.options.desiredSourceEpoch", {
-                    defaultValue: "Desired source epoch",
-                  })}
-                </dt>
-                <dd>
-                  <code>{collaborationState.desired_source_epoch || "—"}</code>
-                </dd>
-              </div>
-              {collaborationState.error && (
-                <div>
-                  <dt>{t("common.error", { defaultValue: "Error" })}</dt>
-                  <dd>{collaborationState.error}</dd>
-                </div>
-              )}
-            </dl>
-          </ChatOptionSection>
-        )}
         <ChatOptionSection
           title={t("chat.blocks.menuTitle", {
             defaultValue: "Block display defaults",
