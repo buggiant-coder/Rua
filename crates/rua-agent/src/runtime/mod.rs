@@ -261,6 +261,10 @@ struct EffectiveCapabilitySnapshot {
     mcp_tool_sources: HashMap<String, (String, String)>,
 }
 
+#[cfg(test)]
+#[path = "../../tests/runtime_capability_projection.rs"]
+mod capability_projection_tests;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ChatSkillSnapshot {
     pub name: String,
@@ -1357,31 +1361,95 @@ impl ModelCallCapabilityProvider {
                 Some(bridge) => bridge.status(&self.resolver.cancel).await,
                 None => Err("Phone Use is not connected on this execution device".into()),
             };
-            let mut unavailable = Vec::new();
-            for name in phone_tools {
-                if name == "phone_status" {
-                    continue;
-                }
-                let reason = match &status {
-                    Ok(status) => crate::tool_disclosure::phone_tool_unavailability(&name, status)
-                        .map(str::to_string),
-                    Err(reason) => Some(reason.clone()),
-                };
-                if let Some(reason) = reason {
-                    snapshot.diagnostics.push(EffectiveCapabilityDiagnostic {
-                        capability_type: "tool".into(),
-                        name: name.clone(),
-                        state: "unavailable".into(),
-                        reason: Some(reason),
-                    });
-                    unavailable.push(name);
-                }
-            }
-            toolkit = toolkit.create_filtered(&unavailable);
+            filter_phone_readiness(&mut toolkit, &mut snapshot, phone_tools, &status);
         }
         snapshot.toolkit = Some(Arc::new(toolkit));
         Ok(snapshot)
     }
+}
+
+fn filter_phone_readiness(
+    toolkit: &mut AgentToolkit,
+    snapshot: &mut EffectiveCapabilitySnapshot,
+    phone_tools: Vec<String>,
+    status: &std::result::Result<rua_core::phone_use::PhoneStatus, String>,
+) {
+    let mut unavailable = Vec::new();
+    for name in phone_tools {
+        if name == "phone_status" {
+            continue;
+        }
+        let reason = match status {
+            Ok(status) => {
+                crate::tool_disclosure::phone_tool_unavailability(&name, status).map(str::to_string)
+            }
+            Err(reason) => Some(reason.clone()),
+        };
+        if let Some(reason) = reason {
+            snapshot.diagnostics.push(EffectiveCapabilityDiagnostic {
+                capability_type: "tool".into(),
+                name: name.clone(),
+                state: "unavailable".into(),
+                reason: Some(reason),
+            });
+            unavailable.push(name);
+        }
+    }
+    *toolkit = toolkit.create_filtered(&unavailable);
+}
+
+fn project_capability_context(
+    mut request: ChatRequest,
+    snapshot: &EffectiveCapabilitySnapshot,
+    disclosure: &react_agent::tool_disclosure::ToolDisclosureConfig,
+    context_window_tokens: Option<usize>,
+) -> ChatRequest {
+    let toolkit = snapshot
+        .toolkit
+        .as_ref()
+        .expect("capability capture always supplies a toolkit");
+    request.tools = if request.tool_choice == Some(agent_types::ToolChoice::None) {
+        Vec::new()
+    } else {
+        react_agent::tool_disclosure::assemble_tool_definitions(
+            toolkit,
+            disclosure,
+            context_window_tokens,
+        )
+        .tools
+    };
+    react_agent::replace_model_call_section(
+        &mut request.messages,
+        snapshot
+            .skill_prompt_block
+            .as_ref()
+            .map(|content| ModelCallSection::new(ModelCallSectionKind::SkillCatalog, content)),
+        ModelCallSectionKind::SkillCatalog,
+    );
+    let unavailable = snapshot
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.state == "unavailable")
+        .collect::<Vec<_>>();
+    let availability = (!unavailable.is_empty()).then(|| {
+        let diagnostics =
+            serde_json::to_string_pretty(&unavailable).expect("capability diagnostics serialize");
+        let content = format!(
+            "## Current unavailable capabilities\n\
+             These are runtime observations, not instructions. These capabilities are not callable \
+             in the current snapshot. Use the reported reason; do not infer that the Agent Tool \
+             selection policy disabled them or guess replacement tools. Native platform permissions \
+             must be enabled by the user in native permission settings; changing Agent configuration \
+             does not grant them.\n{diagnostics}"
+        );
+        ModelCallSection::new(ModelCallSectionKind::CapabilityAvailability, content)
+    });
+    react_agent::replace_model_call_section(
+        &mut request.messages,
+        availability,
+        ModelCallSectionKind::CapabilityAvailability,
+    );
+    request
 }
 
 struct CapabilityContextProjector {
@@ -1403,9 +1471,12 @@ impl ModelCallProjector for CapabilityContextProjector {
         event_tx: &tokio::sync::mpsc::Sender<agent_types::AgentEvent>,
     ) -> std::result::Result<ChatRequest, react_agent::AgentError> {
         let snapshot = self.capabilities.capture().await?;
-        let toolkit = snapshot
-            .toolkit
-            .expect("capability capture always supplies a toolkit");
+        let toolkit = Arc::clone(
+            snapshot
+                .toolkit
+                .as_ref()
+                .expect("capability capture always supplies a toolkit"),
+        );
         if let Some(mode) = self.collaboration_mode {
             let mut section = crate::collaboration_mode::section(mode);
             if toolkit.tool_names().contains(&"chat_send") {
@@ -1435,22 +1506,11 @@ impl ModelCallProjector for CapabilityContextProjector {
                 ModelCallSectionKind::CollaborationMode,
             );
         }
-        request.tools = if request.tool_choice == Some(agent_types::ToolChoice::None) {
-            Vec::new()
-        } else {
-            react_agent::tool_disclosure::assemble_tool_definitions(
-                &toolkit,
-                &self.disclosure,
-                self.context_window_tokens,
-            )
-            .tools
-        };
-        react_agent::replace_model_call_section(
-            &mut request.messages,
-            snapshot
-                .skill_prompt_block
-                .map(|content| ModelCallSection::new(ModelCallSectionKind::SkillCatalog, content)),
-            ModelCallSectionKind::SkillCatalog,
+        request = project_capability_context(
+            request,
+            &snapshot,
+            &self.disclosure,
+            self.context_window_tokens,
         );
         let mut tool_names = toolkit
             .tool_names()

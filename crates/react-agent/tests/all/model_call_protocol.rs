@@ -532,6 +532,8 @@ async fn typed_model_call_sections_have_fixed_roles_and_order() {
         ReactConfig::default(),
     )
     .with_model_call_sections(vec![
+        ModelCallSection::new(ModelCallSectionKind::RuntimeGuidance, "guidance"),
+        ModelCallSection::new(ModelCallSectionKind::CapabilityAvailability, "availability"),
         ModelCallSection::new(ModelCallSectionKind::SkillCatalog, "skills"),
         ModelCallSection::new(ModelCallSectionKind::ProjectInstructions, "project"),
         ModelCallSection::new(ModelCallSectionKind::AgentPromptFiles, "prompt files"),
@@ -584,11 +586,64 @@ async fn typed_model_call_sections_have_fixed_roles_and_order() {
                 "environment".to_string(),
             ),
             ("skill_catalog", Role::Developer, "skills".to_string()),
+            (
+                "capability_availability",
+                Role::Developer,
+                "availability".to_string(),
+            ),
+            ("runtime_guidance", Role::Developer, "guidance".to_string()),
         ]
     );
     assert_eq!(
         request.messages.last().map(ModelDialogueItem::text_content),
         Some("current input".to_string())
+    );
+}
+
+#[test]
+fn capability_availability_replacement_preserves_section_order_and_runtime_guidance() {
+    let mut messages = vec![ModelDialogueItem::text(Role::User, "current input")];
+    for (kind, content) in [
+        (ModelCallSectionKind::RuntimeGuidance, "guidance"),
+        (
+            ModelCallSectionKind::CapabilityAvailability,
+            "old availability",
+        ),
+        (ModelCallSectionKind::SkillCatalog, "skills"),
+        (
+            ModelCallSectionKind::CapabilityAvailability,
+            "current availability",
+        ),
+    ] {
+        react_agent::replace_model_call_section(
+            &mut messages,
+            Some(ModelCallSection::new(kind, content)),
+            kind,
+        );
+    }
+    assert_eq!(
+        messages
+            .iter()
+            .map(ModelDialogueItem::text_content)
+            .collect::<Vec<_>>(),
+        vec![
+            "skills",
+            "current availability",
+            "guidance",
+            "current input"
+        ]
+    );
+    react_agent::replace_model_call_section(
+        &mut messages,
+        None,
+        ModelCallSectionKind::CapabilityAvailability,
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .map(ModelDialogueItem::text_content)
+            .collect::<Vec<_>>(),
+        vec!["skills", "guidance", "current input"]
     );
 }
 

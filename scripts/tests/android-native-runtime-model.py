@@ -62,7 +62,12 @@ class Handler(BaseHTTPRequestHandler):
         elif mode and mode.startswith('phone'):
             observed = list(observations([m.get('content') for m in body.get('messages', []) if m.get('role') == 'tool']))
             if mode == 'phone-denied':
-                tool, arguments = ('phone_status', {}) if not results else (None, None)
+                if not results:
+                    tool, arguments = 'phone_status', {}
+                elif len(results) == 1:
+                    tool, arguments = 'phone_list_apps', {}
+                else:
+                    tool, arguments = None, None
             elif not results:
                 tool, arguments = 'phone_status', {}
             elif len(results) == 1:
@@ -135,8 +140,16 @@ class Handler(BaseHTTPRequestHandler):
                 passed = 'clicks=1' in combined and ('refused' in combined or 'stale' in combined.lower() or 'expired' in combined.lower())
             elif mode == 'phone-denied':
                 exposed = {tool.get('function', {}).get('name') for tool in body.get('tools', [])}
-                status = json.loads(next(m['content'] for m in body.get('messages', []) if m.get('role') == 'tool'))
+                tool_results = [m['content'] for m in body.get('messages', []) if m.get('role') == 'tool']
+                status = json.loads(tool_results[0])
+                try:
+                    apps = json.loads(tool_results[1])
+                except ValueError:
+                    apps = {}
                 passed = (status.get('accessibility') is False
+                          and isinstance(apps.get('apps'), list) and len(apps['apps']) <= 200
+                          and apps.get('limit') == 200
+                          and 'Phone Use requires the Android accessibility service' in encoded
                           and 'phone_observe' not in exposed and 'phone_click' not in exposed)
             elif mode in ('phone-terminate', 'phone-stop'):
                 passed = 'cancel' in combined.lower() or 'outcome_unknown' in combined

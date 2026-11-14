@@ -409,9 +409,9 @@ internal class PhoneUseSession(private val state: PhoneUseBridgeState) {
                 if (!state.isBoundResident(peerPid) || !state.matchesGeneration(request.params?.optString(PhoneUseProtocol.PARAM_GENERATION))) {
                     write(writer,PhoneUseProtocol.errorEnvelope(request.id,"generation_mismatch","Bound resident required")); return false
                 }
-                val service = MobileAccessibilityService.instance
-                if(service == null) write(writer,PhoneUseProtocol.errorEnvelope(request.id,"unavailable","Phone Use is not connected"))
-                else write(writer,PhoneUseProtocol.resultEnvelope(request.id,JSONObject().put("apps",org.json.JSONArray(PhoneApps.list(service))).put("limit",200)))
+                val context = PhoneUseBridge.applicationContext()
+                if(context == null) write(writer,PhoneUseProtocol.errorEnvelope(request.id,"unavailable","Phone Use host unavailable"))
+                else write(writer,PhoneUseProtocol.resultEnvelope(request.id,JSONObject().put("apps",org.json.JSONArray(PhoneApps.list(context))).put("limit",200)))
             }
             "screenshot" -> {
                 if (!state.isBoundResident(peerPid) || !state.matchesGeneration(request.params?.optString(PhoneUseProtocol.PARAM_GENERATION))) {

@@ -49,6 +49,7 @@ pub enum ModelCallSectionKind {
     CollaborationMode,
     ExecutionEnvironment,
     SkillCatalog,
+    CapabilityAvailability,
     RuntimeGuidance,
 }
 
@@ -64,6 +65,7 @@ impl ModelCallSectionKind {
             Self::CollaborationMode => "collaboration_mode",
             Self::ExecutionEnvironment => "execution_environment",
             Self::SkillCatalog => "skill_catalog",
+            Self::CapabilityAvailability => "capability_availability",
             Self::RuntimeGuidance => "runtime_guidance",
         }
     }
@@ -83,6 +85,7 @@ impl ModelCallSectionKind {
             Self::CollaborationMode,
             Self::ExecutionEnvironment,
             Self::SkillCatalog,
+            Self::CapabilityAvailability,
             Self::RuntimeGuidance,
         ]
         .into_iter()

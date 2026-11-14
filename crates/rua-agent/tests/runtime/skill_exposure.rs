@@ -2256,6 +2256,10 @@ async fn disconnected_phone_actions_are_excluded_while_status_stays_discoverable
     let names = tool_names(&requests[0]);
     assert!(names.contains(&"phone_status".into()));
     assert!(!names.contains(&"phone_observe".into()));
+    assert!(
+        system_text(&requests[0]).contains("Phone Use is not connected on this execution device"),
+        "the model must receive the reason the selected Phone Tool is unavailable"
+    );
 }
 
 #[test]

@@ -351,6 +351,45 @@ class PhoneUseBridgeTest {
     }
 
     @Test
+    fun launchableAppsRemainAvailableWhenAccessibilityIsDisconnected() {
+        val context = org.robolectric.RuntimeEnvironment.getApplication()
+        val activity = android.content.ComponentName("com.rua.fixture", "com.rua.fixture.MainActivity")
+        val packages = org.robolectric.Shadows.shadowOf(context.packageManager)
+        packages.addActivityIfNotPresent(activity).nonLocalizedLabel = "Fixture app"
+        packages.addIntentFilterForActivity(
+            activity,
+            android.content.IntentFilter(android.content.Intent.ACTION_MAIN).apply {
+                addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+            },
+        )
+        assertNull(MobileAccessibilityService.instance)
+        try {
+            val bridge = PhoneUseBridge.startForResident(context)
+            val responses = runSession(
+                PhoneUseSession(bridge.state), peerPid = 101,
+                input = frame("""{"id":"h","method":"hello","params":{}}""") +
+                    statusFrame("s", bridge.state.generation) +
+                    frame("""{"id":"a","method":"list_apps","params":{"generation":"${bridge.state.generation}"}}"""),
+            )
+            val status = responses.first { it.optString("id") == "s" }.getJSONObject("result")
+            assertEquals("ready", status.getString("state"))
+            assertFalse(status.getBoolean("accessibility"))
+            val apps = responses.first { it.optString("id") == "a" }
+            assertFalse("An authenticated app listing must not require accessibility: $apps", apps.has("error"))
+            val result = apps.getJSONObject("result")
+            assertEquals(200, result.getInt("limit"))
+            val listed = result.getJSONArray("apps")
+            assertEquals(1, listed.length())
+            assertEquals(activity.packageName, listed.getJSONObject(0).getString("package_name"))
+            assertEquals("Fixture app", listed.getJSONObject(0).getString("label"))
+            assertNull(PhoneDeviceControl.state.current())
+            assertNull(MobileAccessibilityService.instance)
+        } finally {
+            PhoneUseBridge.resetForTests()
+        }
+    }
+
+    @Test
     fun statusReportsPermissionRequiredUntilTheResidentHandshakes() {
         val state = newState(accessibility = true, camera = true)
         val session = PhoneUseSession(state)
