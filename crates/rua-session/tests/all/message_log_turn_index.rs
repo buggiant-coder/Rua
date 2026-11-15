@@ -958,3 +958,55 @@ async fn latest_message_reads_remain_consistent_while_another_store_appends() {
         100
     );
 }
+
+#[tokio::test]
+async fn late_in_progress_output_preserves_committed_terminal_lifecycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = WorkspaceSessionStore::new(dir.path());
+    store.save_chat_header(&header("chat-1")).await.unwrap();
+    store
+        .append_conversation_turn(
+            "chat-1",
+            NewConversationTurn {
+                turn_id: "turn-1".to_string(),
+                lifecycle: lifecycle("in_progress"),
+                selected_variant_id: None,
+                messages: vec![message("user-1", "user", "start")],
+            },
+        )
+        .await
+        .unwrap();
+
+    // The output writer observed in_progress before Stop committed its terminal fact.
+    let stale_lifecycle = lifecycle("in_progress");
+    let terminal_lifecycle = TurnLifecycle {
+        assistant_completed_at: Some("2026-06-19T00:00:03Z".to_string()),
+        ..lifecycle("interrupted")
+    };
+    store
+        .set_turn_lifecycle("chat-1", "turn-1", terminal_lifecycle.clone())
+        .await
+        .unwrap();
+    let record = store
+        .append_messages_to_turn(
+            "chat-1",
+            "turn-1",
+            stale_lifecycle,
+            Some("assistant-late".to_string()),
+            vec![message("assistant-late", "assistant", "partial output")],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(record.lifecycle.status, "interrupted");
+    assert_eq!(
+        record.lifecycle.assistant_completed_at,
+        terminal_lifecycle.assistant_completed_at
+    );
+    assert_eq!(
+        record.selected_assistant_response_variant().unwrap().status,
+        "interrupted"
+    );
+    let messages = store.read_turn_messages("chat-1", "turn-1").await.unwrap();
+    assert_eq!(messages.last().unwrap().message_id, "assistant-late");
+}

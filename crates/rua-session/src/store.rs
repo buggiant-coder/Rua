@@ -4642,11 +4642,20 @@ impl WorkspaceSessionStore {
             .saturating_add(estimate_message_tokens(&entries))
             .max(1);
         if !options.preserve_lifecycle {
-            turn.lifecycle = lifecycle.ok_or_else(|| rua_core::RuaError::Io {
+            let lifecycle = lifecycle.ok_or_else(|| rua_core::RuaError::Io {
                 message: format!(
                     "turn lifecycle is required for message append {chat_id}/{turn_id}"
                 ),
             })?;
+            // An output batch can finish after Stop commits the terminal fact.
+            // Check under the write lock; only an explicit new variant may reopen it.
+            let stale_in_progress = options.mode == AppendTurnOutputMode::ContinueSelected
+                && TurnLifecycleStatus::parse(&lifecycle.status) == TurnLifecycleStatus::InProgress
+                && TurnLifecycleStatus::parse(&turn.lifecycle.status)
+                    .is_syncable_conversation_state();
+            if !stale_in_progress {
+                turn.lifecycle = lifecycle;
+            }
         }
         if turn.metadata.is_empty() {
             turn.metadata = turn_metadata_from_messages(&entries);

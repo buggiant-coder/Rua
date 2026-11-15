@@ -3531,6 +3531,9 @@ async fn console_chat_defers_projection_fit_decisions_to_the_model_call_runtime(
             "name": "Default",
             "description": "Default agent",
             "workspace_dir": runtime.workspace_dir().to_string_lossy(),
+            "tools": {
+                "selection_policy": rua_config::types::tools::ToolSelectionPolicy::default_enabled()
+            },
             "running": {
                 "max_input_length": 1000,
                 "context_compact": {
