@@ -237,25 +237,34 @@ fn hygiene_sum_missing_files_zero() {
 
 #[test]
 fn normal_config_all_pass() {
-    let tmp = std::env::temp_dir().join("rua-doctor-normal-sec");
-    let _ = std::fs::create_dir_all(&tmp);
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path();
+    let workspace = tmp.join("workspaces/default");
+    std::fs::create_dir_all(&workspace).unwrap();
 
     let config = serde_json::json!({
         "security": {
-            "tool_guard": { "enabled": true },
-            "file_guard": { "enabled": true },
             "skill_scanner": { "mode": "warn" }
         },
-        "mcp": { "clients": {} },
         "agents": {
             "active_agent": "default",
-            "profiles": {}
-        },
-        "channels": {}
+            "profiles": {"default": {"id": "default", "workspace_dir": workspace}}
+        }
     });
-    std::fs::write(
-        tmp.join("config.json"),
-        serde_json::to_string_pretty(&config).unwrap(),
+    rua_config::atomic_write_json(&tmp.join("config.json"), &config).unwrap();
+    rua_config::atomic_write_json(
+        &workspace.join("agent.json"),
+        &serde_json::json!({
+            "id": "default", "name": "Default", "workspace_dir": workspace,
+            "mcp": {"clients": {}}
+        }),
+    )
+    .unwrap();
+    rua_config::atomic_write_json(
+        &workspace.join("security.json"),
+        &serde_json::json!({
+            "tool_guard": {"enabled": true}, "file_guard": {"enabled": true}
+        }),
     )
     .unwrap();
 
@@ -272,6 +281,4 @@ fn normal_config_all_pass() {
             "{name} should pass with normal config"
         );
     }
-
-    let _ = std::fs::remove_dir_all(&tmp);
 }

@@ -1974,11 +1974,7 @@ async fn automation_inventory_is_adopted_only_by_target_chat_and_future_turns() 
     let preview = read_json(request(&test.app, Method::GET, &path, None).await).await;
     let capabilities = &preview["candidate"]["capability_configuration"];
     for name in ["rua_browser", "rua_computer"] {
-        assert_eq!(
-            capabilities["mcp_servers"][name]["disabled_tools"],
-            json!([]),
-            "{preview}"
-        );
+        assert_eq!(capabilities["mcp_servers"][name], json!({}), "{preview}");
     }
     assert!(capabilities["tools"].is_null());
     assert_eq!(capabilities["selection_policy"]["mode"], "default_enabled");

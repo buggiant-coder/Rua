@@ -69,10 +69,6 @@ async fn seed_portable_state(tmp: &TempDir) {
                 "agent_order": ["default"]
             },
             "security": {
-                "file_guard": {
-                    "enabled": false,
-                    "paths": ["**/.env.full-export"]
-                },
                 "skill_scanner": {
                     "mode": "warn"
                 },
@@ -147,6 +143,10 @@ async fn seed_portable_state(tmp: &TempDir) {
             "tool_guard": {
                 "enabled": true,
                 "approval_mode": "balanced"
+            },
+            "file_guard": {
+                "enabled": false,
+                "sensitive_files": ["**/.env.full-export"]
             },
             "permission_rules": [{
                 "id": "deny-bash",
@@ -671,9 +671,10 @@ async fn full_export_v4_appends_opaque_changes_for_portable_domains() {
 
     let security = find_change(&changes, "root_config", "security");
     assert_eq!(security.kind, "snapshot");
-    assert_eq!(security.payload["file_guard"]["enabled"], false);
+    assert!(security.payload.get("file_guard").is_none());
+    assert_eq!(agent_security.payload["file_guard"]["enabled"], false);
     assert_eq!(
-        security.payload["file_guard"]["paths"],
+        agent_security.payload["file_guard"]["sensitive_files"],
         json!(["**/.env.full-export"])
     );
     assert_eq!(security.payload["skill_scanner"]["mode"], "warn");

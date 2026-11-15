@@ -243,15 +243,13 @@ fn turn_agent_assignment_keeps_only_compact_execution_inputs() {
     assert_eq!(assignment.agent_name, "Code Agent");
     assert_eq!(assignment.system_prompt.as_deref(), Some("Code carefully"));
     assert_eq!(assignment.system_prompt_files, vec!["SYSTEM.md"]);
-    assert_eq!(
-        assignment.disabled_tools,
-        vec!["Bash", "mcp__private__danger"]
-    );
+    assert!(assignment.disabled_tools.is_empty());
     let persisted = serde_json::to_value(assignment).unwrap();
     assert!(persisted.get("configuration").is_none());
     assert!(persisted.get("default_model").is_none());
     assert!(persisted.get("channels").is_none());
     assert!(persisted.get("mcp").is_none());
+    assert!(persisted.get("disabled_tools").is_none());
 }
 
 async fn materialize(

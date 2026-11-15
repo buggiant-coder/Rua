@@ -32,6 +32,9 @@ fn write_agent_with_model(workspace: &std::path::Path, agent_id: &str) {
             "id": agent_id,
             "name": "Self Called Agent",
             "workspace_dir": agent_workspace,
+            "tools": {
+                "selection_policy": {"mode": "restricted", "allowed_tools": []}
+            },
             "default_model": {
                 "provider_id": "acp-test-provider",
                 "model": "acp-test-model"
@@ -498,7 +501,7 @@ async fn acp_uses_running_server_for_initialize_and_turn() {
         }),
     );
     let (prompt, messages) = recv_response_with_messages(&rx, 3);
-    assert_eq!(prompt["result"]["stopReason"], "end_turn");
+    assert_eq!(prompt["result"]["stopReason"], "end_turn", "{prompt}");
     assert!(messages
         .iter()
         .any(|message| message.to_string().contains("hello from resident server")));

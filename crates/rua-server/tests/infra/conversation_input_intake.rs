@@ -1086,16 +1086,22 @@ async fn submit_delivery_reports_remote_authority_transport() {
         .await;
 
     match outcome {
-        rua_server::services::conversation_input_intake::ConversationInputDeliveryOutcome::Rejected {
+        rua_server::services::conversation_input_intake::ConversationInputDeliveryOutcome::Unconfirmed {
             target_device_id,
             detail,
-            failure_kind,
+            submission_id,
+            device_delivery_id,
+            device_delivery_sequence,
+            chat_id,
         } => {
-            assert_eq!(target_device_id.as_deref(), Some("remote-device"));
+            assert_eq!(target_device_id, "remote-device");
+            assert_eq!(chat_id, CHAT_ID);
             assert!(detail.contains("Device Network Runtime is suspended"));
-            assert_eq!(failure_kind.as_deref(), Some("device_offline"));
+            assert!(!submission_id.is_empty());
+            assert!(!device_delivery_id.is_empty());
+            assert_eq!(device_delivery_sequence, 1);
         }
-        other => panic!("expected rejected remote authority delivery, got {other:?}"),
+        other => panic!("expected unconfirmed remote authority delivery, got {other:?}"),
     }
     let after_header = store
         .load_chat_header(CHAT_ID)

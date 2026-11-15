@@ -252,7 +252,7 @@ async fn put_agent_approval_mode_emits_agent_security_v4_when_sync_enabled() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn put_process_security_emits_root_config_security_without_auth_bypass_hosts() {
+async fn put_file_guard_emits_agent_security_without_auth_bypass_hosts() {
     let (app, _tmp, state) = build_sync_enabled_app();
 
     let allow_resp = app
@@ -286,7 +286,7 @@ async fn put_process_security_emits_root_config_security_without_auth_bypass_hos
     let security_change = changes
         .iter()
         .rev()
-        .find(|change| change.domain == "root_config" && change.record_id == "security");
+        .find(|change| change.domain == "agent_security" && change.record_id == "default");
     assert!(
         security_change.is_some_and(|change| {
             change.kind == "upsert"
@@ -294,7 +294,7 @@ async fn put_process_security_emits_root_config_security_without_auth_bypass_hos
                 && change.payload["file_guard"]["sensitive_files"] == json!(["**/.env.local"])
                 && change.payload.get("allow_no_auth_hosts").is_none()
         }),
-        "process file-guard PUT must append a root_config/security v4 change without auth-bypass hosts; got {changes:#?}"
+        "file-guard PUT must append an agent_security v4 change without auth-bypass hosts; got {changes:#?}"
     );
 }
 

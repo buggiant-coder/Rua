@@ -1852,7 +1852,15 @@ async fn remote_targeted_chat_submit_does_not_call_local_agent_runtime() {
         .get(CHAT_AUTHORITY_PLACEMENT_META_KEY)
         .is_some());
     assert!(!outcome.accepted);
-    assert_eq!(outcome.kind, ConsoleSubmitKind::Rejected);
+    assert_eq!(outcome.kind, ConsoleSubmitKind::Unconfirmed);
+    assert!(outcome
+        .submission_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty()));
+    assert!(outcome
+        .device_delivery_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty()));
     assert_eq!(outcome.target_device_id.as_deref(), Some(target_device_id));
     assert!(
         outcome
@@ -1923,7 +1931,15 @@ async fn remote_targeted_chat_does_not_block_on_previous_source_pending_marker()
         "source-side pending remote finalization must not fall back to local AgentRuntime"
     );
     assert!(!outcome.accepted);
-    assert_eq!(outcome.kind, ConsoleSubmitKind::Rejected);
+    assert_eq!(outcome.kind, ConsoleSubmitKind::Unconfirmed);
+    assert!(outcome
+        .submission_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty()));
+    assert!(outcome
+        .device_delivery_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty()));
     assert_eq!(outcome.target_device_id.as_deref(), Some(target_device_id));
     let detail = outcome.detail.as_deref().unwrap_or_default();
     assert!(
@@ -2023,7 +2039,15 @@ async fn remote_targeted_chat_clears_pending_marker_after_completed_turn_syncs_l
         "completed canonical turn should clear source-side pending marker"
     );
     assert!(!outcome.accepted);
-    assert_eq!(outcome.kind, ConsoleSubmitKind::Rejected);
+    assert_eq!(outcome.kind, ConsoleSubmitKind::Unconfirmed);
+    assert!(outcome
+        .submission_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty()));
+    assert!(outcome
+        .device_delivery_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty()));
     assert_eq!(outcome.target_device_id.as_deref(), Some(target_device_id));
     let detail = outcome.detail.as_deref().unwrap_or_default();
     assert!(
@@ -2097,7 +2121,15 @@ async fn remote_targeted_chat_unblocks_after_terminal_seen_before_turn_syncs_loc
         "live terminal fact should not clear the server marker before stable history can preserve remote sequence"
     );
     assert!(!outcome.accepted);
-    assert_eq!(outcome.kind, ConsoleSubmitKind::Rejected);
+    assert_eq!(outcome.kind, ConsoleSubmitKind::Unconfirmed);
+    assert!(outcome
+        .submission_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty()));
+    assert!(outcome
+        .device_delivery_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty()));
     assert_eq!(outcome.target_device_id.as_deref(), Some(target_device_id));
     let detail = outcome.detail.as_deref().unwrap_or_default();
     assert!(
@@ -2164,7 +2196,15 @@ async fn remote_targeted_chat_with_attachments_requires_source_device_without_lo
         "remote attachment short-circuit must not call local AgentRuntime"
     );
     assert!(!outcome.accepted);
-    assert_eq!(outcome.kind, ConsoleSubmitKind::Rejected);
+    assert_eq!(outcome.kind, ConsoleSubmitKind::Unconfirmed);
+    assert!(outcome
+        .submission_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty()));
+    assert!(outcome
+        .device_delivery_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty()));
     assert_eq!(outcome.target_device_id.as_deref(), Some(target_device_id));
     assert!(
         outcome
@@ -2309,7 +2349,15 @@ async fn authority_placement_request_cannot_override_existing_history_authority(
         "request metadata must not override the stored remote authority"
     );
     assert!(!outcome.accepted);
-    assert_eq!(outcome.kind, ConsoleSubmitKind::Rejected);
+    assert_eq!(outcome.kind, ConsoleSubmitKind::Unconfirmed);
+    assert!(outcome
+        .submission_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty()));
+    assert!(outcome
+        .device_delivery_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty()));
     assert_eq!(
         outcome.target_device_id.as_deref(),
         Some("test-authority-device")
@@ -3215,6 +3263,28 @@ async fn console_chat_persists_memory_signal_as_typed_runtime_note() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn console_chat_skips_memory_signal_note_when_memory_write_is_disabled() {
+    assert_memory_signal_disabled(
+        json!({
+            "mode": "default_enabled",
+            "disabled_tools": [{"kind": "builtin", "name": "memory_write"}],
+            "disabled_capabilities": []
+        }),
+        false,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn console_chat_skips_memory_signal_note_when_memory_write_is_not_allowed() {
+    assert_memory_signal_disabled(json!({"mode": "restricted", "allowed_tools": []}), false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn console_chat_memory_signal_uses_captured_tool_selection_policy() {
+    assert_memory_signal_disabled(json!({"mode": "restricted", "allowed_tools": []}), true).await;
+}
+
+async fn assert_memory_signal_disabled(policy: serde_json::Value, capture_policy: bool) {
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::from_tempdir(dir.path().to_path_buf(), ServerProfile::Test);
     let runtime = state
@@ -3230,16 +3300,7 @@ async fn console_chat_skips_memory_signal_note_when_memory_write_is_disabled() {
             "description": "Default agent",
             "workspace_dir": runtime.workspace_dir().to_string_lossy(),
             "tools": {
-                "builtin_tools": {
-                    "memory_write": {
-                        "name": "memory_write",
-                        "enabled": false,
-                        "description": "Save durable facts to Memory",
-                        "display_to_user": true,
-                        "async_execution": false,
-                        "config": {}
-                    }
-                }
+                "selection_policy": policy
             }
         }))
         .unwrap(),
@@ -3254,7 +3315,7 @@ async fn console_chat_skips_memory_signal_note_when_memory_write_is_disabled() {
 
     let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
     let chat_id = "00000000-0000-0000-0000-000000000791";
-    let header = materialized_chat_header(
+    let mut header = materialized_chat_header(
         &state,
         &runtime.workspace_dir(),
         rua_session::ChatMetadata {
@@ -3269,7 +3330,32 @@ async fn console_chat_skips_memory_signal_note_when_memory_write_is_disabled() {
         },
     )
     .await;
+    if capture_policy {
+        seed_runtime_configuration_with_capabilities(
+            &state,
+            "default",
+            &mut header,
+            Some(runtime.capability_configuration(None).await.unwrap()),
+        )
+        .await;
+        let mut agent: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(runtime.workspace_dir().join("agent.json")).unwrap(),
+        )
+        .unwrap();
+        agent["tools"]["selection_policy"] =
+            serde_json::to_value(rua_config::types::tools::ToolSelectionPolicy::default_enabled())
+                .unwrap();
+        rua_config::atomic_write_json(&runtime.workspace_dir().join("agent.json"), &agent).unwrap();
+    }
     store.save_chat_header(&header).await.unwrap();
+
+    let mut extra = serde_json::Map::new();
+    if capture_policy {
+        extra.insert(
+            rua_server::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY.into(),
+            header.extra["hook_configuration"].clone(),
+        );
+    }
 
     let events: Vec<_> = state
         .chat_service
@@ -3286,7 +3372,7 @@ async fn console_chat_skips_memory_signal_note_when_memory_write_is_disabled() {
                 stream: Some(true),
                 model: None,
                 attachments: Vec::new(),
-                extra: serde_json::Map::new(),
+                extra,
             },
             running_cancel_rx(),
         )
@@ -4467,6 +4553,15 @@ async fn seed_runtime_configuration(
     agent_id: &str,
     header: &mut rua_session::ChatSessionHeader,
 ) {
+    seed_runtime_configuration_with_capabilities(state, agent_id, header, None).await;
+}
+
+async fn seed_runtime_configuration_with_capabilities(
+    state: &AppState,
+    agent_id: &str,
+    header: &mut rua_session::ChatSessionHeader,
+    capability_configuration: Option<rua_agent::runtime::ChatCapabilityConfiguration>,
+) {
     let running: rua_config::AgentsRunningConfig = serde_json::from_value(
         state
             .conversation_input_intake
@@ -4486,7 +4581,7 @@ async fn seed_runtime_configuration(
                 agent_assignment: None,
                 prompt_file_content: None,
                 tool_config_snapshot: Default::default(),
-                capability_configuration: None,
+                capability_configuration,
                 model: header.extra.get("model").cloned(),
                 thinking: None,
                 collaboration_mode: json!("default"),

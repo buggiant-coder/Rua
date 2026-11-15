@@ -5888,6 +5888,9 @@ async fn remote_project_turns_read_fresh_instructions_only_from_the_resource_roo
     .expect("serialize Project descriptor");
     assert!(!descriptor.contains(FIRST_MARKER));
     assert!(!descriptor.contains(SECOND_MARKER));
+    source.runtime.shutdown().await.expect("source shutdown");
+    target.runtime.shutdown().await.expect("target shutdown");
+    // Scan only after runtime writers have stopped replacing their temporary files.
     for entry in walkdir::WalkDir::new(&target_state.rua_root)
         .into_iter()
         .filter_map(Result::ok)
@@ -5910,9 +5913,6 @@ async fn remote_project_turns_read_fresh_instructions_only_from_the_resource_roo
     }
     assert!(!target_repo.join("CONTEXT.md").exists());
     assert!(!target_repo.join("docs/adr").exists());
-
-    source.runtime.shutdown().await.expect("source shutdown");
-    target.runtime.shutdown().await.expect("target shutdown");
 }
 
 fn full_command_handler(state: &AppState, target_device_id: &str) -> Arc<DeviceCommandHandler> {

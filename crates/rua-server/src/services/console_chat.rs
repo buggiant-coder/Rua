@@ -3529,8 +3529,29 @@ impl ConsoleChatService {
             {
                 let store = rua_session::WorkspaceSessionStore::new(&scope_root);
                 if acp_passthrough_runner.is_none() && !task_watch_notification_turn {
+                    let capability_configuration = match captured_configuration
+                        .as_ref()
+                        .and_then(|configuration| configuration.capability_configuration.as_ref())
+                    {
+                        Some(configuration) => configuration.clone(),
+                        None => match runtime
+                            .capability_configuration(
+                                project_id.as_ref().map(|_| working_dir.as_path()),
+                            )
+                            .await
+                        {
+                            Ok(configuration) => configuration,
+                            Err(error) => {
+                                let _ = tx.send(Err(error.to_string())).await;
+                                return;
+                            }
+                        },
+                    };
                     let memory_write_available = runtime.memory_manager().await.is_some()
-                        && !disabled_tools.iter().any(|tool| tool == "memory_write");
+                        && capability_configuration.selection_policy.selects(
+                            &rua_config::types::tools::ToolIdentity::builtin("memory_write"),
+                            None,
+                        );
                     match detect_memory_signal_for_user_input(
                         &store,
                         &chat_id,

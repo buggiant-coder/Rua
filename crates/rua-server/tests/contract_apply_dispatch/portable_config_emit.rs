@@ -50,19 +50,14 @@ fn process_security_writes_publish_root_security_fact() {
     assert!(
         security_src.contains("publish_process_security_config")
             && security_src.contains("SyncPublicationFact::RootProcessSecurityCommitted"),
-        "root security file-guard/skill-scanner/whitelist writes must publish RootProcessSecurityCommitted"
+        "root skill-scanner/whitelist writes must publish RootProcessSecurityCommitted"
     );
     assert!(
         !security_src.contains("emit_security_config_v4_upsert"),
         "process security writes must not call the legacy root_config/security emit helper"
     );
 
-    for name in [
-        "update_file_guard",
-        "update_skill_scanner",
-        "add_whitelist",
-        "remove_whitelist",
-    ] {
+    for name in ["update_skill_scanner", "add_whitelist", "remove_whitelist"] {
         let body = security_src
             .split(&format!("async fn {name}"))
             .nth(1)
@@ -239,6 +234,13 @@ fn agent_security_writes_publish_agent_security_facts() {
         security_src.contains("publish_agent_security_committed"),
         "direct agent security endpoints must publish agent_security facts"
     );
+    let file_guard_body = security_src
+        .split("pub(crate) async fn update_file_guard_for_agent(")
+        .nth(1)
+        .and_then(|tail| tail.split("async fn").next())
+        .expect("Agent file-guard mutation handler should exist");
+    assert!(file_guard_body.contains("publish_agent_security_committed"));
+    assert!(!file_guard_body.contains("publish_process_security_config"));
 
     let agents_src = include_str!("../../src/endpoints/agents.rs");
     assert!(

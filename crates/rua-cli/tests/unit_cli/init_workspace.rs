@@ -20,10 +20,11 @@ fn init_creates_workspace_structure() {
     )
     .unwrap();
     assert_eq!(agent["id"], "default");
-    assert!(!agent["tools"]["builtin_tools"]
-        .as_object()
-        .unwrap()
-        .is_empty());
+    assert_eq!(
+        agent["tools"]["selection_policy"],
+        serde_json::to_value(rua_config::types::tools::ToolSelectionPolicy::default_enabled())
+            .unwrap()
+    );
     let root: serde_json::Value =
         serde_json::from_slice(&std::fs::read(target.join("config.json")).unwrap()).unwrap();
     for field in ["tools", "channels", "mcp", "acp", "show_tool_details"] {
@@ -97,10 +98,11 @@ fn config_commands_initialize_agent_and_reject_retired_root_settings() {
         !fallback.exists(),
         "--rua-root must take precedence over RUA_ROOT"
     );
-    assert!(!agent.tools.unwrap()["builtin_tools"]
-        .as_object()
-        .unwrap()
-        .is_empty());
+    assert_eq!(
+        agent.tools.unwrap()["selection_policy"],
+        serde_json::to_value(rua_config::types::tools::ToolSelectionPolicy::default_enabled())
+            .unwrap()
+    );
     let before = std::fs::read(root.join("config.json")).unwrap();
     for (key, value) in [
         ("tools", "{}"),
