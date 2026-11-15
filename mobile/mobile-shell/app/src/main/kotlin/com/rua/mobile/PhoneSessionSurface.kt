@@ -1,6 +1,7 @@
 package com.rua.mobile
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
@@ -16,6 +17,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
+
+internal const val PHONE_USE_RETURN_ACTION = "com.rua.mobile.action.RETURN_FROM_PHONE_USE"
 
 /** The visible device session is independent of the short operation reservation. */
 internal object PhoneDeviceControl {
@@ -82,8 +85,30 @@ internal object PhoneDeviceControl {
     fun release(invocation: PhoneInvocation, expectedGeneration: String): Boolean = synchronized(lifecycleLock) {
         requireGeneration(expectedGeneration)
         val released = sessions.release(invocation)
-        if (released) cancelOperation(invocation)
+        if (released) {
+            cancelOperation(invocation)
+            returnToChat(invocation, expectedGeneration)
+        }
         released
+    }
+
+    private fun returnToChat(invocation: PhoneInvocation, expectedGeneration: String) {
+        val app = context
+        handler.post {
+            synchronized(lifecycleLock) {
+                // A queued return must not interrupt a new session or a restarted bridge.
+                if (generation == expectedGeneration && sessions.current() == null && app != null) {
+                    refreshSurface()
+                    val intent = Intent(app, MainActivity::class.java).apply {
+                        action = PHONE_USE_RETURN_ACTION
+                        putExtra(MobileNotificationBridge.EXTRA_RUA_URI, "rua:/${invocation.chatAddress.apiPath()}")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    }
+                    try { (MobileAccessibilityService.instance ?: app).startActivity(intent) }
+                    catch (error: Exception) { android.util.Log.w("PhoneControl", "Could not return to Rua Chat", error) }
+                }
+            }
+        }
     }
 
     fun bindTurn(invocation: PhoneInvocation, expectedGeneration: String): Boolean = synchronized(lifecycleLock) {
@@ -131,6 +156,7 @@ internal object PhoneDeviceControl {
         val request = synchronized(lifecycleLock) {
             val invocation = sessions.stop(expectedSessionId) ?: return@synchronized null
             cancelOperation(invocation)
+            generation?.let { returnToChat(invocation, it) }
             invocation to stopped
         } ?: return
         if (Looper.myLooper() == Looper.getMainLooper()) refreshSurface() else refresh()

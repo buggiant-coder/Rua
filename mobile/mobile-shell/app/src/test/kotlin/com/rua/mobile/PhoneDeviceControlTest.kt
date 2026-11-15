@@ -91,4 +91,90 @@ class PhoneDeviceControlTest {
         }
     }
 
+    @Test fun explicitReleaseReturnsToItsChatExactlyOnceAndPreservesTheTask() {
+        val app = RuntimeEnvironment.getApplication()
+        val launches = shadowOf(app)
+        ShadowSettings.setCanDrawOverlays(true)
+        PhoneDeviceControl.initialize(app, "generation") {}
+        try {
+            for (address in listOf(
+                PhoneChatAddress("agent", "default", "chat-one"),
+                PhoneChatAddress("project", "project /一", "chat +/?"),
+            )) {
+                val invocation = PhoneInvocation("owner", address, "turn", "authority", "configuration")
+                PhoneDeviceControl.sessions.activate(invocation)
+                val operation = PhoneDeviceControl.state.begin(invocation, "observe", "observe")
+                PhoneDeviceControl.state.finish(operation)
+                shadowOf(Looper.getMainLooper()).idle()
+                assertNull("Finishing an operation must not leave the target app", launches.nextStartedActivity)
+                assertFalse(PhoneDeviceControl.release(invocation.copy(turnId = "stale"), "generation"))
+                assertTrue(PhoneDeviceControl.release(invocation, "generation"))
+                shadowOf(Looper.getMainLooper()).idle()
+                val intent = launches.nextStartedActivity
+                assertNotNull(intent)
+                assertEquals(MainActivity::class.java.name, intent.component!!.className)
+                assertEquals(PHONE_USE_RETURN_ACTION, intent.action)
+                assertEquals("rua:/${address.apiPath()}", intent.getStringExtra(MobileNotificationBridge.EXTRA_RUA_URI))
+                assertTrue(intent.flags and android.content.Intent.FLAG_ACTIVITY_NEW_TASK != 0)
+                assertTrue(intent.flags and android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP != 0)
+                assertFalse(PhoneDeviceControl.release(invocation, "generation"))
+                shadowOf(Looper.getMainLooper()).idle()
+                assertNull(launches.nextStartedActivity)
+            }
+        } finally {
+            PhoneDeviceControl.close("generation")
+            shadowOf(Looper.getMainLooper()).idle()
+            ShadowSettings.setCanDrawOverlays(false)
+        }
+    }
+
+    @Test fun stopReturnsToChatWhileFailureAndSupersededReturnsDoNotNavigate() {
+        val app = RuntimeEnvironment.getApplication()
+        val launches = shadowOf(app)
+        ShadowSettings.setCanDrawOverlays(true)
+        val invocation = PhoneInvocation("owner", PhoneChatAddress("agent", "default", "chat"), "turn", "authority", "configuration")
+        PhoneDeviceControl.initialize(app, "generation") {}
+        try {
+            val lease = PhoneDeviceControl.sessions.activate(invocation)
+            val active = PhoneDeviceControl.state.begin(invocation, "active")
+            PhoneDeviceControl.stopSession(lease.sessionId)
+            assertTrue("Stop cancels before returning to Rua", active.cancelled.get())
+            assertNull(PhoneDeviceControl.sessions.current())
+            assertNull("Navigation is queued after cancellation", launches.nextStartedActivity)
+            PhoneDeviceControl.state.finish(active)
+            shadowOf(Looper.getMainLooper()).idle()
+            val returned = launches.nextStartedActivity
+            assertNotNull(returned)
+            assertEquals(MainActivity::class.java.name, returned.component!!.className)
+            assertEquals("rua://agents/default/chats/chat", returned.getStringExtra(MobileNotificationBridge.EXTRA_RUA_URI))
+            PhoneDeviceControl.stopSession(lease.sessionId)
+            assertFalse(PhoneDeviceControl.release(invocation, "generation"))
+            assertTrue(runCatching { PhoneDeviceControl.sessions.activate(invocation) }.isFailure)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertNull("Repeated Stop or late release must not return again", launches.nextStartedActivity)
+            val next = invocation.copy(turnId = "next")
+            PhoneDeviceControl.sessions.activate(next)
+            val operation = PhoneDeviceControl.state.begin(next, "failed")
+            PhoneDeviceControl.fail(operation)
+            PhoneDeviceControl.state.finish(operation)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertNull(launches.nextStartedActivity)
+            PhoneDeviceControl.sessions.activate(next)
+            assertTrue(PhoneDeviceControl.release(next, "generation"))
+            PhoneDeviceControl.sessions.activate(next.copy(turnId = "new-session"))
+            shadowOf(Looper.getMainLooper()).idle()
+            assertNull(launches.nextStartedActivity)
+            assertTrue(PhoneDeviceControl.release(next.copy(turnId = "new-session"), "generation"))
+            PhoneDeviceControl.close("generation")
+            PhoneDeviceControl.initialize(app, "new-generation") {}
+            shadowOf(Looper.getMainLooper()).idle()
+            assertNull(launches.nextStartedActivity)
+        } finally {
+            PhoneDeviceControl.close("generation")
+            PhoneDeviceControl.close("new-generation")
+            shadowOf(Looper.getMainLooper()).idle()
+            ShadowSettings.setCanDrawOverlays(false)
+        }
+    }
+
 }

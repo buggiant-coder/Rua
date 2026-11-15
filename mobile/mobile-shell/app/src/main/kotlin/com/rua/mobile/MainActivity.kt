@@ -677,7 +677,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun captureUserNotificationIntent(intent: Intent?) {
-        if (intent?.action != MobileNotificationBridge.ACTION_OPEN_USER_NOTIFICATION) return
+        if (intent?.action != MobileNotificationBridge.ACTION_OPEN_USER_NOTIFICATION &&
+            intent?.action != PHONE_USE_RETURN_ACTION) return
         val uri = intent.getStringExtra(MobileNotificationBridge.EXTRA_RUA_URI)
             ?.let(::safeRuaUriOrNull)
         if (uri != null) {
