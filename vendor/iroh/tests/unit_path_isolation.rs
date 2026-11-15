@@ -9,6 +9,15 @@ use n0_watcher::Watchable;
 
 #[tokio::test]
 async fn abandoned_path_does_not_close_a_healthy_sibling_connection() {
+    assert_abandoned_path_stays_closed(true).await;
+}
+
+#[tokio::test]
+async fn abandonment_before_open_event_does_not_resurrect_path() {
+    assert_abandoned_path_stays_closed(false).await;
+}
+
+async fn assert_abandoned_path_stays_closed(track_initial_path: bool) {
     let server_key = SecretKey::generate();
     let server_tls = TlsConfig::new(server_key.clone(), 8, tls::default_provider());
     let mut transport = noq::TransportConfig::default();
@@ -96,18 +105,21 @@ async fn abandoned_path_does_not_close_a_healthy_sibling_connection() {
     actor
         .paths
         .insert_open_path(addr.clone(), Source::Connection);
-    for conn in &clients {
+    for (index, conn) in clients.iter().enumerate() {
         let (path_state, _receiver) = PathStateSender::new();
         let mut paths = FxHashMap::default();
         // Only the shared primary needs tracking for this event. The real backup
         // keeps close(primary) legal, exposing the cross-connection close bug.
-        paths.insert(PathId::ZERO, addr.clone());
+        if index != 0 || track_initial_path {
+            paths.insert(PathId::ZERO, addr.clone());
+        }
         actor.connections.insert(
             ConnId(conn.stable_id()),
             ConnectionState {
                 handle: conn.weak_handle(),
                 path_state,
                 paths,
+                abandoned_paths: Default::default(),
                 has_been_direct: true,
             },
         );
@@ -120,6 +132,17 @@ async fn abandoned_path_does_not_close_a_healthy_sibling_connection() {
             id: PathId::ZERO,
             reason: noq_proto::PathAbandonReason::UnusableAfterNetworkChange,
         }),
+    );
+    // QUIC can report abandonment before a late validation reports Opened.
+    actor.handle_path_event(
+        ConnId(clients[0].stable_id()),
+        Ok(NoqPathEvent::Opened { id: PathId::ZERO }),
+    );
+    assert!(
+        !actor.connections[&ConnId(clients[0].stable_id())]
+            .paths
+            .contains_key(&PathId::ZERO),
+        "a late Opened event resurrected an abandoned path"
     );
     let abandoned = tokio::time::timeout(Duration::from_millis(100), async {
         while let Some(event) = sibling_events.next().await {

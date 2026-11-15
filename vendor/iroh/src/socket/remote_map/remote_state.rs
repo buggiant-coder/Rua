@@ -480,6 +480,7 @@ impl RemoteStateActor {
                     handle: handle.clone(),
                     path_state: path_state_sender,
                     paths: Default::default(),
+                    abandoned_paths: Default::default(),
                     has_been_direct: false,
                 })
                 .into_mut();
@@ -920,6 +921,10 @@ impl RemoteStateActor {
         trace!("path event");
         match event {
             NoqPathEvent::Opened { id: path_id } => {
+                if conn_state.abandoned_paths.contains(&path_id) {
+                    trace!(%path_id, "ignoring late open event for abandoned path");
+                    return;
+                }
                 let Some(path) = conn.path(path_id) else {
                     trace!("path open event for unknown path");
                     return;
@@ -948,6 +953,8 @@ impl RemoteStateActor {
                 }
             }
             NoqPathEvent::Abandoned { id, reason } => {
+                // Validation can report Opened after Abandoned, even for an untracked path.
+                conn_state.abandoned_paths.insert(id);
                 // Remove abandoned path from the conn state.
                 let Some(path_remote) = conn_state.remove_path(&id, &conn) else {
                     debug!(%id, "path not in path_id_map");
@@ -970,6 +977,8 @@ impl RemoteStateActor {
                 self.select_path();
             }
             NoqPathEvent::Discarded { id, path_stats } => {
+                // Discarded is the final event for this ID; no tombstone is needed after it.
+                conn_state.abandoned_paths.remove(&id);
                 trace!(%id, ?path_stats, "path discarded");
             }
             NoqPathEvent::RemoteStatus { .. } | NoqPathEvent::ObservedAddr { .. } => {
@@ -1313,6 +1322,8 @@ struct ConnectionState {
     path_state: PathStateSender,
     /// The open paths that exist on this connection.
     paths: FxHashMap<PathId, transports::Addr>,
+    /// Abandoned IDs retained until Discarded to reject late validation events.
+    abandoned_paths: BTreeSet<PathId>,
     /// Whether this connection has ever had a direct path.
     ///
     /// Used for recording metrics.
