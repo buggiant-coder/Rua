@@ -36,7 +36,7 @@ jobs:
     name: Format
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -47,7 +47,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -62,7 +62,7 @@ jobs:
     name: Check
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -83,7 +83,7 @@ jobs:
       TEST_SUITE: ${{ matrix.suite }}
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -92,7 +92,7 @@ jobs:
           cache-on-failure: true
           shared-key: rust-tests-${{ matrix.suite }}
       - uses: ./.github/actions/setup-protoc
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -183,14 +183,14 @@ jobs:
     name: Android Release Contract
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: python3 scripts/tests/check-android-release-contract.py
 
   desktop-signing-contract:
     name: Desktop Signing Contract
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: python3 scripts/tests/check-desktop-release-contract.py
       - run: python3 scripts/tests/check-ci-test-contract.py
       - run: bash scripts/release/check-desktop-signing-config.sh
@@ -203,7 +203,7 @@ jobs:
     needs: [fmt, clippy, check, test, android-release-contract, desktop-signing-contract]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@master
@@ -214,7 +214,7 @@ jobs:
         with:
           cache-on-failure: true
       - uses: ./.github/actions/setup-protoc
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -225,7 +225,7 @@ jobs:
         with:
           tool: nextest@0.9.133
       - run: bash scripts/tests/release-gate.sh --ref origin/main --report release-gate-report.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: release-gate-report
@@ -254,8 +254,8 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -278,7 +278,7 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -287,7 +287,7 @@ jobs:
         with:
           key: release-${{ matrix.target }}
           cache-on-failure: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - uses: ./.github/actions/setup-protoc
@@ -299,7 +299,7 @@ jobs:
           sudo ln -s /usr/bin/aarch64-linux-gnu-gcc /usr/local/bin/aarch64-unknown-linux-gnu-gcc
       - name: Build release
         run: bash scripts/ci/build-release.sh "${{ matrix.target }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: rua-${{ matrix.target }}
           path: target/dist/*
@@ -329,7 +329,7 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -338,7 +338,7 @@ jobs:
         with:
           key: desktop-${{ matrix.target }}
           cache-on-failure: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -372,13 +372,13 @@ jobs:
         run: bash scripts/ci/build-desktop.sh "${{ matrix.target }}"
       - name: Verify packaged application
         run: bash scripts/tests/verify-macos-desktop-bundle.sh "${{ matrix.target }}" --signed
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: rua-desktop-${{ matrix.target }}
           path: target/dist/desktop/${{ matrix.target }}/*
           if-no-files-found: error
           retention-days: 30
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: desktop-acceptance-${{ matrix.target }}
@@ -406,7 +406,7 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -415,7 +415,7 @@ jobs:
         with:
           key: desktop-x86_64-pc-windows-msvc
           cache-on-failure: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -480,13 +480,13 @@ jobs:
             $graphics.Dispose()
             $bitmap.Dispose()
           }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: rua-desktop-x86_64-pc-windows-msvc
           path: target/dist/desktop/x86_64-pc-windows-msvc/*
           if-no-files-found: error
           retention-days: 30
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: desktop-acceptance-windows
@@ -502,8 +502,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
         with:
           pattern: rua-*
           path: artifacts/
