@@ -184,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "agent-types"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "serde",
@@ -1146,7 +1146,7 @@ dependencies = [
 
 [[package]]
 name = "cell-store"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "dashmap",
@@ -5178,7 +5178,7 @@ dependencies = [
 
 [[package]]
 name = "llm-multiplex"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agent-types",
  "async-stream",
@@ -5667,7 +5667,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-manager"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agent-types",
  "async-trait",
@@ -7865,7 +7865,7 @@ dependencies = [
 
 [[package]]
 name = "react-agent"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agent-types",
  "async-stream",
@@ -8198,7 +8198,7 @@ checksum = "fae8ee26b0371a29a77d2b2d6b3ae13aa81def6f9bf1b1b92a32d279a5e709b7"
 
 [[package]]
 name = "rua-acp"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agent-client-protocol",
  "agent-types",
@@ -8221,7 +8221,7 @@ dependencies = [
 
 [[package]]
 name = "rua-agent"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agent-types",
  "async-trait",
@@ -8264,7 +8264,7 @@ dependencies = [
 
 [[package]]
 name = "rua-channel"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "aes",
  "agent-types",
@@ -8312,7 +8312,7 @@ dependencies = [
 
 [[package]]
 name = "rua-chat"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "rua-core",
@@ -8326,7 +8326,7 @@ dependencies = [
 
 [[package]]
 name = "rua-cli"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -8368,7 +8368,7 @@ dependencies = [
 
 [[package]]
 name = "rua-command"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agent-types",
  "async-trait",
@@ -8382,7 +8382,7 @@ dependencies = [
 
 [[package]]
 name = "rua-config"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305 0.10.1",
@@ -8401,7 +8401,7 @@ dependencies = [
 
 [[package]]
 name = "rua-contract"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agent-types",
  "async-trait",
@@ -8415,7 +8415,7 @@ dependencies = [
 
 [[package]]
 name = "rua-core"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agent-types",
  "chrono",
@@ -8433,7 +8433,7 @@ dependencies = [
 
 [[package]]
 name = "rua-cron"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "cell-store",
@@ -8456,7 +8456,7 @@ dependencies = [
 
 [[package]]
 name = "rua-device-network"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -8485,7 +8485,7 @@ dependencies = [
 
 [[package]]
 name = "rua-doctor"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono-tz",
  "fs2",
@@ -8502,7 +8502,7 @@ dependencies = [
 
 [[package]]
 name = "rua-http"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "libc",
  "reqwest 0.13.3",
@@ -8514,7 +8514,7 @@ dependencies = [
 
 [[package]]
 name = "rua-i18n"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -8531,7 +8531,7 @@ dependencies = [
 
 [[package]]
 name = "rua-local-model"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -8551,7 +8551,7 @@ dependencies = [
 
 [[package]]
 name = "rua-mcp"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agent-types",
  "async-trait",
@@ -8580,7 +8580,7 @@ dependencies = [
 
 [[package]]
 name = "rua-memory"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "blake3",
@@ -8601,7 +8601,7 @@ dependencies = [
 
 [[package]]
 name = "rua-observability"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "metrics",
@@ -8617,7 +8617,7 @@ dependencies = [
 
 [[package]]
 name = "rua-pack-tool"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.2.0",
@@ -8626,7 +8626,7 @@ dependencies = [
 
 [[package]]
 name = "rua-plugin"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "cell-store",
@@ -8640,7 +8640,7 @@ dependencies = [
 
 [[package]]
 name = "rua-plugin-runtime"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "futures",
  "mcp-manager",
@@ -8662,7 +8662,7 @@ dependencies = [
 
 [[package]]
 name = "rua-project"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "dirs",
@@ -8677,7 +8677,7 @@ dependencies = [
 
 [[package]]
 name = "rua-prompts"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -8698,7 +8698,7 @@ dependencies = [
 
 [[package]]
 name = "rua-provider"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agent-types",
  "async-stream",
@@ -8724,7 +8724,7 @@ dependencies = [
 
 [[package]]
 name = "rua-security"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "dashmap",
@@ -8747,7 +8747,7 @@ dependencies = [
 
 [[package]]
 name = "rua-server"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "aes-gcm",
  "agent-types",
@@ -8849,7 +8849,7 @@ dependencies = [
 
 [[package]]
 name = "rua-session"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agent-types",
  "async-trait",
@@ -8877,7 +8877,7 @@ dependencies = [
 
 [[package]]
 name = "rua-skills"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "cell-store",
  "chrono",
@@ -8899,7 +8899,7 @@ dependencies = [
 
 [[package]]
 name = "rua-skills-hub"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -8923,7 +8923,7 @@ dependencies = [
 
 [[package]]
 name = "rua-skills-market"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -8946,7 +8946,7 @@ dependencies = [
 
 [[package]]
 name = "rua-skills-scanner"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -8966,7 +8966,7 @@ dependencies = [
 
 [[package]]
 name = "rua-sync"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "age",
  "anyhow",
@@ -9016,7 +9016,7 @@ dependencies = [
 
 [[package]]
 name = "rua-task"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9034,7 +9034,7 @@ dependencies = [
 
 [[package]]
 name = "rua-text-search"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "grep-matcher",
  "grep-regex",
@@ -9044,7 +9044,7 @@ dependencies = [
 
 [[package]]
 name = "rua-tool"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agent-client-protocol",
  "agent-types",
@@ -9094,7 +9094,7 @@ dependencies = [
 
 [[package]]
 name = "rua-tunnel"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "flate2",
  "reqwest 0.13.3",
@@ -9110,7 +9110,7 @@ dependencies = [
 
 [[package]]
 name = "rua-usage"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agent-types",
  "async-trait",
@@ -9127,7 +9127,7 @@ dependencies = [
 
 [[package]]
 name = "rua-voice"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "arc-swap",
  "async-stream",
@@ -9163,7 +9163,7 @@ dependencies = [
 
 [[package]]
 name = "rua-workspace"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agent-types",
  "async-trait",
@@ -10339,7 +10339,7 @@ dependencies = [
 
 [[package]]
 name = "sqlite-vecstore"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "rusqlite",
  "serde",
