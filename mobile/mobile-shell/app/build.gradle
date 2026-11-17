@@ -44,7 +44,8 @@ android {
         minSdkVersion project.properties.minSdkVersion.toInteger()
         targetSdkVersion project.properties.targetSdkVersion.toInteger()
         // Rua APK version and development signing configuration.
-        versionCode 2
+        // Keep pre-1.0 development APKs at versionCode 1.
+        versionCode 1
         versionName "0.8.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField "int", "RUA_PORT", ruaPort
