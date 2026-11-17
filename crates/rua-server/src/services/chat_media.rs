@@ -439,16 +439,16 @@ impl ChatMediaService {
         let mut report = OrphanMediaReport::default();
         for entry in fs::read_dir(&media_dir)? {
             let entry = entry?;
-            let metadata = fs::symlink_metadata(entry.path())?;
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                continue;
-            }
             let Some(name) = entry.file_name().to_str().map(str::to_string) else {
                 continue;
             };
             let Ok(media_id) = MediaId::from_str(&name) else {
                 continue;
             };
+            let metadata = fs::symlink_metadata(entry.path())?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                continue;
+            }
             report.scanned += 1;
             let age = metadata
                 .modified()

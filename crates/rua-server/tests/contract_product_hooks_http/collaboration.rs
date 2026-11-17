@@ -3691,6 +3691,8 @@ async fn chat_read_waits_without_intervening_and_does_not_repeat_automatic_resul
         }))
         .await;
 
+    // Keep the runtime queued until the non-blocking read has returned.
+    let runtime_start = requests.lock().await;
     let receipt = test
         .state
         .collaboration
@@ -3710,6 +3712,8 @@ async fn chat_read_waits_without_intervening_and_does_not_repeat_automatic_resul
         .unwrap();
     assert_eq!(pending.state, "running");
     assert!(pending.outcome.is_none());
+    drop(runtime_start);
+    wait_for_source_requests(&requests, 1).await;
     assert_eq!(requests.lock().await.len(), 1);
     assert!(test
         .state
