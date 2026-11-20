@@ -24,7 +24,8 @@ pub use approval_authority::{
     ApprovalOwner, ApprovalRequest, ApprovalRequestInput, ApprovalReuseMatcher,
     ApprovalReuseOption, ApprovalReuseRule, ApprovalReuseScope, ApprovalSnapshot,
     ApprovalStatus as AuthorityStatus, ApprovalTrigger, ApprovalTriggerSource,
-    PermissionRuleEffect, PermissionRuleInput, PermissionRuleSource, ToolCallSnapshot,
+    AuthenticatedApprovalDecision, AuthenticatedUserDecision, PermissionRuleEffect,
+    PermissionRuleInput, PermissionRuleSource, ToolCallSnapshot,
 };
 pub use audit::{AuditEventKind, SecurityAuditEvent};
 pub use audit_sink::{read_audit_entries, FileAuditSink};

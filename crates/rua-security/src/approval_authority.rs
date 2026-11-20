@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, Weak};
 
 use chrono::{DateTime, Utc};
@@ -285,6 +285,24 @@ pub struct ApprovalRequestInput {
     pub tool_call: ToolCallSnapshot,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthenticatedApprovalDecision {
+    RunOnce,
+    AllowChat,
+    AllowRuntimeSession,
+    AllowAgent,
+    Reject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthenticatedUserDecision {
+    pub user_id: String,
+    pub decision: AuthenticatedApprovalDecision,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApprovalRequest {
     pub id: String,
@@ -301,6 +319,10 @@ pub struct ApprovalRequest {
     pub decided_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub decided_by: Option<String>,
+    /// Set by the accepting authority from its authenticated user session.
+    /// Look up the request in that authority when verifying the source of a decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authenticated_user_decision: Option<AuthenticatedUserDecision>,
     #[serde(default)]
     pub reuse_options: Vec<ApprovalReuseOption>,
 }
@@ -485,6 +507,7 @@ impl ApprovalAuthority {
             created_at: Utc::now(),
             decided_at: None,
             decided_by: None,
+            authenticated_user_decision: None,
             reuse_options,
         };
 
@@ -514,6 +537,7 @@ impl ApprovalAuthority {
             created_at: now,
             decided_at: Some(now),
             decided_by: None,
+            authenticated_user_decision: None,
             reuse_options: Vec::new(),
         };
 
@@ -678,7 +702,7 @@ impl ApprovalAuthority {
         id: &str,
         decision: ApprovalDecision,
     ) -> Result<ApprovalRequest, ApprovalAuthorityError> {
-        self.decide_inner(None, id, decision).await
+        self.decide_inner(None, id, decision, None).await
     }
 
     pub async fn decide_for_agent(
@@ -687,7 +711,22 @@ impl ApprovalAuthority {
         id: &str,
         decision: ApprovalDecision,
     ) -> Result<ApprovalRequest, ApprovalAuthorityError> {
-        self.decide_inner(Some(agent_id), id, decision).await
+        self.decide_inner(Some(agent_id), id, decision, None).await
+    }
+
+    /// The caller obtains the user identity from the authority's own authentication context.
+    pub async fn decide_for_authenticated_user(
+        &self,
+        agent_id: &str,
+        id: &str,
+        decision: ApprovalDecision,
+        authenticated_user_id: &str,
+    ) -> Result<ApprovalRequest, ApprovalAuthorityError> {
+        if agent_id.trim().is_empty() {
+            return Err(ApprovalAuthorityError::NotFound(id.into()));
+        }
+        self.decide_inner(Some(agent_id), id, decision, Some(authenticated_user_id))
+            .await
     }
 
     async fn decide_inner(
@@ -695,6 +734,7 @@ impl ApprovalAuthority {
         expected_agent_id: Option<&str>,
         id: &str,
         decision: ApprovalDecision,
+        authenticated_user_id: Option<&str>,
     ) -> Result<ApprovalRequest, ApprovalAuthorityError> {
         let mut requests = self.requests.write().await;
         let request = requests
@@ -711,10 +751,21 @@ impl ApprovalAuthority {
                 attempted: "decide",
             });
         }
+        if authenticated_user_id.is_some_and(|user_id| user_id.trim().is_empty()) {
+            return Err(ApprovalAuthorityError::InvalidState {
+                id: id.into(),
+                current: request.status,
+                attempted: "record a decision without an authenticated user identity",
+            });
+        }
 
         let mut rule_to_insert: Option<ApprovalReuseRule> = None;
-        let (status, decided_by) = match decision {
-            ApprovalDecision::RunOnce { decided_by } => (ApprovalStatus::Approved, decided_by),
+        let (status, decided_by, kind) = match decision {
+            ApprovalDecision::RunOnce { decided_by } => (
+                ApprovalStatus::Approved,
+                decided_by,
+                AuthenticatedApprovalDecision::RunOnce,
+            ),
             ApprovalDecision::AllowChat {
                 decided_by,
                 matcher,
@@ -755,7 +806,11 @@ impl ApprovalAuthority {
                     source: PermissionRuleSource::Approval,
                     hit_count: 0,
                 });
-                (ApprovalStatus::Approved, decided_by)
+                (
+                    ApprovalStatus::Approved,
+                    decided_by,
+                    AuthenticatedApprovalDecision::AllowChat,
+                )
             }
             ApprovalDecision::AllowRuntimeSession {
                 decided_by,
@@ -798,7 +853,11 @@ impl ApprovalAuthority {
                     source: PermissionRuleSource::Approval,
                     hit_count: 0,
                 });
-                (ApprovalStatus::Approved, decided_by)
+                (
+                    ApprovalStatus::Approved,
+                    decided_by,
+                    AuthenticatedApprovalDecision::AllowRuntimeSession,
+                )
             }
             ApprovalDecision::AllowAgent {
                 decided_by,
@@ -833,14 +892,28 @@ impl ApprovalAuthority {
                     source: PermissionRuleSource::Approval,
                     hit_count: 0,
                 });
-                (ApprovalStatus::Approved, decided_by)
+                (
+                    ApprovalStatus::Approved,
+                    decided_by,
+                    AuthenticatedApprovalDecision::AllowAgent,
+                )
             }
-            ApprovalDecision::Reject { decided_by } => (ApprovalStatus::Rejected, decided_by),
+            ApprovalDecision::Reject { decided_by } => (
+                ApprovalStatus::Rejected,
+                decided_by,
+                AuthenticatedApprovalDecision::Reject,
+            ),
         };
 
         request.status = status;
         request.decided_at = Some(Utc::now());
         request.decided_by = Some(decided_by);
+        request.authenticated_user_decision =
+            authenticated_user_id.map(|user_id| AuthenticatedUserDecision {
+                user_id: user_id.to_owned(),
+                decision: kind,
+                extra: BTreeMap::new(),
+            });
         let updated = request.clone();
         drop(requests);
 

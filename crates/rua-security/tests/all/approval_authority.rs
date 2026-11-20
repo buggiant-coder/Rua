@@ -1,7 +1,8 @@
 use rua_core::ChatAddress;
 use rua_security::approval_authority::{
-    ApprovalAuthority, ApprovalDecision, ApprovalModePreset, ApprovalOwner, ApprovalRequestInput,
-    ApprovalReuseMatcher, ApprovalReuseScope, ApprovalStatus, ApprovalTrigger,
+    ApprovalAuthority, ApprovalAuthorityError, ApprovalDecision, ApprovalModePreset, ApprovalOwner,
+    ApprovalRequest, ApprovalRequestInput, ApprovalReuseMatcher, ApprovalReuseScope,
+    ApprovalStatus, ApprovalTrigger, AuthenticatedApprovalDecision, AuthenticatedUserDecision,
     PermissionRuleEffect, PermissionRuleInput, ToolCallSnapshot,
 };
 use serde_json::json;
@@ -34,6 +35,175 @@ fn bash_request(tool_call_id: &str, command: &str) -> ApprovalRequestInput {
             args: json!({ "command": command }),
         },
     }
+}
+
+#[tokio::test]
+async fn approval_labels_and_permission_hooks_do_not_record_an_authenticated_user() {
+    let authority = ApprovalAuthority::new();
+    for (label, agent_scoped) in [("alice", true), ("product_hook:permission-1", false)] {
+        let mut input = serde_json::to_value(request(label, "read")).unwrap();
+        input["authenticated_user_decision"] = json!({"user_id":"alice","decision":"run_once"});
+        let pending = authority
+            .create_request(serde_json::from_value(input).unwrap())
+            .await;
+        assert!(pending.authenticated_user_decision.is_none());
+        let decision = ApprovalDecision::RunOnce {
+            decided_by: label.into(),
+        };
+        let approved = if agent_scoped {
+            authority
+                .decide_for_agent(&pending.agent_id, &pending.id, decision)
+                .await
+        } else {
+            authority.decide(&pending.id, decision).await
+        }
+        .unwrap();
+        assert_eq!(approved.decided_by.as_deref(), Some(label));
+        assert!(approved.authenticated_user_decision.is_none());
+        let legacy = serde_json::to_value(&approved).unwrap();
+        assert!(legacy.get("authenticated_user_decision").is_none());
+        assert_eq!(
+            serde_json::from_value::<ApprovalRequest>(legacy).unwrap(),
+            approved
+        );
+        let repeated = authority
+            .decide_for_authenticated_user(
+                &pending.agent_id,
+                &pending.id,
+                ApprovalDecision::RunOnce {
+                    decided_by: "webui".into(),
+                },
+                "alice",
+            )
+            .await;
+        assert!(matches!(
+            repeated,
+            Err(ApprovalAuthorityError::InvalidState { .. })
+        ));
+        assert_eq!(authority.request(&pending.id).await.unwrap(), approved);
+    }
+}
+
+#[tokio::test]
+async fn authenticated_run_once_records_the_verified_user_on_the_exact_pending_request() {
+    let authority = ApprovalAuthority::new();
+    let pending = authority.create_request(request("call-1", "read")).await;
+    let unassigned = authority
+        .create_request(ApprovalRequestInput {
+            agent_id: String::new(),
+            ..request("unassigned", "read")
+        })
+        .await;
+    let run_once = ApprovalDecision::RunOnce {
+        decided_by: "client_label".into(),
+    };
+    for (agent, id) in [
+        ("", unassigned.id.as_str()),
+        ("other-agent", pending.id.as_str()),
+        (&pending.agent_id, "absent"),
+    ] {
+        assert!(matches!(
+            authority
+                .decide_for_authenticated_user(agent, id, run_once.clone(), "alice")
+                .await,
+            Err(ApprovalAuthorityError::NotFound(_))
+        ));
+    }
+    assert!(authority
+        .decide_for_authenticated_user(&pending.agent_id, &pending.id, run_once.clone(), "  ")
+        .await
+        .is_err());
+    assert_eq!(authority.request(&pending.id).await.unwrap(), pending);
+
+    let mut updates = authority.subscribe();
+    let approved = authority
+        .decide_for_authenticated_user(&pending.agent_id, &pending.id, run_once, "alice")
+        .await
+        .unwrap();
+    assert_eq!(approved.status, ApprovalStatus::Approved);
+    assert_eq!(
+        approved.authenticated_user_decision,
+        Some(AuthenticatedUserDecision {
+            user_id: "alice".into(),
+            decision: AuthenticatedApprovalDecision::RunOnce,
+            extra: Default::default(),
+        })
+    );
+    assert_eq!(updates.recv().await.unwrap().request, approved);
+    assert_eq!(
+        authority.wait_for_decision(&pending.id).await.unwrap(),
+        approved
+    );
+    assert_eq!(
+        serde_json::to_value(&approved).unwrap()["authenticated_user_decision"],
+        json!({"user_id":"alice","decision":"run_once"})
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_authenticated_decisions_publish_only_the_winning_identity_and_action() {
+    use std::sync::Arc;
+    use tokio::sync::Barrier;
+
+    let authority = Arc::new(ApprovalAuthority::new());
+    let pending = authority.create_request(request("call-1", "read")).await;
+    let mut updates = authority.subscribe();
+    let barrier = Arc::new(Barrier::new(2));
+    let decide = |user, decision| {
+        let authority = Arc::clone(&authority);
+        let barrier = Arc::clone(&barrier);
+        let pending = pending.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            authority
+                .decide_for_authenticated_user(&pending.agent_id, &pending.id, decision, user)
+                .await
+        })
+    };
+    let (one, two) = tokio::join!(
+        decide(
+            "alice",
+            ApprovalDecision::RunOnce {
+                decided_by: "webui".into()
+            }
+        ),
+        decide(
+            "bob",
+            ApprovalDecision::Reject {
+                decided_by: "webui".into()
+            }
+        )
+    );
+    let (winner, user, kind, status) = match (one.unwrap(), two.unwrap()) {
+        (Ok(winner), Err(ApprovalAuthorityError::InvalidState { .. })) => (
+            winner,
+            "alice",
+            AuthenticatedApprovalDecision::RunOnce,
+            ApprovalStatus::Approved,
+        ),
+        (Err(ApprovalAuthorityError::InvalidState { .. }), Ok(winner)) => (
+            winner,
+            "bob",
+            AuthenticatedApprovalDecision::Reject,
+            ApprovalStatus::Rejected,
+        ),
+        outcomes => panic!("expected exactly one successful decision: {outcomes:?}"),
+    };
+    assert_eq!(winner.status, status);
+    assert_eq!(
+        winner.authenticated_user_decision,
+        Some(AuthenticatedUserDecision {
+            user_id: user.into(),
+            decision: kind,
+            extra: Default::default(),
+        })
+    );
+    assert_eq!(authority.request(&pending.id).await.unwrap(), winner);
+    assert_eq!(updates.recv().await.unwrap().request, winner);
+    assert!(matches!(
+        updates.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
 }
 
 #[tokio::test]
@@ -513,8 +683,9 @@ async fn allow_chat_creates_reuse_rule_that_matches_only_same_chat() {
         .create_request(bash_request("call-git-status", "git status --short"))
         .await;
 
-    authority
-        .decide(
+    let approved = authority
+        .decide_for_authenticated_user(
+            &request.agent_id,
             &request.id,
             ApprovalDecision::AllowChat {
                 decided_by: "user".into(),
@@ -523,9 +694,14 @@ async fn allow_chat_creates_reuse_rule_that_matches_only_same_chat() {
                     input_params: Some("git status *".into()),
                 },
             },
+            "alice",
         )
         .await
         .expect("allow chat");
+    assert_eq!(
+        approved.authenticated_user_decision.unwrap().decision,
+        AuthenticatedApprovalDecision::AllowChat
+    );
 
     let same_chat_rule = authority
         .find_reuse_rule_at(
