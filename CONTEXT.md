@@ -90,7 +90,7 @@ Details: [model knowledge and reasoning](docs/adr/0006-model-knowledge-catalog-a
 
 [ADR 0059](docs/adr/0059-unified-chat-and-device-resources.md) records the
 unified Chat design. Chat identity, fixed Project membership, drafts, discovery,
-Agent switching, and the Project resource collection are implemented. Definitions
+Agent switching, Project resources, and Chat execution directories are implemented. Definitions
 marked as proposed describe later slices.
 
 **Chat Identity:** A Chat ID independently identifies one Chat within
@@ -186,9 +186,10 @@ approvals. Running background Tasks alone do not block these changes. An active
 ACP binding separately requires explicit exit before Agent or runtime Device
 switching; being idle does not make an external runner session portable.
 
-**Chat Execution Defaults (proposed):** Device and directory choices adopted at
-Chat creation only. Project defaults do not redirect existing Chats; a new Chat
-without a Project defaults to the Device serving the connected Rua client.
+**Chat Execution Defaults:** Device and optional directory applied when a new
+draft is established. Restoring that draft preserves its choice. A Project
+default applies to new member Chats. An unassigned Chat defaults to the Device
+serving the connected client.
 
 **Chat Runtime Device (proposed):** The Device running the Chat's Agent loop and
 hosting its Conversation Authority. Calling a Tool on another Device does not
@@ -218,7 +219,7 @@ Resources are accessed explicitly through file tools or transfer; ordinary
 programs use files local to their Tool Execution Device, without transparent
 remote mounts.
 
-**Chat Execution Position (proposed):** The Chat Runtime Device plus an optional
+**Chat Execution Position:** The Chat Runtime Device plus an optional
 explicit local working directory; otherwise Rua provides a dedicated managed
 Chat directory, stable for that Chat on that Device and reused when selected
 again. Chat runtime Device changes require a target-local directory choice;
@@ -611,7 +612,7 @@ Details: [unified Chat and cross-device resources](docs/adr/0059-unified-chat-an
 | **Project / Project Descriptor / Project Catalog** | A Project organizes member Chats. Its portable descriptor carries its name, lifecycle and versioned resource collection. The catalog stores and synchronizes this metadata. |
 | **Project Resource Binding** | An association with one directory on its owning Device. Renaming preserves its ID. Replacing the Device or root creates a new ID. Each Project can hold zero or more associations. |
 | **Project Directory Picker** | Browses/creates an explicitly named child on that Device without overwrite or implicit ancestor creation. Android uses filesystem paths with native permissions, not SAF document URIs as bindings. |
-| **Chat Working Directory** | The Chat execution Device and working directory are independent of the Project resource collection. A resource edit preserves the location captured by existing work. |
+| **Chat Working Directory** | The working directory on the execution Device. It can be an explicit path or the stable Rua-managed directory for that Chat and Device. Changing it affects future work. A running Task keeps its original Device, directory and configuration. |
 | **Project Resource Policy** | Existing Agent security settings and Tool Guard govern access. Attaching or detaching a directory only changes the references supplied to member Chats. |
 | **Project Approval Reuse** | Chat-scoped approvals follow full Project Chat Address across Agent switches; Agent-scoped approvals follow Agent. Archive/Reopen preserves Chat reuse; deletion removes it with Chat-owned data. |
 | **Project Sidebar Preferences** | User-owned pins/manual ordering independent of activity/descriptors, synchronized per preference record rather than replacing the whole sidebar. |

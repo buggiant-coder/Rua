@@ -5,18 +5,39 @@ use rua_session::WorkspaceSessionStore;
 use crate::errors::ApiError;
 use crate::state::AppState;
 
+pub(crate) fn saved_directory(
+    header: &rua_session::ChatSessionHeader,
+    device_id: &str,
+) -> Result<Option<rua_session::ChatExecutionDirectory>, String> {
+    let Some(value) = header.extra.get(rua_session::EXECUTION_DIRECTORY_KEY) else {
+        return Ok(None);
+    };
+    let directory: rua_session::ChatExecutionDirectory = serde_json::from_value(value.clone())
+        .map_err(|error| format!("Invalid saved Chat execution directory: {error}"))?;
+    if directory.device_id != device_id {
+        return Err("Chat execution directory belongs to another Device".into());
+    }
+    Ok(Some(directory))
+}
+
 pub(crate) fn saved_working_directory(
     header: Option<&rua_session::ChatSessionHeader>,
     device_id: &str,
-) -> Option<std::path::PathBuf> {
-    let directory = header?.extra.get(rua_session::EXECUTION_DIRECTORY_KEY)?;
-    if directory.get("device_id")?.as_str()? != device_id {
-        return None;
+) -> Result<Option<std::path::PathBuf>, String> {
+    let Some(header) = header else {
+        return Ok(None);
+    };
+    let Some(directory) = saved_directory(header, device_id)? else {
+        return Ok(None);
+    };
+    let path = directory.host_path().map_err(|error| error.to_string())?;
+    if !path.is_dir() {
+        return Err(format!(
+            "Chat execution directory is unavailable: {}",
+            directory.path.display()
+        ));
     }
-    directory
-        .get("path")?
-        .as_str()
-        .map(std::path::PathBuf::from)
+    Ok(Some(path))
 }
 
 pub(crate) async fn working_directory_on_device(
@@ -28,8 +49,90 @@ pub(crate) async fn working_directory_on_device(
     let header = WorkspaceSessionStore::new(scope)
         .load_stored_chat_header(chat_id)
         .await
-        .map_err(|error| error.to_string())?;
-    Ok(saved_working_directory(header.as_ref(), device_id).unwrap_or(default))
+        .map_err(|e| e.to_string())?;
+    Ok(saved_working_directory(header.as_ref(), device_id)?.unwrap_or(default))
+}
+
+/// The name of a managed directory depends only on the Chat and Device.
+pub(crate) async fn select_execution_directory(
+    rua_root: &Path,
+    address: &rua_core::ChatAddress,
+    device_id: &str,
+    path: Option<&Path>,
+) -> Result<rua_session::ChatExecutionDirectory, String> {
+    let managed = path.is_none();
+    let path = match path {
+        Some(path) => super::execution_directory::validate(path, rua_root).await?,
+        None => {
+            let host_path = rua_core::RuaRoot::new(rua_root)
+                .managed_chat_directory(address.chat_id().as_str(), device_id)
+                .map_err(|error| error.to_string())?;
+            let layout = rua_core::runtime_layout::RuntimeLayout::from_current_process(None);
+            match layout.linux_compat {
+                Some(guest) => guest
+                    .map_host_path(&host_path)
+                    .ok_or("Managed Chat directory is unavailable in this execution environment")?,
+                None => host_path,
+            }
+        }
+    };
+    Ok(rua_session::ChatExecutionDirectory {
+        extra: Default::default(),
+        device_id: device_id.into(),
+        managed,
+        path,
+    })
+}
+
+/// Creates only the Chat's own directory at admission. The returned path is
+/// newly created and can be removed if the enclosing durable commit fails.
+pub(crate) async fn create_managed_directory(
+    directory: &rua_session::ChatExecutionDirectory,
+) -> Result<Option<std::path::PathBuf>, String> {
+    if !directory.managed {
+        return Ok(None);
+    }
+    let path = directory.host_path().map_err(|e| e.to_string())?;
+    let parent = path
+        .parent()
+        .ok_or("Managed Chat directory has no parent")?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .map_err(|e| e.to_string())?;
+    match tokio::fs::create_dir(&path).await {
+        Ok(()) => Ok(Some(path)),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && path.is_dir() => {
+            Ok(None)
+        }
+        Err(error) => Err(format!(
+            "Create managed Chat directory {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+pub(crate) async fn initial_execution_directory(
+    rua_root: &Path,
+    address: &rua_core::ChatAddress,
+    device_id: &str,
+    extra: &serde_json::Map<String, serde_json::Value>,
+) -> Result<rua_session::ChatExecutionDirectory, String> {
+    let request = extra
+        .get(rua_session::EXECUTION_DIRECTORY_KEY)
+        .cloned()
+        .map(serde_json::from_value::<rua_core::ExecutionDirectorySelection>)
+        .transpose()
+        .map_err(|e| format!("Invalid execution directory: {e}"))?;
+    if request.as_ref().is_some_and(|r| r.device_id != device_id) {
+        return Err("Execution directory belongs to another Device".into());
+    }
+    select_execution_directory(
+        rua_root,
+        address,
+        device_id,
+        request.as_ref().and_then(|r| r.path.as_deref()),
+    )
+    .await
 }
 
 /// Configuration belongs to the saved Chat, never to its URL or the current selector.

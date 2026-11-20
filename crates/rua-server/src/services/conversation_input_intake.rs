@@ -473,6 +473,41 @@ impl ConversationInputIntake {
         }
     }
 
+    async fn submission_directory(
+        &self,
+        header: Option<&rua_session::ChatSessionHeader>,
+        address: &ChatAddress,
+        device_id: &str,
+        extra: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<rua_session::ChatExecutionDirectory, String> {
+        if let Some(header) = header {
+            if let Some(directory) =
+                crate::services::chat_context::saved_directory(header, device_id)?
+            {
+                crate::services::execution_directory::validate(
+                    &directory.path,
+                    self.session_sync.rua_root(),
+                )
+                .await?;
+                return Ok(directory);
+            }
+            return crate::services::chat_context::select_execution_directory(
+                self.session_sync.rua_root(),
+                address,
+                device_id,
+                None,
+            )
+            .await;
+        }
+        crate::services::chat_context::initial_execution_directory(
+            self.session_sync.rua_root(),
+            address,
+            device_id,
+            extra,
+        )
+        .await
+    }
+
     async fn execution_working_directory(
         &self,
         chat_id: &str,
@@ -806,11 +841,12 @@ impl ConversationInputIntake {
         record: rua_task::TaskRecord,
         tasks: Arc<rua_task::TaskRuntime>,
     ) -> Result<(), String> {
-        let note = rua_agent::task_runtime_notes::task_terminal_note(&record)
-            .map_err(|e| e.to_string())?;
         let root = self.session_sync.rua_root();
         let scope = ChatStore::resolve(root, record.spec.owner.chat_address.clone());
         let store = rua_session::WorkspaceSessionStore::new(scope.root());
+        let note = rua_agent::task_runtime_notes::task_terminal_note(&record, &store)
+            .await
+            .map_err(|error| error.to_string())?;
         if store
             .load_collaboration_wake_state(record.spec.owner.chat_id())
             .await
@@ -947,7 +983,7 @@ impl ConversationInputIntake {
                 .await?;
         }
         let working_dir =
-            crate::services::chat_context::saved_working_directory(Some(&header), local_device_id)
+            crate::services::chat_context::saved_working_directory(Some(&header), local_device_id)?
                 .unwrap_or_else(|| runtime.workspace_dir());
         Ok((
             ConversationExecutionContext {
@@ -1234,6 +1270,11 @@ impl ConversationInputIntake {
             ConversationControlDeviceAction::ViewAgentSelection
                 | ConversationControlDeviceAction::SwitchAgent { .. }
         );
+        let needs_working_directory = !selecting_agent
+            && !matches!(
+                &command.action,
+                ConversationControlDeviceAction::SetExecutionDirectory { .. }
+            );
         let project_discovery = project_id.as_ref().is_some()
             && matches!(&command.action, ConversationControlDeviceAction::Discover);
         let (execution_agent_id, scope_root, working_dir) = match project_id.as_ref() {
@@ -1248,7 +1289,7 @@ impl ConversationInputIntake {
                     ChatStore::resolve(self.session_sync.rua_root(), command.address.clone())
                         .root()
                         .to_path_buf();
-                let cwd = if selecting_agent {
+                let cwd = if !needs_working_directory {
                     // Selection uses durable configuration and requires no current Agent runtime.
                     root.clone()
                 } else {
@@ -1330,7 +1371,7 @@ impl ConversationInputIntake {
                         ),
                     ));
                 }
-                let cwd = if selecting_agent {
+                let cwd = if !needs_working_directory {
                     scope_root.clone()
                 } else {
                     self.execution_working_directory(
@@ -1494,6 +1535,13 @@ impl ConversationInputIntake {
                     .map_err(|e| reject("chat_agent_state_unavailable", e))?;
                 Ok(ConversationControlDeviceResponse::AgentSelection { state })
             }
+            ConversationControlDeviceAction::SetExecutionDirectory { device_id, path } => {
+                let directory = self
+                    .set_execution_directory(&target.address, &device_id, path.as_deref())
+                    .await
+                    .map_err(|detail| reject("execution_directory_change_rejected", detail))?;
+                Ok(ConversationControlDeviceResponse::ExecutionDirectory { directory })
+            }
             ConversationControlDeviceAction::SwitchAgent {
                 expected_agent_id,
                 agent_id,
@@ -1588,14 +1636,20 @@ impl ConversationInputIntake {
                             "Chat configuration missing".to_string(),
                         )
                     })?;
+                let roots = configuration
+                    .capability_configuration
+                    .as_ref()
+                    .map(|capabilities| capabilities.project_write_roots())
+                    .unwrap_or_default();
                 let config = configuration.security_config;
                 let policy = config
                     .extra
                     .contains_key(rua_security::PROJECT_RESOURCE_POLICY_KEY)
                     .then(|| {
-                        rua_security::EffectiveProjectResourcePolicy::resolve(
+                        rua_security::EffectiveProjectResourcePolicy::resolve_with_roots(
                             &config,
                             &target.working_dir,
+                            &roots,
                         )
                     });
                 let approval_authority = self.approval_authority.as_ref().ok_or_else(|| {
@@ -2434,6 +2488,116 @@ impl ConversationInputIntake {
                 Ok(AcpChatDeviceResponse::PermissionDecided { request })
             }
         }
+    }
+
+    pub async fn set_execution_directory(
+        &self,
+        address: &ChatAddress,
+        device_id: &str,
+        path: Option<&Path>,
+    ) -> Result<rua_session::ChatExecutionDirectory, String> {
+        if current_sync_device_id(&self.sync_device).as_deref() != Some(device_id) {
+            return Err("Execution directory must be changed on the Chat authority Device".into());
+        }
+        let _project = self.project_work_admission(address).await?;
+        let scope = ChatStore::resolve(self.session_sync.rua_root(), address.clone());
+        let agent = self.chat_header(address).await?.agent_id;
+        let update = ChatConfigurationUpdate::begin(self, address, &agent, scope.root()).await?;
+        let approvals = self
+            .approval_authority
+            .as_ref()
+            .ok_or("Approval Authority is unavailable")?;
+        let _registration = approvals.hold_chat_registrations(address).await;
+        let header = self.chat_header(address).await?;
+        let placement = crate::services::conversation_authority_placement::parse_conversation_authority_placement(
+            &serde_json::Value::Object(header.extra.clone())
+        ).map_err(|error| error.to_string())?;
+        if placement.device_id != device_id {
+            return Err("Changing the execution Device requires an authority handoff".into());
+        }
+        let authority = self
+            .conversation_authority
+            .as_ref()
+            .ok_or("Conversation Authority is unavailable")?;
+        use crate::services::project_chat::ChatAgentSwitchBlocker;
+        let mut state = crate::services::project_chat::chat_agent_state_from_header(
+            address, &header, true, authority, approvals,
+        )
+        .await?;
+        state.blockers.retain(|blocker| {
+            matches!(
+                blocker,
+                ChatAgentSwitchBlocker::ActiveTurn
+                    | ChatAgentSwitchBlocker::QueuedInput
+                    | ChatAgentSwitchBlocker::UnresolvedApproval
+                    | ChatAgentSwitchBlocker::ArchivedChat
+            )
+        });
+        if let Some(id) = &header.project_id {
+            let catalog = self
+                .project_catalog
+                .as_ref()
+                .ok_or("Project catalog unavailable")?;
+            if catalog
+                .get(&ProjectId::new(id))
+                .map_err(|error| error.to_string())?
+                .is_none_or(|project| project.lifecycle != rua_project::ProjectLifecycle::Active)
+            {
+                state.blockers.push(ChatAgentSwitchBlocker::ArchivedProject);
+            }
+        }
+        if !state.blockers.is_empty() {
+            return Err(format!(
+                "Execution directory change blocked by {}",
+                serde_json::json!(state.blockers)
+            ));
+        }
+        let directory = crate::services::chat_context::select_execution_directory(
+            self.session_sync.rua_root(),
+            address,
+            device_id,
+            path,
+        )
+        .await?;
+        let mut next = update
+            .current()
+            .ok_or("Chat configuration is unavailable")?
+            .clone();
+        let capabilities = next
+            .capability_configuration
+            .as_mut()
+            .ok_or("Chat configuration requires captured capabilities")?;
+        let value = serde_json::json!(directory);
+        let changed = capabilities.extra.get(rua_session::EXECUTION_DIRECTORY_KEY) != Some(&value);
+        if changed {
+            capabilities
+                .extra
+                .insert(rua_session::EXECUTION_DIRECTORY_KEY.into(), value);
+            next.epoch = format!("config-{}", uuid::Uuid::new_v4());
+            next.validate()?;
+        }
+        let created = crate::services::chat_context::create_managed_directory(&directory).await?;
+        if changed {
+            if let Err(error) = update.replace(&next).await {
+                // replace can fail after it commits (for example, during sync).
+                // Preserve the directory if readers already observe the new head.
+                if let Some(path) = created {
+                    if let Ok(header) = self.chat_header(address).await {
+                        if header.extra.get(rua_session::EXECUTION_DIRECTORY_KEY)
+                            != Some(&serde_json::json!(directory))
+                        {
+                            let _ = tokio::fs::remove_dir(path).await;
+                        }
+                    }
+                }
+                return Err(error);
+            }
+        }
+        rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope.root()))
+            .repair_projection(address)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(directory)
     }
 
     pub async fn switch_chat_agent(
@@ -3862,6 +4026,62 @@ impl ConversationInputIntake {
         }
         let local_device_id = current_sync_device_id(&self.sync_device);
         let address = rua_core::ChatAddress::new(&chat_id);
+        if saved.is_none() {
+            match self
+                .remote_input_delivery
+                .read_source_pending(&address)
+                .await
+            {
+                Ok(Some(pending)) => {
+                    let Some(local) = local_device_id.as_deref() else {
+                        return ConversationInputDeliveryOutcome::Rejected {
+                            detail: "Source Device identity is unavailable".into(),
+                            target_device_id: Some(pending.target_device_id),
+                            failure_kind: Some("delivery".into()),
+                        };
+                    };
+                    let expected = request
+                        .extra
+                        .get("expected_authority_epoch")
+                        .and_then(serde_json::Value::as_str);
+                    if expected.is_some_and(|value| value != pending.authority_epoch.to_string())
+                        || pending.base_manifest_hash.is_none()
+                    {
+                        return ConversationInputDeliveryOutcome::Rejected {
+                            detail:
+                                "Chat authority placement is not ready; retry after synchronization"
+                                    .into(),
+                            target_device_id: Some(pending.target_device_id),
+                            failure_kind: Some("chat_not_ready".into()),
+                        };
+                    }
+                    return self
+                        .send_routed_remote_input(RemoteConversationInputParams {
+                            address: &address,
+                            execution_agent_id: &pending.agent_id,
+                            request: &request,
+                            source_device_id: local,
+                            target_device_id: &pending.target_device_id,
+                            authority_epoch: pending.authority_epoch,
+                            base_manifest_hash: pending
+                                .base_manifest_hash
+                                .as_deref()
+                                .expect("validated receipt hash"),
+                            workspace_dir: Some(workspace_dir),
+                            materialize_conversation: false,
+                        })
+                        .await;
+                }
+                Err(detail) => {
+                    return ConversationInputDeliveryOutcome::Rejected {
+                        detail,
+                        target_device_id: None,
+                        failure_kind: Some("chat_not_ready".into()),
+                    }
+                }
+                Ok(None) => {}
+            }
+        }
         if let Err(detail) =
             crate::services::conversation_authority_target::validate_chat_submit_materialization(
                 workspace_dir,
@@ -3911,14 +4131,20 @@ impl ConversationInputIntake {
                     failure_kind: Some("delivery".to_string()),
                 };
             };
-            let target_device_id = request
-                .extra
-                .get("target_device_id")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or(local_device_id)
-                .to_string();
+            let target_device_id = match crate::services::execution_directory::select_draft(
+                &mut request.extra,
+                None,
+                local_device_id,
+            ) {
+                Ok(device) => device,
+                Err(detail) => {
+                    return ConversationInputDeliveryOutcome::Rejected {
+                        detail,
+                        target_device_id: None,
+                        failure_kind: Some("invalid_request".into()),
+                    }
+                }
+            };
             Some(ConversationAuthorityPlacement {
                 device_id: target_device_id.clone(),
                 authority_epoch: ConversationAuthorityEpoch::next_for_device(
@@ -4091,6 +4317,8 @@ impl ConversationInputIntake {
                             .authority_running_config_typed(agent_id)
                             .await
                             .map_err(|error| error.to_string())?;
+                        let directory = self.submission_directory(None,&address,&placement.device_id,&request.extra).await?;
+                        request.extra.insert(rua_session::EXECUTION_DIRECTORY_KEY.into(),serde_json::json!(directory));
                         hooks
                             .resolve_complete_chat_configuration(
                                 &address,
@@ -4099,7 +4327,8 @@ impl ConversationInputIntake {
                                     rua_config::ChatRunningConfig::from_agent_defaults(&running),
                                     None,
                                     crate::services::chat_configuration_capture::ChatConfigurationSelection {
-                                        execution_working_dir: None,
+                                        chat_id: address.chat_id().clone(),
+                                        execution_directory: directory,
                                         project_id: None,
                                         model: initial_model.clone(),
                                         thinking: None,
@@ -4177,27 +4406,7 @@ impl ConversationInputIntake {
                     workspace_dir: Some(workspace_dir),
                     materialize_conversation,
                 };
-                match self
-                    .remote_input_delivery
-                    .build_remote_conversation_input_request(&params)
-                    .await
-                {
-                    Ok(prepared) => match self
-                        .remote_input_delivery
-                        .deliver_prepared_conversation_input(&prepared, "remote conversation input")
-                        .await
-                    {
-                        Ok(outcome) => ConversationInputDeliveryOutcome::remote(chat_id, outcome),
-                        Err(error) => {
-                            ConversationInputDeliveryOutcome::remote_error(&prepared, error)
-                        }
-                    },
-                    Err(detail) => ConversationInputDeliveryOutcome::Rejected {
-                        detail,
-                        target_device_id: Some(target_device_id),
-                        failure_kind: Some("invalid_request".to_string()),
-                    },
-                }
+                self.send_routed_remote_input(params).await
             }
             ConversationSubmitRoute::Rejected {
                 detail,
@@ -4207,6 +4416,37 @@ impl ConversationInputIntake {
                 target_device_id,
                 failure_kind: None,
             },
+        }
+    }
+
+    async fn send_routed_remote_input(
+        &self,
+        params: RemoteConversationInputParams<'_>,
+    ) -> ConversationInputDeliveryOutcome {
+        let request = match self
+            .remote_input_delivery
+            .build_remote_conversation_input_request(&params)
+            .await
+        {
+            Ok(request) => request,
+            Err(detail) => {
+                return ConversationInputDeliveryOutcome::Rejected {
+                    detail,
+                    target_device_id: Some(params.target_device_id.to_owned()),
+                    failure_kind: Some("invalid_request".into()),
+                }
+            }
+        };
+        match self
+            .remote_input_delivery
+            .deliver_prepared_conversation_input(&request, "remote conversation input")
+            .await
+        {
+            Ok(outcome) => ConversationInputDeliveryOutcome::remote(
+                params.address.chat_id().to_string(),
+                outcome,
+            ),
+            Err(error) => ConversationInputDeliveryOutcome::remote_error(&request, error),
         }
     }
 
@@ -4237,8 +4477,10 @@ impl ConversationInputIntake {
                 failure_kind: Some("business".to_string()),
             };
         }
-        match catalog.get(project_id) {
-            Ok(Some(project)) if project.lifecycle == rua_project::ProjectLifecycle::Active => {}
+        let project = match catalog.get(project_id) {
+            Ok(Some(project)) if project.lifecycle == rua_project::ProjectLifecycle::Active => {
+                project
+            }
             Ok(Some(_)) => {
                 return ConversationInputDeliveryOutcome::Rejected {
                     detail: "Archived Project cannot accept new work".to_string(),
@@ -4316,7 +4558,7 @@ impl ConversationInputIntake {
                 }
             }
         };
-        let selected_agent_id = match saved {
+        let selected_agent_id = match saved.as_ref() {
             Some(header) => {
                 if header.project_id.as_deref() != Some(project_id.as_str()) {
                     return ConversationInputDeliveryOutcome::Rejected {
@@ -4325,7 +4567,7 @@ impl ConversationInputIntake {
                         failure_kind: Some("invalid_request".into()),
                     };
                 }
-                match crate::services::project_chat::selection_from_header(&header) {
+                match crate::services::project_chat::selection_from_header(header) {
                     Ok(selection) => selection.agent_id,
                     Err(detail) => {
                         return ConversationInputDeliveryOutcome::Rejected {
@@ -4363,6 +4605,19 @@ impl ConversationInputIntake {
                 }
             }
         };
+        if saved.is_none() && acknowledged.is_none() {
+            if let Err(detail) = crate::services::execution_directory::select_draft(
+                &mut request.extra,
+                project.execution_default.as_ref(),
+                &source_device_id,
+            ) {
+                return ConversationInputDeliveryOutcome::Rejected {
+                    detail,
+                    target_device_id: None,
+                    failure_kind: Some("invalid_request".into()),
+                };
+            }
+        }
         // A source-side receipt can arrive before the authoritative Chat header.
         // Route this interval to the Device that already accepted the Chat.
         let route = if let Some(pending) = acknowledged {
@@ -4440,28 +4695,7 @@ impl ConversationInputIntake {
                     workspace_dir: Some(&scope_root),
                     materialize_conversation,
                 };
-                let prepared = match self
-                    .remote_input_delivery
-                    .build_remote_conversation_input_request(&params)
-                    .await
-                {
-                    Ok(request) => request,
-                    Err(detail) => {
-                        return ConversationInputDeliveryOutcome::Rejected {
-                            detail,
-                            target_device_id: None,
-                            failure_kind: Some("invalid_request".to_string()),
-                        };
-                    }
-                };
-                match self
-                    .remote_input_delivery
-                    .deliver_prepared_conversation_input(&prepared, "Project Chat input")
-                    .await
-                {
-                    Ok(outcome) => ConversationInputDeliveryOutcome::remote(chat_id, outcome),
-                    Err(error) => ConversationInputDeliveryOutcome::remote_error(&prepared, error),
-                }
+                self.send_routed_remote_input(params).await
             }
             ConversationSubmitRoute::Rejected {
                 detail,
@@ -4544,20 +4778,25 @@ impl ConversationInputIntake {
                 requested_agent_id, selected_agent_id
             ));
         }
-        let working_dir = match self
-            .execution_working_directory(
-                address.chat_id().as_str(),
-                &selected_agent_id,
+        let directory = match self
+            .submission_directory(
+                header.as_ref(),
+                &address,
                 &placement.device_id,
+                &request.extra,
             )
             .await
         {
-            Ok(cwd) => cwd,
+            Ok(directory) => directory,
             Err(error) => return reject(error),
+        };
+        let working_dir = match directory.host_path() {
+            Ok(path) => path,
+            Err(error) => return reject(error.to_string()),
         };
         request.extra.insert(
             rua_session::EXECUTION_DIRECTORY_KEY.into(),
-            serde_json::json!({"device_id":placement.device_id,"path":working_dir}),
+            serde_json::json!(directory),
         );
         if let Err(error) = self.resolve_project_turn_agent(&selected_agent_id).await {
             return reject(error);
@@ -4672,7 +4911,8 @@ impl ConversationInputIntake {
                         running,
                         Some(&working_dir),
                         crate::services::chat_configuration_capture::ChatConfigurationSelection {
-                            execution_working_dir: Some(working_dir.clone()),
+                            chat_id: address.chat_id().clone(),
+                            execution_directory: directory.clone(),
                             project_id: Some(project_id.to_string()),
                             model: initial_model.clone(),
                             thinking: request.extra.get(rua_chat::TURN_THINKING_KEY).cloned(),
@@ -5027,19 +5267,15 @@ impl ConversationInputIntake {
         {
             return Err("initial ACP cwd and resume Session must not be empty".into());
         }
-        let cwd = if project_id.is_some() {
-            working_dir
-        } else {
-            selection
-                .cwd
-                .as_deref()
-                .map(Path::new)
-                .unwrap_or(working_dir)
-        };
-        if !cwd.is_dir() {
+        let managed = extra
+            .get(rua_session::EXECUTION_DIRECTORY_KEY)
+            .and_then(|directory| directory.get("managed"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true);
+        if !managed && !working_dir.is_dir() {
             return Err(format!(
                 "initial ACP working directory does not exist: {}",
-                cwd.display()
+                working_dir.display()
             ));
         }
         Ok(Some(selection))
@@ -5723,19 +5959,27 @@ impl ConversationInputIntake {
             .filter(|value| !value.trim().is_empty())
             .ok_or("Chat Authority Device missing")?
             .to_string();
-        let cwd = crate::services::chat_context::saved_working_directory(
-            Some(header),
-            &authority_device_id,
-        );
+        let directory =
+            match crate::services::chat_context::saved_directory(header, &authority_device_id)? {
+                Some(directory) => directory,
+                None => {
+                    self.submission_directory(
+                        Some(header),
+                        &ChatAddress::new(header.chat_id.as_str()),
+                        &authority_device_id,
+                        &Default::default(),
+                    )
+                    .await?
+                }
+            };
+        let cwd = directory.host_path().map_err(|e| e.to_string())?;
         self.capture_chat_configuration(
             assignment,
             running_config,
-            cwd.as_deref().filter(|_| header.project_id.is_some()),
+            header.project_id.as_ref().map(|_| cwd.as_path()),
             crate::services::chat_configuration_capture::ChatConfigurationSelection {
-                execution_working_dir: crate::services::chat_context::saved_working_directory(
-                    Some(header),
-                    &authority_device_id,
-                ),
+                chat_id: rua_core::ChatId::new(header.chat_id.as_str()),
+                execution_directory: directory,
                 project_id: header.project_id.clone(),
                 model: current.model.clone(),
                 thinking: current.thinking.clone(),
@@ -6188,10 +6432,34 @@ impl ConversationInputIntake {
         route_target: AuthorityRouteTarget<'_>,
         first_submission: Option<FirstAgentSubmission>,
     ) -> ConversationInputDeliveryOutcome {
-        let working_dir = match self
-            .execution_working_directory(&chat_id, agent_id, route_target.device_id)
-            .await
-        {
+        let address = rua_core::ChatAddress::new(&chat_id);
+        let directory = async {
+            if let Some(first) = first_submission.as_ref() {
+                let value = first
+                    .configuration
+                    .capability_configuration
+                    .as_ref()
+                    .and_then(|capabilities| {
+                        capabilities.extra.get(rua_session::EXECUTION_DIRECTORY_KEY)
+                    })
+                    .ok_or("Chat configuration requires an execution directory")?;
+                let directory: rua_session::ChatExecutionDirectory =
+                    serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+                return directory.host_path().map_err(|e| e.to_string());
+            }
+            let header = self.optional_chat_header(&address).await?;
+            self.submission_directory(
+                header.as_ref(),
+                &address,
+                route_target.device_id,
+                &request.extra,
+            )
+            .await?
+            .host_path()
+            .map_err(|e| e.to_string())
+        }
+        .await;
+        let working_dir = match directory {
             Ok(directory) => directory,
             Err(error) => {
                 return ConversationInputDeliveryOutcome::Rejected {
@@ -6201,7 +6469,6 @@ impl ConversationInputIntake {
                 }
             }
         };
-        let address = rua_core::ChatAddress::new(&chat_id);
         let key = StreamKey::new(CONSOLE_CHANNEL_ID, address.clone(), Priority::Normal);
         let Some(authority) = self.conversation_authority.as_ref() else {
             return ConversationInputDeliveryOutcome::Rejected {
@@ -6717,13 +6984,22 @@ impl ConversationInputIntake {
                 } else {
                     None
                 };
+                let directory = self
+                    .submission_directory(
+                        header.as_ref(),
+                        &request.address,
+                        &request.target_device_id,
+                        &request.metadata,
+                    )
+                    .await?;
+                let working_dir = directory.host_path().map_err(|e| e.to_string())?;
+                request.metadata.insert(
+                    rua_session::EXECUTION_DIRECTORY_KEY.into(),
+                    serde_json::json!(directory),
+                );
                 (
                     agent_workspace_dir,
-                    crate::services::chat_context::saved_working_directory(
-                        header.as_ref(),
-                        &request.target_device_id,
-                    )
-                    .unwrap_or_else(|| runtime.workspace_dir()),
+                    working_dir,
                     placement,
                     first_submission,
                     assignment,
@@ -6772,16 +7048,18 @@ impl ConversationInputIntake {
                         .ok_or_else(|| "Project Chat header is unavailable".to_string())?;
                     crate::services::project_chat::selection_from_header(header)?.agent_id
                 };
-                let working_dir = self
-                    .execution_working_directory(
-                        request.chat_id(),
-                        &selected_agent_id,
+                let directory = self
+                    .submission_directory(
+                        header.as_ref(),
+                        &request.address,
                         &request.target_device_id,
+                        &request.metadata,
                     )
                     .await?;
+                let working_dir = directory.host_path().map_err(|e| e.to_string())?;
                 request.metadata.insert(
                     rua_session::EXECUTION_DIRECTORY_KEY.into(),
-                    serde_json::json!({"device_id":request.target_device_id,"path":working_dir}),
+                    serde_json::json!(directory),
                 );
                 if !first_submission && request.agent_id != selected_agent_id {
                     return Err(format!(
@@ -7033,7 +7311,8 @@ impl ConversationInputIntake {
                                 project_id.as_ref()
                                     .map(|_| working_dir.as_path()),
                                 crate::services::chat_configuration_capture::ChatConfigurationSelection {
-                                    execution_working_dir: Some(working_dir.clone()),
+                                    chat_id: request.address.chat_id().clone(),
+                                    execution_directory: serde_json::from_value(pending.extra[rua_session::EXECUTION_DIRECTORY_KEY].clone()).map_err(|e|e.to_string())?,
                                     project_id: project_id.as_ref().map(ToString::to_string),
                                     model: initial_model.clone(),
                                     thinking: None,

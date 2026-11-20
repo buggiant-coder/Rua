@@ -1176,8 +1176,8 @@ test("Project Lazy Chat keeps mobile draft editable while offline", async ({
   await expect(
     page
       .locator(".rua-owned-chat-page")
-      .getByText("This device", { exact: true }),
-  ).toBeVisible();
+      .getByRole("button", { name: "Execution location", exact: true }),
+  ).toContainText("This device");
   await input.fill("Keep this phone draft");
   await expect(input).toHaveValue("Keep this phone draft");
   await expect(

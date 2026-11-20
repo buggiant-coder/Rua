@@ -172,6 +172,7 @@ async fn project_draft_live_viewer_waits_on_the_connected_device() {
     state
         .project_catalog
         .apply_descriptor(rua_project::ProjectDescriptor {
+            execution_default: None,
             project_id: project_id.clone(),
             display_name: "Draft Project".to_string(),
             lifecycle: rua_project::ProjectLifecycle::Active,
@@ -221,6 +222,7 @@ async fn unavailable_project_live_does_not_fallback_or_persist_retry_intent() {
     state
         .project_catalog
         .apply_descriptor(rua_project::ProjectDescriptor {
+            execution_default: None,
             project_id: project_id.clone(),
             display_name: "Unavailable Project".to_string(),
             lifecycle: rua_project::ProjectLifecycle::Active,

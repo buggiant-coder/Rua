@@ -4511,10 +4511,39 @@ async fn remote_project_first_submit_materializes_on_selected_device() {
     *second_state.device_network.lock().await = Some(second.runtime.clone());
 
     let chat_id = "00000000-0000-4000-8000-000000000404";
-    let mut first_submit_extra = serde_json::Map::from_iter([(
-        "target_device_id".into(),
-        serde_json::json!(target_device_id),
-    )]);
+    let cwd = target_dir.path().join("explicit-cwd");
+    std::fs::create_dir(&cwd).unwrap();
+    std::fs::write(cwd.join("remote-only"), b"target").unwrap();
+    let api = rua_server::router::build_app(source_state.clone(), None);
+    let browse = api
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!(
+                    "/api/devices/{target_device_id}/execution-directory?path={}",
+                    cwd.display()
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(browse.status(), StatusCode::OK);
+    let listing: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(browse.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(listing["device_id"], target_device_id);
+    assert_eq!(listing["entries"][0]["name"], "remote-only");
+    let update=api.oneshot(Request::builder().method(Method::PUT)
+        .uri(format!("/api/projects/{}/execution-default",created.project.project_id))
+        .header("content-type","application/json")
+        .body(Body::from(serde_json::json!({"execution_default":{"device_id":target_device_id,"path":cwd}}).to_string())).unwrap()).await.unwrap();
+    assert_eq!(update.status(), StatusCode::OK);
+    let mut first_submit_extra = serde_json::Map::new();
     first_submit_extra.insert(
         "chat_model_slot".to_string(),
         serde_json::json!({
@@ -4592,6 +4621,21 @@ async fn remote_project_first_submit_materializes_on_selected_device() {
         .unwrap()
         .expect("resource Device Project Chat header");
     assert_eq!(header.agent_id, "default");
+    assert_eq!(
+        header.extra[rua_session::EXECUTION_DIRECTORY_KEY],
+        serde_json::json!({"device_id":target_device_id,"path":cwd,"managed":false})
+    );
+    assert!(
+        target_state
+            .project_catalog
+            .get(&created.project.project_id)
+            .unwrap()
+            .unwrap()
+            .execution_default
+            .is_none(),
+        "the receiving Device uses the source's creation-time choice before Project sync"
+    );
+
     assert_eq!(header.extra["model"]["provider_id"], "fixture");
     assert_eq!(header.extra["model"]["model"], "project-control-model");
     assert_eq!(header.turn_index.latest_turn, 1);
@@ -5613,6 +5657,92 @@ async fn remote_project_first_submit_materializes_on_selected_device() {
         rua_core::ChatStore::resolve(&source_state.rua_root, offline_address.clone());
     copy_tree(offline_scope.root(), offline_source_scope.root())
         .expect("synchronize stable offline Project Chat history");
+    let patched_cwd = target_dir.path().join("patched-cwd");
+    std::fs::create_dir(&patched_cwd).unwrap();
+    let patch = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PATCH)
+                .uri(format!("/api/chats/{offline_chat_id}/execution-directory"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"device_id":target_device_id,"path":patched_cwd})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = patch.status();
+    let location: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(patch.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(status, StatusCode::OK, "{location}");
+    assert_eq!(
+        location,
+        serde_json::json!({"device_id":target_device_id,"path":patched_cwd,"managed":false})
+    );
+    let target_header = offline_store
+        .load_chat_header(offline_chat_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        target_header.extra[rua_session::EXECUTION_DIRECTORY_KEY],
+        location
+    );
+    assert_eq!(
+        target_header.extra["authority_placement"],
+        offline_header_before.extra["authority_placement"]
+    );
+    // A second input can arrive on the source before the first remote Chat header is synchronized.
+    let standalone = uuid::Uuid::new_v4().to_string();
+    for (index, extra) in [
+        serde_json::Map::from_iter([(
+            rua_session::EXECUTION_DIRECTORY_KEY.into(),
+            serde_json::json!({"device_id":target_device_id,"path":patched_cwd}),
+        )]),
+        serde_json::Map::new(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let result = source_state
+            .conversation_input_intake
+            .submit_delivery(
+                "default",
+                ConsoleChatRequest {
+                    message: format!("Remote ordinary input {index}"),
+                    chat_id: Some(standalone.clone()),
+                    model: None,
+                    is_reconnect: false,
+                    attachments: vec![],
+                    input: None,
+                    messages: None,
+                    extra,
+                    channel_kind: Some(rua_channel::core::renderer::ChannelKind::Chat),
+                },
+            )
+            .await;
+        assert!(matches!(&result,rua_server::services::conversation_input_intake::ConversationInputDeliveryOutcome::Delivered{
+            transport:rua_server::services::conversation_input_intake::ConversationInputDeliveryTransport::RemoteAuthority,accepted:true,..
+        }),"{result:?}");
+    }
+    assert!(source_store
+        .load_chat_header(&standalone)
+        .await
+        .unwrap()
+        .is_none());
+    let remote = target_store
+        .load_chat_header(&standalone)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(remote.extra[rua_session::EXECUTION_DIRECTORY_KEY], location);
     target.runtime.shutdown().await.unwrap();
     let stable_offline_history = app
         .clone()
@@ -5751,12 +5881,8 @@ async fn remote_project_turns_use_execution_cwd_and_do_not_scan_resource_directo
     let target_state = AppState::from_tempdir(target_dir.path().join("data"), ServerProfile::Test);
     install_test_device(&source_state, 102);
     install_test_device(&target_state, 103);
-    let agent = target_state
-        .registry
-        .get_or_create("default")
-        .await
-        .unwrap();
-    let execution_directory = agent.workspace_dir();
+    let execution_directory = target_dir.path().join("explicit-work-directory");
+    std::fs::create_dir(&execution_directory).unwrap();
     std::fs::write(execution_directory.join("AGENTS.md"), FIRST_MARKER).unwrap();
     let repository = TempDir::new().expect("resource repository");
     let target_repo = repository.path().join("project");
@@ -5838,12 +5964,10 @@ async fn remote_project_turns_use_execution_cwd_and_do_not_scan_resource_directo
                     messages: None,
                     extra: if expected_count == 1 {
                         serde_json::Map::from_iter([(
-                            "target_device_id".into(),
-                            serde_json::json!(target_device_id),
+                            "execution_directory".into(),
+                            serde_json::json!({"device_id":target_device_id,"path":execution_directory}),
                         )])
-                    } else {
-                        Default::default()
-                    },
+                    } else { Default::default() },
                     channel_kind: Some(rua_channel::core::renderer::ChannelKind::Chat),
                 },
             )
@@ -6124,6 +6248,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
         created_at: chrono::Utc::now().to_rfc3339(),
         payload: rua_session::RuntimeNotePayload::TaskAttemptTerminal(
             rua_session::TaskAttemptTerminalRuntimeNote {
+                execution_directory: None,
                 task_id: "remote-task".into(),
                 attempt_no: 1,
                 terminal_status: "completed".into(),

@@ -97,6 +97,8 @@ pub struct TaskAttemptTerminalRuntimeNote {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_directory: Option<Box<crate::ChatExecutionDirectory>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_result_ref: Option<serde_json::Value>,
     #[serde(default)]
     pub artifacts: serde_json::Value,
@@ -251,14 +253,15 @@ impl RuntimeNote {
                     signal.evidence
                 )
             }
-            RuntimeNotePayload::TaskAttemptTerminal(task) => format!(
-                "<task_attempt_terminal>\ntask_id: {}\nattempt_no: {}\nterminal_status: {}\nrunner: {}\noutput:\n{}\n</task_attempt_terminal>",
-                task.task_id,
-                task.attempt_no,
-                task.terminal_status,
-                task.runner_name,
-                task.output
-            ),
+            RuntimeNotePayload::TaskAttemptTerminal(task) => {
+                let origin = task.execution_directory.as_ref().map(|directory|
+                    format!("\nexecution_directory: {}",serde_json::json!(directory))
+                ).unwrap_or_default();
+                format!(
+                    "<task_attempt_terminal>\ntask_id: {}\nattempt_no: {}\nterminal_status: {}\nrunner: {}{}\noutput:\n{}\n</task_attempt_terminal>",
+                    task.task_id,task.attempt_no,task.terminal_status,task.runner_name,origin,task.output
+                )
+            }
             RuntimeNotePayload::TaskWatchOutput(task) => {
                 let records = task
                     .records

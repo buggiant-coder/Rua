@@ -294,6 +294,7 @@ impl RemoteConversationInputDelivery {
         }
         if params.materialize_conversation {
             for key in [
+                rua_session::EXECUTION_DIRECTORY_KEY,
                 "collaboration_mode",
                 "harness_configuration",
                 "user_id",

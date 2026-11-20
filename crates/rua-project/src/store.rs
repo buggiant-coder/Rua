@@ -36,6 +36,8 @@ pub enum ProjectError {
     DirectoryUnavailable { path: PathBuf, detail: String },
     #[error("resource Device id must not be empty")]
     InvalidResourceDevice,
+    #[error("invalid Project execution default: {0}")]
+    InvalidExecutionDefault(String),
     #[error("project display name must not be empty")]
     InvalidDisplayName,
     #[error("project id must not be empty")]
@@ -299,6 +301,7 @@ impl ProjectCatalog {
         validate_project_directory(&root)?;
         self.create_resources(ProjectCreateResourcesRequest {
             display_name: request.display_name,
+            execution_default: None,
             directories: vec![ProjectResourceDirectoryInput::new(
                 request.resource_device_id,
                 root,
@@ -325,6 +328,7 @@ impl ProjectCatalog {
             project_id: ProjectId::new(uuid::Uuid::new_v4().to_string()),
             display_name,
             resources,
+            execution_default: request.execution_default,
             lifecycle: ProjectLifecycle::Active,
             created_at: now,
             updated_at: now,
@@ -385,6 +389,31 @@ impl ProjectCatalog {
         if display_name.is_empty() {
             return Err(ProjectError::InvalidDisplayName);
         }
+        self.update_metadata(project_id, |descriptor| {
+            descriptor.display_name = display_name.to_owned();
+        })
+    }
+
+    pub fn set_execution_default(
+        &self,
+        project_id: &ProjectId,
+        execution_default: Option<rua_core::ExecutionDirectorySelection>,
+    ) -> ProjectResult<ProjectDescriptor> {
+        if let Some(selection) = &execution_default {
+            selection
+                .validate()
+                .map_err(|error| ProjectError::InvalidExecutionDefault(error.to_string()))?;
+        }
+        self.update_metadata(project_id, |descriptor| {
+            descriptor.execution_default = execution_default;
+        })
+    }
+
+    fn update_metadata(
+        &self,
+        project_id: &ProjectId,
+        update: impl FnOnce(&mut ProjectDescriptor),
+    ) -> ProjectResult<ProjectDescriptor> {
         let mut records = self.core.lock()?;
         let tombstones = self.core.lock_tombstones()?;
         if tombstones.contains_key(project_id) {
@@ -394,7 +423,10 @@ impl ProjectCatalog {
             .get_mut(project_id)
             .ok_or_else(|| ProjectError::NotFound(project_id.clone()))?;
         let mut updated = record.clone();
-        updated.descriptor.display_name = display_name.to_string();
+        update(&mut updated.descriptor);
+        if updated.descriptor == record.descriptor {
+            return Ok(record.descriptor.clone());
+        }
         updated.descriptor.updated_at = Utc::now();
         self.core.write_record(&updated)?;
         *record = updated;
@@ -705,6 +737,11 @@ fn validate_descriptor(descriptor: &ProjectDescriptor) -> ProjectResult<()> {
         return Err(ProjectError::InvalidProjectId);
     }
     descriptor.resources.validate()?;
+    if let Some(selection) = &descriptor.execution_default {
+        selection
+            .validate()
+            .map_err(|error| ProjectError::InvalidExecutionDefault(error.to_string()))?;
+    }
     if descriptor.display_name.trim().is_empty() {
         return Err(ProjectError::InvalidDisplayName);
     }

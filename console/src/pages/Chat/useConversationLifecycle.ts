@@ -1,11 +1,11 @@
-import { useCallback, useRef, useState } from "react";
-import type { ChatHistory, ModelSlot } from "@/api/types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { ChatHistory, ModelSlot, ExecutionPosition } from "@/api/types";
 import {
   loadDraftConversationModel,
   materializeConversation,
   saveDraftConversationModel,
-  loadDraftConversationDevice,
-  saveDraftConversationDevice,
+  loadDraftExecutionPosition,
+  saveDraftExecutionPosition,
   draftCreationStarted,
   markDraftCreationStarted,
 } from "./conversationLifecycle";
@@ -16,12 +16,14 @@ type ConversationLifecycleOptions = {
   conversationId: string;
   unmaterialized: boolean;
   onMaterialized?: () => void;
+  initialPosition?: ExecutionPosition | null;
 };
 
 export function useConversationLifecycle({
   scope,
   conversationId,
   unmaterialized,
+  initialPosition,
   onMaterialized,
 }: ConversationLifecycleOptions) {
   const identity = `${scope}\u0000${conversationId}`;
@@ -30,8 +32,9 @@ export function useConversationLifecycle({
   const [creationStarted, setCreationStarted] = useState(
     () => unmaterialized && draftCreationStarted(scope, conversationId),
   );
-  const [draftDevice, setDraftDevice] = useState<string | null>(() =>
-    unmaterialized ? loadDraftConversationDevice(scope, conversationId) : null,
+  const [draftPosition, setDraftPosition] = useState<ExecutionPosition | null>(
+    () =>
+      unmaterialized ? loadDraftExecutionPosition(scope, conversationId) : null,
   );
   const [draftModel, setDraftModel] = useState<ModelSlot | null>(() =>
     unmaterialized ? loadDraftConversationModel(scope, conversationId) : null,
@@ -41,11 +44,11 @@ export function useConversationLifecycle({
   const currentCreationStarted = identityChanged
     ? unmaterialized && draftCreationStarted(scope, conversationId)
     : creationStarted;
-  const currentDraftDevice = identityChanged
+  const currentDraftPosition = identityChanged
     ? unmaterialized
-      ? loadDraftConversationDevice(scope, conversationId)
+      ? loadDraftExecutionPosition(scope, conversationId)
       : null
-    : draftDevice;
+    : draftPosition;
   const currentDraftModel = identityChanged
     ? unmaterialized
       ? loadDraftConversationModel(scope, conversationId)
@@ -58,9 +61,34 @@ export function useConversationLifecycle({
     setTrackedIdentity(identity);
     setLazy(currentLazy);
     setCreationStarted(currentCreationStarted);
-    setDraftDevice(currentDraftDevice);
+    setDraftPosition(currentDraftPosition);
     setDraftModel(currentDraftModel);
   }
+
+  const initialDeviceId = initialPosition?.device_id;
+  const initialPath = initialPosition?.path;
+  useEffect(() => {
+    if (
+      !currentLazy ||
+      !conversationId ||
+      currentDraftPosition ||
+      !initialDeviceId
+    )
+      return;
+    const position = {
+      device_id: initialDeviceId,
+      ...(initialPath ? { path: initialPath } : {}),
+    };
+    saveDraftExecutionPosition(scope, conversationId, position);
+    setDraftPosition(position);
+  }, [
+    conversationId,
+    currentDraftPosition,
+    currentLazy,
+    initialDeviceId,
+    initialPath,
+    scope,
+  ]);
 
   const saveDraftModel = useCallback(
     (model: ModelSlot) => {
@@ -76,10 +104,10 @@ export function useConversationLifecycle({
     lazyRef.current = false;
     setLazy(false);
     setDraftModel(null);
-    setDraftDevice(null);
+    setDraftPosition(null);
     setCreationStarted(false);
     markDraftCreationStarted(scope, conversationId, false);
-    saveDraftConversationDevice(scope, conversationId, null);
+    saveDraftExecutionPosition(scope, conversationId, null);
     onMaterialized?.();
   }, [conversationId, onMaterialized, scope]);
 
@@ -97,17 +125,14 @@ export function useConversationLifecycle({
     lazy: currentLazy,
     lazyRef,
     draftModel: currentDraftModel,
-    draftDevice: currentDraftDevice,
+    draftPosition: currentLazy
+      ? currentDraftPosition ?? initialPosition ?? null
+      : null,
     creationStarted: currentCreationStarted,
-    beginCreation: (device: string) => {
-      setDraftDevice(device);
-      saveDraftConversationDevice(scope, conversationId, device);
-      setCreationStarted(true);
-      markDraftCreationStarted(scope, conversationId, true);
-    },
-    setDraftDevice: (device: string) => {
-      setDraftDevice(device);
-      saveDraftConversationDevice(scope, conversationId, device);
+    setDraftPosition: (position: ExecutionPosition) => {
+      if (!lazyRef.current) return;
+      setDraftPosition(position);
+      saveDraftExecutionPosition(scope, conversationId, position);
     },
     setDraftModel: saveDraftModel,
     statefulOperationAccepted: confirmMaterialized,

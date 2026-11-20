@@ -70,6 +70,24 @@ pub use turn_writer::TurnWriter;
 
 /// Device and native path captured for the Chat execution directory.
 pub const EXECUTION_DIRECTORY_KEY: &str = "execution_directory";
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChatExecutionDirectory {
+    pub device_id: String,
+    pub path: std::path::PathBuf,
+    #[serde(default)]
+    pub managed: bool,
+    #[serde(default, flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl ChatExecutionDirectory {
+    pub fn host_path(&self) -> rua_core::Result<std::path::PathBuf> {
+        rua_core::runtime_layout::RuntimeLayout::from_current_process(None)
+            .execution_host_path(&self.path)
+    }
+}
+
 /// Immutable resource association metadata recorded on a claimed Project Turn.
 pub const TURN_PROJECT_RESOURCES_KEY: &str = "turn_project_resources";
 

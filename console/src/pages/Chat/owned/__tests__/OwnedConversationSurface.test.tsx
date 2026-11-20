@@ -273,6 +273,11 @@ function routeFetch(handler?: FetchRouteHandler) {
         }),
       );
     }
+    if (url.endsWith("/sync/devices")) {
+      return Promise.resolve(
+        jsonResponse({ devices: [{ device_id: "device-local", is_self: true }] }),
+      );
+    }
     if (url.includes("/sync/cycle/target")) {
       return Promise.resolve(jsonResponse({ ok: true }));
     }
@@ -1118,7 +1123,11 @@ describe("OwnedConversationSurface", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(submitCalls(fetchMock)).toHaveLength(1));
-    expect(submittedChatBody(fetchMock).model).toEqual(configuredModel);
+    expect(submittedChatBody(fetchMock)).toMatchObject({
+      model: configuredModel,
+      target_device_id: "device-local",
+      execution_directory: { device_id: "device-local" },
+    });
   });
 
   it("keeps submission enabled before remote conversation control arrives", async () => {

@@ -46,7 +46,6 @@ import {
   saveDraftConversationAcp,
 } from "@/pages/Chat/conversationLifecycle";
 import ModelSelector from "@/pages/Chat/ModelSelector";
-import ChatDeviceChip from "@/pages/Chat/ChatDeviceChip";
 import { openChatDraft } from "@/pages/Chat/chatNavigation";
 import { historyProvesConversationMaterialized } from "@/pages/Chat/conversationRouteController";
 import {
@@ -118,10 +117,16 @@ export default function ProjectChatPage({
   const navigationHistoryKeyRef = useRef("");
   const projectId = initialData.project.project_id;
   const chatId = initialData.chatId;
+  const { devices } = useMultiDeviceFeatureAvailability();
+  const currentDeviceId =
+    devices.find((device) => device.is_self)?.device_id ?? null;
+
   const {
     lazy,
     lazyRef,
     draftModel,
+    draftPosition,
+    setDraftPosition,
     setDraftModel,
     statefulOperationAccepted,
     authoritativeHistoryObserved,
@@ -129,6 +134,9 @@ export default function ProjectChatPage({
     scope: chatDraftScope(projectId),
     conversationId: chatId,
     unmaterialized: initialData.unmaterialized,
+    initialPosition:
+      initialData.project.execution_default ??
+      (currentDeviceId ? { device_id: currentDeviceId } : null),
   });
   const [history, setHistory] = useState<ChatHistory | null>(
     initialData.initialHistory ?? null,
@@ -220,9 +228,6 @@ export default function ProjectChatPage({
     }),
     [projectId],
   );
-  const { devices } = useMultiDeviceFeatureAvailability();
-  const currentDeviceId =
-    devices.find((device) => device.is_self)?.device_id ?? null;
   const chatActivityWake = useConversationActivityWake(
     lazy ? undefined : chatId,
   );
@@ -428,20 +433,9 @@ export default function ProjectChatPage({
         : project,
   );
   const executionDirectory = history?.meta?.execution_directory;
-  const workspaceDir =
-    executionDirectory &&
-    typeof executionDirectory === "object" &&
-    "path" in executionDirectory &&
-    typeof executionDirectory.path === "string"
-      ? executionDirectory.path
-      : "";
-  const executionDeviceId =
-    executionDirectory &&
-    typeof executionDirectory === "object" &&
-    "device_id" in executionDirectory &&
-    typeof executionDirectory.device_id === "string"
-      ? executionDirectory.device_id
-      : null;
+  const workspaceDir = lazy
+    ? draftPosition?.path ?? ""
+    : executionDirectory?.path ?? "";
   const projectPlacement = resolveChatPlacement({
     chatId,
     meta: history?.meta,
@@ -451,8 +445,8 @@ export default function ProjectChatPage({
   const placementDeviceId =
     history?.control?.placement?.authority_device_id ??
     projectPlacement.authorityPlacementDeviceId ??
-    executionDeviceId ??
-    (lazy ? currentDeviceId : null);
+    executionDirectory?.device_id ??
+    (lazy ? draftPosition?.device_id ?? currentDeviceId : null);
   const controlAcpStatus = acpStatusFromConversationControl(
     history?.control,
     chatId,
@@ -706,6 +700,7 @@ export default function ProjectChatPage({
             executionAgentId={executionAgentId || "default"}
             draftKey={projectChatDraftKey(projectId, chatId)}
             authorityPlacementDeviceId={placementDeviceId}
+            draftExecutionPosition={draftPosition}
             currentDeviceId={currentDeviceId}
             submitDisabled={Boolean(submitDisabledReason)}
             submitDisabledReason={submitDisabledReason}
@@ -735,13 +730,11 @@ export default function ProjectChatPage({
                 onChatModelChange={handleChatModelChange}
               />
             }
-            composerDeviceChip={
-              <ChatDeviceChip
-                currentDeviceId={placementDeviceId}
-                devices={devices}
-                readOnly
-              />
-            }
+            executionLocation={{
+              devices,
+              archived,
+              onDraftChange: setDraftPosition,
+            }}
             onSubmitAccepted={handleStatefulOperationAccepted}
             onHistoryChange={handleHistoryChange}
           />

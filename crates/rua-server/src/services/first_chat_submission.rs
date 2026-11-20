@@ -221,7 +221,29 @@ where
     ));
     let result = async {
         let entry = stage(staging_root.clone()).await?;
-        commit_staged_chat(scope_root, address, &staging_root, entry).await
+        let staged = WorkspaceSessionStore::new(&staging_root)
+            .load_chat_header(address.chat_id().as_str())
+            .await
+            .map_err(|e| e.to_string())?;
+        let directory = staged
+            .as_ref()
+            .and_then(|header| header.extra.get(rua_session::EXECUTION_DIRECTORY_KEY))
+            .cloned()
+            .map(serde_json::from_value::<rua_session::ChatExecutionDirectory>)
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        let created = match directory {
+            Some(directory) => super::chat_context::create_managed_directory(&directory).await?,
+            None => None,
+        };
+        let result = commit_staged_chat(scope_root, address, &staging_root, entry).await;
+        if result.is_err() {
+            if let Some(path) = created {
+                // Never remove a pre-existing directory or any files in it.
+                let _ = tokio::fs::remove_dir(path).await;
+            }
+        }
+        result
     }
     .await;
     remove_dir_if_exists(&staging_root).await;

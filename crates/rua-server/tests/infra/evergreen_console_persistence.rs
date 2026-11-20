@@ -1525,6 +1525,7 @@ fn runtime_note() -> rua_session::RuntimeNote {
         created_at: "2026-06-19T00:00:03Z".to_string(),
         payload: rua_session::RuntimeNotePayload::TaskAttemptTerminal(
             rua_session::TaskAttemptTerminalRuntimeNote {
+                execution_directory: None,
                 task_id: "task-evergreen-input-1".to_string(),
                 attempt_no: 1,
                 terminal_status: "completed".to_string(),

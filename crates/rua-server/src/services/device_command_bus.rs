@@ -173,6 +173,10 @@ pub enum ConversationControlDeviceAction {
     Discover,
     View,
     ViewAgentSelection,
+    SetExecutionDirectory {
+        device_id: String,
+        path: Option<PathBuf>,
+    },
     SwitchAgent {
         expected_agent_id: String,
         agent_id: String,
@@ -256,6 +260,9 @@ pub enum ConversationControlDeviceResponse {
         execution_agent_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         authority_placement: Option<ConversationAuthorityPlacement>,
+    },
+    ExecutionDirectory {
+        directory: rua_session::ChatExecutionDirectory,
     },
     AgentSelection {
         state: crate::services::project_chat::ChatAgentState,
@@ -592,6 +599,12 @@ pub enum ProjectDeviceAction {
     BrowseDirectory {
         path: String,
     },
+    BrowseExecutionDirectory {
+        path: String,
+    },
+    ValidateExecutionDirectory {
+        path: PathBuf,
+    },
     ValidateResourceDirectory {
         resource_root: PathBuf,
     },
@@ -652,6 +665,9 @@ pub enum ProjectDeviceAction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProjectDeviceResponse {
+    ExecutionDirectoryListing {
+        listing: crate::services::projects::BrowseDirectoryResponse,
+    },
     ChatsArchived {
         result: crate::services::project_chat::ProjectBulkArchiveResult,
     },
@@ -660,6 +676,10 @@ pub enum ProjectDeviceResponse {
         path: PathBuf,
         entries: Vec<rua_project::ProjectDirectoryEntry>,
         roots: Vec<rua_project::ProjectDirectoryEntry>,
+    },
+    ValidatedExecutionDirectory {
+        device_id: String,
+        path: PathBuf,
     },
     ValidatedResourceDirectory {
         device_id: String,
@@ -2002,6 +2022,43 @@ impl DeviceCommandHandler {
                     },
                 }
             }
+            ProjectDeviceAction::BrowseExecutionDirectory { path } => {
+                match crate::services::execution_directory::browse(&path).await {
+                    Ok(listing) => DeviceCommandResponse::Project {
+                        response: ProjectDeviceResponse::ExecutionDirectoryListing {
+                            listing:
+                                crate::services::projects::BrowseDirectoryResponse::from_listing(
+                                    self.local_device_id.clone(),
+                                    listing,
+                                ),
+                        },
+                    },
+                    Err(detail) => DeviceCommandResponse::Rejected {
+                        reason: "execution_directory_unavailable".into(),
+                        detail,
+                    },
+                }
+            }
+            ProjectDeviceAction::ValidateExecutionDirectory { path } => {
+                let Some(root) = self.data_dir.as_ref() else {
+                    return DeviceCommandResponse::Rejected {
+                        reason: "execution_environment_unavailable".into(),
+                        detail: "Device execution environment is unavailable".into(),
+                    };
+                };
+                match crate::services::execution_directory::validate(&path, root).await {
+                    Ok(path) => DeviceCommandResponse::Project {
+                        response: ProjectDeviceResponse::ValidatedExecutionDirectory {
+                            device_id: self.local_device_id.clone(),
+                            path,
+                        },
+                    },
+                    Err(detail) => DeviceCommandResponse::Rejected {
+                        reason: "execution_directory_unavailable".into(),
+                        detail,
+                    },
+                }
+            }
             ProjectDeviceAction::ValidateResourceDirectory { resource_root } => {
                 match super::projects::validate_resource_directory(resource_root).await {
                     Ok(resource_root) => DeviceCommandResponse::Project {
@@ -3031,6 +3088,7 @@ impl DeviceCommandHandler {
             }
             ConversationControlDeviceAction::ApprovalSnapshot
             | ConversationControlDeviceAction::ViewAgentSelection
+            | ConversationControlDeviceAction::SetExecutionDirectory { .. }
             | ConversationControlDeviceAction::SwitchAgent { .. }
             | ConversationControlDeviceAction::StopTurn { .. }
             | ConversationControlDeviceAction::PauseQueuedInputs { .. }
@@ -4765,12 +4823,16 @@ impl ProjectDeviceCommand {
                     ));
                 }
             }
-            ProjectDeviceAction::BrowseDirectory { path } => {
+            ProjectDeviceAction::BrowseExecutionDirectory { path }
+            | ProjectDeviceAction::BrowseDirectory { path } => {
                 if path.trim().is_empty() {
                     return Err(DeviceCommandBusError::InvalidId("empty path".to_string()));
                 }
             }
-            ProjectDeviceAction::ValidateResourceDirectory { resource_root } => {
+            ProjectDeviceAction::ValidateExecutionDirectory {
+                path: resource_root,
+            }
+            | ProjectDeviceAction::ValidateResourceDirectory { resource_root } => {
                 if !resource_root.is_absolute() {
                     return Err(DeviceCommandBusError::InvalidId(
                         "Resource root must be absolute".into(),

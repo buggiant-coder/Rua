@@ -206,6 +206,23 @@
       "error": "アップデート失敗"
     }
   },
+  "executionLocation": {
+    "missingServiceIdentity": "接続中の Rua サービスからデバイス ID を取得できませんでした。",
+    "title": "実行場所",
+    "device": "実行デバイス",
+    "directory": "作業ディレクトリ",
+    "managed": "チャットの管理ディレクトリ",
+    "explicit": "ディレクトリを選択",
+    "path": "実行ディレクトリのパス",
+    "connectedService": "接続中の Rua サービス",
+    "projectDefault": "新しいチャットの既定の実行場所",
+    "blockers": {
+      "activeTurn": "作業ディレクトリを変更するには、進行中のターンを完了または停止してください。",
+      "queuedInput": "作業ディレクトリを変更する前に、入力キューを空にしてください。",
+      "approval": "作業ディレクトリを変更する前に、保留中の承認を解決してください。",
+      "archived": "作業ディレクトリを変更する前に、アーカイブされたチャットまたはプロジェクトを再開してください。"
+    }
+  },
   "projects": {
     "title": "プロジェクト",
     "resourceFolders": "リソースフォルダー",

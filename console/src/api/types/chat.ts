@@ -208,6 +208,16 @@ export interface Message {
   [key: string]: unknown;
 }
 
+export interface ExecutionPosition {
+  device_id: string;
+  path?: string;
+}
+
+export interface ResolvedExecutionDirectory extends ExecutionPosition {
+  path: string;
+  managed: boolean;
+}
+
 export interface ChatHistory {
   agent_id?: string | null;
   project_id?: string | null;
@@ -216,7 +226,10 @@ export interface ChatHistory {
   active_turn?: ConversationActiveTurn | null;
   control?: ConversationControlView | null;
   model?: ModelSlot | null;
-  meta?: Record<string, unknown> & { chat_agent_state?: ChatAgentState | null };
+  meta?: Record<string, unknown> & {
+    chat_agent_state?: ChatAgentState | null;
+    execution_directory?: ResolvedExecutionDirectory;
+  };
   title?: string | null;
   oldest_turn_ordinal?: number | null;
   newest_turn_ordinal?: number | null;

@@ -15,7 +15,9 @@ use crate::services::device_command_bus::{
 use crate::services::project_control::{
     resolve_project_control_target, ProjectControlError, ProjectControlTarget,
 };
-use crate::services::projects::{ProjectPlacementError, ProjectPlacementService};
+use crate::services::projects::{
+    BrowseDirectoryResponse, ProjectPlacementError, ProjectPlacementService,
+};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -26,6 +28,14 @@ pub fn router() -> Router<AppState> {
             get(get_project_sidebar).patch(update_project_sidebar),
         )
         .route("/projects/{projectId}/resources", patch(edit_resources))
+        .route(
+            "/projects/{projectId}/execution-default",
+            axum::routing::put(set_execution_default),
+        )
+        .route(
+            "/devices/{deviceId}/execution-directory",
+            get(browse_execution_directory),
+        )
         .route(
             "/projects/{projectId}/workspace/files",
             get(get_project_files),
@@ -149,18 +159,9 @@ struct CreateDirectoryRequest {
     name: String,
 }
 
-#[derive(Debug, Serialize)]
-struct BrowseDirectoryResponse {
-    device_id: String,
-    path: std::path::PathBuf,
-    roots: Vec<rua_project::ProjectDirectoryEntry>,
-    parent_path: Option<std::path::PathBuf>,
-    entries: Vec<rua_project::ProjectDirectoryEntry>,
-    proposed_name: String,
-}
-
 #[derive(Debug, Deserialize)]
 struct CreateProjectRequest {
+    execution_default: Option<rua_core::ExecutionDirectorySelection>,
     directories: Vec<rua_project::ProjectResourceDirectoryInput>,
     #[serde(default)]
     display_name: Option<String>,
@@ -362,17 +363,7 @@ fn directory_response(
     device_id: String,
     listing: rua_project::ProjectDirectoryListing,
 ) -> Response {
-    let proposed_name = rua_project::propose_project_display_name(&listing.path);
-    let parent_path = listing.path.parent().map(std::path::Path::to_path_buf);
-    Json(BrowseDirectoryResponse {
-        device_id,
-        path: listing.path,
-        parent_path,
-        entries: listing.entries,
-        roots: listing.roots,
-        proposed_name,
-    })
-    .into_response()
+    Json(BrowseDirectoryResponse::from_listing(device_id, listing)).into_response()
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -530,6 +521,54 @@ async fn get_project_git_history(
     ApiError::BadRequest("directory_id is required".into()).into_response()
 }
 
+#[derive(Deserialize)]
+struct ExecutionDirectoryBrowseQuery {
+    path: Option<String>,
+}
+
+async fn browse_execution_directory(
+    State(state): State<AppState>,
+    Path(device): Path<String>,
+    Query(query): Query<ExecutionDirectoryBrowseQuery>,
+) -> Response {
+    let service = match ProjectPlacementService::from_state(&state) {
+        Ok(service) => service,
+        Err(error) => return placement_error(error),
+    };
+    match service
+        .browse_execution_directory(&device, query.path.as_deref().unwrap_or("~"))
+        .await
+    {
+        Ok(listing) => Json(listing).into_response(),
+        Err(error) => placement_error(error),
+    }
+}
+
+async fn set_execution_default(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let Some(selection) = body.get("execution_default") else {
+        return ApiError::BadRequest("execution_default is required".into()).into_response();
+    };
+    let selection = match serde_json::from_value(selection.clone()) {
+        Ok(selection) => selection,
+        Err(e) => return ApiError::BadRequest(e.to_string()).into_response(),
+    };
+    let service = match ProjectPlacementService::from_state(&state) {
+        Ok(service) => service,
+        Err(error) => return placement_error(error),
+    };
+    match service
+        .set_execution_default(&ProjectId::new(id), selection, &state)
+        .await
+    {
+        Ok(project) => Json(project).into_response(),
+        Err(error) => placement_error(error),
+    }
+}
+
 async fn create_project(
     State(state): State<AppState>,
     Json(body): Json<CreateProjectRequest>,
@@ -539,7 +578,12 @@ async fn create_project(
         Err(error) => return placement_error(error),
     };
     match service
-        .create(body.directories, body.display_name, &state)
+        .create(
+            body.directories,
+            body.display_name,
+            body.execution_default,
+            &state,
+        )
         .await
     {
         Ok(outcome) => (StatusCode::CREATED, Json(outcome)).into_response(),

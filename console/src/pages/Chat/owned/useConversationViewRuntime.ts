@@ -7,6 +7,8 @@ import {
   type ApprovalStatus,
 } from "@/api/modules/console";
 import { conversationApi } from "@/api/modules/conversation";
+import { devicesApi } from "@/api/modules/sync";
+import { t } from "i18next";
 import type { ConversationAddress } from "../conversationAddress";
 import {
   useConversationIdentity,
@@ -19,6 +21,8 @@ import { useRouteViewerVisible } from "@/routes/RouteActivity";
 import type {
   ACPPermissionRequest,
   ChatHistory,
+  ExecutionPosition,
+  ResolvedExecutionDirectory,
   ConversationControlView,
   Message,
   ModelSlot,
@@ -333,6 +337,9 @@ export type ConversationViewRuntime = {
   historyGap: { beforeMessageId: string; count: number } | null;
   reload: () => void;
   applyCommittedModel: (model: ModelSlot | null) => void;
+  applyCommittedExecutionDirectory: (
+    directory: ResolvedExecutionDirectory,
+  ) => void;
   selectVariant: (turnId: string, variantId: string) => Promise<void>;
   regenerate: (turnId: string, userText: string) => Promise<void>;
   rollback: (beforeTurnId: string) => Promise<void>;
@@ -1025,6 +1032,7 @@ import {
 type SubmitRequest = {
   agent_id?: string;
   project_id?: string;
+  execution_directory?: ExecutionPosition;
   target_device_id?: string;
   initial_acp?: import("../conversationLifecycle").DraftAcpSelection;
   input: Message[];
@@ -1246,6 +1254,7 @@ function rolledBackHistory(
 }
 
 export interface ConversationViewRuntimeOptions {
+  draftExecutionPosition?: ExecutionPosition | null;
   address: ConversationAddress;
   authorityPlacementDeviceId?: string | null;
   currentDeviceId?: string | null;
@@ -1261,6 +1270,7 @@ export interface ConversationViewRuntimeOptions {
 export function useConversationViewRuntime({
   address,
   authorityPlacementDeviceId: externalAuthorityPlacementDeviceId,
+  draftExecutionPosition,
   currentDeviceId,
   activeAcpRunner,
   acpHistoryPreview,
@@ -2873,7 +2883,28 @@ export function useConversationViewRuntime({
         return true;
       }
 
-      const targetAtSubmit = authorityPlacementDeviceId || null;
+      let targetAtSubmit =
+        (unmaterialized && draftExecutionPosition?.device_id) ||
+        authorityPlacementDeviceId ||
+        null;
+      if (unmaterialized && !targetAtSubmit) {
+        // The first send can precede the initial roster read. The service supplies
+        // its own Device identity, including when multi-device sync is disabled.
+        try {
+          const devices = await devicesApi.listDevices();
+          targetAtSubmit =
+            devices?.find((device) => device.is_self)?.device_id ?? null;
+        } catch (error) {
+          if (isCurrentView())
+            setError(error instanceof Error ? error.message : String(error));
+          return false;
+        }
+        if (!isCurrentView()) return false;
+        if (!targetAtSubmit) {
+          setError(t("executionLocation.missingServiceIdentity"));
+          return false;
+        }
+      }
       const attachmentEpochs = Array.from(
         new Set(
           attachments
@@ -2937,7 +2968,12 @@ export function useConversationViewRuntime({
         if (unmaterialized) {
           submitRequest.agent_id = agentAtCall;
           submitRequest.project_id = projectId;
-          if (targetAtSubmit) submitRequest.target_device_id = targetAtSubmit;
+          if (targetAtSubmit) {
+            submitRequest.target_device_id = targetAtSubmit;
+            submitRequest.execution_directory = draftExecutionPosition ?? {
+              device_id: targetAtSubmit,
+            };
+          }
           submitRequest.initial_acp =
             loadDraftConversationAcp(
               chatDraftScope(projectId),
@@ -3157,6 +3193,8 @@ export function useConversationViewRuntime({
     [
       conversationId,
       authorityPlacementDeviceId,
+      draftExecutionPosition,
+      unmaterialized,
       projectId,
       selectedAgent,
       startReconnectStream,
@@ -3736,6 +3774,19 @@ export function useConversationViewRuntime({
     });
   }, []);
 
+  const applyCommittedExecutionDirectory = useCallback(
+    (directory: ResolvedExecutionDirectory) => {
+      setHistory(
+        (current) =>
+          current && {
+            ...current,
+            meta: { ...current.meta, execution_directory: directory },
+          },
+      );
+    },
+    [],
+  );
+
   return {
     identity,
     executionAgentId: selectedAgent,
@@ -3770,6 +3821,7 @@ export function useConversationViewRuntime({
     historyGap: historyWindowGap(history, locatedHistory),
     reload,
     applyCommittedModel,
+    applyCommittedExecutionDirectory,
     selectVariant,
     regenerate: async (turnId: string, userText: string) => {
       const fallback = userText || textFromUserBeforeTurn(projection, turnId);

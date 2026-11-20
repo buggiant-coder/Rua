@@ -1,3 +1,4 @@
+import type { ExecutionPosition } from "../types/chat";
 import { request } from "../request";
 import type {
   ProjectBulkArchiveResult,
@@ -78,11 +79,31 @@ export const projectsApi = {
       body: JSON.stringify({ device_id: deviceId, parent, name }),
     }),
 
-  create: (displayName: string, directories: ProjectResourceInput[]) =>
+  create: (
+    displayName: string,
+    directories: ProjectResourceInput[],
+    executionDefault: ExecutionPosition | null = null,
+  ) =>
     request<ProjectCreationOutcome>("/projects", {
       method: "POST",
-      body: JSON.stringify({ display_name: displayName, directories }),
+      body: JSON.stringify({
+        display_name: displayName,
+        directories,
+        execution_default: executionDefault,
+      }),
     }),
+
+  setExecutionDefault: (
+    projectId: string,
+    position: ExecutionPosition | null,
+  ) =>
+    request<ProjectDescriptor>(
+      `/projects/${encodeURIComponent(projectId)}/execution-default`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ execution_default: position }),
+      },
+    ),
 
   editResources: (
     projectId: string,

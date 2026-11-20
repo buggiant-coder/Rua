@@ -39,6 +39,7 @@ pub mod device_context;
 pub mod device_network_availability;
 pub mod device_session_access;
 pub mod durable_publication_watermark;
+pub(crate) mod execution_directory;
 pub(crate) mod first_chat_submission;
 pub mod foreground_operation;
 pub mod helpers;

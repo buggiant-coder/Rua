@@ -273,6 +273,23 @@
       "error": "更新失败"
     }
   },
+  "executionLocation": {
+    "missingServiceIdentity": "当前连接的 Rua 服务未提供设备标识。",
+    "title": "执行位置",
+    "device": "执行设备",
+    "directory": "工作目录",
+    "managed": "对话托管目录",
+    "explicit": "选择指定目录",
+    "path": "执行目录路径",
+    "connectedService": "当前连接的 Rua 服务",
+    "projectDefault": "新对话默认执行位置",
+    "blockers": {
+      "activeTurn": "请等待或停止当前轮次后再更换工作目录。",
+      "queuedInput": "请先处理排队输入，再更换工作目录。",
+      "approval": "请先处理待审批请求，再更换工作目录。",
+      "archived": "请先重新打开已归档的对话或项目，再更换工作目录。"
+    }
+  },
   "projects": {
     "addFolder": "添加文件夹",
     "changeFolder": "更换目录",

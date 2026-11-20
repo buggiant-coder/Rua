@@ -368,6 +368,7 @@ async fn local_create_browse_list_get_rename_and_shared_directory_contract() {
 async fn project_list_activity_comes_from_chat_index_without_reading_history() {
     let test = build_app();
     let project = ProjectDescriptor {
+        execution_default: None,
         project_id: ProjectId::new("activity-project"),
         display_name: "Activity Project".to_string(),
         lifecycle: ProjectLifecycle::Active,
@@ -1885,6 +1886,50 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     assert_eq!(workspace["policy"]["writable_roots"], json!([]));
     assert_eq!(workspace["policy"]["tool_guard_enabled"], true);
 
+    security_config.extra.insert(
+        rua_security::PROJECT_RESOURCE_POLICY_KEY.into(),
+        json!({"profile":"resource-write"}),
+    );
+    test.state
+        .security
+        .save_and_invalidate("default", &security_config)
+        .unwrap();
+    let preview =
+        response_json(request(&test.app, Method::GET, &configuration_path, None).await).await;
+    let apply = request(&test.app, Method::PUT, &configuration_path, Some(json!({
+        "expected_epoch":preview["current"]["epoch"], "candidate_epoch":preview["candidate"]["epoch"],
+    }))).await;
+    assert_eq!(apply.status(), StatusCode::OK);
+    let new_cwd = test._temp.path().join("external-work");
+    std::fs::create_dir(&new_cwd).unwrap();
+    let changed = request(
+        &test.app,
+        Method::PATCH,
+        &format!("/api/chats/{chat_id}/execution-directory"),
+        Some(json!({"device_id": local_device_id, "path":new_cwd})),
+    )
+    .await;
+    assert_eq!(changed.status(), StatusCode::OK);
+    let view = response_json(
+        request(
+            &test.app,
+            Method::GET,
+            &format!("/api/chats/{chat_id}/resource-policy"),
+            None,
+        )
+        .await,
+    )
+    .await;
+    let policy: rua_security::EffectiveProjectResourcePolicy =
+        serde_json::from_value(view["policy"].clone()).unwrap();
+    let managed = rua_core::RuaRoot::new(&test.state.rua_root)
+        .managed_chat_directory(chat_id, &local_device_id)
+        .unwrap();
+    assert_eq!(Path::new(&policy.cwd), new_cwd.as_path());
+    assert!(policy.permits_write(&managed.join("allowed.txt")));
+    assert!(!policy.permits_write(&new_cwd.join("external.txt")));
+    assert!(!policy.permits_write(&repo.join("declared-resource.txt")));
+
     let model = json!({
         "provider_id": "fixture",
         "model": "project-control-model",
@@ -1921,7 +1966,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     assert_eq!(acp_status.status(), StatusCode::OK);
     let acp_status = response_json(acp_status).await;
     assert_eq!(acp_status["active"], false);
-    assert_eq!(acp_status["workspace_dir"], workspace["policy"]["cwd"]);
+    assert_eq!(acp_status["workspace_dir"], json!(new_cwd));
     assert_ne!(acp_status["workspace_dir"], json!(repo));
 
     let address = ChatAddress::new(chat_id);
@@ -2727,6 +2772,7 @@ async fn project_lifecycle_metadata_ignores_offline_or_removed_resource_devices(
     let now = Utc::now();
     let offline_device_id = "0102030405060708";
     let offline_project = ProjectDescriptor {
+        execution_default: None,
         project_id: ProjectId::new("project-offline"),
         display_name: "Offline".to_string(),
         lifecycle: ProjectLifecycle::Active,
@@ -2789,6 +2835,7 @@ async fn project_lifecycle_metadata_ignores_offline_or_removed_resource_devices(
     );
 
     let revoked_project = ProjectDescriptor {
+        execution_default: None,
         project_id: ProjectId::new("project-revoked"),
         display_name: "Revoked".to_string(),
         lifecycle: ProjectLifecycle::Active,
@@ -3113,6 +3160,7 @@ async fn project_permanent_delete_cleans_rua_state_and_preserves_repository() {
 async fn archived_offline_project_delete_does_not_contact_resource_device() {
     let test = build_app();
     let project = ProjectDescriptor {
+        execution_default: None,
         project_id: ProjectId::new("project-offline-delete"),
         display_name: "Offline delete".to_string(),
         lifecycle: ProjectLifecycle::Archived,
@@ -3194,6 +3242,7 @@ fn snapshot_directory(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
 async fn remote_resource_locations_are_visible_and_chat_deletion_targets_its_saved_authority() {
     let test = build_app();
     let project = ProjectDescriptor {
+        execution_default: None,
         project_id: ProjectId::new("remote-project"),
         display_name: "Remote Project".to_string(),
         lifecycle: ProjectLifecycle::Active,
@@ -3581,6 +3630,7 @@ async fn chat_metadata_reads_only_the_index_including_archived_project_chats() {
         test.state
             .project_catalog
             .apply_descriptor(ProjectDescriptor {
+                execution_default: None,
                 project_id: ProjectId::new(id),
                 display_name: id.to_string(),
                 lifecycle: ProjectLifecycle::Active,
@@ -3801,6 +3851,7 @@ async fn sidebar_preferences_are_independent_of_resource_device_availability_and
     test.state
         .project_catalog
         .apply_descriptor(rua_project::ProjectDescriptor {
+            execution_default: None,
             project_id: ProjectId::new("remote-sidebar"),
             display_name: "Remote".into(),
             resources: rua_project::ProjectResources::create(vec![

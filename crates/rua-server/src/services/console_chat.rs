@@ -3462,11 +3462,16 @@ impl ConsoleChatService {
                     return;
                 }
             };
-            let working_dir = crate::services::chat_context::saved_working_directory(
+            let working_dir = match crate::services::chat_context::saved_working_directory(
                 Some(&header),
                 &device_id_str,
-            )
-            .unwrap_or(working_dir);
+            ) {
+                Ok(directory) => directory.unwrap_or(working_dir),
+                Err(error) => {
+                    let _ = tx.send(Err(error)).await;
+                    return;
+                }
+            };
             let execution_environment_prompt =
                 Some(rua_agent::prompt::build_execution_environment_prompt(
                     &RuntimeLayout::from_current_process(Some(&host_profile)),
@@ -3971,18 +3976,21 @@ impl ConsoleChatService {
                     rua_session::TURN_PROJECT_RESOURCES_KEY.into(),
                     resources.clone(),
                 );
-                if captured_configuration.as_ref().is_some_and(|c| {
-                    c.security_config.extra.contains_key(
-                        rua_security::project_resource_policy::PROJECT_RESOURCE_POLICY_KEY,
-                    )
-                }) {
-                    metadata.insert(
-                        "project_resource_roots".into(),
-                        serde_json::json!([working_dir]),
-                    );
-                }
             }
             if project_id.is_some() {
+                if let Some(config) = captured_configuration.as_ref().filter(|config| {
+                    config
+                        .security_config
+                        .extra
+                        .contains_key(rua_security::PROJECT_RESOURCE_POLICY_KEY)
+                }) {
+                    let roots = config
+                        .capability_configuration
+                        .as_ref()
+                        .map(|capabilities| capabilities.project_write_roots())
+                        .unwrap_or_default();
+                    metadata.insert("project_resource_roots".into(), serde_json::json!(roots));
+                }
                 metadata.insert(
                     rua_agent::hooks::PROJECT_SKILLS_ROOT_METADATA_KEY.into(),
                     serde_json::Value::String(working_dir.to_string_lossy().into_owned()),
@@ -5504,14 +5512,7 @@ async fn start_initial_acp(
         .active_turn(address)
         .await
         .ok_or("accepted ACP Turn is missing")?;
-    let cwd = if header.project_id.is_some() {
-        working_dir.to_string_lossy().to_string()
-    } else {
-        selection
-            .cwd
-            .clone()
-            .unwrap_or_else(|| working_dir.to_string_lossy().to_string())
-    };
+    let cwd = working_dir.to_string_lossy().into_owned();
     let chat_id = address.chat_id().as_str();
     let startup = async {
         if let Some(resume) = selection.resume_session_id.as_deref() {

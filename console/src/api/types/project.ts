@@ -1,3 +1,5 @@
+import type { ExecutionPosition } from "./chat";
+
 export type ProjectLifecycle = "active" | "archived";
 
 export interface ProjectResourceInput {
@@ -14,6 +16,7 @@ export interface ProjectResourceDirectory extends ProjectResourceInput {
 export interface ProjectDescriptor {
   project_id: string;
   display_name: string;
+  execution_default?: ExecutionPosition | null;
   resources: {
     revision: number;
     directories: ProjectResourceDirectory[];

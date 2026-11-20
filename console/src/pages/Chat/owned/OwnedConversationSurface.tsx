@@ -24,12 +24,14 @@ import {
   chatPath,
 } from "@/pages/Chat/conversationAddress";
 import { prepareChatTransition } from "../preparedChatTransition";
+import ExecutionDirectoryControl from "../ExecutionDirectoryControl";
 import * as drafts from "../drafts";
 import { projectChatDraftKey } from "../../Projects/projectChatNavigation";
 import { Modal, TextArea, toast } from "@/ui";
 import type { ApprovalRequest } from "@/api/modules/console";
 import type {
   ChatHistory,
+  ExecutionPosition,
   CollaborationChatRelation,
   ModelSlot,
 } from "@/api/types";
@@ -109,6 +111,7 @@ type OwnedConversationSurfaceProps = {
   onSubmitAccepted?: () => void;
   onHistoryChange?: (history: ChatHistory | null) => void;
   authorityPlacementDeviceId?: string | null;
+  draftExecutionPosition?: ExecutionPosition | null;
   currentDeviceId?: string | null;
   activeAcpRunner?: string | null;
   acpHistoryPreview?: AcpHistoryPreviewPayload | null;
@@ -116,6 +119,10 @@ type OwnedConversationSurfaceProps = {
   blockPreferences?: ChatBlockCollapsePreferences;
 
   composerDeviceChip?: React.ReactNode;
+  executionLocation?: Pick<
+    React.ComponentProps<typeof ExecutionDirectoryControl>,
+    "devices" | "disabled" | "archived" | "onDraftChange"
+  >;
 
   chatModel?: ModelSlot | null;
 
@@ -530,12 +537,14 @@ export default function OwnedConversationSurface({
   onSubmitAccepted,
   onHistoryChange,
   authorityPlacementDeviceId,
+  draftExecutionPosition,
   currentDeviceId,
   activeAcpRunner,
   acpHistoryPreview,
   activityWake,
   blockPreferences,
   composerDeviceChip,
+  executionLocation,
   chatModel,
   composerLeftTools,
   contextEditorOpen = false,
@@ -553,6 +562,7 @@ export default function OwnedConversationSurface({
   const runtime = useConversationViewRuntime({
     address,
     authorityPlacementDeviceId,
+    draftExecutionPosition,
     currentDeviceId,
     activeAcpRunner,
     acpHistoryPreview,
@@ -1018,7 +1028,26 @@ export default function OwnedConversationSurface({
           attachmentsDisabled={attachmentsDisabled}
           onSubmit={submitAndFollowLatest}
           onStop={runtime.stop}
-          deviceChip={composerDeviceChip}
+          deviceChip={
+            <>
+              {composerDeviceChip}
+              {executionLocation && conversationId && (
+                <ExecutionDirectoryControl
+                  {...executionLocation}
+                  chatId={conversationId}
+                  draft={unmaterialized}
+                  position={
+                    draftExecutionPosition ??
+                    (authorityPlacementDeviceId
+                      ? { device_id: authorityPlacementDeviceId }
+                      : null)
+                  }
+                  history={runtime.authoritativeHistory}
+                  onSaved={runtime.applyCommittedExecutionDirectory}
+                />
+              )}
+            </>
+          }
           leftTools={composerLeftTools}
         />
       </div>

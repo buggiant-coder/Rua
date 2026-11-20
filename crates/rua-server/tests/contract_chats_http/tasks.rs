@@ -1092,6 +1092,7 @@ async fn remote_task_runtime_note_remains_readable_without_local_task_details() 
                 created_at: chrono::Utc::now().to_rfc3339(),
                 payload: RuntimeNotePayload::TaskAttemptTerminal(
                     TaskAttemptTerminalRuntimeNote {
+                        execution_directory: None,
                         task_id: task_id.to_string(),
                         attempt_no: 1,
                         terminal_status: "completed".to_string(),

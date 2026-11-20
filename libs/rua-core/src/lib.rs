@@ -5,6 +5,7 @@ pub mod desktop_cli;
 pub mod desktop_control;
 pub mod error;
 pub mod event;
+pub mod execution_directory;
 pub mod fs;
 pub mod id;
 pub mod message;
@@ -24,6 +25,7 @@ pub use chat::{
 pub use chat_store::ChatStore;
 pub use error::{Result, RuaError};
 pub use event::RuntimeEvent;
+pub use execution_directory::ExecutionDirectorySelection;
 pub use id::{AgentId, ChatId, MessageId, ProjectId, SessionId, ToolCallId};
 pub use message::{ContentPart, ModelDialogueItem, Role};
 pub use runtime::{

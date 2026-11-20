@@ -747,6 +747,8 @@ use crate::AGENT_SWITCH_EVENTS_KEY;
 struct ChatConfigurationHead {
     epoch: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    execution_directory: Option<crate::ChatExecutionDirectory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     agent_switch_events: Vec<Value>,
@@ -771,6 +773,15 @@ impl ChatConfigurationHead {
             .unwrap_or_default();
         Ok(Self {
             epoch: epoch.to_owned(),
+            execution_directory: header
+                .extra
+                .get(crate::EXECUTION_DIRECTORY_KEY)
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| rua_core::RuaError::Validation {
+                    message: format!("Invalid execution directory: {e}"),
+                })?,
             agent_id: Some(header.agent_id.clone()),
             agent_switch_events: events,
             extra: Default::default(),
@@ -796,6 +807,12 @@ impl ChatConfigurationHead {
     }
 
     fn apply_selection(&self, header: &mut ChatSessionHeader) {
+        if let Some(directory) = &self.execution_directory {
+            header.extra.insert(
+                crate::EXECUTION_DIRECTORY_KEY.into(),
+                serde_json::json!(directory),
+            );
+        }
         if let Some(agent_id) = &self.agent_id {
             header.agent_id.clone_from(agent_id);
             header.metadata.agent_id.clone_from(agent_id);
@@ -1361,6 +1378,17 @@ impl WorkspaceSessionStore {
             }
         };
         head.validate_configuration(configuration)?;
+        if let Some(directory) = configuration
+            .get("capability_configuration")
+            .and_then(|c| c.get(crate::EXECUTION_DIRECTORY_KEY))
+        {
+            head.execution_directory =
+                Some(serde_json::from_value(directory.clone()).map_err(|e| {
+                    rua_core::RuaError::Validation {
+                        message: format!("Invalid execution directory: {e}"),
+                    }
+                })?);
+        }
         head.epoch = epoch.to_owned();
         write_json_atomic(&self.configuration_head_path(chat_id), &head).await
     }

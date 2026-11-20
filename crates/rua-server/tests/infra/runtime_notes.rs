@@ -16,6 +16,7 @@ fn runtime_note(status: &str) -> RuntimeNote {
         runtime_note_id: format!("runtime-note:background-task:task-1:{status}"),
         created_at: "2026-06-18T00:00:00Z".to_string(),
         payload: RuntimeNotePayload::TaskAttemptTerminal(TaskAttemptTerminalRuntimeNote {
+            execution_directory: None,
             task_id: "task-1".to_string(),
             attempt_no: 1,
             terminal_status: status.to_string(),

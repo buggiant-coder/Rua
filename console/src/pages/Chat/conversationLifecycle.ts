@@ -1,3 +1,4 @@
+import type { ExecutionPosition } from "@/api/types/chat";
 import { clearDraftChatContext } from "./chatContext";
 import type { ModelSlot } from "@/api/types";
 
@@ -79,26 +80,42 @@ export function markDraftCreationStarted(
   }
 }
 
-export function loadDraftConversationDevice(
+export function loadDraftExecutionPosition(
   scope: string,
   id: string,
-): string | null {
+): ExecutionPosition | null {
   try {
-    return sessionStorage.getItem(`${DRAFT_CHAT_DEVICE_PREFIX}${scope}:${id}`);
+    const key = `${DRAFT_CHAT_DEVICE_PREFIX}${scope}:${id}`;
+    const stored = localStorage.getItem(key);
+    if (!stored) {
+      const previousDevice = sessionStorage.getItem(key);
+      if (!previousDevice) return null;
+      const position = { device_id: previousDevice };
+      saveDraftExecutionPosition(scope, id, position);
+      return position;
+    }
+    const value = JSON.parse(stored);
+    return value &&
+      typeof value.device_id === "string" &&
+      value.device_id &&
+      (value.path === undefined || typeof value.path === "string")
+      ? value
+      : null;
   } catch {
     return null;
   }
 }
 
-export function saveDraftConversationDevice(
+export function saveDraftExecutionPosition(
   scope: string,
   id: string,
-  device: string | null,
-): void {
+  position: ExecutionPosition | null,
+) {
   const key = `${DRAFT_CHAT_DEVICE_PREFIX}${scope}:${id}`;
   try {
-    if (device) sessionStorage.setItem(key, device);
-    else sessionStorage.removeItem(key);
+    if (position) localStorage.setItem(key, JSON.stringify(position));
+    else localStorage.removeItem(key);
+    sessionStorage.removeItem(key);
   } catch {
     /* storage unavailable */
   }
@@ -224,7 +241,7 @@ export function clearDraftConversation(
   const previous = loadDraftConversationId(scope);
   if (previous && (!conversationId || previous === conversationId)) {
     clearDraftChatContext(previous);
-    saveDraftConversationDevice(scope, previous, null);
+    saveDraftExecutionPosition(scope, previous, null);
     markDraftCreationStarted(scope, previous, false);
   }
   let clearedId = conversationId;

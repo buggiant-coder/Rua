@@ -1,3 +1,6 @@
+import type { ExecutionPosition } from "@/api/types/chat";
+import ExecutionDirectoryFields from "../Chat/ExecutionDirectoryFields";
+import { validateExecutionPosition } from "@/api/modules/executionDirectory";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FolderPen, Plus, X } from "lucide-react";
@@ -41,6 +44,8 @@ export default function ProjectEditDialog(props: ProjectFormProps) {
   const [directories, setDirectories] = useState<ProjectResourceInput[]>(
     current?.resources.directories ?? [],
   );
+  const [executionDefault, setExecutionDefault] =
+    useState<ExecutionPosition | null>(current?.execution_default ?? null);
   const [picker, setPicker] = useState<number | "add" | null>(null);
   const pickerForm = useRef<HTMLFormElement>(null);
   const [pickerStatus, setPickerStatus] = useState({
@@ -65,6 +70,11 @@ export default function ProjectEditDialog(props: ProjectFormProps) {
     setPicker(index);
   }
 
+  const savedDefault = current?.execution_default;
+  const defaultChanged =
+    savedDefault?.device_id !== executionDefault?.device_id ||
+    savedDefault?.path !== executionDefault?.path;
+
   async function save() {
     if (saving || !name.trim()) return;
     setError("");
@@ -72,8 +82,14 @@ export default function ProjectEditDialog(props: ProjectFormProps) {
     setConflict(false);
     setSaving(true);
     try {
+      const nextDefault =
+        defaultChanged && executionDefault
+          ? await validateExecutionPosition(executionDefault)
+          : executionDefault;
       if (!props.project) {
-        props.onCreated(await projectsApi.create(name.trim(), directories));
+        props.onCreated(
+          await projectsApi.create(name.trim(), directories, nextDefault),
+        );
         return;
       }
       if (!current) return;
@@ -90,8 +106,18 @@ export default function ProjectEditDialog(props: ProjectFormProps) {
         updated = outcome.project;
         setCurrent(updated);
         setDirectories(updated.resources.directories);
+        if (!defaultChanged)
+          setExecutionDefault(updated.execution_default ?? null);
         if (outcome.overlap_warnings.length)
           toast.warning(t("projects.overlapCreated"));
+      }
+      if (defaultChanged) {
+        updated = await projectsApi.setExecutionDefault(
+          updated.project_id,
+          nextDefault,
+        );
+        setCurrent(updated);
+        setExecutionDefault(updated.execution_default ?? null);
       }
       if (name.trim() !== updated.display_name)
         updated = await projectsApi.rename(updated.project_id, name.trim());
@@ -115,6 +141,8 @@ export default function ProjectEditDialog(props: ProjectFormProps) {
     try {
       const updated = await projectsApi.get(current.project_id);
       if (name === current.display_name) setName(updated.display_name);
+      if (!defaultChanged)
+        setExecutionDefault(updated.execution_default ?? null);
       setCurrent(updated);
       setDirectories(updated.resources.directories);
       setError("");
@@ -153,7 +181,10 @@ export default function ProjectEditDialog(props: ProjectFormProps) {
         disabled:
           picker !== null
             ? !pickerStatus.ready
-            : !name.trim() || saving || conflict,
+            : !name.trim() ||
+              saving ||
+              conflict ||
+              executionDefault?.path?.trim() === "",
       }}
       confirmLoading={picker !== null ? pickerStatus.saving : saving}
       width={620}
@@ -201,6 +232,20 @@ export default function ProjectEditDialog(props: ProjectFormProps) {
               disabled={saving}
             />
           </FormField>
+          <section aria-label={t("executionLocation.projectDefault")}>
+            <h3>{t("executionLocation.projectDefault")}</h3>
+            <ExecutionDirectoryFields
+              position={executionDefault}
+              devices={devices}
+              allowServiceDefault
+              disabled={saving}
+              onChange={(next) => {
+                setExecutionDefault(next);
+                setError("");
+              }}
+              onError={(cause) => setError(extractFriendlyMessage(cause))}
+            />
+          </section>
           <section aria-label={t("projects.resourceFolders")}>
             <div className={styles.sectionHeader}>
               <h3>{t("projects.resourceFolders")}</h3>

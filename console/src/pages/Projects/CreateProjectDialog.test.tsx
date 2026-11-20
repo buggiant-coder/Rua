@@ -191,7 +191,7 @@ describe("Project resource directory creation", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "projects.create" }));
     await waitFor(() => expect(created).toHaveBeenCalledWith(outcome));
-    expect(api.create).toHaveBeenCalledWith("Photos", []);
+    expect(api.create).toHaveBeenCalledWith("Photos", [], null);
     expect(api.browseDirectory).not.toHaveBeenCalled();
   });
 });

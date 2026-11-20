@@ -151,6 +151,7 @@ test("a Project can be empty and keep same-path folders on two devices independe
   expect(writes[0]).toEqual({
     display_name: "Photo collection",
     directories: [],
+    execution_default: null,
   });
   expect(browses).toEqual([]);
   const sidebar = page.locator("#desktop-navigation");

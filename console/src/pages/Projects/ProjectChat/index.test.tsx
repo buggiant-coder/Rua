@@ -577,7 +577,7 @@ describe("ProjectChatPage", () => {
     });
   });
 
-  it("does not render a working-folder selector for multi-folder projects", async () => {
+  it("keeps the draft execution location independent of Project resources", async () => {
     renderPage({
       project: {
         ...project,
@@ -618,12 +618,15 @@ describe("ProjectChatPage", () => {
     expect(await screen.findByText("Default Agent")).toBeVisible();
     expect(screen.getByText("rua-rust")).toBeVisible();
     expect(screen.queryByTitle("Resource · Connected")).not.toBeInTheDocument();
-    const deviceChip = screen.getByRole("button", {
-      name: /Execution device: This device/,
+    expect(surfaceProps.current?.executionLocation).toMatchObject({
+      devices: expect.arrayContaining([
+        expect.objectContaining({ is_self: true }),
+      ]),
+      archived: false,
     });
-    expect(deviceChip).toHaveAttribute("aria-disabled", "true");
-    fireEvent.click(deviceChip);
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(surfaceProps.current?.draftExecutionPosition).toEqual({
+      device_id: "controller",
+    });
     expect(surfaceProps.current?.address).toEqual({ chatId: "chat-1" });
     expect(surfaceProps.current?.executionAgentId).toBe("default");
     expect(surfaceProps.current?.unmaterialized).toBe(true);

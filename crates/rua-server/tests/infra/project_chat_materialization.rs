@@ -1418,6 +1418,7 @@ async fn project_turns_capture_resources_at_claim_and_keep_their_execution_direc
     let project = state
         .project_catalog
         .create_resources(ProjectCreateResourcesRequest {
+            execution_default: None,
             directories: vec![directory("phone-a"), directory("laptop-b")],
             display_name: Some("Photos".into()),
         })
@@ -1563,7 +1564,7 @@ async fn project_turns_capture_resources_at_claim_and_keep_their_execution_direc
     let header = store.load_chat_header(&id).await.unwrap().unwrap();
     assert_eq!(
         header.extra[rua_session::EXECUTION_DIRECTORY_KEY],
-        serde_json::json!({"device_id":device,"path":first.working_dir})
+        serde_json::json!({"device_id":device,"path":first.working_dir,"managed":true})
     );
     let turns = store.read_turn_range(&id, 1, 2).await.unwrap();
     assert_eq!(turns[0].metadata[key], serde_json::json!(project.resources));

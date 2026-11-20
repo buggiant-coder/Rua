@@ -900,8 +900,8 @@ export function AgentChatPage({
     lazy: conversationLazy,
     lazyRef,
     draftModel: draftChatModel,
-    draftDevice: draftChatDevice,
-    setDraftDevice,
+    draftPosition,
+    setDraftPosition,
     creationStarted,
     setDraftModel,
     statefulOperationAccepted,
@@ -910,6 +910,7 @@ export function AgentChatPage({
     scope: chatDraftScope(),
     conversationId: effectiveChatId || "",
     unmaterialized: lazy,
+    initialPosition: currentDeviceId ? { device_id: currentDeviceId } : null,
   });
   const activeChatKeyRef = useRef(activeChatKey);
   activeChatKeyRef.current = activeChatKey;
@@ -994,7 +995,7 @@ export function AgentChatPage({
   const controlAuthorityPlacement =
     controlAuthorityPlacementDeviceId(currentChatHistory);
   const authorityPlacementDeviceId = conversationLazy
-    ? draftChatDevice ?? currentDeviceId
+    ? draftPosition?.device_id ?? currentDeviceId
     : controlAuthorityPlacement !== undefined
     ? controlAuthorityPlacement
     : chatPlacement.authorityPlacementDeviceId;
@@ -1637,8 +1638,9 @@ export function AgentChatPage({
       return false;
     }
     if (conversationLazy) {
-      if (creationStarted) return deviceId === draftChatDevice;
-      setDraftDevice(deviceId);
+      if (creationStarted) return deviceId === draftPosition?.device_id;
+      if (deviceId !== draftPosition?.device_id)
+        setDraftPosition({ device_id: deviceId });
       return true;
     }
     if (authorityPlacementLocked) {
@@ -1973,6 +1975,7 @@ export function AgentChatPage({
             onSubmitAccepted={handleSubmitAccepted}
             onHistoryChange={handleConversationHistoryChange}
             authorityPlacementDeviceId={authorityPlacementDeviceId}
+            draftExecutionPosition={draftPosition}
             currentDeviceId={currentDeviceId}
             activeAcpRunner={
               currentAcpStatus?.active ? currentAcpStatus.runner : null
@@ -2000,6 +2003,11 @@ export function AgentChatPage({
                 onChatModelChange={handleChatModelChange}
               />
             }
+            executionLocation={{
+              devices: syncDevices,
+              disabled: creationStarted,
+              onDraftChange: setDraftPosition,
+            }}
             composerDeviceChip={
               multiDeviceFeaturesAvailable ? (
                 <ChatDeviceChip

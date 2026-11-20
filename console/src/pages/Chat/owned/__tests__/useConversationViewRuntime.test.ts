@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentStore } from "@/stores/agentStore";
+import { devicesApi, type DeviceDto } from "@/api/modules/sync";
 import { saveDraftConversationAcp } from "../../conversationLifecycle";
 import { loadSubmitted, clearSubmitted, saveSubmitted } from "../../drafts";
 import {
@@ -428,6 +429,9 @@ function regenerationHistory(
 describe("useConversationViewRuntime", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(devicesApi, "listDevices").mockResolvedValue([
+      { device_id: "device-local", is_self: true } as DeviceDto,
+    ]);
     cacheHostMock.isMobile.mockReturnValue(true);
     cacheHostMock.isDesktopShell.mockReturnValue(false);
     __resetChatViewCacheForTests();
@@ -1413,12 +1417,45 @@ describe("useConversationViewRuntime", () => {
     );
     expect(JSON.parse(String(submitCall?.[1]?.body || "{}"))).toMatchObject({
       chat_id: "lazy-chat",
+      target_device_id: "device-local",
+      execution_directory: { device_id: "device-local" },
       model: configuredModel,
       initial_acp: selection,
     });
     expect(JSON.parse(String(submitCall?.[1]?.body || "{}")).model).not.toEqual(
       configuredModel.model,
     );
+  });
+
+  it("keeps the first input retryable when the service device lookup fails", async () => {
+    vi.mocked(devicesApi.listDevices).mockRejectedValueOnce(
+      new Error("Device roster unavailable"),
+    );
+    const { result } = renderHook(() =>
+      useConversationViewRuntime({
+        address: { chatId: "identity-retry" },
+        executionAgentId: "agent-a",
+        unmaterialized: true,
+      }),
+    );
+    act(() => result.current.applyCommittedModel(configuredModel));
+    await act(async () => {
+      expect(await result.current.submit("try this input")).toBe(false);
+    });
+    expect(result.current.error).toBe("Device roster unavailable");
+    const submits = () =>
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([url]) => String(url).includes("/console/submit"));
+    expect(submits()).toHaveLength(0);
+    await act(async () => {
+      await result.current.submit("try this input");
+    });
+    expect(submits()).toHaveLength(1);
+    expect(JSON.parse(String(submits()[0][1]?.body))).toMatchObject({
+      target_device_id: "device-local",
+      execution_directory: { device_id: "device-local" },
+    });
   });
 
   it("retains unknown submissions across remount without creating another identity", async () => {
@@ -2892,7 +2929,7 @@ describe("useConversationViewRuntime", () => {
     });
   });
 
-  it("applies the authority model from live conversation control", async () => {
+  it("applies the live authority model while retaining a confirmed directory change", async () => {
     const liveStream = controlledSseResponse();
     let liveSignal: AbortSignal | undefined;
     vi.stubGlobal(
@@ -2918,6 +2955,9 @@ describe("useConversationViewRuntime", () => {
       ).toBe(true),
     );
     expect(liveSignal?.aborted).toBe(false);
+
+    const directory = { device_id: "device-b", path: "/work", managed: false };
+    act(() => result.current.applyCommittedExecutionDirectory(directory));
 
     await act(async () => {
       liveStream.send({
@@ -2964,6 +3004,9 @@ describe("useConversationViewRuntime", () => {
         reasoning_effort_options: ["low", "medium", "high"],
       }),
     );
+    expect(
+      result.current.authoritativeHistory?.meta?.execution_directory,
+    ).toEqual(directory);
   });
 
   it("applies the initial live control after stable history renders without runtime state", async () => {

@@ -82,9 +82,9 @@ fn task_record_for_turn(
 #[tokio::test]
 async fn task_attempt_notes_are_durable_message_log_records() {
     let data_dir = tempfile::tempdir().unwrap();
-    let workspace_dir = data_dir.path().join("workspaces").join("agent-1");
+    let chat_workspace = rua_core::RuaRoot::new(data_dir.path()).chat_workspace();
     let chat_id = "chat-1";
-    let store = WorkspaceSessionStore::new(&workspace_dir);
+    let store = WorkspaceSessionStore::new(chat_workspace.as_path());
     store
         .save_chat_header(&ChatSessionHeader::new(ChatMetadata {
             chat_id: chat_id.to_string(),
@@ -166,8 +166,9 @@ async fn task_attempt_notes_are_durable_message_log_records() {
 async fn in_flight_task_note_flushes_after_complete_model_call_group() {
     let data_dir = tempfile::tempdir().unwrap();
     let workspace_dir = data_dir.path().join("workspaces").join("agent-1");
+    let chat_workspace = rua_core::RuaRoot::new(data_dir.path()).chat_workspace();
     let chat_id = "chat-boundary";
-    let store = WorkspaceSessionStore::new(&workspace_dir);
+    let store = WorkspaceSessionStore::new(chat_workspace.as_path());
     store
         .save_chat_header(&ChatSessionHeader::new(ChatMetadata {
             chat_id: chat_id.to_string(),
@@ -255,7 +256,7 @@ async fn in_flight_task_note_flushes_after_complete_model_call_group() {
         cancel: None,
         run_control: None,
         workspace_dir: Some(workspace_dir.clone()),
-        conversation_store_dir: Some(workspace_dir.clone()),
+        conversation_store_dir: Some(chat_workspace.as_path().to_owned()),
         working_dir: Some(workspace_dir),
     };
     let hook = TurnPersistenceHook::from_request(&request).expect("Turn persistence hook");
@@ -314,9 +315,9 @@ async fn in_flight_task_note_flushes_after_complete_model_call_group() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn terminal_note_survives_an_in_flight_turn_header_commit() {
     let data_dir = tempfile::tempdir().unwrap();
-    let workspace_dir = data_dir.path().join("workspaces").join("agent-1");
+    let chat_workspace = rua_core::RuaRoot::new(data_dir.path()).chat_workspace();
     let chat_id = "chat-race";
-    let store = WorkspaceSessionStore::new(&workspace_dir);
+    let store = WorkspaceSessionStore::new(chat_workspace.as_path());
     let mut header = ChatSessionHeader::new(ChatMetadata {
         chat_id: chat_id.to_string(),
         agent_id: "agent-1".to_string(),
@@ -330,7 +331,7 @@ async fn terminal_note_survives_an_in_flight_turn_header_commit() {
     header.message_log.chunk_size = 1;
     store.save_chat_header(&header).await.unwrap();
 
-    let append_store = WorkspaceSessionStore::new(&workspace_dir);
+    let append_store = WorkspaceSessionStore::new(chat_workspace.as_path());
     let append = tokio::spawn(async move {
         let messages = (0..512)
             .map(|index| NewConversationMessage {
@@ -366,7 +367,8 @@ async fn terminal_note_survives_an_in_flight_turn_header_commit() {
             .unwrap();
     });
 
-    let first_chunk = workspace_dir
+    let first_chunk = chat_workspace
+        .as_path()
         .join("sessions")
         .join(chat_id)
         .join("messages")

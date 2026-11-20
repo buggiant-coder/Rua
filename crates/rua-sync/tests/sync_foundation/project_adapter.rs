@@ -22,6 +22,7 @@ fn hlc(wall_ms: u64) -> HlcTimestamp {
 
 fn descriptor(id: &str, name: &str, updated_ms: i64) -> ProjectDescriptor {
     ProjectDescriptor {
+        execution_default: None,
         project_id: ProjectId::new(id),
         display_name: name.to_string(),
         lifecycle: ProjectLifecycle::Active,
@@ -228,6 +229,12 @@ async fn offline_rename_and_concurrent_resource_edits_converge_in_both_orders_af
     let second = make("Camera");
     let mut rename = base.clone();
     rename.display_name = "Family album".into();
+    let selected = serde_json::from_value(serde_json::json!({
+        "device_id": "tablet", "path": "/work/albums"
+    }))
+    .unwrap();
+    rename.execution_default = Some(selected);
+    let expected_default = rename.execution_default.clone();
     let changes = [
         ProjectCatalogSyncAdapter::descriptor_change("resources-a", first, "a", hlc(1500)),
         ProjectCatalogSyncAdapter::descriptor_change("resources-b", second.clone(), "b", hlc(2000)),
@@ -259,6 +266,7 @@ async fn offline_rename_and_concurrent_resource_edits_converge_in_both_orders_af
         let stores = Arc::new(ProjectCatalog::open(&catalog_dir).unwrap());
         let project = stores.get(&base.project_id).unwrap().unwrap();
         assert_eq!(project.display_name, "Family album");
+        assert_eq!(project.execution_default, expected_default);
         assert_eq!(project.resources, second.resources);
         let final_project = stores
             .replace_resources(&base.project_id, project.resources.revision, vec![])

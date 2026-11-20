@@ -98,7 +98,7 @@ async function mockDiscoveryServer(
       );
       if (project) return json(project);
       if (path === "/models/active") return json({ default_llm: model });
-      if (path === "/sync/devices") return json({ devices: [] });
+      if (path === "/sync/devices") return json({ devices: [{device_id:"desktop",friendly_name:"Desktop",is_self:true,connectivity_state:"connected"}] });
       const scopePath = /^\/projects\/([^/]+)\/chats(?:\/search)?$/.exec(path);
       if (path === "/chats" || path === "/chats/search" || scopePath) {
         queries.push(url);

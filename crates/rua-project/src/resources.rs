@@ -1,3 +1,4 @@
+use rua_core::execution_directory::is_device_absolute_path;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
@@ -155,22 +156,4 @@ impl ProjectResources {
                 ))
             })
     }
-}
-
-// A replica may run a different operating system from the validating Device.
-fn is_device_absolute_path(path: &str) -> bool {
-    if path.contains('\0') {
-        return false;
-    }
-    let bytes = path.as_bytes();
-    path.starts_with('/')
-        || (bytes.len() >= 3
-            && bytes[0].is_ascii_alphabetic()
-            && bytes[1] == b':'
-            && matches!(bytes[2], b'/' | b'\\'))
-        || path.strip_prefix(r"\\").is_some_and(|unc| {
-            let mut components = unc.split('\\');
-            components.next().is_some_and(|server| !server.is_empty())
-                && components.next().is_some_and(|share| !share.is_empty())
-        })
 }

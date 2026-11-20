@@ -440,6 +440,7 @@ fn task_runtime_notes_project_as_tool_protocol_instead_of_system_messages() {
             runtime_note_id: "terminal-1".to_string(),
             created_at: "2026-08-26T00:00:01Z".to_string(),
             payload: RuntimeNotePayload::TaskAttemptTerminal(TaskAttemptTerminalRuntimeNote {
+                execution_directory: None,
                 task_id: "task-1".to_string(),
                 attempt_no: 1,
                 terminal_status: "completed".to_string(),
@@ -547,6 +548,7 @@ fn task_notification_does_not_repeat_previously_read_terminal_preview() {
             runtime_note_id: "task:task-1:attempt:1".into(),
             created_at: "2026-08-26T00:00:01Z".into(),
             payload: RuntimeNotePayload::TaskAttemptTerminal(TaskAttemptTerminalRuntimeNote {
+                execution_directory: None,
                 task_id: "task-1".into(),
                 attempt_no: 1,
                 terminal_status: "completed".into(),
@@ -761,6 +763,7 @@ fn runtime_notifications_follow_the_complete_parallel_tool_group() {
                 runtime_note_id: id.to_string(),
                 created_at: "2026-09-21T00:00:00Z".into(),
                 payload: RuntimeNotePayload::TaskAttemptTerminal(TaskAttemptTerminalRuntimeNote {
+                    execution_directory: None,
                     task_id: "task-1".into(),
                     attempt_no: 1,
                     terminal_status: "completed".into(),

@@ -329,6 +329,19 @@ pub struct ChatMcpToolSelection {
 }
 
 impl ChatCapabilityConfiguration {
+    /// Roots granted by an explicit Project security profile at capture time.
+    pub fn project_write_roots(&self) -> Vec<PathBuf> {
+        self.extra
+            .get("project_resource_roots")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_project_write_roots(&mut self, roots: &[PathBuf]) {
+        self.extra
+            .insert("project_resource_roots".into(), serde_json::json!(roots));
+    }
+
     pub fn validate_selection_policy(&self) -> Result<()> {
         self.selection_policy
             .validate()

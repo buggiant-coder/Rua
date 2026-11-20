@@ -626,6 +626,7 @@ async fn export_includes_durable_runtime_note_but_not_pending_queue() {
                 runtime_note_id: "task:sync:attempt:1".to_string(),
                 created_at: "2026-08-03T00:00:03Z".to_string(),
                 payload: RuntimeNotePayload::TaskAttemptTerminal(TaskAttemptTerminalRuntimeNote {
+                    execution_directory: None,
                     task_id: "sync".to_string(),
                     attempt_no: 1,
                     terminal_status: "completed".to_string(),

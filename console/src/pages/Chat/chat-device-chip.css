@@ -140,3 +140,16 @@
     max-width: 184px;
   }
 }
+
+.rua-chat-execution-directory {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: min(180px, 36vw);
+}
+.rua-chat-execution-directory span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

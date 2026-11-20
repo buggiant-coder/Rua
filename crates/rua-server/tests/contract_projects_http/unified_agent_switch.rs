@@ -119,13 +119,9 @@ async fn standalone_switch_replaces_agent_contribution_and_preserves_chat_settin
     let original_cwd = original.extra["execution_directory"].clone();
     assert_eq!(
         original_cwd["path"],
-        json!(test
-            .state
-            .registry
-            .get("default")
-            .await
-            .unwrap()
-            .workspace_dir())
+        json!(rua_core::RuaRoot::new(&test.state.rua_root)
+            .managed_chat_directory(chat_id, original_cwd["device_id"].as_str().unwrap())
+            .unwrap())
     );
 
     // A malformed required security rule must leave the old Agent usable.

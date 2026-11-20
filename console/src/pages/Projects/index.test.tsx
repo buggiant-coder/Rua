@@ -180,7 +180,7 @@ describe("ProjectsPage", () => {
     fireEvent.click(screen.getByRole("button", {name:"Add folder"}));
     await waitFor(()=>expect(screen.getByRole("textbox",{name:"Display name"})).toHaveValue("rua"));
     fireEvent.click(screen.getByRole("button",{name:"Create Project"}));
-    await waitFor(()=>expect(projectsApiMock.create).toHaveBeenCalledWith("rua",[{device_id:"device-a",resource_root:"/repos/rua"}]));
+    await waitFor(()=>expect(projectsApiMock.create).toHaveBeenCalledWith("rua",[{device_id:"device-a",resource_root:"/repos/rua"}],null));
     expect(await screen.findByText("rua")).toBeVisible();
     expect(toastMock.success).toHaveBeenCalledWith("Project created");
     expect(navigationChanged).toHaveBeenCalledExactlyOnceWith(

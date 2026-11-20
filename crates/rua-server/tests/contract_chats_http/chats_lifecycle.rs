@@ -350,6 +350,7 @@ fn branch_runtime_note(id: &str, output: &str, created_at: &str) -> RuntimeNote 
         runtime_note_id: id.to_string(),
         created_at: created_at.to_string(),
         payload: RuntimeNotePayload::TaskAttemptTerminal(TaskAttemptTerminalRuntimeNote {
+            execution_directory: None,
             task_id: format!("task-{id}"),
             attempt_no: 1,
             terminal_status: "completed".to_string(),
@@ -3721,6 +3722,7 @@ async fn chat_history_reads_runtime_notes_from_message_log_without_legacy_sessio
         runtime_note_id: "runtime-note-evergreen-1".to_string(),
         created_at: Utc::now().to_rfc3339(),
         payload: RuntimeNotePayload::TaskAttemptTerminal(TaskAttemptTerminalRuntimeNote {
+            execution_directory: None,
             task_id: "task-evergreen-1".to_string(),
             attempt_no: 1,
             terminal_status: "completed".to_string(),

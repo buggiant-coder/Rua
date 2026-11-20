@@ -9,13 +9,14 @@ use super::product_hooks::ChatConfigurationMaterialization;
 
 /// Chat-owned choices supplied by the operation requesting a new candidate.
 pub(crate) struct ChatConfigurationSelection {
+    pub chat_id: rua_core::ChatId,
     pub project_id: Option<String>,
     pub model: Option<Value>,
     pub thinking: Option<Value>,
     pub collaboration_mode: Value,
     pub harness_configuration: Option<Value>,
     pub authority_device_id: String,
-    pub execution_working_dir: Option<std::path::PathBuf>,
+    pub execution_directory: rua_session::ChatExecutionDirectory,
 }
 
 /// Captures resources without persisting or adopting the candidate configuration.
@@ -36,12 +37,19 @@ pub(crate) async fn capture_chat_configuration(
         .capability_configuration(project_root)
         .await
         .map_err(|error| error.to_string())?;
-    let cwd = selection
-        .execution_working_dir
-        .unwrap_or_else(|| runtime.workspace_dir());
+    if selection.project_id.is_some()
+        && security_config
+            .extra
+            .contains_key(rua_security::PROJECT_RESOURCE_POLICY_KEY)
+    {
+        let managed = rua_core::RuaRoot::new(runtime.rua_root())
+            .managed_chat_directory(selection.chat_id.as_str(), &selection.authority_device_id)
+            .map_err(|error| error.to_string())?;
+        capability_configuration.set_project_write_roots(&[managed]);
+    }
     capability_configuration.extra.insert(
         rua_session::EXECUTION_DIRECTORY_KEY.into(),
-        serde_json::json!({"device_id":selection.authority_device_id, "path":cwd}),
+        serde_json::json!(selection.execution_directory),
     );
     let prompt_file_content = super::console_chat::prompt_file_fragment_for_entries(
         &runtime.workspace_dir(),

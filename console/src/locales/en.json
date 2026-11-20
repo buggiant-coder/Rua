@@ -273,6 +273,23 @@
       "error": "Update failed"
     }
   },
+  "executionLocation": {
+    "missingServiceIdentity": "The connected Rua service did not provide its device identity.",
+    "title": "Execution location",
+    "device": "Execution device",
+    "directory": "Working directory",
+    "managed": "Chat-managed directory",
+    "explicit": "Choose a directory",
+    "path": "Execution directory path",
+    "connectedService": "Connected Rua service",
+    "projectDefault": "Default execution location for new chats",
+    "blockers": {
+      "activeTurn": "Finish or stop the active Turn before changing directories.",
+      "queuedInput": "Clear queued input before changing directories.",
+      "approval": "Resolve pending approvals before changing directories.",
+      "archived": "Reopen the archived Chat or Project before changing directories."
+    }
+  },
   "projects": {
     "addFolder": "Add folder",
     "changeFolder": "Change folder",

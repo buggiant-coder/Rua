@@ -1155,8 +1155,19 @@ impl CollaborationService {
                 .insert("selected_agent_id".into(), serde_json::json!(agent_id));
             header.project_id = source_header.project_id.clone();
             let directory_key = rua_session::EXECUTION_DIRECTORY_KEY;
-            let directory = serde_json::json!({
-                "device_id": self.current_device_id(), "path": caller.working_dir
+            let path = match rua_core::runtime_layout::RuntimeLayout::from_current_process(None)
+                .linux_compat
+            {
+                Some(guest) => guest
+                    .map_host_path(&caller.working_dir)
+                    .ok_or("Caller directory is unavailable in the execution environment")?,
+                None => caller.working_dir.clone(),
+            };
+            let directory = serde_json::json!(rua_session::ChatExecutionDirectory {
+                extra: Default::default(),
+                device_id: self.current_device_id(),
+                path,
+                managed: false,
             });
             configuration
                 .capability_configuration

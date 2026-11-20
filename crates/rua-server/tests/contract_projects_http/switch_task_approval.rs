@@ -46,13 +46,8 @@ async fn task_retains_original_executor_and_cwd_while_result_and_approval_follow
         Some(json!({"id":"next","name":"Next"})),
     )
     .await;
-    let execution_dir = state
-        .registry
-        .get_or_create("next")
-        .await
-        .unwrap()
-        .workspace_dir();
-
+    let external = tempfile::tempdir().unwrap();
+    let device = local_device_id(state);
     let id = uuid::Uuid::new_v4().to_string();
     let chat = format!("/api/chats/{id}");
     let selection = format!("{chat}/agent-selection");
@@ -84,9 +79,13 @@ async fn task_retains_original_executor_and_cwd_while_result_and_approval_follow
     .await;
     wait_for_chat_idle(state, &id).await;
     let store = WorkspaceSessionStore::new(state.chat_workspace().as_path());
-    let directory = json!({"device_id":local_device_id(state),"path":execution_dir});
     let header = store.load_chat_header(&id).await.unwrap().unwrap();
-    assert_eq!(header.extra["execution_directory"], directory);
+    let original: rua_session::ChatExecutionDirectory =
+        serde_json::from_value(header.extra["execution_directory"].clone()).unwrap();
+    assert!(original.managed);
+    assert_eq!(original.device_id, device);
+    let execution_dir = original.path.clone();
+    assert_ne!(execution_dir, old.workspace_dir());
     let origin_turn = store
         .read_turn_range(&id, 2, 1)
         .await
@@ -164,6 +163,13 @@ async fn task_retains_original_executor_and_cwd_while_result_and_approval_follow
     )
     .await;
     assert_eq!(switched["selection"]["agent_id"], "next");
+    let changed = state
+        .conversation_input_intake
+        .set_execution_directory(&address, &device, Some(external.path()))
+        .await
+        .unwrap();
+    assert_eq!(changed.path, external.path());
+    assert!(!changed.managed);
     release.send(()).unwrap();
     let pending = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
@@ -212,6 +218,15 @@ async fn task_retains_original_executor_and_cwd_while_result_and_approval_follow
             .unwrap()
             .contains("unresolved_approval"),
         "{body}"
+    );
+    let blocked_directory = state
+        .conversation_input_intake
+        .set_execution_directory(&address, &device, None)
+        .await
+        .unwrap_err();
+    assert!(
+        blocked_directory.contains("unresolved_approval"),
+        "{blocked_directory}"
     );
     let approvals = state.security.approval_authority();
     let old_rules = approvals.list_agent_rules("default").await.len();
@@ -284,6 +299,7 @@ async fn task_retains_original_executor_and_cwd_while_result_and_approval_follow
         "from original Agent"
     );
     assert!(!old.workspace_dir().join(name).exists());
+    assert!(!external.path().join(name).exists());
     let result_turn = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let messages = store.read_message_range(&id, 1, usize::MAX).await.unwrap();
@@ -294,6 +310,7 @@ async fn task_retains_original_executor_and_cwd_while_result_and_approval_follow
                             && n.attempt_no == 1
                             && n.tool_call_id.as_deref() == Some("original-call") =>
                     {
+                        assert_eq!(n.execution_directory.as_deref(), Some(&original));
                         Some(m.turn_id.clone())
                     }
                     _ => None,
@@ -307,11 +324,33 @@ async fn task_retains_original_executor_and_cwd_while_result_and_approval_follow
     .await
     .expect("the completed Task result reaches the original Chat");
     let header = store.load_chat_header(&id).await.unwrap().unwrap();
-    assert_eq!(header.extra["execution_directory"], directory);
+    assert_eq!(header.extra["execution_directory"], json!(changed));
     let turns = store.read_turn_range(&id, 1, usize::MAX).await.unwrap();
     let result = turns.iter().find(|t| t.turn_id == result_turn).unwrap();
     assert_eq!(result.metadata["turn_agent_assignment"]["agent_id"], "next");
     wait_for_chat_idle(state, &id).await;
+    let restored = state
+        .conversation_input_intake
+        .set_execution_directory(&address, &device, None)
+        .await
+        .unwrap();
+    assert_eq!(restored, original);
+    let history = call(
+        &test.app,
+        Method::GET,
+        &format!("{chat}?turn_limit=20"),
+        None,
+    )
+    .await;
+    assert_eq!(history["meta"]["execution_directory"], json!(restored));
+    let metadata = call(&test.app, Method::GET, &format!("{chat}/metadata"), None).await;
+    assert_eq!(metadata["meta"]["execution_directory"], json!(restored));
+    assert_eq!(
+        std::fs::read_to_string(restored.path.join(name))
+            .unwrap()
+            .trim(),
+        "from original Agent"
+    );
     watch_arriving_during_switch_uses_the_committed_agent(state, &address, config).await;
 }
 
@@ -390,4 +429,131 @@ async fn watch_arriving_during_switch_uses_the_committed_agent(
         turn.metadata["turn_agent_assignment"]["agent_id"],
         "default"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn managed_directories_are_isolated_and_created_only_for_accepted_chats() {
+    use rua_server::services::conversation_authority::{
+        ConversationActiveTurnStart, ConversationDriverKind, ConversationInputPayload,
+    };
+    use rua_server::services::conversation_authority_placement::parse_conversation_authority_placement;
+
+    let test = build_app();
+    let state = &test.state;
+    let device = local_device_id(state);
+    let store = WorkspaceSessionStore::new(state.chat_workspace().as_path());
+    let empty = uuid::Uuid::new_v4().to_string();
+    let rejected = state
+        .conversation_input_intake
+        .submit_delivery(
+            "default",
+            rua_channel::core::console::ConsoleChatRequest {
+                message: String::new(),
+                chat_id: Some(empty.clone()),
+                model: None,
+                is_reconnect: false,
+                attachments: vec![],
+                input: None,
+                messages: None,
+                extra: Default::default(),
+                channel_kind: None,
+            },
+        )
+        .await;
+    assert!(matches!(rejected,rua_server::services::conversation_input_intake::ConversationInputDeliveryOutcome::Rejected{..}),"{rejected:?}");
+    assert!(store.load_chat_header(&empty).await.unwrap().is_none());
+    assert!(!state
+        .rua_root
+        .join("chat-workdirs")
+        .join(&device)
+        .join(&empty)
+        .exists());
+
+    let mut directories = Vec::new();
+    for _ in 0..2 {
+        let id = uuid::Uuid::new_v4().to_string();
+        call(
+            &test.app,
+            Method::POST,
+            &format!("/api/chats/{id}/console/submit"),
+            Some(json!({"message":"Create a managed Chat","agent_id":"default"})),
+        )
+        .await;
+        wait_for_chat_idle(state, &id).await;
+        let header = store.load_chat_header(&id).await.unwrap().unwrap();
+        let directory: rua_session::ChatExecutionDirectory =
+            serde_json::from_value(header.extra["execution_directory"].clone()).unwrap();
+        assert!(directory.managed);
+        assert!(directory.path.is_dir());
+        directories.push((ChatAddress::new(id), directory, header));
+    }
+    let (address, first, header) = &directories[0];
+    let (_, second, _) = &directories[1];
+    assert_ne!(first.path, second.path);
+    std::fs::write(first.path.join("fixture"), "first").unwrap();
+    assert!(!second.path.join("fixture").exists());
+    let missing = first.path.join("missing");
+    assert!(state
+        .conversation_input_intake
+        .set_execution_directory(address, &device, Some(&missing))
+        .await
+        .is_err());
+    assert!(!missing.exists());
+    assert!(state
+        .conversation_input_intake
+        .set_execution_directory(address, "another-paired-device", None)
+        .await
+        .is_err());
+
+    let placement =
+        parse_conversation_authority_placement(&Value::Object(header.extra.clone())).unwrap();
+    let authority = &state.conversation_authority;
+    authority
+        .start_active_turn(ConversationActiveTurnStart {
+            address: address.clone(),
+            driver: ConversationDriverKind::Rua,
+            driver_detail: None,
+            authority_device_id: device.clone(),
+            authority_epoch: placement.authority_epoch,
+        })
+        .await;
+    authority
+        .enqueue_input(
+            address,
+            ConversationInputPayload {
+                message: "queued".into(),
+                model_override: None,
+                input: None,
+                messages: None,
+                extra: Default::default(),
+                attachments: vec![],
+                enqueued_at: std::time::Instant::now(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let blocked = state
+        .conversation_input_intake
+        .set_execution_directory(address, &device, Some(&second.path))
+        .await
+        .unwrap_err();
+    assert!(
+        blocked.contains("active_turn") && blocked.contains("queued_input"),
+        "{blocked}"
+    );
+    authority.finish_active_turn(address).await;
+    let blocked = state
+        .conversation_input_intake
+        .set_execution_directory(address, &device, Some(&second.path))
+        .await
+        .unwrap_err();
+    assert!(blocked.contains("queued_input"), "{blocked}");
+    let persisted = store
+        .load_chat_header(address.chat_id().as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.extra["execution_directory"], json!(first));
+    authority.discard_unclaimed_inputs(address).await;
 }

@@ -515,6 +515,10 @@ pub fn router() -> Router<AppState> {
             get(get_chat_running_config_agent).put(put_chat_running_config_agent),
         )
         .route(
+            "/chats/{chatId}/execution-directory",
+            axum::routing::patch(set_chat_execution_directory),
+        )
+        .route(
             "/chats/{chatId}/agent-selection",
             get(get_chat_agent_selection).patch(switch_chat_agent),
         )
@@ -672,6 +676,36 @@ async fn get_chat_agent_selection(
         ConversationControlDeviceAction::ViewAgentSelection,
     )
     .await
+}
+
+async fn set_chat_execution_directory(
+    State(state): State<AppState>,
+    ChatPath((agent_id, chat_id)): ChatPath<(String, String)>,
+    Json(body): Json<rua_core::ExecutionDirectorySelection>,
+) -> Response {
+    if let Err(error) = body.validate() {
+        return ApiError::BadRequest(error.to_string()).into_response();
+    }
+    match dispatch_agent_chat_control(
+        &state,
+        &agent_id,
+        state.chat_workspace().as_path(),
+        &chat_id,
+        ConversationControlDeviceAction::SetExecutionDirectory {
+            device_id: body.device_id,
+            path: body.path,
+        },
+    )
+    .await
+    {
+        Ok(ConversationControlDeviceResponse::ExecutionDirectory { directory }) => {
+            Json(directory).into_response()
+        }
+        Ok(_) => {
+            ApiError::Internal("Unexpected execution directory response".into()).into_response()
+        }
+        Err(error) => error.into_response(),
+    }
 }
 
 async fn switch_chat_agent(
@@ -1943,12 +1977,13 @@ pub(crate) async fn get_chat_core(
     if let Some(harness_configuration) = current_chat.harness_configuration() {
         meta["harness_configuration"] = harness_configuration.clone();
     }
-    if let Some(configuration) = header
-        .extra
-        .get(crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY)
-    {
-        meta[crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY] =
-            configuration.clone();
+    for key in [
+        crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY,
+        rua_session::EXECUTION_DIRECTORY_KEY,
+    ] {
+        if let Some(value) = header.extra.get(key) {
+            meta[key] = value.clone();
+        }
     }
     if let Some(mut collaboration) =
         collaboration_from_meta(&serde_json::Value::Object(header.extra.clone()))

@@ -2743,10 +2743,10 @@ describe("owned ChatPage route identity", () => {
     expect(chatApiMock.setAuthorityPlacement).not.toHaveBeenCalled();
     expect(chatApiMock.materialize).not.toHaveBeenCalled();
     expect(
-      sessionStorage.getItem(
+      localStorage.getItem(
         "rua_draft_chat_device_no-project:lazy-authority-chat",
       ),
-    ).toBe("device-remote");
+    ).toBe(JSON.stringify({ device_id: "device-remote" }));
     expect(screen.getByTestId("model-selector")).toHaveTextContent(
       "model-draft",
     );

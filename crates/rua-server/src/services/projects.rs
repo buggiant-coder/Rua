@@ -20,6 +20,29 @@ use crate::services::project_lifecycle::{
 };
 use crate::state::AppState;
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BrowseDirectoryResponse {
+    pub device_id: String,
+    pub path: std::path::PathBuf,
+    pub roots: Vec<rua_project::ProjectDirectoryEntry>,
+    pub parent_path: Option<std::path::PathBuf>,
+    pub entries: Vec<rua_project::ProjectDirectoryEntry>,
+    pub proposed_name: String,
+}
+
+impl BrowseDirectoryResponse {
+    pub(crate) fn from_listing(device_id: String, listing: ProjectDirectoryListing) -> Self {
+        Self {
+            device_id,
+            parent_path: listing.path.parent().map(Path::to_owned),
+            proposed_name: rua_project::propose_project_display_name(&listing.path),
+            path: listing.path,
+            entries: listing.entries,
+            roots: listing.roots,
+        }
+    }
+}
+
 const PROJECT_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Error)]
@@ -198,18 +221,117 @@ impl ProjectPlacementService {
         }
     }
 
+    pub async fn browse_execution_directory(
+        &self,
+        device: &str,
+        path: &str,
+    ) -> Result<BrowseDirectoryResponse, ProjectPlacementError> {
+        if device == self.local_device_id {
+            let listing = crate::services::execution_directory::browse(path)
+                .await
+                .map_err(ProjectPlacementError::Invalid)?;
+            return Ok(BrowseDirectoryResponse::from_listing(
+                device.into(),
+                listing,
+            ));
+        }
+        match self
+            .deliver(
+                device,
+                ProjectDeviceAction::BrowseExecutionDirectory { path: path.into() },
+            )
+            .await?
+        {
+            ProjectDeviceResponse::ExecutionDirectoryListing { listing }
+                if listing.device_id == device =>
+            {
+                Ok(listing)
+            }
+            _ => Err(ProjectPlacementError::UnexpectedResponse),
+        }
+    }
+
+    async fn validate_execution_default(
+        &self,
+        selection: Option<&rua_core::ExecutionDirectorySelection>,
+        state: &AppState,
+    ) -> Result<(), ProjectPlacementError> {
+        let Some(selection) = selection else {
+            return Ok(());
+        };
+        selection
+            .validate()
+            .map_err(|error| ProjectPlacementError::Invalid(error.to_string()))?;
+        let Some(path) = selection.path.as_ref() else {
+            if selection.device_id != self.local_device_id
+                && !crate::services::device_context::known_devices_for_runtime(
+                    &state.rua_root,
+                    Some(&self.local_device_id),
+                )
+                .iter()
+                .any(|d| d["device_id"] == selection.device_id)
+            {
+                return Err(ProjectPlacementError::Invalid(
+                    "Execution Device is not paired".into(),
+                ));
+            }
+            return Ok(());
+        };
+        if selection.device_id == self.local_device_id {
+            crate::services::execution_directory::validate(path, &state.rua_root)
+                .await
+                .map_err(ProjectPlacementError::Invalid)?;
+            return Ok(());
+        }
+        match self
+            .deliver(
+                &selection.device_id,
+                ProjectDeviceAction::ValidateExecutionDirectory { path: path.clone() },
+            )
+            .await?
+        {
+            ProjectDeviceResponse::ValidatedExecutionDirectory {
+                device_id,
+                path: checked,
+            } if device_id == selection.device_id && checked.as_os_str() == path.as_os_str() => {
+                Ok(())
+            }
+            _ => Err(ProjectPlacementError::UnexpectedResponse),
+        }
+    }
+
+    pub async fn set_execution_default(
+        &self,
+        id: &ProjectId,
+        selection: Option<rua_core::ExecutionDirectorySelection>,
+        state: &AppState,
+    ) -> Result<ProjectDescriptor, ProjectPlacementError> {
+        self.validate_execution_default(selection.as_ref(), state)
+            .await?;
+        let project = self
+            .catalog
+            .set_execution_default(id, selection)
+            .map_err(map_project_error)?;
+        publish_project_descriptor(state, &project).await;
+        Ok(project)
+    }
+
     pub async fn create(
         &self,
         mut directories: Vec<ProjectResourceDirectoryInput>,
         display_name: Option<String>,
+        execution_default: Option<rua_core::ExecutionDirectorySelection>,
         state: &AppState,
     ) -> Result<ProjectCreationOutcome, ProjectPlacementError> {
         self.validate_locations(&[], &mut directories).await?;
+        self.validate_execution_default(execution_default.as_ref(), state)
+            .await?;
         let outcome = self
             .catalog
             .create_resources(ProjectCreateResourcesRequest {
                 display_name,
                 directories,
+                execution_default,
             })
             .map_err(map_project_error)?;
         publish_project_descriptor(state, &outcome.project).await;
@@ -424,6 +546,7 @@ fn map_project_error(error: rua_project::ProjectError) -> ProjectPlacementError 
     match error {
         rua_project::ProjectError::NotFound(id) => ProjectPlacementError::NotFound(id.to_string()),
         rua_project::ProjectError::InvalidResources(_)
+        | rua_project::ProjectError::InvalidExecutionDefault(_)
         | rua_project::ProjectError::InvalidPath(_)
         | rua_project::ProjectError::DirectoryUnavailable { .. }
         | rua_project::ProjectError::InvalidResourceDevice

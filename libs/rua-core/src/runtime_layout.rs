@@ -215,6 +215,26 @@ impl RuntimeLayout {
         }
     }
 
+    /// Map an execution-environment address to the native file used by resident tools.
+    pub fn execution_host_path(&self, path: &Path) -> crate::Result<PathBuf> {
+        if !path.is_absolute() {
+            return Err(crate::RuaError::Runtime {
+                message: format!("Execution path must be absolute: {}", path.display()),
+            });
+        }
+        if !(self.host_profile.is_mobile() || self.os_family == "android") {
+            return Ok(path.to_path_buf());
+        }
+        let guest = self
+            .linux_compat
+            .as_ref()
+            .filter(|guest| guest.is_available())
+            .ok_or_else(|| crate::RuaError::Runtime {
+                message: "Linux Compatibility Runtime is unavailable".into(),
+            })?;
+        guest.resolve_guest_path(path, 0)
+    }
+
     pub fn process_temp_dir_for_rua_root(&self, rua_root: &Path) -> Option<PathBuf> {
         if self.host_profile.is_mobile() || self.os_family == "android" {
             Some(rua_root.join("tmp"))
@@ -526,23 +546,95 @@ impl LinuxCompatLayout {
         ])
     }
 
-    pub fn map_host_path(&self, path: &Path) -> Option<PathBuf> {
-        if path.as_os_str().is_empty() {
-            return None;
+    fn guest_backing_path(&self, path: &Path) -> PathBuf {
+        if let Some(bind) = self
+            .binds
+            .iter()
+            .filter(|bind| path.starts_with(&bind.guest))
+            .max_by_key(|bind| bind.guest.components().count())
+        {
+            return bind
+                .host
+                .join(path.strip_prefix(&bind.guest).expect("matched bind"));
         }
-        if path.starts_with(MOBILE_SHARED_STORAGE_ANDROID) {
-            let suffix = path
-                .strip_prefix(MOBILE_SHARED_STORAGE_ANDROID)
-                .unwrap_or_else(|_| Path::new(""));
-            return Some(PathBuf::from(MOBILE_SHARED_STORAGE_PRIMARY).join(suffix));
+        self.rootfs_path
+            .join(path.strip_prefix("/").expect("absolute guest path"))
+    }
+
+    fn resolve_guest_path(&self, path: &Path, links: usize) -> crate::Result<PathBuf> {
+        if links > 40 {
+            return Err(crate::RuaError::Runtime {
+                message: format!("Too many symbolic links in guest path {}", path.display()),
+            });
         }
-        for bind in &self.binds {
-            if path.starts_with(&bind.host) {
-                let suffix = path
-                    .strip_prefix(&bind.host)
-                    .unwrap_or_else(|_| Path::new(""));
-                return Some(bind.guest.join(suffix));
+        let mut guest = PathBuf::from("/");
+        let mut components = path.components();
+        while let Some(component) = components.next() {
+            match component {
+                std::path::Component::RootDir | std::path::Component::CurDir => continue,
+                std::path::Component::ParentDir => {
+                    guest.pop();
+                }
+                std::path::Component::Normal(name) => guest.push(name),
+                std::path::Component::Prefix(_) => {
+                    return Err(crate::RuaError::Runtime {
+                        message: "Invalid guest path prefix".into(),
+                    })
+                }
             }
+            let host = self.guest_backing_path(&guest);
+            if self.binds.iter().any(|bind| bind.guest == guest) {
+                continue;
+            }
+            match std::fs::symlink_metadata(&host) {
+                Ok(metadata) if metadata.is_symlink() => {
+                    let target = std::fs::read_link(&host)?;
+                    guest.pop();
+                    return self.resolve_guest_path(
+                        &guest.join(target).join(components.as_path()),
+                        links + 1,
+                    );
+                }
+                Ok(metadata)
+                    if !metadata.is_dir() && !components.as_path().as_os_str().is_empty() =>
+                {
+                    return Err(crate::RuaError::Runtime {
+                        message: format!("Guest path is not a directory: {}", guest.display()),
+                    });
+                }
+                Err(error)
+                    if matches!(
+                        components.clone().next(),
+                        Some(std::path::Component::ParentDir)
+                    ) =>
+                {
+                    return Err(error.into());
+                }
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(error.into())
+                }
+                _ => {}
+            }
+        }
+        Ok(self.guest_backing_path(&guest))
+    }
+
+    pub fn map_host_path(&self, path: &Path) -> Option<PathBuf> {
+        if let Ok(suffix) = path.strip_prefix(&self.rootfs_path) {
+            return Some(PathBuf::from("/").join(suffix));
+        }
+        // Prefer the most specific mount. The first configured alias is canonical for ties.
+        if let Some(bind) = self
+            .binds
+            .iter()
+            .rev()
+            .filter(|bind| path.starts_with(&bind.host))
+            .max_by_key(|bind| bind.host.components().count())
+        {
+            return Some(
+                bind.guest
+                    .join(path.strip_prefix(&bind.host).expect("matched bind")),
+            );
         }
         if path.starts_with(&self.guest_home) || path.starts_with("/tmp") {
             return Some(path.to_path_buf());

@@ -149,23 +149,20 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             .await
             .map_err(|error| error.to_string())?
             .ok_or("Task owning Chat is unavailable")?;
-        let directory = configuration
-            .extra
-            .get(rua_session::EXECUTION_DIRECTORY_KEY)
-            .ok_or("Task configuration has no captured execution directory")?;
-        let device = directory
-            .get("device_id")
-            .and_then(serde_json::Value::as_str)
-            .ok_or("Task execution directory has no Device")?;
-        if runtime.task_runtime().device_context().device_id.as_deref() != Some(device) {
+        let directory: rua_session::ChatExecutionDirectory = serde_json::from_value(
+            configuration
+                .extra
+                .get(rua_session::EXECUTION_DIRECTORY_KEY)
+                .ok_or("Task configuration has no captured execution directory")?
+                .clone(),
+        )
+        .map_err(|error| format!("Invalid Task execution directory: {error}"))?;
+        if runtime.task_runtime().device_context().device_id.as_deref()
+            != Some(directory.device_id.as_str())
+        {
             return Err("Task execution directory belongs to another Device".into());
         }
-        let working_dir = directory
-            .get("path")
-            .and_then(serde_json::Value::as_str)
-            .map(std::path::PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .ok_or("Task execution directory has no absolute path")?;
+        let working_dir = directory.host_path().map_err(|error| error.to_string())?;
         let project_root = header.project_id.as_ref().map(|_| working_dir.as_path());
         let toolkit = runtime
             .task_toolkit_for_configuration(
@@ -218,7 +215,8 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
                 .extra
                 .contains_key(rua_security::project_resource_policy::PROJECT_RESOURCE_POLICY_KEY)
         {
-            security_hook = security_hook.with_project_resource_roots(vec![working_dir.clone()]);
+            security_hook =
+                security_hook.with_project_resource_roots(configuration.project_write_roots());
         }
         let hook: Arc<dyn AgentHook> = Arc::new(TaskToolWaitStateHook {
             inner: Arc::new(security_hook),

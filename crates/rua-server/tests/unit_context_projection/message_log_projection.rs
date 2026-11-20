@@ -279,6 +279,7 @@ fn task_notifications_enter_agent_input_as_tool_protocol_only_when_model_visible
             runtime_note_id: "task-terminal".to_string(),
             created_at: "2026-08-26T00:00:02Z".to_string(),
             payload: RuntimeNotePayload::TaskAttemptTerminal(TaskAttemptTerminalRuntimeNote {
+                execution_directory: None,
                 task_id: "task-agent".to_string(),
                 attempt_no: 1,
                 terminal_status: "completed".to_string(),

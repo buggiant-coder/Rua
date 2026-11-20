@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use rua_core::ProjectId;
+use rua_core::{ExecutionDirectorySelection, ProjectId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,6 +17,8 @@ pub struct ProjectDescriptor {
     pub project_id: ProjectId,
     pub display_name: String,
     pub resources: crate::ProjectResources,
+    #[serde(default)]
+    pub execution_default: Option<ExecutionDirectorySelection>,
     pub lifecycle: ProjectLifecycle,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -26,6 +28,7 @@ pub struct ProjectDescriptor {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectCreateResourcesRequest {
+    pub execution_default: Option<ExecutionDirectorySelection>,
     pub directories: Vec<crate::ProjectResourceDirectoryInput>,
     pub display_name: Option<String>,
 }

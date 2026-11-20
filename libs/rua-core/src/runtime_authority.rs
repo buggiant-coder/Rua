@@ -443,21 +443,12 @@ impl RuntimeAuthority {
                 }
             });
         if let Some(cwd) = &cwd {
-            let host = if layout.binds.iter().any(|bind| cwd.starts_with(&bind.host)) {
-                cwd.clone()
-            } else if let Some(bind) = layout
-                .binds
-                .iter()
-                .find(|bind| cwd.starts_with(&bind.guest))
+            let guest = layout.map_host_path(cwd).unwrap_or_else(|| cwd.clone());
+            if !self
+                .layout
+                .execution_host_path(&guest)
+                .is_ok_and(|host| host.is_dir())
             {
-                bind.host
-                    .join(cwd.strip_prefix(&bind.guest).expect("matched bind"))
-            } else {
-                layout
-                    .rootfs_path
-                    .join(cwd.strip_prefix("/").unwrap_or(cwd))
-            };
-            if !host.is_dir() {
                 diagnostics.push(format!(
                     "Working directory is unavailable in Linux Compatibility Runtime: {}",
                     cwd.display()

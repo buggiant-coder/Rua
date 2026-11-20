@@ -40,7 +40,7 @@ test("a staged attachment and accepted first turn reopen at the original Chat ID
     if (path === "/projects") return json({ projects: [] });
     if (path === "/project-sidebar")
       return json({ revision: "1", sort: "manual", items: {} });
-    if (path === "/sync/devices") return json({ devices: [] });
+    if (path === "/sync/devices") return json({ devices: [{device_id:"desktop",friendly_name:"Desktop",is_self:true,connectivity_state:"connected"}] });
     if (path === "/models/active") return json({ default_llm: model });
     if (path === "/chats")
       return json(
@@ -226,7 +226,7 @@ test("New chat restores one draft per Project or standalone group using the curr
       if (project) return json(project);
       if (path === "/project-sidebar")
         return json({ revision: "1", sort: "manual", items: {} });
-      if (path === "/sync/devices") return json({ devices: [] });
+      if (path === "/sync/devices") return json({ devices: [{device_id:"desktop",friendly_name:"Desktop",is_self:true,connectivity_state:"connected"}] });
       if (path === "/models/active") return json({ default_llm: model });
       if (path === "/models")
         return json([

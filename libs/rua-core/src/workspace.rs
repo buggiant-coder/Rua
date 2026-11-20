@@ -48,6 +48,17 @@ impl RuaRoot {
         WorkspaceRoot::new(self.rua_root.join("chats"))
     }
 
+    /// Host storage reserved for this Chat on this Device, independently of its selected cwd.
+    pub fn managed_chat_directory(&self, chat_id: &str, device_id: &str) -> Result<PathBuf> {
+        validate_owner_id("Chat", chat_id)?;
+        validate_owner_id("Device", device_id)?;
+        Ok(self
+            .rua_root
+            .join("chat-workdirs")
+            .join(device_id)
+            .join(chat_id))
+    }
+
     pub fn agent_workspace(&self, agent_id: &str) -> Result<WorkspaceRoot> {
         validate_owner_id("Agent", agent_id)?;
         Ok(WorkspaceRoot::new(

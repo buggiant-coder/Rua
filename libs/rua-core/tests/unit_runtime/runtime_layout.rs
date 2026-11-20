@@ -214,3 +214,54 @@ fn android_paths_keep_data_outside_the_guest_and_secrets_out_of_argv() {
         "/data/app/random/lib/arm64/libproot-loader.so"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn android_execution_directory_resolves_guest_links_and_longest_mount_before_native_access() {
+    use rua_core::runtime_layout::RuntimeBind;
+    use std::path::Path;
+    let temp = tempfile::tempdir().unwrap();
+    let mut runtime = RuntimeLayout::android(
+        temp.path().join("native"),
+        temp.path().join("data"),
+        temp.path().join("home"),
+    );
+    let guest = runtime.linux_compat.as_mut().unwrap();
+    fs::create_dir_all(guest.proot_path.parent().unwrap()).unwrap();
+    fs::write(&guest.proot_path, b"").unwrap();
+    fs::create_dir_all(guest.rootfs_path.join("usr/bin")).unwrap();
+    fs::write(guest.rootfs_path.join("usr/bin/env"), b"").unwrap();
+    for dir in [
+        "data/guest-home",
+        "data/tmp",
+        "data/runtime/debian/etc/owned",
+        "nested/child",
+    ] {
+        fs::create_dir_all(temp.path().join(dir)).unwrap();
+    }
+    guest
+        .binds
+        .push(RuntimeBind::new(temp.path().join("nested"), "/tmp/work"));
+    std::os::unix::fs::symlink("/etc/owned", temp.path().join("data/guest-home/link")).unwrap();
+    std::os::unix::fs::symlink("/tmp/work/child", guest.rootfs_path.join("etc/alias")).unwrap();
+    for (path, host) in [
+        ("/root", "data/guest-home"),
+        ("/tmp", "data/tmp"),
+        ("/tmp/work/child", "nested/child"),
+        ("/root/link", "data/runtime/debian/etc/owned"),
+        ("/etc/alias", "nested/child"),
+    ] {
+        assert_eq!(
+            runtime.execution_host_path(Path::new(path)).unwrap(),
+            temp.path().join(host)
+        );
+    }
+    assert_eq!(
+        runtime
+            .linux_compat
+            .as_ref()
+            .unwrap()
+            .map_host_path(&temp.path().join("data/runtime/debian/etc/owned")),
+        Some("/etc/owned".into())
+    );
+}

@@ -152,6 +152,7 @@ fn synchronized_tombstone_blocks_same_project_id_resurrection() {
     let temp = tempfile::tempdir().unwrap();
     let catalog = ProjectCatalog::open(temp.path().join("data")).unwrap();
     let descriptor = rua_project::ProjectDescriptor {
+        execution_default: None,
         project_id: rua_core::ProjectId::new("deleted-project"),
         display_name: "Deleted".to_string(),
         lifecycle: ProjectLifecycle::Archived,
@@ -389,4 +390,75 @@ fn apply_descriptor_drops_legacy_project_running_config() {
     let applied = catalog.apply_descriptor(descriptor).unwrap();
 
     assert!(!applied.extra.contains_key("running_config"));
+}
+
+#[test]
+fn execution_default_persists_separately_from_resources_and_can_be_cleared() {
+    use rua_core::ExecutionDirectorySelection;
+    use rua_project::{ProjectCreateResourcesRequest, ProjectResourceDirectoryInput};
+    use serde_json::json;
+
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = ProjectCatalog::open(temp.path()).unwrap();
+    let original: ExecutionDirectorySelection = serde_json::from_value(json!({
+        "device_id": "phone", "path": "/srv/photos", "extension": 7,
+    }))
+    .unwrap();
+    let project = catalog
+        .create_resources(ProjectCreateResourcesRequest {
+            display_name: Some("Photos".into()),
+            directories: vec![ProjectResourceDirectoryInput::new("laptop", "/srv/photos")],
+            execution_default: Some(original.clone()),
+        })
+        .unwrap()
+        .project;
+    assert_eq!(project.execution_default.as_ref(), Some(&original));
+    let id = &project.project_id;
+    let initial_resources = project.resources.clone();
+    catalog.rename(id, "Family album").unwrap();
+    drop(catalog);
+    let catalog = ProjectCatalog::open(temp.path()).unwrap();
+    assert_eq!(
+        catalog.get(id).unwrap().unwrap().execution_default,
+        Some(original.clone())
+    );
+
+    let mut invalid = original.clone();
+    invalid.path = Some("relative".into());
+    assert!(matches!(
+        catalog.set_execution_default(id, Some(invalid)),
+        Err(ProjectError::InvalidExecutionDefault(_))
+    ));
+    assert_eq!(
+        catalog.get(id).unwrap().unwrap().execution_default,
+        Some(original)
+    );
+    let windows: ExecutionDirectorySelection = serde_json::from_value(json!({
+        "device_id": "desktop", "path": r"D:\Photos"
+    }))
+    .unwrap();
+    let changed = catalog
+        .set_execution_default(id, Some(windows.clone()))
+        .unwrap();
+    assert_eq!(changed.resources, initial_resources);
+    assert_eq!(changed.execution_default, Some(windows));
+    let managed: ExecutionDirectorySelection =
+        serde_json::from_value(json!({"device_id":"phone"})).unwrap();
+    assert_eq!(
+        catalog
+            .set_execution_default(id, Some(managed.clone()))
+            .unwrap()
+            .execution_default,
+        Some(managed)
+    );
+    catalog.set_execution_default(id, None).unwrap();
+    drop(catalog);
+    let cleared = ProjectCatalog::open(temp.path())
+        .unwrap()
+        .get(id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cleared.resources, initial_resources);
+    assert_eq!(cleared.display_name, "Family album");
+    assert!(cleared.execution_default.is_none());
 }

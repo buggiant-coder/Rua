@@ -85,6 +85,7 @@ fn empty_projects_and_offline_metadata_edits_survive_reopen() {
     let catalog = ProjectCatalog::open(&root).unwrap();
     let project = catalog
         .create_resources(ProjectCreateResourcesRequest {
+            execution_default: None,
             display_name: Some("Family Photos".into()),
             directories: vec![],
         })
@@ -128,6 +129,7 @@ fn concurrent_edits_commit_once_and_loser_can_retry() {
     let catalog = Arc::new(ProjectCatalog::open(temp.path()).unwrap());
     let project = catalog
         .create_resources(ProjectCreateResourcesRequest {
+            execution_default: None,
             display_name: Some("Snapshots".into()),
             directories: vec![],
         })
@@ -181,6 +183,7 @@ fn a_replica_cannot_redirect_an_existing_association_id() {
     let catalog = ProjectCatalog::open(temp.path()).unwrap();
     let project = catalog
         .create_resources(ProjectCreateResourcesRequest {
+            execution_default: None,
             display_name: Some("Family".into()),
             directories: vec![input("phone", "/Photos")],
         })
@@ -203,6 +206,7 @@ fn overlap_uses_the_resource_device_and_its_path_component_boundaries() {
     let create = |device: &str, path: &str| {
         catalog
             .create_resources(ProjectCreateResourcesRequest {
+                execution_default: None,
                 display_name: Some("Photo collection".into()),
                 directories: vec![input(device, path)],
             })
