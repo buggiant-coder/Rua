@@ -2934,6 +2934,8 @@
       "ruleLabel": "Rule label",
       "ruleEffect": "Effect",
       "ruleMatcher": "Matcher",
+      "invalidCommandFamily": "Enter one program and one subcommand, each without spaces or asterisks.",
+      "inputPattern": "Input parameter pattern",
       "toolPattern": "Tool pattern",
       "ruleEnabled": "Enabled",
       "ruleDisabled": "Disabled",

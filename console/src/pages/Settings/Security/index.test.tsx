@@ -238,9 +238,9 @@ function seedToolGuard() {
       source: "approval",
       label: "Bash(git status)",
       matcher: {
-        type: "bash_command_family",
-        program: "git",
-        subcommand: "status",
+        type: "tool_call",
+        tool_name: "bash",
+        input_params: "git status *",
       },
       source_approval_id: "approval-1",
       created_at: "2026-06-22T00:00:00Z",
@@ -373,7 +373,7 @@ describe("SecurityPage", () => {
       target: { value: "deny" },
     });
     fireEvent.change(within(addDialog).getByLabelText("Tool pattern"), {
-      target: { value: "WebSearch" },
+      target: { value: " WebSearch " },
     });
     fireEvent.click(within(addDialog).getByRole("button", { name: "Save" }));
 
@@ -384,7 +384,7 @@ describe("SecurityPage", () => {
           effect: "deny",
           enabled: true,
           label: "Block WebSearch",
-          matcher: { type: "tool_name", pattern: "WebSearch" },
+          matcher: { type: "tool_call", tool_name: "WebSearch" },
         },
       ),
     );
@@ -409,7 +409,14 @@ describe("SecurityPage", () => {
       expect(apiMock.updatePermissionRule).toHaveBeenCalledWith(
         "security-agent",
         "rule-git-status",
-        expect.objectContaining({ label: "Allow git status quietly" }),
+        expect.objectContaining({
+          label: "Allow git status quietly",
+          matcher: {
+            type: "tool_call",
+            tool_name: "bash",
+            input_params: "git status *",
+          },
+        }),
       ),
     );
 
@@ -418,6 +425,94 @@ describe("SecurityPage", () => {
       expect(apiMock.deleteApprovalRule).toHaveBeenCalledWith(
         "security-agent",
         "rule-git-status",
+      ),
+    );
+  });
+
+  it.each(['{"path":"/fixture/private/* "}', ""])(
+    "preserves a stored read input constraint %j when editing the label",
+    async (inputParams) => {
+      const matcher = {
+        type: "tool_call",
+        tool_name: "read",
+        input_params: inputParams,
+      };
+      apiMock.listApprovalRules.mockResolvedValueOnce([
+        {
+          id: "specific-read",
+          agent_id: "security-agent",
+          label: "Scoped read",
+          enabled: true,
+          effect: "allow",
+          source: "manual",
+          matcher,
+          hit_count: 0,
+        },
+      ]);
+      render(<SecurityPage />);
+      await screen.findByText("Scoped read");
+      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByLabelText("Tool pattern")).toHaveValue("read");
+      expect(
+        within(dialog).getByText("security.permissionManagement.inputPattern"),
+      ).toBeVisible();
+      fireEvent.change(within(dialog).getByLabelText("Rule label"), {
+        target: { value: "Renamed" },
+      });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      await waitFor(() =>
+        expect(apiMock.updatePermissionRule).toHaveBeenCalledWith(
+          "security-agent",
+          "specific-read",
+          {
+            effect: "allow",
+            enabled: true,
+            label: "Renamed",
+            matcher,
+          },
+        ),
+      );
+    },
+  );
+
+  it("uses the command boundary for Bash families and rejects wildcards in family fields", async () => {
+    render(<SecurityPage />);
+    await screen.findByText("Bash(git status)");
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Add permission rule" })[0],
+    );
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Rule label"), {
+      target: { value: "Check status" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Matcher"), {
+      target: { value: "bash_command_family" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("subcommand"), {
+      target: { value: "*" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    expect(apiMock.createPermissionRule).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("button", { name: "Save" }),
+      ).toBeEnabled(),
+    );
+    fireEvent.change(within(dialog).getByLabelText("subcommand"), {
+      target: { value: "status" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(apiMock.createPermissionRule).toHaveBeenCalledWith(
+        "security-agent",
+        expect.objectContaining({
+          matcher: {
+            type: "tool_call",
+            tool_name: "bash",
+            input_params: "git status *",
+          },
+        }),
       ),
     );
   });

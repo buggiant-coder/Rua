@@ -1975,16 +1975,18 @@ describe("OwnedConversationSurface", () => {
               label:
                 "Allow Bash(du -sh /Users/example/projects/rua) in this chat",
               matcher: {
-                type: "bash_command_pattern",
-                pattern: "du -sh /Users/example/projects/rua",
+                type: "tool_call",
+                tool_name: "bash",
+                input_params: "du -sh /Users/example/projects/rua",
               },
             },
             {
               scope: "agent",
               label: "Always allow Bash(du -sh *) for this agent",
               matcher: {
-                type: "bash_command_pattern",
-                pattern: "du -sh *",
+                type: "tool_call",
+                tool_name: "bash",
+                input_params: "du -sh *",
               },
             },
           ],
@@ -2027,8 +2029,9 @@ describe("OwnedConversationSurface", () => {
           decision: "allow_chat",
           decided_by: "webui",
           matcher: {
-            type: "bash_command_pattern",
-            pattern: "du -sh /Users/example/projects/rua",
+            type: "tool_call",
+            tool_name: "bash",
+            input_params: "du -sh /Users/example/projects/rua",
           },
         },
       ),

@@ -49,6 +49,7 @@ type PermissionRuleDraft = {
   label: string;
   matcherType: "tool_name" | "bash_command_pattern" | "bash_command_family";
   toolPattern: string;
+  inputParams?: string;
   bashPattern: string;
   program: string;
   subcommand: string;
@@ -68,70 +69,46 @@ const emptyPermissionDraft = (
 });
 
 function matcherToText(matcher: ApprovalReuseMatcher): string {
-  if (matcher.type === "bash_command_pattern") {
-    return `Bash(${matcher.pattern})`;
-  }
-  if (matcher.type === "bash_command_family") {
-    return `Bash(program=${matcher.program}, subcommand=${matcher.subcommand})`;
-  }
-  return matcher.pattern;
+  return matcher.input_params === undefined
+    ? matcher.tool_name
+    : `${matcher.tool_name}(${matcher.input_params})`;
 }
 
 function draftFromRule(rule: ApprovalRule): PermissionRuleDraft {
-  if (rule.matcher.type === "bash_command_pattern") {
-    return {
-      id: rule.id,
-      effect: rule.effect,
-      enabled: rule.enabled,
-      label: rule.label,
-      matcherType: "bash_command_pattern",
-      toolPattern: "",
-      bashPattern: rule.matcher.pattern,
-      program: "git",
-      subcommand: "status",
-    };
-  }
-  if (rule.matcher.type === "bash_command_family") {
-    return {
-      id: rule.id,
-      effect: rule.effect,
-      enabled: rule.enabled,
-      label: rule.label,
-      matcherType: "bash_command_family",
-      toolPattern: "",
-      bashPattern: "",
-      program: rule.matcher.program,
-      subcommand: rule.matcher.subcommand,
-    };
-  }
+  const { tool_name, input_params } = rule.matcher;
+  const bashPattern = tool_name === "bash" && input_params !== undefined;
   return {
+    ...emptyPermissionDraft(rule.effect),
     id: rule.id,
-    effect: rule.effect,
     enabled: rule.enabled,
     label: rule.label,
-    matcherType: "tool_name",
-    toolPattern: rule.matcher.pattern,
-    bashPattern: "",
-    program: "git",
-    subcommand: "status",
+    matcherType: bashPattern ? "bash_command_pattern" : "tool_name",
+    toolPattern: tool_name,
+    inputParams: input_params,
+    bashPattern: input_params ?? "",
   };
 }
 
 function matcherFromDraft(draft: PermissionRuleDraft): ApprovalReuseMatcher {
   if (draft.matcherType === "bash_command_pattern") {
     return {
-      type: "bash_command_pattern",
-      pattern: draft.bashPattern.trim(),
+      type: "tool_call",
+      tool_name: "bash",
+      input_params: draft.id ? draft.bashPattern : draft.bashPattern.trim(),
     };
   }
   if (draft.matcherType === "bash_command_family") {
     return {
-      type: "bash_command_family",
-      program: draft.program.trim(),
-      subcommand: draft.subcommand.trim(),
+      type: "tool_call",
+      tool_name: "bash",
+      input_params: `${draft.program.trim()} ${draft.subcommand.trim()} *`,
     };
   }
-  return { type: "tool_name", pattern: draft.toolPattern.trim() };
+  return {
+    type: "tool_call",
+    tool_name: draft.id ? draft.toolPattern : draft.toolPattern.trim(),
+    input_params: draft.inputParams,
+  };
 }
 
 interface SecurityPageProps {
@@ -355,12 +332,21 @@ function SecurityPage({ initialData }: SecurityPageProps) {
       return;
     }
     if (
-      (matcher.type === "tool_name" && !matcher.pattern) ||
-      (matcher.type === "bash_command_pattern" && !matcher.pattern) ||
-      (matcher.type === "bash_command_family" &&
-        (!matcher.program || !matcher.subcommand))
+      !matcher.tool_name.trim() ||
+      (permissionRuleDraft.matcherType === "bash_command_pattern" &&
+        !permissionRuleDraft.id &&
+        !permissionRuleDraft.bashPattern.trim())
     ) {
       toast.error(t("security.permissionManagement.ruleMatcherRequired"));
+      return;
+    }
+    if (
+      permissionRuleDraft.matcherType === "bash_command_family" &&
+      ![permissionRuleDraft.program, permissionRuleDraft.subcommand].every(
+        (part) => /^[^\s*]+$/.test(part.trim()),
+      )
+    ) {
+      toast.error(t("security.permissionManagement.invalidCommandFamily"));
       return;
     }
     setPermissionRuleSaving(true);
@@ -982,6 +968,16 @@ function SecurityPage({ initialData }: SecurityPageProps) {
                 </FormField>
               </div>
             )}
+            {permissionRuleDraft.matcherType === "tool_name" &&
+              permissionRuleDraft.inputParams !== undefined && (
+                <FormField
+                  label={t("security.permissionManagement.inputPattern")}
+                >
+                  <div className={styles.permissionRuleMatcher}>
+                    {permissionRuleDraft.inputParams}
+                  </div>
+                </FormField>
+              )}
             <label className={styles.permissionRuleEnabledRow}>
               <Toggle
                 checked={permissionRuleDraft.enabled}

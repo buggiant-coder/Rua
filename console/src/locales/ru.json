@@ -2467,6 +2467,8 @@
       "ruleLabel": "Название правила",
       "ruleEffect": "Действие",
       "ruleMatcher": "Матчер",
+      "invalidCommandFamily": "Введите одну программу и одну подкоманду без пробелов и звёздочек.",
+      "inputPattern": "Шаблон входных параметров",
       "toolPattern": "Шаблон инструмента",
       "ruleEnabled": "Включено",
       "ruleDisabled": "Отключено",

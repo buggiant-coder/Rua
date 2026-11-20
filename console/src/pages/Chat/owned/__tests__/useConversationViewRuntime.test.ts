@@ -10100,9 +10100,9 @@ describe("useConversationViewRuntime", () => {
 
   it("sends backend-provided reuse matchers for chat approval decisions", async () => {
     const matcher = {
-      type: "bash_command_family" as const,
-      program: "git",
-      subcommand: "status",
+      type: "tool_call" as const,
+      tool_name: "bash",
+      input_params: "git status *",
     };
     const { result } = renderHook(() =>
       useConversationViewRuntime({

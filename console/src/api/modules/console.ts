@@ -37,20 +37,11 @@ export type ApprovalOwner =
       session_id: string;
     };
 
-export type ApprovalReuseMatcher =
-  | {
-      type: "bash_command_pattern";
-      pattern: string;
-    }
-  | {
-      type: "bash_command_family";
-      program: string;
-      subcommand: string;
-    }
-  | {
-      type: "tool_name";
-      pattern: string;
-    };
+export interface ApprovalReuseMatcher {
+  type: "tool_call";
+  tool_name: string;
+  input_params?: string;
+}
 
 export type PermissionRuleEffect = "allow" | "deny";
 export type PermissionRuleSource = "manual" | "approval";

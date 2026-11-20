@@ -2462,6 +2462,8 @@
       "ruleLabel": "ルール名",
       "ruleEffect": "効果",
       "ruleMatcher": "マッチャー",
+      "invalidCommandFamily": "プログラム名とサブコマンドを一つずつ入力してください。空白やアスタリスクは使用できません。",
+      "inputPattern": "入力パラメーターのパターン",
       "toolPattern": "ツールパターン",
       "ruleEnabled": "有効",
       "ruleDisabled": "無効",

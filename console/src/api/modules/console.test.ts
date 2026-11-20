@@ -24,9 +24,9 @@ describe("consoleApi routes", () => {
 
   it("submits decisions through the approval control endpoint", async () => {
     const matcher = {
-      type: "bash_command_family" as const,
-      program: "git",
-      subcommand: "status",
+      type: "tool_call" as const,
+      tool_name: "bash",
+      input_params: "git status *",
     };
 
     await consoleApi.decideApproval("chat/1", "approval/1", {
@@ -54,7 +54,7 @@ describe("consoleApi routes", () => {
       effect: "deny",
       enabled: true,
       label: "Block WebSearch",
-      matcher: { type: "tool_name", pattern: "WebSearch" },
+      matcher: { type: "tool_call", tool_name: "WebSearch" },
     });
     await consoleApi.deleteApprovalRule("agent/a", "rule/1");
 
@@ -71,7 +71,7 @@ describe("consoleApi routes", () => {
           effect: "deny",
           enabled: true,
           label: "Block WebSearch",
-          matcher: { type: "tool_name", pattern: "WebSearch" },
+          matcher: { type: "tool_call", tool_name: "WebSearch" },
         }),
       },
     );

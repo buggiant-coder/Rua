@@ -2852,6 +2852,8 @@
       "ruleLabel": "规则名称",
       "ruleEffect": "规则效果",
       "ruleMatcher": "匹配器",
+      "invalidCommandFamily": "请分别填写程序名和子命令，两者都不能包含空格或星号。",
+      "inputPattern": "输入参数匹配模式",
       "toolPattern": "工具匹配",
       "ruleEnabled": "已启用",
       "ruleDisabled": "已停用",
