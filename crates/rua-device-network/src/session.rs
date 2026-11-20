@@ -56,6 +56,14 @@ type HmacSha256 = Hmac<Sha256>;
 #[async_trait]
 pub trait DeviceSessionCommandHandler: Send + Sync + 'static {
     async fn handle_command(&self, payload: &[u8]) -> Result<Vec<u8>, String>;
+
+    async fn handle_command_from(
+        &self,
+        _peer_device_id: &str,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        self.handle_command(payload).await
+    }
 }
 
 pub type DeviceSessionFrameStream = Pin<Box<dyn Stream<Item = Vec<u8>> + Send + 'static>>;
@@ -1851,7 +1859,8 @@ impl DeviceSessionManager {
             COMMAND_STREAM_KIND => {
                 send.set_priority(COMMAND_STREAM_PRIORITY)
                     .map_err(|error| DeviceSessionError::Closed(error.to_string()))?;
-                self.handle_command_stream(&mut send, &mut recv).await
+                self.handle_command_stream(session.peer_device_id, &mut send, &mut recv)
+                    .await
             }
             LIVE_ACTIVITY_STREAM_KIND => {
                 send.set_priority(LIVE_ACTIVITY_STREAM_PRIORITY)
@@ -1873,6 +1882,7 @@ impl DeviceSessionManager {
 
     async fn handle_command_stream(
         &self,
+        peer_device_id: DeviceId,
         send: &mut iroh::endpoint::SendStream,
         recv: &mut iroh::endpoint::RecvStream,
     ) -> Result<(), DeviceSessionError> {
@@ -1881,7 +1891,10 @@ impl DeviceSessionManager {
             write_command_error(send, "Command handler unavailable").await?;
             return Ok(());
         };
-        match handler.handle_command(&payload).await {
+        match handler
+            .handle_command_from(&hex::encode(peer_device_id), &payload)
+            .await
+        {
             Ok(response) => {
                 send.write_all(&[COMMAND_RESPONSE_OK])
                     .await

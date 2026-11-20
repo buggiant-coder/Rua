@@ -90,7 +90,7 @@ Details: [model knowledge and reasoning](docs/adr/0006-model-knowledge-catalog-a
 
 [ADR 0059](docs/adr/0059-unified-chat-and-device-resources.md) records the
 unified Chat design. Chat identity, fixed Project membership, drafts, discovery,
-Agent switching, Project resources, and Chat execution directories are implemented. Definitions
+Agent switching, Project resources, Chat execution directories, and on-demand Chat Media are implemented. Definitions
 marked as proposed describe later slices.
 
 **Chat Identity:** A Chat ID independently identifies one Chat within
@@ -611,7 +611,8 @@ Details: [unified Chat and cross-device resources](docs/adr/0059-unified-chat-an
 |---|---|
 | **Project / Project Descriptor / Project Catalog** | A Project organizes member Chats. Its portable descriptor carries its name, lifecycle and versioned resource collection. The catalog stores and synchronizes this metadata. |
 | **Project Resource Binding** | An association with one directory on its owning Device. Renaming preserves its ID. Replacing the Device or root creates a new ID. Each Project can hold zero or more associations. |
-| **Project Directory Picker** | Browses/creates an explicitly named child on that Device without overwrite or implicit ancestor creation. Android uses filesystem paths with native permissions, not SAF document URIs as bindings. |
+| **Project Directory Picker** | Browses directories and creates a named child on the selected Device. A lost create response leaves the outcome unconfirmed until the user refreshes. Android uses paths governed by native filesystem permissions. |
+| **Project resource browser** | Opens files and Git views using the selected Device ID and its absolute resource path. Directory pages and Git history stay tied to that location. |
 | **Chat Working Directory** | The working directory on the execution Device. It can be an explicit path or the stable Rua-managed directory for that Chat and Device. Changing it affects future work. A running Task keeps its original Device, directory and configuration. |
 | **Project Resource Policy** | Existing Agent security settings and Tool Guard govern access. Attaching or detaching a directory only changes the references supplied to member Chats. |
 | **Project Approval Reuse** | Chat-scoped approvals follow full Project Chat Address across Agent switches; Agent-scoped approvals follow Agent. Archive/Reopen preserves Chat reuse; deletion removes it with Chat-owned data. |

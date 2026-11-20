@@ -142,6 +142,19 @@ describe("Project resources", () => {
       "new-1",
     );
   });
+  it("confirms the specified device path including a trailing space", async () => {
+    const saved = open();
+    await choose("/shared ", "Phone");
+    await waitFor(() =>
+      expect(api.browseDirectory).toHaveBeenCalledWith("phone", "/shared "),
+    );
+    save();
+    await waitFor(() => expect(saved).toHaveBeenCalled());
+    expect(api.editResources).toHaveBeenCalledWith("project", 4, [
+      one,
+      { device_id: "phone", resource_root: "/shared " },
+    ]);
+  });
   it("keeps the existing association and revision when the current folder is confirmed", async () => {
     const saved = open();
     click("projects.changeFolder");
@@ -299,4 +312,21 @@ describe("Project resources", () => {
     );
     expect(api.editResources).not.toHaveBeenCalled();
   });
+});
+
+it("keeps the selected offline resource and path without browsing another device or its home", async () => {
+  api.browseDirectory.mockRejectedValue(
+    new Error("Selected desktop is offline"),
+  );
+  open([
+    { ...devices[0], is_self: false, connectivity_state: "offline" },
+    devices[1],
+  ]);
+  click("projects.changeFolder");
+  await screen.findByText("Selected desktop is offline");
+  expect(screen.getByRole("combobox")).toHaveTextContent("Desktop");
+  expect(
+    screen.getByRole("textbox", { name: "projects.folderPath" }),
+  ).toHaveValue("/shared");
+  expect(api.browseDirectory.mock.calls).toEqual([["desk", "/shared"]]);
 });

@@ -330,8 +330,8 @@ async fn local_create_browse_list_get_rename_and_shared_directory_contract() {
         &test.app,
         Method::GET,
         &format!(
-            "/api/projects/{project_id}/workspace/git?directory_id={}",
-            descriptor.resources.directories[0].directory_id
+            "/api/projects/{project_id}/workspace/git?{}",
+            resource_query(&descriptor.resources.directories[0].device_id, &repo, None)
         ),
         None,
     )
@@ -3380,7 +3380,8 @@ async fn project_chat_remote_delete_command_preserves_busy_force_and_not_found()
             },
         };
         let response = handler
-            .handle_command(
+            .handle_command_from(
+                &command.source_device_id,
                 &serde_json::to_vec(&json!({"command": "project", "payload": command})).unwrap(),
             )
             .await
@@ -3887,15 +3888,39 @@ async fn sidebar_preferences_are_independent_of_resource_device_availability_and
     assert!(reopened.items["remote-sidebar"].pinned);
 }
 
+fn resource_query(device: &str, root: &std::path::Path, path: Option<&std::path::Path>) -> String {
+    let mut url = reqwest::Url::parse("http://localhost").unwrap();
+    url.query_pairs_mut()
+        .append_pair("device_id", device)
+        .append_pair("resource_root", root.to_str().unwrap());
+    if let Some(path) = path {
+        url.query_pairs_mut()
+            .append_pair("path", path.to_str().unwrap());
+    }
+    url.query().unwrap().to_string()
+}
+
 #[tokio::test]
-async fn resource_views_use_directory_identity_and_reject_cross_root_paths() {
+async fn resource_views_use_device_and_absolute_path_paginate_and_reject_cross_root_paths() {
     let test = build_app();
     let first = test._temp.path().join("first-resource");
-    let second = test._temp.path().join("second-resource");
+    let second = test._temp.path().join(if cfg!(unix) {
+        "second & 手机 "
+    } else {
+        "second & 手机"
+    });
     std::fs::create_dir(&first).unwrap();
     std::fs::create_dir(&second).unwrap();
     std::fs::write(first.join("only-first"), "first").unwrap();
     std::fs::write(second.join("only-second"), "second").unwrap();
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let name = std::ffi::OsString::from_vec(vec![0xff]);
+        std::fs::write(second.join(name), "cannot address this name with JSON").unwrap();
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("unavailable", second.join("unreadable-link")).unwrap();
     assert!(Command::new("git")
         .args(["init", "-q"])
         .arg(&second)
@@ -3904,17 +3929,29 @@ async fn resource_views_use_directory_identity_and_reject_cross_root_paths() {
         .success());
     let created=response_json(request(&test.app,Method::POST,"/api/projects",Some(json!({"directories":[{"device_id":local_device_id(&test.state),"resource_root":first},{"device_id":local_device_id(&test.state),"resource_root":second}]}))).await).await;
     let project = &created["project"];
+    assert_eq!(
+        project["resources"]["directories"][1]["resource_root"],
+        json!(second)
+    );
     let id = project["project_id"].as_str().unwrap();
-    let directory = project["resources"]["directories"][1]["directory_id"]
-        .as_str()
-        .unwrap();
-    let first_id = project["resources"]["directories"][0]["directory_id"]
-        .as_str()
-        .unwrap();
+    let device = local_device_id(&test.state);
+    let selected = resource_query(&device, &second, Some(&second));
+    let git_location = resource_query(&device, &second, None);
+    let first_location = resource_query(&device, &first, None);
+    let picker = request(
+        &test.app,
+        Method::POST,
+        "/api/projects/directory",
+        Some(json!({"device_id":device,"path":second})),
+    )
+    .await;
+    assert_eq!(picker.status(), StatusCode::OK);
+    let picker = response_json(picker).await;
+    assert_eq!(picker["path"], json!(second));
     let files = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{id}/workspace/files?directory_id={directory}"),
+        &format!("/api/projects/{id}/workspace/files?{selected}"),
         None,
     )
     .await;
@@ -3926,22 +3963,71 @@ async fn resource_views_use_directory_identity_and_reject_cross_root_paths() {
         .iter()
         .any(|entry| entry["name"] == "only-second"));
     assert!(files["roots"].as_array().unwrap().is_empty());
+    let omissions = usize::from(cfg!(unix)) + usize::from(cfg!(target_os = "linux"));
+    assert_eq!(files["omitted_entries"], omissions);
+    assert_eq!(files["device_id"], device);
+    let first_page = response_json(
+        request(
+            &test.app,
+            Method::GET,
+            &format!("/api/projects/{id}/workspace/files?{selected}&limit=1"),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(first_page["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(first_page["omitted_entries"], files["omitted_entries"]);
+    let offset = first_page["next_offset"].as_u64().unwrap();
+    let last_page = response_json(
+        request(
+            &test.app,
+            Method::GET,
+            &format!("/api/projects/{id}/workspace/files?{selected}&limit=1&offset={offset}"),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_ne!(
+        first_page["entries"][0]["path"],
+        last_page["entries"][0]["path"]
+    );
+    assert!(last_page.get("next_offset").is_none());
+    assert_eq!(last_page["omitted_entries"], files["omitted_entries"]);
+    assert_eq!(picker["omitted_entries"], files["omitted_entries"]);
+    let child = if cfg!(unix) { "Summer " } else { "Summer" };
+    let creation = request(
+        &test.app,
+        Method::POST,
+        "/api/projects/directory/create",
+        Some(json!({"device_id":device,"parent":second,"name":child})),
+    )
+    .await;
+    assert_eq!(creation.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(creation).await["path"],
+        json!(second.join(child))
+    );
+    assert!(second.join(child).is_dir());
     let git = response_json(
         request(
             &test.app,
             Method::GET,
-            &format!("/api/projects/{id}/workspace/git?directory_id={directory}"),
+            &format!("/api/projects/{id}/workspace/git?{git_location}"),
             None,
         )
         .await,
     )
     .await;
     assert_eq!(git["repository"], true);
+    assert_eq!(git["device_id"], device);
+    assert_eq!(git["resource_root"], json!(second));
     let git = response_json(
         request(
             &test.app,
             Method::GET,
-            &format!("/api/projects/{id}/workspace/git?directory_id={first_id}"),
+            &format!("/api/projects/{id}/workspace/git?{first_location}"),
             None,
         )
         .await,
@@ -3949,8 +4035,9 @@ async fn resource_views_use_directory_identity_and_reject_cross_root_paths() {
     .await;
     assert_eq!(git["repository"], false);
     for suffix in [
-        "directory_id=foreign".to_string(),
-        format!("directory_id={directory}&path=../first-resource"),
+        resource_query("foreign", &second, Some(&second)),
+        resource_query(&device, &second, Some(&first)),
+        resource_query(&device, &second, Some(std::path::Path::new("relative"))),
     ] {
         let response = request(
             &test.app,
@@ -3967,7 +4054,10 @@ async fn resource_views_use_directory_identity_and_reject_cross_root_paths() {
         let response = request(
             &test.app,
             Method::GET,
-            &format!("/api/projects/{id}/workspace/files?directory_id={directory}&path=escape"),
+            &format!(
+                "/api/projects/{id}/workspace/files?{}",
+                resource_query(&device, &second, Some(&second.join("escape")))
+            ),
             None,
         )
         .await;
@@ -3977,7 +4067,7 @@ async fn resource_views_use_directory_identity_and_reject_cross_root_paths() {
     let response = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{id}/workspace/git?directory_id={directory}"),
+        &format!("/api/projects/{id}/workspace/git?{git_location}"),
         None,
     )
     .await;

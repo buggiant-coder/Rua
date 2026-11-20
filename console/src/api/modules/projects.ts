@@ -8,6 +8,7 @@ import type {
   ProjectCreationOutcome,
   ProjectDescriptor,
   ProjectResourceInput,
+  ProjectResourceDirectory,
   ProjectDirectoryListing,
   ProjectGitStatus,
   ProjectGitHistoryPage,
@@ -16,6 +17,27 @@ import type {
   ProjectPermanentDeleteResult,
   ProjectReopenResult,
 } from "../types/project";
+
+type ResourceTarget = Pick<
+  ProjectResourceDirectory,
+  "device_id" | "resource_root"
+>;
+
+function workspacePath(
+  projectId: string,
+  operation: string,
+  target: ResourceTarget,
+  fields?: Record<string, string>,
+) {
+  const query = new URLSearchParams({
+    device_id: target.device_id,
+    resource_root: target.resource_root,
+    ...fields,
+  });
+  return `/projects/${encodeURIComponent(
+    projectId,
+  )}/workspace/${operation}?${query}`;
+}
 
 export const projectsApi = {
   archiveIdleChats: (projectId: string, chatIds?: string[]) =>
@@ -37,34 +59,42 @@ export const projectsApi = {
   get: (projectId: string) =>
     request<ProjectDescriptor>(`/projects/${encodeURIComponent(projectId)}`),
 
-  browseResource: (projectId: string, directoryId: string, path = "") =>
+  browseResource: (
+    projectId: string,
+    target: ResourceTarget,
+    path: string,
+    offset = 0,
+    signal?: AbortSignal,
+  ) =>
     request<ProjectDirectoryListing>(
-      `/projects/${encodeURIComponent(
-        projectId,
-      )}/workspace/files?directory_id=${encodeURIComponent(
-        directoryId,
-      )}&path=${encodeURIComponent(path)}`,
+      workspacePath(projectId, "files", target, {
+        path,
+        offset: String(offset),
+      }),
+      { signal },
     ),
 
-  getGitStatus: (projectId: string, directoryId: string) =>
-    request<ProjectGitStatus>(
-      `/projects/${encodeURIComponent(
-        projectId,
-      )}/workspace/git?directory_id=${encodeURIComponent(directoryId)}`,
-    ),
+  getGitStatus: (
+    projectId: string,
+    target: ResourceTarget,
+    signal?: AbortSignal,
+  ) =>
+    request<ProjectGitStatus>(workspacePath(projectId, "git", target), {
+      signal,
+    }),
 
   getGitHistory: (
     projectId: string,
-    directoryId: string,
+    target: ResourceTarget,
     offset = 0,
-    limit = 30,
+    signal?: AbortSignal,
   ) =>
     request<ProjectGitHistoryPage>(
-      `/projects/${encodeURIComponent(
-        projectId,
-      )}/workspace/git/history?offset=${offset}&limit=${limit}&directory_id=${encodeURIComponent(
-        directoryId,
-      )}`,
+      workspacePath(projectId, "git/history", target, {
+        offset: String(offset),
+        limit: "30",
+      }),
+      { signal },
     ),
 
   browseDirectory: (deviceId: string, path: string) =>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronRight,
@@ -149,7 +149,11 @@ export function ProjectShellDrawer(props: ProjectShellDrawerProps) {
             </div>
           )}
           <ProjectShellDrawerContent
-            key={`${project.project_id}:${directory?.directory_id ?? ""}`}
+            key={JSON.stringify([
+              project.project_id,
+              directory?.device_id,
+              directory?.resource_root,
+            ])}
             {...props}
             project={project}
             directory={directory}
@@ -178,8 +182,18 @@ function ProjectShellDrawerContent({
   onTabChange: (tab: string) => void;
 }) {
   const { t } = useTranslation();
-  const directoryId = directory?.directory_id;
+  const deviceId = directory?.device_id;
   const rootPath = directory?.resource_root ?? "";
+  const target = useMemo(
+    () =>
+      deviceId && rootPath
+        ? { device_id: deviceId, resource_root: rootPath }
+        : undefined,
+    [deviceId, rootPath],
+  );
+  const fileReads = useRef(new Map<string, AbortController>());
+  const gitRead = useRef<AbortController | null>(null);
+
   const device = devices.find((d) => d.device_id === directory?.device_id);
   const localResourceDevice = device?.is_self;
   const deviceLabel =
@@ -196,95 +210,144 @@ function ProjectShellDrawerContent({
   const [filesError, setFilesError] = useState<string | null>(null);
   const [gitStatus, setGitStatus] = useState<ProjectGitStatus | null>(null);
   const [gitHistory, setGitHistory] = useState<ProjectGitCommit[]>([]);
-  const [gitHistoryTotal, setGitHistoryTotal] = useState(0);
+  const [nextGitOffset, setNextGitOffset] = useState<number | null>(null);
   const [gitLoading, setGitLoading] = useState(false);
   const [gitLoadingMore, setGitLoadingMore] = useState(false);
   const [gitError, setGitError] = useState<string | null>(null);
 
   const loadDirectory = useCallback(
-    async (path: string, initial = false) => {
-      if (!directoryId) return;
-      if (initial) setFilesLoading(true);
+    async (path: string, refresh = false, offset = 0) => {
+      if (!target) return;
+      const requests = fileReads.current;
+      if (refresh) {
+        for (const request of requests.values()) request.abort();
+        requests.clear();
+        setFilesLoading(true);
+      } else if (requests.has(path) || requests.has(target.resource_root))
+        return;
+      const request = new AbortController();
+      requests.set(path, request);
       setFilesError(null);
       try {
         const listing = await projectsApi.browseResource(
           project.project_id,
-          directoryId,
-          initial ? "" : path,
+          target,
+          path,
+          offset,
+          request.signal,
         );
+        if (request.signal.aborted) return;
         setListings((current) => {
-          const next = new Map(current);
-          next.set(path, listing);
-          next.set(listing.path, listing);
+          const next = refresh
+            ? new Map<string, ProjectDirectoryListing>()
+            : new Map(current);
+          const previous = offset ? current.get(path) : undefined;
+          const merged = previous
+            ? {
+                ...listing,
+                entries: Array.from(
+                  new Map(
+                    [...previous.entries, ...listing.entries].map((entry) => [
+                      entry.path,
+                      entry,
+                    ]),
+                  ).values(),
+                ),
+              }
+            : listing;
+          next.set(path, merged);
+          next.set(listing.path, merged);
           return next;
         });
-        setExpanded((current) => new Set(current).add(listing.path));
+        if (refresh) setExpanded(new Set([listing.path]));
       } catch (error) {
-        setFilesError(
-          error instanceof Error
-            ? error.message
-            : t("projects.workspace.filesUnavailable"),
-        );
+        if (!request.signal.aborted)
+          setFilesError(extractFriendlyMessage(error));
       } finally {
-        if (initial) setFilesLoading(false);
+        if (requests.get(path) === request) requests.delete(path);
+        if (refresh && !request.signal.aborted) setFilesLoading(false);
       }
     },
-    [project.project_id, directoryId, t],
+    [project.project_id, target],
   );
 
   const loadGit = useCallback(
     async (offset = 0) => {
-      if (!directoryId) return;
-      const append = offset > 0;
-      if (append) {
-        setGitLoadingMore(true);
-      } else {
-        setGitLoading(true);
-      }
+      if (!target) return;
+      if (offset && gitRead.current) return;
+      gitRead.current?.abort();
+      const request = new AbortController();
+      gitRead.current = request;
+      setGitLoading(!offset);
+      setGitLoadingMore(Boolean(offset));
       setGitError(null);
       try {
         const [status, history] = await Promise.all([
-          projectsApi.getGitStatus(project.project_id, directoryId),
-          projectsApi.getGitHistory(project.project_id, directoryId, offset),
+          offset
+            ? null
+            : projectsApi.getGitStatus(
+                project.project_id,
+                target,
+                request.signal,
+              ),
+          projectsApi.getGitHistory(
+            project.project_id,
+            target,
+            offset,
+            request.signal,
+          ),
         ]);
+        if (request.signal.aborted) return;
         if (status) setGitStatus(status);
         setGitHistory((current) => {
-          if (!append) return history.items;
+          if (!offset) return history.items;
           const known = new Set(current.map((item) => item.oid));
           return [
             ...current,
             ...history.items.filter((item) => !known.has(item.oid)),
           ];
         });
-        setGitHistoryTotal(history.total);
+        const next = offset + history.items.length;
+        setNextGitOffset(
+          history.items.length && next < history.total ? next : null,
+        );
       } catch (error) {
-        if (!append) {
+        if (request.signal.aborted) return;
+        if (!offset) {
           setGitStatus(null);
           setGitHistory([]);
-          setGitHistoryTotal(0);
+          setNextGitOffset(null);
         }
-        setGitError(
-          error instanceof Error
-            ? error.message
-            : t("projects.workspace.gitUnavailable"),
-        );
+        setGitError(extractFriendlyMessage(error));
       } finally {
-        setGitLoading(false);
-        setGitLoadingMore(false);
+        if (gitRead.current === request) {
+          gitRead.current = null;
+          setGitLoading(false);
+          setGitLoadingMore(false);
+        }
       }
     },
-    [project.project_id, directoryId, t],
+    [project.project_id, target],
   );
 
-  const hasMoreGitHistory = gitHistory.length < gitHistoryTotal;
+  const hasMoreGitHistory = nextGitOffset !== null;
   const pullPastGitHistory = usePullPastBottom({
     enabled: hasMoreGitHistory && !gitLoading && !gitLoadingMore,
-    onLoadMore: () => void loadGit(gitHistory.length),
+    onLoadMore: () => {
+      if (nextGitOffset !== null) void loadGit(nextGitOffset);
+    },
   });
 
   useEffect(() => {
+    const requests = fileReads.current;
     if (activeTab === "files") void loadDirectory(rootPath, true);
     if (activeTab === "git") void loadGit();
+    return () => {
+      for (const request of requests.values()) request.abort();
+      requests.clear();
+      gitRead.current?.abort();
+      gitRead.current = null;
+    };
   }, [activeTab, loadDirectory, loadGit, rootPath]);
 
   const toggleDirectory = useCallback(
@@ -318,9 +381,10 @@ function ProjectShellDrawerContent({
           />
         </Tooltip>
       </div>
-      {filesError ? (
+      {filesError && (
         <WorkspaceState icon={<TriangleAlert size={15} />} text={filesError} />
-      ) : filesLoading && listings.size === 0 ? (
+      )}
+      {filesLoading && listings.size === 0 ? (
         <WorkspaceState
           icon={<LoaderCircle className={styles.spin} size={15} />}
           text={t("projects.workspace.loadingFiles")}
@@ -334,6 +398,8 @@ function ProjectShellDrawerContent({
             expanded={expanded}
             onToggle={toggleDirectory}
             onCopy={(path) => void navigator.clipboard.writeText(path)}
+            onMore={(path, offset) => void loadDirectory(path, false, offset)}
+            moreLabel={t("projects.workspace.loadMore")}
             copyLabel={t("projects.workspace.copyPath")}
           />
         </div>
@@ -422,7 +488,9 @@ function ProjectShellDrawerContent({
                     type="button"
                     className={styles.gitLoadMore}
                     disabled={gitLoadingMore}
-                    onClick={() => void loadGit(gitHistory.length)}
+                    onClick={() =>
+                      nextGitOffset !== null && void loadGit(nextGitOffset)
+                    }
                   >
                     {gitLoadingMore ? (
                       <LoaderCircle size={13} className={styles.spin} />
@@ -511,14 +579,15 @@ function ProjectShellDrawerContent({
 
   return (
     <>
-      {directoryId && localResourceDevice && canOpenProjectDirectory() && (
+      {target && localResourceDevice && canOpenProjectDirectory() && (
         <Btn
           variant="ghost"
           onClick={async () => {
             try {
               const listing = await projectsApi.browseResource(
                 project.project_id,
-                directoryId,
+                target,
+                rootPath,
               );
               await openProjectDirectory(listing.path);
             } catch (error) {
@@ -601,6 +670,8 @@ function DirectoryRows({
   onToggle,
   onCopy,
   copyLabel,
+  onMore,
+  moreLabel,
 }: {
   path: string;
   depth: number;
@@ -609,9 +680,13 @@ function DirectoryRows({
   onToggle: (path: string) => void;
   onCopy: (path: string) => void;
   copyLabel: string;
+  onMore: (path: string, offset: number) => void;
+  moreLabel: string;
 }) {
+  const { t } = useTranslation();
   const listing = listings.get(path);
   if (!listing) return null;
+  const nextOffset = listing.next_offset;
   return (
     <>
       {listing.entries
@@ -665,12 +740,34 @@ function DirectoryRows({
                   expanded={expanded}
                   onToggle={onToggle}
                   onCopy={onCopy}
+                  onMore={onMore}
+                  moreLabel={moreLabel}
                   copyLabel={copyLabel}
                 />
               ) : null}
             </div>
           );
         })}
+      {!!listing.omitted_entries && (
+        <div
+          className={styles.workspaceEmpty}
+          style={{ paddingLeft: `${8 + depth * 14}px` }}
+        >
+          {t("projects.workspace.omittedEntries", {
+            path,
+            count: listing.omitted_entries,
+          })}
+        </div>
+      )}
+      {nextOffset != null && (
+        <button
+          type="button"
+          className={styles.gitLoadMore}
+          onClick={() => onMore(path, nextOffset)}
+        >
+          {moreLabel}
+        </button>
+      )}
     </>
   );
 }

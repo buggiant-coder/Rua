@@ -77,13 +77,19 @@ pub(crate) async fn browse(path: &str) -> Result<ProjectDirectoryListing, String
             }
         }
         let mut entries = Vec::new();
+        let mut omitted_entries = 0;
         for (name, is_symlink) in children {
+            let Ok(name) = name.into_string() else {
+                omitted_entries += 1;
+                continue;
+            };
             let child = path.join(&name);
             let Some(metadata) = layout
                 .execution_host_path(&child)
                 .ok()
                 .and_then(|host| std::fs::metadata(host).ok())
             else {
+                omitted_entries += 1;
                 continue;
             };
             let kind = if metadata.is_dir() {
@@ -94,7 +100,7 @@ pub(crate) async fn browse(path: &str) -> Result<ProjectDirectoryListing, String
                 ProjectDirectoryEntryKind::Other
             };
             entries.push(ProjectDirectoryEntry {
-                name: name.to_string_lossy().into(),
+                name,
                 path: child,
                 kind,
                 is_symlink,
@@ -116,6 +122,7 @@ pub(crate) async fn browse(path: &str) -> Result<ProjectDirectoryListing, String
         Ok(ProjectDirectoryListing {
             path,
             entries,
+            omitted_entries,
             roots: roots.into(),
         })
     })

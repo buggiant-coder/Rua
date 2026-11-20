@@ -574,9 +574,16 @@ pub struct ProjectDeviceCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum ProjectResourceOperation {
-    Files { path: String },
+    Files {
+        path: PathBuf,
+        offset: usize,
+        limit: usize,
+    },
     GitStatus,
-    GitHistory { offset: usize, limit: usize },
+    GitHistory {
+        offset: usize,
+        limit: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -588,7 +595,8 @@ pub enum ProjectDeviceAction {
     },
     InspectResource {
         project_id: rua_core::ProjectId,
-        directory_id: String,
+        device_id: String,
+        resource_root: PathBuf,
         operation: ProjectResourceOperation,
     },
     CreateDirectory {
@@ -675,6 +683,10 @@ pub enum ProjectDeviceResponse {
         path: PathBuf,
         entries: Vec<rua_project::ProjectDirectoryEntry>,
         roots: Vec<rua_project::ProjectDirectoryEntry>,
+        #[serde(default)]
+        omitted_entries: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_offset: Option<usize>,
     },
     ValidatedExecutionDirectory {
         device_id: String,
@@ -1140,12 +1152,14 @@ pub enum DeviceCommandBusError {
     InvalidId(String),
     InvalidSequence,
     WrongTarget { target: String, local: String },
+    UnauthenticatedSource,
     Io(std::io::Error),
 }
 
 #[derive(Debug)]
 pub enum DeviceCommandDeliveryError {
     Timeout,
+    OutcomeUnconfirmed(String),
     Connect(String),
     Json(serde_json::Error),
     Session(rua_device_network::DeviceSessionError),
@@ -1163,6 +1177,7 @@ impl DeviceCommandDeliveryError {
 
     pub fn failure_kind(&self) -> &'static str {
         match self {
+            Self::OutcomeUnconfirmed(_) => "unconfirmed",
             Self::Rejected { .. } => "business",
             Self::AuthorityRedirect(_) => "authority_redirect",
             Self::Session(error) if error.is_version_incompatible() => "version_incompatible",
@@ -1176,6 +1191,7 @@ impl std::fmt::Display for DeviceCommandDeliveryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Timeout => write!(f, "device command delivery timed out"),
+            Self::OutcomeUnconfirmed(detail) => f.write_str(detail),
             Self::Connect(error) => write!(f, "connect: {error}"),
             Self::Json(error) => write!(f, "json: {error}"),
             Self::Session(error) => write!(f, "{error}"),
@@ -1207,6 +1223,9 @@ impl std::fmt::Display for DeviceCommandBusError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidId(id) => write!(f, "invalid device command id: {id}"),
+            Self::UnauthenticatedSource => f.write_str(
+                "Project command source does not match its authenticated Device Session",
+            ),
             Self::InvalidSequence => {
                 write!(f, "device delivery sequence must be greater than zero")
             }
@@ -1452,6 +1471,25 @@ impl DeviceCommandHandler {
 #[async_trait::async_trait]
 impl rua_device_network::DeviceSessionCommandHandler for DeviceCommandHandler {
     async fn handle_command(&self, payload: &[u8]) -> Result<Vec<u8>, String> {
+        self.handle_command_payload(None, payload).await
+    }
+
+    async fn handle_command_from(
+        &self,
+        peer_device_id: &str,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        self.handle_command_payload(Some(peer_device_id), payload)
+            .await
+    }
+}
+
+impl DeviceCommandHandler {
+    async fn handle_command_payload(
+        &self,
+        peer: Option<&str>,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, String> {
         if let Ok(envelope) = serde_json::from_slice::<UserNotificationWireEnvelope>(payload) {
             if let (Some(service), Some(request)) = (
                 self.user_notifications.as_ref(),
@@ -1461,12 +1499,11 @@ impl rua_device_network::DeviceSessionCommandHandler for DeviceCommandHandler {
             }
             return Ok(Vec::new());
         }
-        serde_json::to_vec(&self.handle_frame(payload).await).map_err(|error| error.to_string())
+        serde_json::to_vec(&self.handle_frame(peer, payload).await)
+            .map_err(|error| error.to_string())
     }
-}
 
-impl DeviceCommandHandler {
-    async fn handle_frame(&self, bytes: &[u8]) -> DeviceCommandResponse {
+    async fn handle_frame(&self, peer: Option<&str>, bytes: &[u8]) -> DeviceCommandResponse {
         let envelope = match serde_json::from_slice::<DeviceCommandEnvelope>(bytes) {
             Ok(envelope) => envelope,
             Err(error) => {
@@ -1476,6 +1513,14 @@ impl DeviceCommandHandler {
                 };
             }
         };
+        if let DeviceCommandEnvelope::Project(command) = &envelope {
+            if let Err(error) = command.validate_session_route(peer, &self.local_device_id) {
+                return DeviceCommandResponse::Rejected {
+                    reason: "invalid_project_route".into(),
+                    detail: error.to_string(),
+                };
+            }
+        }
         let Some(key) = envelope.idempotency_key() else {
             return self.dispatch_envelope(envelope).await;
         };
@@ -1786,12 +1831,6 @@ impl DeviceCommandHandler {
     }
 
     async fn handle_project(&self, command: ProjectDeviceCommand) -> DeviceCommandResponse {
-        if let Err(error) = command.validate_for_target(&self.local_device_id) {
-            return DeviceCommandResponse::Rejected {
-                reason: "invalid_project_command".to_string(),
-                detail: error.to_string(),
-            };
-        }
         let task_chat = match &command.action {
             ProjectDeviceAction::ListTasks {
                 project_id,
@@ -1890,6 +1929,8 @@ impl DeviceCommandHandler {
                             path: listing.path,
                             entries: listing.entries,
                             roots: listing.roots,
+                            omitted_entries: listing.omitted_entries,
+                            next_offset: None,
                         },
                     },
                     Err(error) => DeviceCommandResponse::Rejected {
@@ -1974,38 +2015,33 @@ impl DeviceCommandHandler {
             }
             ProjectDeviceAction::InspectResource {
                 project_id,
-                directory_id,
+                device_id,
+                resource_root,
                 operation,
             } => {
-                let directory = self
-                    .project_catalog
-                    .as_ref()
-                    .ok_or_else(|| "Project catalog unavailable".to_string())
-                    .and_then(|catalog| {
-                        let project = catalog
-                            .get(&project_id)
-                            .map_err(|e| e.to_string())?
-                            .ok_or_else(|| format!("Project not found: {project_id}"))?;
-                        let directory = project
-                            .resources
-                            .directory(&directory_id)
-                            .map_err(|e| e.to_string())?;
-                        if directory.device_id != self.local_device_id {
-                            return Err("Resource directory belongs to another Device".into());
-                        }
-                        Ok(directory.clone())
-                    });
-                let directory = match directory {
-                    Ok(directory) => directory,
-                    Err(detail) => {
-                        return DeviceCommandResponse::Rejected {
-                            reason: "project_resource_unavailable".into(),
-                            detail,
-                        }
-                    }
-                };
+                if device_id != self.local_device_id {
+                    return DeviceCommandResponse::Rejected {
+                        reason: "project_resource_unavailable".into(),
+                        detail: "Resource directory belongs to another Device".into(),
+                    };
+                }
+                let catalog = self.project_catalog.clone();
                 match tokio::task::spawn_blocking(move || {
-                    super::projects::inspect_project_resource(&directory, operation)
+                    let project = catalog
+                        .ok_or("Project catalog unavailable")?
+                        .get(&project_id)
+                        .map_err(|error| error.to_string())?
+                        .ok_or("Project unavailable on resource Device")?;
+                    if !project
+                        .resources
+                        .contains_location(&device_id, &resource_root)
+                    {
+                        return Err(
+                            "Selected location is not registered in the Project on this Device"
+                                .into(),
+                        );
+                    }
+                    super::projects::inspect_project_resource(&device_id, &resource_root, operation)
                 })
                 .await
                 {
@@ -4682,6 +4718,17 @@ impl SyncTransferDeviceCommand {
 }
 
 impl ProjectDeviceCommand {
+    pub fn validate_session_route(
+        &self,
+        authenticated_peer: Option<&str>,
+        local_device_id: &str,
+    ) -> Result<(), DeviceCommandBusError> {
+        if authenticated_peer != Some(self.source_device_id.as_str()) {
+            return Err(DeviceCommandBusError::UnauthenticatedSource);
+        }
+        self.validate_for_target(local_device_id)
+    }
+
     pub fn validate_for_target(&self, local_device_id: &str) -> Result<(), DeviceCommandBusError> {
         validate_id(&self.command_id)?;
         validate_id(&self.source_device_id)?;
@@ -5100,15 +5147,55 @@ pub async fn deliver_project_device_command_via_session(
     command: &ProjectDeviceCommand,
     timeout: Duration,
 ) -> Result<ProjectDeviceResponse, DeviceCommandDeliveryError> {
-    match deliver_envelope_via_session(
-        session_manager,
-        &command.target_device_id,
-        DeviceCommandEnvelope::Project(command.clone()),
-        timeout,
-    )
-    .await?
-    {
+    let envelope = DeviceCommandEnvelope::Project(command.clone());
+    let response = if matches!(command.action, ProjectDeviceAction::CreateDirectory { .. }) {
+        let unconfirmed = |detail: String| {
+            DeviceCommandDeliveryError::OutcomeUnconfirmed(format!(
+                "Directory creation on Device '{}' is unconfirmed. Refresh the directory before trying again. {detail}",
+                command.target_device_id
+            ))
+        };
+        let payload = serde_json::to_vec(&envelope)?;
+        let bytes = session_manager
+            .command_once_to(&command.target_device_id, &payload, timeout)
+            .await
+            .map_err(|error| match error {
+                rua_device_network::DeviceSessionError::Timeout {
+                    stage: "command exchange",
+                    ..
+                }
+                | rua_device_network::DeviceSessionError::Io(_)
+                | rua_device_network::DeviceSessionError::Closed(_)
+                | rua_device_network::DeviceSessionError::CommandRejected(_)
+                | rua_device_network::DeviceSessionError::FrameTooLarge { .. } => {
+                    unconfirmed(error.to_string())
+                }
+                other => other.into(),
+            })?;
+        let response: DeviceCommandResponse =
+            serde_json::from_slice(&bytes).map_err(|e| unconfirmed(e.to_string()))?;
+        match &response {
+            DeviceCommandResponse::Project {
+                response: ProjectDeviceResponse::Directory { device_id, .. },
+            } if device_id == &command.target_device_id => {}
+            DeviceCommandResponse::Rejected { .. } => {}
+            _ => return Err(unconfirmed("Unexpected directory creation receipt".into())),
+        }
+        response
+    } else {
+        deliver_envelope_via_session(
+            session_manager,
+            &command.target_device_id,
+            envelope,
+            timeout,
+        )
+        .await?
+    };
+    match response {
         DeviceCommandResponse::Project { response } => Ok(response),
+        DeviceCommandResponse::Rejected { reason, detail } => {
+            Err(DeviceCommandDeliveryError::Rejected { reason, detail })
+        }
         response => unexpected_response(response, "Project command"),
     }
 }

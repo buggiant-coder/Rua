@@ -84,6 +84,7 @@ fn directory_listing_skips_broken_symlink_entries() {
     std::os::unix::fs::symlink(temp.path().join("missing"), temp.path().join("broken")).unwrap();
     std::fs::create_dir(temp.path().join("visible")).unwrap();
     let listing = list_project_directory(&temp.path().to_string_lossy()).unwrap();
+    assert_eq!(listing.omitted_entries, 1);
     assert_eq!(listing.entries.len(), 1);
     assert_eq!(listing.entries[0].name, "visible");
 }

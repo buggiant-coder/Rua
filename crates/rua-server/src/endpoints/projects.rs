@@ -327,7 +327,7 @@ async fn browse_directory(
         Err(error) => return placement_error(error),
     };
     match service
-        .browse_directory(body.device_id.trim(), body.path.trim())
+        .browse_directory(body.device_id.trim(), &body.path)
         .await
     {
         Ok(listing) => directory_response(body.device_id, listing),
@@ -351,7 +351,7 @@ async fn create_directory(
         Err(error) => return placement_error(error),
     };
     match service
-        .create_directory(body.device_id.trim(), body.parent.trim(), body.name.trim())
+        .create_directory(body.device_id.trim(), &body.parent, &body.name)
         .await
     {
         Ok(listing) => directory_response(body.device_id, listing),
@@ -366,12 +366,26 @@ fn directory_response(
     Json(BrowseDirectoryResponse::from_listing(device_id, listing)).into_response()
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct ProjectResourceQuery {
-    directory_id: Option<String>,
     #[serde(default)]
-    path: String,
+    device_id: String,
+    #[serde(default)]
+    resource_root: std::path::PathBuf,
+    path: Option<std::path::PathBuf>,
+    #[serde(default)]
+    offset: usize,
+    limit: Option<usize>,
 }
+
+#[derive(Serialize)]
+struct LocatedGitResult<T> {
+    device_id: String,
+    resource_root: std::path::PathBuf,
+    #[serde(flatten)]
+    result: T,
+}
+
 #[derive(Debug, Deserialize)]
 struct ArchiveIdleChatsRequest {
     chat_ids: Option<Vec<String>>,
@@ -404,43 +418,16 @@ async fn get_project_files(
     Path(project_id): Path<String>,
     Query(query): Query<ProjectResourceQuery>,
 ) -> Response {
-    let project = match state.project_catalog.get(&ProjectId::new(project_id)) {
-        Ok(Some(project)) => project,
-        Ok(None) => return ApiError::NotFound("Project not found".into()).into_response(),
-        Err(error) => return ApiError::Internal(error.to_string()).into_response(),
+    let Some(path) = query.path.clone() else {
+        return ApiError::BadRequest("An explicit resource path is required".into())
+            .into_response();
     };
-    let Some(directory_id) = query.directory_id else {
-        return ApiError::BadRequest("directory_id is required".into()).into_response();
+    let operation = ProjectResourceOperation::Files {
+        path,
+        offset: query.offset,
+        limit: query.limit.unwrap_or(100),
     };
-    let service = match ProjectPlacementService::from_state(&state) {
-        Ok(service) => service,
-        Err(error) => return placement_error(error),
-    };
-    match service
-        .inspect_resource(
-            &project,
-            &directory_id,
-            ProjectResourceOperation::Files { path: query.path },
-        )
-        .await
-    {
-        Ok(ProjectDeviceResponse::Directory {
-            device_id,
-            path,
-            entries,
-            roots,
-        }) => Json(BrowseDirectoryResponse {
-            device_id,
-            path,
-            entries,
-            roots,
-            parent_path: None,
-            proposed_name: project.display_name,
-        })
-        .into_response(),
-        Ok(_) => placement_error(ProjectPlacementError::UnexpectedResponse),
-        Err(error) => placement_error(error),
-    }
+    inspect_resource_response(&state, project_id, query, operation).await
 }
 
 async fn get_project_git_status(
@@ -448,77 +435,96 @@ async fn get_project_git_status(
     Path(project_id): Path<String>,
     Query(query): Query<ProjectResourceQuery>,
 ) -> Response {
-    let project_id = ProjectId::new(project_id);
-    let project = match state.project_catalog.get(&project_id) {
-        Ok(Some(project)) => project,
-        Ok(None) => {
-            return ApiError::NotFound("Project not found".to_string()).into_response();
-        }
-        Err(error) => return ApiError::Internal(error.to_string()).into_response(),
-    };
-    let service = match ProjectPlacementService::from_state(&state) {
-        Ok(service) => service,
-        Err(error) => return placement_error(error),
-    };
-    if let Some(directory_id) = query.directory_id {
-        return match service
-            .inspect_resource(&project, &directory_id, ProjectResourceOperation::GitStatus)
-            .await
-        {
-            Ok(ProjectDeviceResponse::GitStatus { status }) => Json(status).into_response(),
-            Ok(_) => placement_error(ProjectPlacementError::UnexpectedResponse),
-            Err(error) => placement_error(error),
-        };
-    }
-    ApiError::BadRequest("directory_id is required".into()).into_response()
-}
-
-#[derive(Debug, Deserialize)]
-struct ProjectGitHistoryQuery {
-    directory_id: Option<String>,
-    #[serde(default)]
-    offset: usize,
-    #[serde(default = "default_git_history_limit")]
-    limit: usize,
-}
-
-const fn default_git_history_limit() -> usize {
-    30
+    inspect_resource_response(
+        &state,
+        project_id,
+        query,
+        ProjectResourceOperation::GitStatus,
+    )
+    .await
 }
 
 async fn get_project_git_history(
     State(state): State<AppState>,
     Path(project_id): Path<String>,
-    Query(query): Query<ProjectGitHistoryQuery>,
+    Query(query): Query<ProjectResourceQuery>,
 ) -> Response {
-    let project_id = ProjectId::new(project_id);
-    let project = match state.project_catalog.get(&project_id) {
+    let operation = ProjectResourceOperation::GitHistory {
+        offset: query.offset,
+        limit: query.limit.unwrap_or(30),
+    };
+    inspect_resource_response(&state, project_id, query, operation).await
+}
+
+async fn inspect_resource_response(
+    state: &AppState,
+    project_id: String,
+    query: ProjectResourceQuery,
+    operation: ProjectResourceOperation,
+) -> Response {
+    if query.device_id.trim().is_empty() || query.resource_root.as_os_str().is_empty() {
+        return ApiError::BadRequest("device_id and resource_root are required".into())
+            .into_response();
+    }
+    let project = match state.project_catalog.get(&ProjectId::new(project_id)) {
         Ok(Some(project)) => project,
-        Ok(None) => return ApiError::NotFound("Project not found".to_string()).into_response(),
+        Ok(None) => return ApiError::NotFound("Project not found".into()).into_response(),
         Err(error) => return ApiError::Internal(error.to_string()).into_response(),
     };
-    let service = match ProjectPlacementService::from_state(&state) {
+    let service = match ProjectPlacementService::from_state(state) {
         Ok(service) => service,
         Err(error) => return placement_error(error),
     };
-    if let Some(directory_id) = query.directory_id {
-        return match service
-            .inspect_resource(
-                &project,
-                &directory_id,
-                ProjectResourceOperation::GitHistory {
-                    offset: query.offset,
-                    limit: query.limit,
-                },
-            )
-            .await
-        {
-            Ok(ProjectDeviceResponse::GitHistory { history }) => Json(history).into_response(),
-            Ok(_) => placement_error(ProjectPlacementError::UnexpectedResponse),
-            Err(error) => placement_error(error),
-        };
+    let response = service
+        .inspect_resource(
+            &project,
+            &query.device_id,
+            &query.resource_root,
+            operation.clone(),
+        )
+        .await;
+    match (operation, response) {
+        (
+            ProjectResourceOperation::Files { .. },
+            Ok(ProjectDeviceResponse::Directory {
+                device_id,
+                path,
+                entries,
+                roots,
+                omitted_entries,
+                next_offset,
+            }),
+        ) if device_id == query.device_id => Json(BrowseDirectoryResponse {
+            device_id,
+            path,
+            entries,
+            roots,
+            omitted_entries,
+            next_offset,
+            parent_path: None,
+            proposed_name: project.display_name,
+        })
+        .into_response(),
+        (ProjectResourceOperation::GitStatus, Ok(ProjectDeviceResponse::GitStatus { status })) => {
+            Json(LocatedGitResult {
+                device_id: query.device_id,
+                resource_root: query.resource_root,
+                result: status,
+            })
+            .into_response()
+        }
+        (
+            ProjectResourceOperation::GitHistory { .. },
+            Ok(ProjectDeviceResponse::GitHistory { history }),
+        ) => Json(LocatedGitResult {
+            device_id: query.device_id,
+            resource_root: query.resource_root,
+            result: history,
+        })
+        .into_response(),
+        (_, Err(error)) => placement_error(error),
+        _ => placement_error(ProjectPlacementError::UnexpectedResponse),
     }
-    ApiError::BadRequest("directory_id is required".into()).into_response()
 }
 
 #[derive(Deserialize)]
@@ -1213,7 +1219,9 @@ fn placement_error(error: ProjectPlacementError) -> Response {
     match error {
         ProjectPlacementError::NotFound(_) => ApiError::NotFound(error.to_string()),
         ProjectPlacementError::MissingLocalDevice => ApiError::Conflict(error.to_string()),
-        ProjectPlacementError::Unavailable(_) => ApiError::Unavailable(error.to_string()),
+        ProjectPlacementError::Unavailable(_) | ProjectPlacementError::OutcomeUnconfirmed(_) => {
+            ApiError::Unavailable(error.to_string())
+        }
         ProjectPlacementError::Rejected(_) | ProjectPlacementError::Invalid(_) => {
             ApiError::BadRequest(error.to_string())
         }

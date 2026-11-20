@@ -474,6 +474,7 @@
       "git": "Git",
       "context": "Context",
       "copyPath": "Copy path",
+      "omittedEntries": "Some entries in {{path}} could not be listed ({{count}} omitted).",
       "refreshFiles": "Refresh files",
       "refreshGit": "Refresh Git status",
       "loadingFiles": "Loading files",

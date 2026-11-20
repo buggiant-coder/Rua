@@ -27,17 +27,23 @@ pub struct BrowseDirectoryResponse {
     pub roots: Vec<rua_project::ProjectDirectoryEntry>,
     pub parent_path: Option<std::path::PathBuf>,
     pub entries: Vec<rua_project::ProjectDirectoryEntry>,
+    #[serde(default)]
+    pub omitted_entries: usize,
     pub proposed_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
 }
 
 impl BrowseDirectoryResponse {
     pub(crate) fn from_listing(device_id: String, listing: ProjectDirectoryListing) -> Self {
         Self {
             device_id,
+            next_offset: None,
             parent_path: listing.path.parent().map(Path::to_owned),
             proposed_name: rua_project::propose_project_display_name(&listing.path),
             path: listing.path,
             entries: listing.entries,
+            omitted_entries: listing.omitted_entries,
             roots: listing.roots,
         }
     }
@@ -53,6 +59,8 @@ pub enum ProjectPlacementError {
     MissingLocalDevice,
     #[error("Project Device command is unavailable: {0}")]
     Unavailable(String),
+    #[error("{0}")]
+    OutcomeUnconfirmed(String),
     #[error("Project request was rejected: {0}")]
     Rejected(String),
     #[error("invalid Project request: {0}")]
@@ -178,11 +186,14 @@ impl ProjectPlacementService {
                 path,
                 entries,
                 roots,
+                omitted_entries,
+                device_id,
                 ..
-            } => Ok(ProjectDirectoryListing {
+            } if device_id == resource_device_id => Ok(ProjectDirectoryListing {
                 path,
                 entries,
                 roots,
+                omitted_entries,
             }),
             _ => Err(ProjectPlacementError::UnexpectedResponse),
         }
@@ -211,11 +222,14 @@ impl ProjectPlacementService {
                 path,
                 entries,
                 roots,
+                omitted_entries,
+                device_id,
                 ..
-            } => Ok(ProjectDirectoryListing {
+            } if device_id == resource_device_id => Ok(ProjectDirectoryListing {
                 path,
                 entries,
                 roots,
+                omitted_entries,
             }),
             _ => Err(ProjectPlacementError::UnexpectedResponse),
         }
@@ -355,31 +369,48 @@ impl ProjectPlacementService {
     pub async fn inspect_resource(
         &self,
         project: &ProjectDescriptor,
-        directory_id: &str,
+        device_id: &str,
+        resource_root: &Path,
         operation: ProjectResourceOperation,
     ) -> Result<ProjectDeviceResponse, ProjectPlacementError> {
-        let directory = project
+        if !project
             .resources
-            .directory(directory_id)
-            .map_err(map_project_error)?;
-        if directory.device_id == self.local_device_id {
-            let directory = directory.clone();
+            .contains_location(device_id, resource_root)
+        {
+            return Err(ProjectPlacementError::Invalid(format!(
+                "Project does not contain resource {device_id} {}",
+                resource_root.display()
+            )));
+        }
+        if device_id == self.local_device_id {
+            let device_id = device_id.to_owned();
+            let resource_root = resource_root.to_owned();
             return tokio::task::spawn_blocking(move || {
-                inspect_project_resource(&directory, operation)
+                inspect_project_resource(&device_id, &resource_root, operation)
             })
             .await
             .map_err(|e| ProjectPlacementError::Unavailable(e.to_string()))?
             .map_err(ProjectPlacementError::Invalid);
         }
         self.deliver(
-            &directory.device_id,
+            device_id,
             ProjectDeviceAction::InspectResource {
                 project_id: project.project_id.clone(),
-                directory_id: directory_id.into(),
+                device_id: device_id.into(),
+                resource_root: resource_root.into(),
                 operation,
             },
         )
         .await
+        .map_err(|error| match error {
+            ProjectPlacementError::Unavailable(detail) => {
+                ProjectPlacementError::Unavailable(format!(
+                    "Device {device_id}, resource {}: {detail}",
+                    resource_root.display()
+                ))
+            }
+            other => other,
+        })
     }
 
     pub async fn lifecycle_preview(
@@ -507,6 +538,9 @@ impl ProjectPlacementService {
         )
         .await
         .map_err(|error| match error {
+            crate::services::device_command_bus::DeviceCommandDeliveryError::OutcomeUnconfirmed(
+                detail,
+            ) => ProjectPlacementError::OutcomeUnconfirmed(detail),
             crate::services::device_command_bus::DeviceCommandDeliveryError::Rejected {
                 detail,
                 ..
@@ -566,35 +600,65 @@ fn map_project_error(error: rua_project::ProjectError) -> ProjectPlacementError 
 
 /// Inspect a directory after verifying that its saved owner is this Device.
 pub(crate) fn inspect_project_resource(
-    directory: &rua_project::ProjectResourceDirectory,
+    device_id: &str,
+    resource_root: &Path,
     operation: ProjectResourceOperation,
 ) -> Result<ProjectDeviceResponse, String> {
-    let root = directory.resource_root.canonicalize().map_err(|error| {
+    if !resource_root.is_absolute() {
+        return Err("The selected resource root must be an absolute path on its Device".into());
+    }
+    let root = resource_root.canonicalize().map_err(|error| {
         format!(
-            "Resource directory {} is unavailable: {error}",
-            directory.resource_root.display()
+            "Resource directory on {device_id} at {} is unavailable: {error}",
+            resource_root.display()
         )
     })?;
     match operation {
-        ProjectResourceOperation::Files { path } => {
-            let requested = Path::new(&path);
-            let candidate = if requested.is_absolute() {
-                requested.to_path_buf()
-            } else {
-                root.join(requested)
-            };
-            let path = candidate
-                .canonicalize()
-                .map_err(|error| format!("Resource path unavailable: {error}"))?;
+        ProjectResourceOperation::Files {
+            path,
+            offset,
+            limit,
+        } => {
+            if !path.is_absolute() {
+                return Err("Resource path must be absolute on its owning Device".into());
+            }
+            let path = path.canonicalize().map_err(|error| {
+                format!(
+                    "Resource path on {device_id} at {} is unavailable: {error}",
+                    path.display()
+                )
+            })?;
             if !path.starts_with(&root) {
                 return Err("Path must stay inside the selected resource directory".into());
             }
-            let listing = rua_project::list_project_directory(&path.to_string_lossy())
+            let limit = limit.clamp(1, 200);
+            let listing = rua_project::list_project_directory_contents(&path)
                 .map_err(|error| error.to_string())?;
+            // Leave room for the response envelope even when path names need JSON escaping.
+            let total = listing.entries.len();
+            let mut entries = Vec::new();
+            let mut bytes = 0;
+            for entry in listing.entries.into_iter().skip(offset).take(limit) {
+                let size = serde_json::to_vec(&entry)
+                    .map_err(|error| error.to_string())?
+                    .len()
+                    + 1;
+                if bytes + size > 256 * 1024 {
+                    if entries.is_empty() {
+                        return Err("Directory entry exceeds the response size limit".into());
+                    }
+                    break;
+                }
+                bytes += size;
+                entries.push(entry);
+            }
+            let end = offset.saturating_add(entries.len());
             Ok(ProjectDeviceResponse::Directory {
-                device_id: directory.device_id.clone(),
+                device_id: device_id.into(),
+                next_offset: (end < total).then_some(end),
                 path: listing.path,
-                entries: listing.entries,
+                entries,
+                omitted_entries: listing.omitted_entries,
                 roots: Vec::new(),
             })
         }

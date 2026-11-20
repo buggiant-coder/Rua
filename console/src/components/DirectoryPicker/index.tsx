@@ -47,14 +47,13 @@ interface DirectoryPickerProps<T> {
 }
 
 function splitPath(value: string): { parent: string; query: string } {
-  const trimmed = value.trim();
-  if (!trimmed) return { parent: "", query: "" };
-  if (trimmed === "/") return { parent: "/", query: "" };
-  const separator = trimmed.lastIndexOf("/");
-  if (separator < 0) return { parent: ".", query: trimmed };
+  if (!value.trim()) return { parent: "", query: "" };
+  if (value === "/") return { parent: "/", query: "" };
+  const separator = value.lastIndexOf("/");
+  if (separator < 0) return { parent: ".", query: value };
   return {
-    parent: separator === 0 ? "/" : trimmed.slice(0, separator),
-    query: trimmed.slice(separator + 1),
+    parent: separator === 0 ? "/" : value.slice(0, separator),
+    query: value.slice(separator + 1),
   };
 }
 
@@ -209,7 +208,7 @@ export default function DirectoryPicker<T = unknown>({
     const requestId = ++requestIdRef.current;
     setCreatingFolder(true);
     try {
-      const next = await createDirectory(listing.path, folderName.trim());
+      const next = await createDirectory(listing.path, folderName);
       if (requestId !== requestIdRef.current) return;
       setListing(next);
       onListingChange?.(next);
@@ -295,7 +294,7 @@ export default function DirectoryPicker<T = unknown>({
           title={open ? closeLabel : openLabel}
           disabled={disabled || creatingFolder}
           onClick={() => {
-            if (!open) void loadListing(value.trim() || "~");
+            if (!open) void loadListing(value.trim() ? value : "~");
             setOpen((current) => !current);
           }}
         >

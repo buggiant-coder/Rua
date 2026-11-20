@@ -87,6 +87,7 @@ fn builder_wires_agent_id_in_tool_ctx_metadata() {
     );
 
     let tool_ctx = ToolContext {
+        local_device_id: None,
         agent_id: agent_id.to_string(),
         session_id: "sess-1".to_string(),
         working_dir: std::path::PathBuf::from("/tmp"),
@@ -131,6 +132,7 @@ fn builder_wires_approval_authority_and_metadata_together() {
     );
 
     let tool_ctx = ToolContext {
+        local_device_id: None,
         agent_id: agent_id.to_string(),
         session_id: "sess-2".to_string(),
         working_dir: std::path::PathBuf::from("/tmp"),

@@ -481,12 +481,31 @@ impl LinuxCompatLayout {
     pub fn android(native_dir: &Path, data_dir: &Path, host_home: &Path) -> Self {
         let home = host_home.to_path_buf();
         let rootfs = data_dir.join("runtime/debian");
+        // Android can expose the same private home through two distinct bind mounts.
+        #[cfg(unix)]
+        let home_alias = {
+            use std::os::unix::fs::MetadataExt;
+
+            let alias = data_dir.join("home");
+            (alias != home)
+                .then(|| {
+                    let registered = std::fs::metadata(&home).ok()?;
+                    let alternate = std::fs::metadata(&alias).ok()?;
+                    (registered.is_dir()
+                        && registered.dev() == alternate.dev()
+                        && registered.ino() == alternate.ino())
+                    .then(|| RuntimeBind::new(&home, alias))
+                })
+                .flatten()
+        };
+        #[cfg(not(unix))]
+        let home_alias: Option<RuntimeBind> = None;
         Self {
             proot_path: native_dir.join("libproot.so"),
             rootfs_path: rootfs.clone(),
             host_home: home.clone(),
             guest_home: PathBuf::from(LINUX_COMPAT_GUEST_HOME),
-            binds: vec![
+            binds: [
                 RuntimeBind::new(&home, &home),
                 RuntimeBind::new(data_dir.join("guest-home"), LINUX_COMPAT_GUEST_HOME),
                 RuntimeBind::new(
@@ -502,7 +521,10 @@ impl LinuxCompatLayout {
                 RuntimeBind::new("/sys", "/sys"),
                 RuntimeBind::new("/proc", "/proc"),
                 RuntimeBind::new("/dev", "/dev"),
-            ],
+            ]
+            .into_iter()
+            .chain(home_alias)
+            .collect(),
         }
     }
 
@@ -635,6 +657,17 @@ impl LinuxCompatLayout {
                 bind.guest
                     .join(path.strip_prefix(&bind.host).expect("matched bind")),
             );
+        }
+        // A saved absolute path can already be the verified public spelling of this bind.
+        for bind in self.binds.iter().filter(|bind| bind.host == self.host_home) {
+            if let Ok(suffix) = path.strip_prefix(&bind.guest) {
+                if !suffix
+                    .components()
+                    .any(|part| part == std::path::Component::ParentDir)
+                {
+                    return Some(bind.guest.join(suffix));
+                }
+            }
         }
         if path.starts_with(&self.guest_home) || path.starts_with("/tmp") {
             return Some(path.to_path_buf());

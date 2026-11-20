@@ -41,7 +41,7 @@ export default function ProjectResourcePicker({
     (d) => d.is_self || d.connectivity_state === "connected",
   );
   const preferredDevice =
-    connected.find((d) => d.device_id === previous?.device_id)?.device_id ??
+    previous?.device_id ??
     connected.find((d) => d.is_self)?.device_id ??
     connected[0]?.device_id ??
     "";
@@ -133,7 +133,7 @@ export default function ProjectResourcePicker({
     setSaving(true);
     setError("");
     try {
-      const result = await browse(path.trim());
+      const result = await browse(path);
       const sameLocation =
         previous?.device_id === deviceId &&
         previous.resource_root === result.path;
@@ -176,6 +176,11 @@ export default function ProjectResourcePicker({
             setBrowseRequest({ path: "~", id: Date.now() });
           }}
         >
+          {deviceId && !devices.some((d) => d.device_id === deviceId) && (
+            <Select.Option value={deviceId}>
+              {deviceId} · {t("projects.offline")}
+            </Select.Option>
+          )}
           {devices.map((d) => (
             <Select.Option key={d.device_id} value={d.device_id}>
               {projectResourceDeviceLabel(d.device_id, devices)}
@@ -198,20 +203,7 @@ export default function ProjectResourcePicker({
           placeholder="~"
           browseRequest={browseRequest}
           onLoadingChange={setBrowsing}
-          browse={async (destination) => {
-            try {
-              return listing(await browse(destination));
-            } catch (cause) {
-              if (
-                cause instanceof StoragePermissionRequired ||
-                !previous ||
-                destination === "~" ||
-                destination !== browseRequest.path
-              )
-                throw cause;
-              return listing(await browse("~"));
-            }
-          }}
+          browse={async (destination) => listing(await browse(destination))}
           createDirectory={async (parent, name) =>
             listing(
               await withStorageAccess(parent, () =>

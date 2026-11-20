@@ -88,6 +88,8 @@ export interface ProjectDirectoryEntry {
 }
 
 export interface ProjectDirectoryListing {
+  omitted_entries?: number;
+  next_offset?: number | null;
   device_id: string;
   path: string;
   parent_path: string | null;

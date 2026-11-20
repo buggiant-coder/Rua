@@ -234,3 +234,213 @@ test("a Project can be empty and keep same-path folders on two devices independe
   expect(project!.project_id).toBe("photos");
   expect(browses.length).toBe(visits);
 });
+
+test("resource browsing, Git, and folder creation follow the selected Device and actual path", async ({
+  page,
+}) => {
+  await mockConsoleTransport(page);
+  await page.addInitScript(() => localStorage.setItem("language", "en"));
+  const root = "/shared/repo";
+  const devices = ["desktop", "phone"].map((device_id) => ({
+    device_id,
+    friendly_name: device_id,
+    is_self: device_id === "desktop",
+    connectivity_state: "connected",
+  }));
+  const project = {
+    project_id: "pair",
+    display_name: "Pair",
+    lifecycle: "active",
+    resources: {
+      revision: 1,
+      directories: devices.map((d) => ({
+        directory_id: "row-" + d.device_id,
+        device_id: d.device_id,
+        resource_root: root,
+      })),
+    },
+  };
+  const workspace: string[] = [];
+  const mkdir: unknown[] = [];
+  const unconfirmed =
+    "Directory creation on Device 'phone' is unconfirmed. Refresh the directory before trying again.";
+  let online = true;
+  const listing = (
+    device: string,
+    path: string,
+    name: string,
+    offset: number | null = null,
+  ) => ({
+    device_id: device,
+    path,
+    parent_path: "/",
+    roots: [],
+    proposed_name: "repo",
+    entries: [
+      {
+        name,
+        path: path + "/" + name,
+        kind: name === "nested" ? "directory" : "file",
+        is_symlink: false,
+      },
+    ],
+    next_offset: offset,
+  });
+  await page.route(
+    (u) => u.pathname.startsWith("/api/"),
+    (route) => {
+      const req = route.request(),
+        url = new URL(req.url()),
+        path = url.pathname.slice(4),
+        query = url.searchParams;
+      const send = (json: unknown, status = 200) =>
+        route.fulfill({ json, status });
+      if (path === "/agents")
+        return send({
+          agents: [{ id: "default", name: "Default", enabled: true }],
+        });
+      if (path === "/auth/status") return send({ enabled: false });
+      if (path === "/sync/devices") return send({ devices });
+      if (path === "/project-sidebar")
+        return send({ revision: "1", sections: [], items: {} });
+      if (path === "/projects") return send({ projects: [project] });
+      if (path === "/projects/pair") return send(project);
+      if (path === "/projects/directory") {
+        const { device_id, path: real } = req.postDataJSON();
+        return send(listing(device_id, real, "nested"));
+      }
+      if (path === "/projects/directory/create") {
+        const body = req.postDataJSON();
+        mkdir.push(body);
+        if (body.name === "receipt-lost")
+          return send({ detail: unconfirmed }, 503);
+        return send(
+          listing(body.device_id, body.parent + "/" + body.name, "nested"),
+        );
+      }
+      if (path.startsWith("/projects/pair/workspace/")) {
+        const device = query.get("device_id"),
+          base = query.get("resource_root"),
+          offset = Number(query.get("offset") ?? 0),
+          operation = path.split("workspace/")[1],
+          actual = query.get("path");
+        workspace.push([device, operation, actual ?? base, offset].join(" "));
+        if (
+          !devices.some((d) => d.device_id === device) ||
+          query.has("directory_id") ||
+          base !== root
+        )
+          return send({ detail: "Wrong resource target" }, 400);
+        if (device === "phone" && !online)
+          return send({ detail: "Phone offline" }, 503);
+        if (operation === "files" && actual === root)
+          return send(
+            listing(
+              device!,
+              root,
+              offset ? device + ".txt" : "nested",
+              offset ? null : 1,
+            ),
+          );
+        if (operation === "files" && actual === root + "/nested")
+          return send(listing(device!, actual, "child-" + device + ".txt"));
+        if (operation === "git")
+          return send({
+            repository: true,
+            branch: device + "-branch",
+            detached: false,
+            ahead: 0,
+            behind: 0,
+            changes: [],
+          });
+        if (operation === "git/history")
+          return send({
+            items: [
+              {
+                oid: (offset ? "b" : "a").repeat(40),
+                parent_oids: [],
+                summary: device + " commit " + (offset + 1),
+                authored_at: "2026-11-20T00:00:00Z",
+                refs: [],
+              },
+            ],
+            offset,
+            limit: 30,
+            total: 2,
+          });
+        return send({ detail: "Wrong operation or path" }, 400);
+      }
+      if (
+        path === "/chats" ||
+        path === "/models" ||
+        path.includes("/providers") ||
+        path.includes("/channels")
+      )
+        return send([]);
+      return send({});
+    },
+  );
+  await page.goto("/projects?overview=1");
+  const actions = page
+    .locator("#desktop-navigation")
+    .getByRole("button", { name: "Actions for Pair", exact: true });
+  const dialog = page.getByRole("dialog");
+  await actions.click();
+  await page.getByRole("menuitem", { name: "Browse resource folders" }).click();
+  await expect(dialog.getByText("nested", { exact: true })).toBeVisible();
+  const select = async (device: string) => {
+    await dialog.getByRole("combobox").click();
+    await page.getByRole("option").filter({ hasText: device }).click();
+  };
+  await select("phone");
+  await dialog.getByText("nested", { exact: true }).click();
+  await expect(dialog.getByText("child-phone.txt")).toBeVisible();
+  await dialog.getByRole("button", { name: "Load more" }).click();
+  await expect(dialog.getByText("phone.txt", { exact: true })).toBeVisible();
+  await dialog.getByRole("tab", { name: "Git", exact: true }).click();
+  await expect(dialog.getByText("phone commit 1")).toBeVisible();
+  await dialog.getByRole("button", { name: "Load more" }).click();
+  await expect(dialog.getByText("phone commit 2")).toBeVisible();
+  expect(workspace.filter((v) => v.startsWith("phone git "))).toHaveLength(1);
+  online = false;
+  await dialog.getByRole("button", { name: "Refresh Git status" }).click();
+  await expect(dialog.getByText("Phone offline")).toBeVisible();
+  await expect(dialog.getByRole("combobox")).toContainText("phone");
+  await select("desktop");
+  await expect(dialog.getByText("desktop commit 1")).toBeVisible();
+  expect(workspace).toEqual(
+    expect.arrayContaining([
+      "phone files /shared/repo 0",
+      "phone files /shared/repo/nested 0",
+      "phone files /shared/repo 1",
+      "phone git/history /shared/repo 1",
+    ]),
+  );
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  online = true;
+  await actions.click();
+  await page.getByRole("menuitem", { name: "Edit project" }).click();
+  await dialog.getByRole("button", { name: "Change folder" }).last().click();
+  await dialog.getByRole("button", { name: "New folder", exact: true }).click();
+  await dialog
+    .getByRole("textbox", { name: "Folder name" })
+    .fill("phone-write");
+  await dialog.getByRole("button", { name: "New folder", exact: true }).click();
+  await expect
+    .poll(() => mkdir)
+    .toEqual([{ device_id: "phone", parent: root, name: "phone-write" }]);
+  await dialog.getByRole("button", { name: "New folder", exact: true }).click();
+  await dialog
+    .getByRole("textbox", { name: "Folder name" })
+    .fill("receipt-lost");
+  await dialog.getByRole("button", { name: "New folder", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toHaveText(unconfirmed);
+  await dialog
+    .getByRole("button", { name: "Cancel", exact: true })
+    .first()
+    .click();
+  expect(mkdir).toEqual([
+    { device_id: "phone", parent: root, name: "phone-write" },
+    { device_id: "phone", parent: root + "/phone-write", name: "receipt-lost" },
+  ]);
+});

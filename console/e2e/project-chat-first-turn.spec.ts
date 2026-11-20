@@ -382,7 +382,9 @@ async function mockProjectChatApis(
     }
     if (path === "/projects/project-rua/workspace/files") {
       const directory = projectFixture.resources.directories.find(
-        (entry) => entry.directory_id === url.searchParams.get("directory_id"),
+        (entry) =>
+          entry.device_id === url.searchParams.get("device_id") &&
+          entry.resource_root === url.searchParams.get("resource_root"),
       );
       return directory
         ? json({

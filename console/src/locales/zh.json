@@ -473,6 +473,7 @@
       "git": "Git",
       "context": "上下文",
       "copyPath": "复制路径",
+      "omittedEntries": "{{path}} 中有 {{count}} 项无法列出。",
       "refreshFiles": "刷新文件",
       "refreshGit": "刷新 Git 状态",
       "loadingFiles": "正在加载文件",

@@ -53,8 +53,8 @@ async fn read_file_reports_missing_directory_and_line_range_errors() {
         .call(json!({"file_path": "folder"}), make_ctx(&root))
         .await
         .expect("directory response");
-    assert!(directory.is_error);
-    assert!(text(&directory).contains("not a file"));
+    assert!(!directory.is_error);
+    assert_eq!(text(&directory), "");
 
     let ranged = read
         .call(
@@ -606,4 +606,189 @@ async fn edit_file_reports_files_committed_before_a_write_failure() {
         std::fs::read_to_string(locked_dir.join("second.txt")).expect("read second"),
         "before second\n"
     );
+}
+
+#[tokio::test]
+async fn directory_pages_keep_the_device_and_skip_previously_returned_names() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("photos");
+    std::fs::create_dir(&directory).unwrap();
+    for name in ["z.jpg", "a.jpg", "m.jpg"] {
+        std::fs::write(directory.join(name), []).unwrap();
+    }
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("desktop".into());
+    ctx.metadata
+        .insert("tool_call_id".into(), json!("read-directory"));
+    let page = ReadFileTool
+        .call(json!({"file_path":"photos","limit":2}), ctx.clone())
+        .await
+        .unwrap();
+    assert!(page.text_content().starts_with("a.jpg\nm.jpg\n"));
+    assert_eq!(page.call_id, "read-directory");
+    assert_eq!(page.metadata["file_location"]["coverage"], "partial");
+    let next = &page.metadata["continuation"];
+    assert_eq!(next["after"], "m.jpg");
+    assert_eq!(next["device_id"], "desktop");
+    assert_eq!(next["file_path"], json!(directory.canonicalize().unwrap()));
+    let tail = ReadFileTool.call(next.clone(), ctx).await.unwrap();
+    assert!(tail.text_content().starts_with("z.jpg\n"));
+    assert_eq!(
+        tail.metadata["file_location"]["coverage"],
+        "requested_scope"
+    );
+    assert!(!tail.metadata.contains_key("continuation"));
+}
+
+#[tokio::test]
+async fn selected_other_device_never_opens_or_edits_a_local_namesake() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("photo.txt");
+    std::fs::write(&path, "original\n").unwrap();
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("desktop".into());
+    let read = ReadFileTool
+        .call(json!({"file_path":path,"device_id":"phone"}), ctx.clone())
+        .await
+        .unwrap();
+    assert!(read.is_error);
+    assert_eq!(read.metadata["file_location"]["device_id"], "phone");
+    assert!(!read.text_content().contains("original"));
+    let edit=EditFileTool.call(json!({"patch":format!("*** Begin Patch\n*** Update File: {}\n@@\n-original\n+new\n*** End Patch",path.display()),"device_id":"phone"}),ctx).await.unwrap();
+    assert!(edit.is_error);
+    assert_eq!(edit.metadata["file_location"]["path"], json!(path));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "original\n");
+}
+
+#[tokio::test]
+async fn huge_text_and_binary_inputs_are_bounded_before_formatting() {
+    let root = tempfile::tempdir().unwrap();
+    let file = std::fs::File::create(root.path().join("sparse.bin")).unwrap();
+    file.set_len(2 * 1024 * 1024 * 1024).unwrap();
+    let ctx = make_ctx(&root);
+    let err = ReadFileTool
+        .call(json!({"file_path":"sparse.bin"}), ctx.clone())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().to_lowercase().contains("binary"));
+    std::fs::write(
+        root.path().join("long.txt"),
+        format!("{}\ntail\n", "a".repeat(65536)),
+    )
+    .unwrap();
+    let mut ctx = ctx;
+    ctx.raw_capture_max_bytes = 200;
+    let first = ReadFileTool
+        .call(json!({"file_path":"long.txt"}), ctx.clone())
+        .await
+        .unwrap();
+    assert!(!first.is_error);
+    assert_eq!(first.metadata["continuation"]["byte_offset"], 200);
+    let second = ReadFileTool
+        .call(first.metadata["continuation"].clone(), ctx.clone())
+        .await
+        .unwrap();
+    assert_eq!(second.metadata["byte_range"]["start"], 200);
+    assert_eq!(second.metadata["byte_range"]["end_exclusive"], 400);
+    let tail = ReadFileTool
+        .call(json!({"file_path":"long.txt","start_line":2}), ctx)
+        .await
+        .unwrap();
+    assert_eq!(tail.text_content(), "     2 | tail\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn mobile_file_locations_resolve_inside_the_guest_and_fail_when_unavailable() {
+    use rua_core::runtime_layout::RuntimeLayout;
+    use rua_tool::fs::WorkspaceFs;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let layout = RuntimeLayout::android(root.join("native"), root.join("data"), root.join("home"));
+    let guest = layout.linux_compat.as_ref().unwrap();
+    std::fs::create_dir_all(guest.proot_path.parent().unwrap()).unwrap();
+    std::fs::write(&guest.proot_path, b"").unwrap();
+    std::fs::create_dir_all(guest.rootfs_path.join("usr/bin")).unwrap();
+    let env = guest.rootfs_path.join("usr/bin/env");
+    std::fs::write(&env, b"").unwrap();
+    let cwd = guest.rootfs_path.join("etc/album");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let file = cwd.join("photo");
+    std::fs::write(&file, b"guest").unwrap();
+    let fs = WorkspaceFs::for_execution(&cwd, layout.clone()).unwrap();
+    assert_eq!(fs.resolve("/etc/album/photo").unwrap(), file);
+    assert_eq!(fs.resolve("photo").unwrap(), file);
+    std::fs::remove_file(env).unwrap();
+    assert!(fs.resolve("/etc/album/photo").is_err());
+    assert!(WorkspaceFs::for_execution(&cwd, layout).is_err());
+}
+
+#[tokio::test]
+async fn file_error_display_keeps_the_location_and_original_error_kind() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().canonicalize().unwrap();
+    std::fs::write(directory.join("binary.bin"), b"\0data").unwrap();
+    std::fs::create_dir(directory.join(".secret")).unwrap();
+    std::fs::write(directory.join(".secret/private"), b"data").unwrap();
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("desktop".into());
+
+    for (name, protected) in [("binary.bin", false), (".secret/private", true)] {
+        let error = ReadFileTool
+            .call(json!({"file_path":name}), ctx.clone())
+            .await
+            .unwrap_err();
+        if protected {
+            assert!(matches!(error, rua_core::RuaError::Security { .. }));
+        } else {
+            assert!(matches!(error, rua_core::RuaError::Tool { .. }));
+        }
+        let model_message = error.to_string();
+        assert!(model_message.contains("desktop"), "{model_message}");
+        assert!(
+            model_message.contains(&serde_json::to_string(&directory.join(name)).unwrap()),
+            "{model_message}"
+        );
+    }
+
+    let bad_page = ReadFileTool
+        .call(json!({"file_path":directory,"limit":0}), ctx)
+        .await
+        .unwrap();
+    assert!(bad_page.is_error && bad_page.text_content().contains("limit"));
+    assert!(!bad_page.metadata.contains_key("continuation"));
+}
+
+#[tokio::test]
+async fn byte_pages_reconstruct_lossy_text_without_splitting_valid_utf8() {
+    let root = tempfile::tempdir().unwrap();
+    let bytes = b"a\xe7\x85\xa7\xffA12345\xf0\x9f\x8c\x84z";
+    std::fs::write(root.path().join("notes"), bytes).unwrap();
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("desktop".into());
+    ctx.raw_capture_max_bytes = 6;
+    let mut args = json!({"file_path":"notes","byte_offset":0});
+    let mut shown = String::new();
+    let mut offset = 0;
+    loop {
+        let result = ReadFileTool.call(args, ctx.clone()).await.unwrap();
+        let agent_types::ContentPart::Text { text } = &result.content[0] else {
+            panic!("text byte page")
+        };
+        assert!(text.len() <= 6);
+        shown.push_str(text);
+        let range = &result.metadata["byte_range"];
+        assert_eq!(range["start"], offset);
+        let next = range["end_exclusive"].as_u64().unwrap();
+        assert!(next > offset);
+        offset = next;
+        let Some(continuation) = result.metadata.get("continuation") else {
+            break;
+        };
+        assert_eq!(continuation["byte_offset"], offset);
+        assert_eq!(continuation["device_id"], "desktop");
+        args = continuation.clone();
+    }
+    assert_eq!(offset as usize, bytes.len());
+    assert_eq!(shown, String::from_utf8_lossy(bytes));
 }

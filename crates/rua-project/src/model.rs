@@ -84,5 +84,7 @@ pub struct ProjectDirectoryEntry {
 pub struct ProjectDirectoryListing {
     pub path: PathBuf,
     pub entries: Vec<ProjectDirectoryEntry>,
+    #[serde(default)]
+    pub omitted_entries: usize,
     pub roots: Vec<ProjectDirectoryEntry>,
 }

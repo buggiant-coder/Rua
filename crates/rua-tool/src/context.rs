@@ -94,6 +94,7 @@ impl ToolExecutionContext {
 
     pub fn to_core_context(&self) -> rua_core::tool::ToolContext {
         rua_core::tool::ToolContext {
+            local_device_id: None,
             agent_id: self.agent_id.clone(),
             session_id: self.session_id.clone(),
             working_dir: self.working_dir.clone(),

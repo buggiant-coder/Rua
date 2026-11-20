@@ -146,6 +146,13 @@ impl ProjectResources {
         Ok(())
     }
 
+    pub fn contains_location(&self, device_id: &str, root: &std::path::Path) -> bool {
+        self.directories.iter().any(|directory| {
+            directory.device_id == device_id
+                && directory.resource_root.as_os_str() == root.as_os_str()
+        })
+    }
+
     pub fn directory(&self, directory_id: &str) -> ProjectResult<&ProjectResourceDirectory> {
         self.directories
             .iter()

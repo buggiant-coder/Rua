@@ -1,19 +1,15 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use rua_contract::Tool;
 use rua_core::tool::{ToolContext, ToolResult, ToolSchema};
-use rua_core::Result;
 use tokio::fs;
 
 use crate::annotations::ExtendedToolAnnotations;
 use crate::context::ToolExecutionContext;
 use crate::error::ToolError;
-use crate::fs::{
-    atomic_write, detect_newline_style, normalize_newlines, NewlineStyle, WorkspaceFs,
-};
+use crate::fs::{atomic_write, detect_newline_style, normalize_newlines, NewlineStyle};
 use crate::schema::ToolSpec;
 
 pub struct EditFileTool;
@@ -30,6 +26,7 @@ impl EditFileTool {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "device_id": crate::device_file::device_id_parameter(),
                     "patch": {
                         "type": "string",
                         "description": "Patch text using Codex apply_patch syntax. This field is a JSON string: to place a literal backslash-n escape in source code, encode it as `\\\\n` so it does not become an unprefixed patch line. Every unchanged, added, or deleted line in an Update File block must begin with ` `, `+`, or `-` respectively. Example: `*** Begin Patch\\n*** Update File: path\\n@@\\n-old\\n+new\\n*** End Patch`"
@@ -751,47 +748,11 @@ impl Tool for EditFileTool {
         }
     }
 
-    async fn call(&self, args: serde_json::Value, ctx: ToolContext) -> Result<ToolResult> {
-        let tool_result_store_dir = crate::result_store::archive_dir_for_context(&ctx)?;
-        let cancel = ctx.cancel.unwrap_or_else(|| {
-            let (_, rx) = tokio::sync::watch::channel(false);
-            rx
-        });
-
-        let workspace_fs =
-            Arc::new(
-                WorkspaceFs::new(&ctx.working_dir).map_err(|e| rua_core::RuaError::Tool {
-                    tool: "edit".into(),
-                    message: e.to_string(),
-                })?,
-            );
-
-        let exec_ctx = ToolExecutionContext {
-            workspace_fs,
-            tool_result_store_dir,
-            working_dir: ctx.working_dir,
-            session_id: ctx.session_id,
-            user_id: String::new(),
-            agent_id: ctx.agent_id,
-            channel: "console".into(),
-            trace_id: uuid::Uuid::new_v4().to_string(),
-            cancel,
-            security_context: crate::context::SecurityContext::default(),
-            executor: Arc::new(crate::executor::DisabledCommandExecutor::default()),
-            task_session: None,
-            limits: crate::context::ToolExecutionLimits::default(),
-
-            execution_output_max_tokens: rua_core::tool::DEFAULT_TOOL_EXECUTION_OUTPUT_MAX_TOKENS,
-            raw_capture_max_bytes: rua_core::tool::DEFAULT_TOOL_RAW_CAPTURE_MAX_BYTES,
-            recall_slice_max_tokens: rua_core::tool::DEFAULT_TOOL_RECALL_SLICE_MAX_TOKENS,
-
-            old_max_bytes: rua_core::tool::DEFAULT_TOOL_OLD_MAX_BYTES,
-
-            token_estimate_divisor: rua_core::tool::DEFAULT_TOKEN_ESTIMATE_DIVISOR,
-        };
-
-        self.execute_with_context(args, &exec_ctx)
-            .await
-            .map_err(rua_core::RuaError::from)
+    async fn call(
+        &self,
+        args: serde_json::Value,
+        ctx: ToolContext,
+    ) -> rua_core::Result<ToolResult> {
+        crate::device_file::call("edit", args, ctx).await
     }
 }

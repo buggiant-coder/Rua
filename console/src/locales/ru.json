@@ -373,6 +373,7 @@
       "git": "Git",
       "context": "Контекст",
       "copyPath": "Копировать путь",
+      "omittedEntries": "Не удалось показать все элементы в {{path}} (пропущено {{count}}).",
       "refreshFiles": "Обновить файлы",
       "refreshGit": "Обновить статус Git",
       "loadingFiles": "Загрузка файлов",

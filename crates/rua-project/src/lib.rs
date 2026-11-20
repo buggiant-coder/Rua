@@ -14,8 +14,8 @@ pub use model::{
     ProjectOverlapRelation, ProjectOverlapWarning,
 };
 pub use path::{
-    create_project_directory, list_project_directory, normalize_project_root,
-    propose_project_display_name, validate_project_directory,
+    create_project_directory, list_project_directory, list_project_directory_contents,
+    normalize_project_root, propose_project_display_name, validate_project_directory,
 };
 pub use store::{
     project_tombstone_exists, ProjectAdmissionGuard, ProjectCatalog, ProjectDeletePreparation,

@@ -15,8 +15,7 @@ fn normalize_project_root_with(
     home: Option<&Path>,
     current_dir: std::io::Result<PathBuf>,
 ) -> ProjectResult<PathBuf> {
-    let input = input.trim();
-    if input.is_empty() {
+    if input.trim().is_empty() {
         return Err(ProjectError::InvalidPath(
             "project path must not be empty".to_string(),
         ));
@@ -51,20 +50,42 @@ pub fn validate_project_directory(path: &Path) -> ProjectResult<()> {
 
 pub fn list_project_directory(input: &str) -> ProjectResult<ProjectDirectoryListing> {
     let path = normalize_project_root(input)?;
-    let read_dir =
-        std::fs::read_dir(&path).map_err(|error| ProjectError::DirectoryUnavailable {
-            path: path.clone(),
-            detail: error.to_string(),
-        })?;
+    let mut listing = list_project_directory_contents(&path)?;
+    listing.roots = project_directory_roots();
+    Ok(listing)
+}
+
+/// Read exactly this directory. Only the interactive picker needs navigation roots.
+pub fn list_project_directory_contents(path: &Path) -> ProjectResult<ProjectDirectoryListing> {
+    let read_dir = std::fs::read_dir(path).map_err(|error| ProjectError::DirectoryUnavailable {
+        path: path.to_owned(),
+        detail: error.to_string(),
+    })?;
     let mut entries = Vec::new();
+    let mut omitted_entries = 0;
     for entry in read_dir {
-        let entry = entry?;
-        let entry_path = entry.path();
-        let Ok(link_metadata) = std::fs::symlink_metadata(&entry_path) else {
+        let Ok(entry) = entry else {
+            omitted_entries += 1;
             continue;
         };
-        let Ok(target_metadata) = std::fs::metadata(&entry_path) else {
+        let Ok(name) = entry.file_name().into_string() else {
+            omitted_entries += 1;
             continue;
+        };
+        let entry_path = entry.path();
+        let Ok(link_metadata) = std::fs::symlink_metadata(&entry_path) else {
+            omitted_entries += 1;
+            continue;
+        };
+        let is_symlink = link_metadata.is_symlink();
+        let target_metadata = if is_symlink {
+            let Ok(target) = std::fs::metadata(&entry_path) else {
+                omitted_entries += 1;
+                continue;
+            };
+            target
+        } else {
+            link_metadata
         };
         let kind = if target_metadata.is_dir() {
             ProjectDirectoryEntryKind::Directory
@@ -74,10 +95,10 @@ pub fn list_project_directory(input: &str) -> ProjectResult<ProjectDirectoryList
             ProjectDirectoryEntryKind::Other
         };
         entries.push(ProjectDirectoryEntry {
-            name: entry.file_name().to_string_lossy().to_string(),
+            name,
             path: entry_path,
             kind,
-            is_symlink: link_metadata.file_type().is_symlink(),
+            is_symlink,
         });
     }
     entries.sort_by(|left, right| {
@@ -87,9 +108,10 @@ pub fn list_project_directory(input: &str) -> ProjectResult<ProjectDirectoryList
             .then_with(|| left.name.cmp(&right.name))
     });
     Ok(ProjectDirectoryListing {
-        path,
+        path: path.to_owned(),
         entries,
-        roots: project_directory_roots(),
+        omitted_entries,
+        roots: Vec::new(),
     })
 }
 

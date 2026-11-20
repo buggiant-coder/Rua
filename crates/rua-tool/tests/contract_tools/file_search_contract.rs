@@ -557,3 +557,56 @@ async fn glob_missing_path_and_result_limit_return_tool_results() {
     assert!(body.contains("max_results=2 reached"), "got: {body}");
     assert!(!body.contains("<truncated_output"), "got: {body}");
 }
+
+#[tokio::test]
+async fn search_pages_resume_on_the_same_device_without_repeating_matches() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("a.txt"), "hit 1\nhit 2\nhit 3\n").unwrap();
+    std::fs::write(root.path().join("b.txt"), "hit 4\n").unwrap();
+    std::fs::write(root.path().join("c.txt"), "").unwrap();
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("desktop".into());
+    let first = GrepSearchTool
+        .call(json!({"pattern":"hit","max_results":2}), ctx.clone())
+        .await
+        .unwrap();
+    assert_eq!(first.metadata["next_offset"], 2);
+    assert!(!first.text_content().contains("hit 3"));
+    let next = &first.metadata["continuation"];
+    assert_eq!(next["device_id"], "desktop");
+    let last = GrepSearchTool
+        .call(next.clone(), ctx.clone())
+        .await
+        .unwrap();
+    assert!(last.text_content().contains("hit 3") && last.text_content().contains("hit 4"));
+    assert!(!last.text_content().contains("hit 1") && !last.metadata.contains_key("continuation"));
+    let first = GlobSearchTool
+        .call(json!({"pattern":"*.txt","max_results":2}), ctx.clone())
+        .await
+        .unwrap();
+    let more = GlobSearchTool
+        .call(first.metadata["continuation"].clone(), ctx)
+        .await
+        .unwrap();
+    assert!(more.text_content().starts_with("c.txt\n"));
+    assert!(!more.metadata.contains_key("continuation"));
+}
+
+#[tokio::test]
+async fn protected_tree_is_excluded_and_reported_as_missing_coverage() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join(".secret")).unwrap();
+    std::fs::write(root.path().join(".secret/restricted.txt"), "private").unwrap();
+    std::fs::write(root.path().join("public.txt"), "visible").unwrap();
+    let result = GlobSearchTool
+        .call(
+            json!({"pattern":"**/*.txt","include_hidden":true}),
+            make_ctx(&root),
+        )
+        .await
+        .unwrap();
+    assert!(result.is_error);
+    assert!(result.text_content().contains("public.txt"));
+    assert!(!result.text_content().contains("restricted.txt"));
+    assert_eq!(result.metadata["file_location"]["coverage"], "partial");
+}

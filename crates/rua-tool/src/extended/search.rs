@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -70,6 +68,8 @@ struct GrepArgs {
     exclude: Option<Vec<String>>,
     #[serde(default)]
     max_results: Option<usize>,
+    #[serde(default)]
+    offset: usize,
 }
 
 pub struct GrepSearchTool;
@@ -88,6 +88,7 @@ impl GrepSearchTool {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "device_id": crate::device_file::device_id_parameter(),
                     "pattern": {
                         "type": "string",
                         "description": "Pattern to search for (literal string or regex)"
@@ -121,6 +122,7 @@ impl GrepSearchTool {
                         "items": { "type": "string" },
                         "description": "Glob patterns for files to exclude"
                     },
+                    "offset": {"type":"integer","minimum":0,"description":"Skip this many matching entries in the same query. Use the returned next_offset to continue."},
                     "max_results": {
                         "type": "integer",
                         "description": "Maximum number of matching results to return (default: 200). If this cap is reached, the output includes a result_limit notice; increase max_results or narrow the query if needed."
@@ -139,6 +141,17 @@ impl GrepSearchTool {
         args: serde_json::Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult, ToolError> {
+        let ctx = ctx.clone();
+        tokio::task::spawn_blocking(move || Self::search(args, &ctx))
+            .await
+            .map_err(|e| ToolError::Internal(e.to_string()))?
+    }
+
+    #[cfg(feature = "search")]
+    fn search(
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult, ToolError> {
         let args: GrepArgs =
             serde_json::from_value(args).map_err(|e| ToolError::SchemaValidation {
                 tool: "grep".into(),
@@ -151,7 +164,10 @@ impl GrepSearchTool {
             .context_lines
             .unwrap_or(DEFAULT_CONTEXT_LINES)
             .min(MAX_CONTEXT_LINES);
-        let max_results = args.max_results.unwrap_or(DEFAULT_MAX_RESULTS);
+        let max_results = args
+            .max_results
+            .unwrap_or(DEFAULT_MAX_RESULTS)
+            .clamp(1, 2000);
         let resolved_include = args.include.clone().filter(|patterns| !patterns.is_empty());
         let resolved_exclude = args.exclude.clone().filter(|patterns| !patterns.is_empty());
 
@@ -162,12 +178,13 @@ impl GrepSearchTool {
         let search_root = if let Some(ref path) = args.path {
             match ctx.workspace_fs.resolve(path) {
                 Ok(p) => p,
-                Err(_) => {
+                Err(ToolError::FileNotFound { .. }) => {
                     return Ok(ToolResult::error(
                         &ctx.trace_id,
                         format!("Error: The path {path} does not exist."),
                     ));
                 }
+                Err(error) => return Err(error),
             }
         } else {
             ctx.workspace_fs.root().to_path_buf()
@@ -220,7 +237,12 @@ impl GrepSearchTool {
         let mut search_errors: Vec<String> = Vec::new();
         let mut search_error_count = 0usize;
 
+        let fs = ctx.workspace_fs.clone();
+        walk_builder.filter_entry(move |entry| {
+            !is_default_excluded(entry.path()) && fs.check_secret_dir(entry.path()).is_ok()
+        });
         let walker = walk_builder.build();
+        let mut remaining_skip = args.offset;
 
         for entry in walker {
             if ctx.is_cancelled() {
@@ -267,30 +289,38 @@ impl GrepSearchTool {
                 }
             }
 
-            let (file_lines, file_match_count) =
-                match search_file(&matcher, path, display_path.as_ref(), context_lines) {
-                    Ok(result) => result,
-                    Err(error) => {
-                        search_error_count += 1;
-                        if search_errors.len() < 5 {
-                            search_errors.push(format!("{display_path}: {error}"));
-                        }
-                        continue;
+            let page = match search_file(
+                &matcher,
+                path,
+                &display_path,
+                context_lines,
+                (
+                    max_results.saturating_sub(total_match_count),
+                    MAX_OUTPUT_CHARS.saturating_sub(total_chars),
+                    remaining_skip,
+                ),
+                ctx,
+            ) {
+                Ok(page) => page,
+                Err(error) => {
+                    search_error_count += 1;
+                    if search_errors.len() < 5 {
+                        search_errors.push(format!("{display_path}: {error}"));
                     }
-                };
-
-            for line in file_lines {
-                let line_len = line.len() + 1;
-                if total_chars + line_len > MAX_OUTPUT_CHARS {
-                    output_size_truncated = true;
-                    break;
+                    continue;
                 }
-                output_lines.push(line);
-                total_chars += line_len;
+            };
+            remaining_skip = page.skip;
+            let file_match_count = page.matches;
+            total_chars += page.bytes;
+            output_lines.extend(page.lines);
+            output_size_truncated |= page.byte_limited;
+            if ctx.is_cancelled() {
+                cancelled = true;
+                break;
             }
-
             total_match_count += file_match_count;
-            if total_match_count >= max_results {
+            if page.match_limited {
                 result_limit_reached = true;
                 break;
             }
@@ -300,7 +330,7 @@ impl GrepSearchTool {
             }
         }
 
-        if cancelled {
+        if cancelled || ctx.is_cancelled() {
             let mut body = "Search cancelled before completion.".to_string();
             if !output_lines.is_empty() {
                 body.push_str("\n\n[partial results]\n");
@@ -365,6 +395,16 @@ impl GrepSearchTool {
 
         let mut result = ToolResult::text(&ctx.trace_id, output);
         result.truncation = truncation_meta;
+        if result_limit_reached || output_size_truncated {
+            result.metadata.insert("more_results".into(), true.into());
+            if total_match_count > 0 {
+                let next = args.offset.saturating_add(total_match_count);
+                result.metadata.insert("next_offset".into(), next.into());
+                result.content.push(agent_types::ContentPart::Text {
+                    text: format!("\nContinue the same grep query with offset={next}."),
+                });
+            }
+        }
         Ok(result)
     }
 }
@@ -393,58 +433,9 @@ impl Tool for GrepSearchTool {
     async fn call(
         &self,
         args: serde_json::Value,
-        _ctx: ToolContext,
+        ctx: ToolContext,
     ) -> rua_core::Result<ToolResult> {
-        #[cfg(feature = "search")]
-        {
-            let tool_result_store_dir = crate::result_store::archive_dir_for_context(&_ctx)?;
-            let cancel = _ctx.cancel.unwrap_or_else(|| {
-                let (_, rx) = tokio::sync::watch::channel(false);
-                rx
-            });
-            let workspace_fs =
-                Arc::new(crate::fs::WorkspaceFs::new(&_ctx.working_dir).map_err(|e| {
-                    rua_core::RuaError::Tool {
-                        tool: "grep".into(),
-                        message: e.to_string(),
-                    }
-                })?);
-            let exec_ctx = ToolExecutionContext {
-                workspace_fs,
-                tool_result_store_dir,
-                working_dir: _ctx.working_dir,
-                session_id: _ctx.session_id,
-                user_id: String::new(),
-                agent_id: _ctx.agent_id,
-                channel: "console".into(),
-                trace_id: uuid::Uuid::new_v4().to_string(),
-                cancel,
-                security_context: crate::context::SecurityContext::default(),
-                executor: Arc::new(crate::executor::DisabledCommandExecutor::default()),
-                task_session: None,
-                limits: crate::context::ToolExecutionLimits::default(),
-
-                execution_output_max_tokens:
-                    rua_core::tool::DEFAULT_TOOL_EXECUTION_OUTPUT_MAX_TOKENS,
-                raw_capture_max_bytes: rua_core::tool::DEFAULT_TOOL_RAW_CAPTURE_MAX_BYTES,
-                recall_slice_max_tokens: rua_core::tool::DEFAULT_TOOL_RECALL_SLICE_MAX_TOKENS,
-
-                old_max_bytes: rua_core::tool::DEFAULT_TOOL_OLD_MAX_BYTES,
-
-                token_estimate_divisor: rua_core::tool::DEFAULT_TOKEN_ESTIMATE_DIVISOR,
-            };
-            self.execute_with_context(args, &exec_ctx)
-                .await
-                .map_err(rua_core::RuaError::from)
-        }
-        #[cfg(not(feature = "search"))]
-        {
-            let _ = args;
-            Err(rua_core::RuaError::Tool {
-                tool: "grep".into(),
-                message: "search feature not enabled".into(),
-            })
-        }
+        crate::device_file::call("grep", args, ctx).await
     }
 }
 
@@ -457,6 +448,8 @@ struct GlobArgs {
     include_hidden: Option<bool>,
     #[serde(default)]
     max_results: Option<usize>,
+    #[serde(default)]
+    offset: usize,
 }
 
 pub struct GlobSearchTool;
@@ -473,6 +466,7 @@ impl GlobSearchTool {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "device_id": crate::device_file::device_id_parameter(),
                     "pattern": {
                         "type": "string",
                         "description": "Glob pattern to match files (e.g., '**/*.rs', 'src/**/*.ts')"
@@ -485,6 +479,7 @@ impl GlobSearchTool {
                         "type": "boolean",
                         "description": "Whether to include hidden files (default: false)"
                     },
+                    "offset": {"type":"integer","minimum":0,"description":"Skip this many matching entries in the same query. Use the returned next_offset to continue."},
                     "max_results": {
                         "type": "integer",
                         "description": "Maximum number of paths to return (default: 200). If this cap is reached, the output includes a result_limit notice; increase max_results or narrow the pattern/path if needed."
@@ -503,82 +498,148 @@ impl GlobSearchTool {
         args: serde_json::Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult, ToolError> {
+        let ctx = ctx.clone();
+        tokio::task::spawn_blocking(move || Self::search(args, &ctx))
+            .await
+            .map_err(|e| ToolError::Internal(e.to_string()))?
+    }
+
+    #[cfg(feature = "search")]
+    fn search(
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult, ToolError> {
         let args: GlobArgs =
             serde_json::from_value(args).map_err(|e| ToolError::SchemaValidation {
                 tool: "glob".into(),
                 message: e.to_string(),
             })?;
 
-        let max_results = args.max_results.unwrap_or(DEFAULT_MAX_RESULTS);
+        let max_results = args
+            .max_results
+            .unwrap_or(DEFAULT_MAX_RESULTS)
+            .clamp(1, 2000);
         let include_hidden = args.include_hidden.unwrap_or(false);
 
         let search_root = if let Some(ref path) = args.path {
             match ctx.workspace_fs.resolve(path) {
                 Ok(p) => p,
-                Err(_) => {
+                Err(ToolError::FileNotFound { .. }) => {
                     return Ok(ToolResult::error(
                         &ctx.trace_id,
                         format!("Error: The path {path} does not exist."),
                     ));
                 }
+                Err(error) => return Err(error),
             }
         } else {
             ctx.workspace_fs.root().to_path_buf()
         };
 
-        let full_pattern = search_root.join(&args.pattern);
-        let pattern_str = full_pattern.to_string_lossy().to_string();
-
-        let glob_opts = glob::MatchOptions {
+        if std::path::Path::new(&args.pattern).components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        }) {
+            return Ok(ToolResult::error(
+                &ctx.trace_id,
+                "Use the path argument for the search root and a pattern inside it.",
+            ));
+        }
+        let pattern = glob::Pattern::new(&args.pattern).map_err(|e| ToolError::Search {
+            message: format!("invalid glob pattern '{}': {e}", args.pattern),
+        })?;
+        let options = glob::MatchOptions {
             case_sensitive: true,
-            require_literal_separator: false,
+            require_literal_separator: true,
             require_literal_leading_dot: !include_hidden,
         };
-
-        let mut results: Vec<String> = Vec::new();
+        let mut results = Vec::new();
         let mut truncated = false;
         let mut cancelled = false;
-
-        match glob::glob_with(&pattern_str, glob_opts) {
-            Ok(paths) => {
-                for entry in paths {
-                    if ctx.is_cancelled() {
-                        cancelled = true;
-                        break;
-                    }
-                    match entry {
-                        Ok(path) => {
-                            if is_default_excluded(&path) {
-                                continue;
-                            }
-
-                            let rel = path
-                                .strip_prefix(&search_root)
-                                .unwrap_or(&path)
-                                .to_string_lossy()
-                                .to_string();
-
-                            if path.is_dir() {
-                                results.push(format!("{rel}/"));
-                            } else {
-                                results.push(rel);
-                            }
-                            if results.len() >= max_results {
-                                truncated = true;
-                                break;
-                            }
-                        }
-                        Err(_) => continue,
-                    }
-                }
-            }
-            Err(e) => {
-                return Err(ToolError::Search {
-                    message: format!("invalid glob pattern '{}': {e}", args.pattern),
-                });
-            }
+        let mut bytes = 0;
+        let mut byte_limited = false;
+        let mut failed = 0;
+        let mut remaining_skip = args.offset;
+        let mut builder = ignore::WalkBuilder::new(&search_root);
+        builder
+            .standard_filters(false)
+            .follow_links(false)
+            .hidden(!include_hidden)
+            .sort_by_file_path(|left, right| left.cmp(right));
+        if !args.pattern.contains("**") {
+            builder.max_depth(Some(
+                std::path::Path::new(&args.pattern).components().count(),
+            ));
         }
-
+        let fs = ctx.workspace_fs.clone();
+        let denied = std::sync::Arc::new(std::sync::atomic::AtomicUsize::default());
+        let skipped = denied.clone();
+        builder.filter_entry(move |entry| {
+            if is_default_excluded(entry.path()) {
+                return false;
+            }
+            if fs.check_secret_dir(entry.path()).is_err() {
+                skipped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return false;
+            }
+            true
+        });
+        for entry in builder.build().skip(1) {
+            if ctx.is_cancelled() {
+                cancelled = true;
+                break;
+            }
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    failed += 1;
+                    continue;
+                }
+            };
+            let path = entry.path();
+            let Ok(relative) = path.strip_prefix(&search_root) else {
+                continue;
+            };
+            if !pattern.matches_path_with(relative, options) {
+                continue;
+            }
+            if ctx.workspace_fs.resolve_host_path(path).is_err() {
+                failed += 1;
+                continue;
+            }
+            if remaining_skip > 0 {
+                remaining_skip -= 1;
+                continue;
+            }
+            let mut name = relative.to_string_lossy().into_owned();
+            if entry.file_type().is_some_and(|kind| kind.is_dir()) {
+                name.push('/');
+            }
+            byte_limited = bytes + name.len() + 1 > MAX_OUTPUT_CHARS;
+            if results.len() >= max_results || byte_limited {
+                truncated = true;
+                break;
+            }
+            bytes += name.len() + 1;
+            results.push(name);
+        }
+        if ctx.is_cancelled() {
+            cancelled = true;
+        }
+        failed += denied.load(std::sync::atomic::Ordering::Relaxed);
+        if failed > 0 {
+            return Ok(ToolResult::error(
+                &ctx.trace_id,
+                format!(
+                    "Search incomplete: {failed} inaccessible paths.\n{}",
+                    results.join("\n")
+                ),
+            ));
+        }
         results.sort();
 
         if cancelled {
@@ -590,7 +651,12 @@ impl GlobSearchTool {
             return Ok(ToolResult::error(&ctx.trace_id, body));
         }
 
-        let output = if truncated {
+        let output = if byte_limited {
+            format!(
+                "Output size limit ({MAX_OUTPUT_CHARS} bytes) reached.\n{}",
+                results.join("\n")
+            )
+        } else if truncated {
             let mut notice = result_limit_notice(
                 "glob",
                 max_results,
@@ -607,7 +673,16 @@ impl GlobSearchTool {
             results.join("\n")
         };
 
-        Ok(ToolResult::text(&ctx.trace_id, output))
+        let mut result = ToolResult::text(&ctx.trace_id, output);
+        if truncated {
+            result.metadata.insert("more_results".into(), true.into());
+            let next = args.offset.saturating_add(results.len());
+            result.metadata.insert("next_offset".into(), next.into());
+            result.content.push(agent_types::ContentPart::Text {
+                text: format!("\nContinue the same glob query with offset={next}."),
+            });
+        }
+        Ok(result)
     }
 }
 
@@ -635,58 +710,9 @@ impl Tool for GlobSearchTool {
     async fn call(
         &self,
         args: serde_json::Value,
-        _ctx: ToolContext,
+        ctx: ToolContext,
     ) -> rua_core::Result<ToolResult> {
-        #[cfg(feature = "search")]
-        {
-            let tool_result_store_dir = crate::result_store::archive_dir_for_context(&_ctx)?;
-            let cancel = _ctx.cancel.unwrap_or_else(|| {
-                let (_, rx) = tokio::sync::watch::channel(false);
-                rx
-            });
-            let workspace_fs =
-                Arc::new(crate::fs::WorkspaceFs::new(&_ctx.working_dir).map_err(|e| {
-                    rua_core::RuaError::Tool {
-                        tool: "glob".into(),
-                        message: e.to_string(),
-                    }
-                })?);
-            let exec_ctx = ToolExecutionContext {
-                workspace_fs,
-                tool_result_store_dir,
-                working_dir: _ctx.working_dir,
-                session_id: _ctx.session_id,
-                user_id: String::new(),
-                agent_id: _ctx.agent_id,
-                channel: "console".into(),
-                trace_id: uuid::Uuid::new_v4().to_string(),
-                cancel,
-                security_context: crate::context::SecurityContext::default(),
-                executor: Arc::new(crate::executor::DisabledCommandExecutor::default()),
-                task_session: None,
-                limits: crate::context::ToolExecutionLimits::default(),
-
-                execution_output_max_tokens:
-                    rua_core::tool::DEFAULT_TOOL_EXECUTION_OUTPUT_MAX_TOKENS,
-                raw_capture_max_bytes: rua_core::tool::DEFAULT_TOOL_RAW_CAPTURE_MAX_BYTES,
-                recall_slice_max_tokens: rua_core::tool::DEFAULT_TOOL_RECALL_SLICE_MAX_TOKENS,
-
-                old_max_bytes: rua_core::tool::DEFAULT_TOOL_OLD_MAX_BYTES,
-
-                token_estimate_divisor: rua_core::tool::DEFAULT_TOKEN_ESTIMATE_DIVISOR,
-            };
-            self.execute_with_context(args, &exec_ctx)
-                .await
-                .map_err(rua_core::RuaError::from)
-        }
-        #[cfg(not(feature = "search"))]
-        {
-            let _ = args;
-            Err(rua_core::RuaError::Tool {
-                tool: "glob".into(),
-                message: "search feature not enabled".into(),
-            })
-        }
+        crate::device_file::call("glob", args, ctx).await
     }
 }
 
@@ -796,72 +822,151 @@ fn display_path_for(
 }
 
 #[cfg(feature = "search")]
-fn search_file(
+struct SearchPage<'a> {
+    path: &'a str,
+    context: bool,
+    remaining_matches: usize,
+    remaining_bytes: usize,
+    skip: usize,
+    match_limited: bool,
+    cancel: &'a tokio::sync::watch::Receiver<bool>,
+    lines: Vec<String>,
+    matches: usize,
+    bytes: usize,
+    byte_limited: bool,
+}
+
+#[cfg(feature = "search")]
+impl SearchPage<'_> {
+    fn push(&mut self, number: u64, bytes: &[u8], matched: bool) -> std::io::Result<bool> {
+        if *self.cancel.borrow() {
+            return Ok(false);
+        }
+        if self.skip > 0 {
+            self.skip -= usize::from(matched);
+            return Ok(true);
+        }
+        if matched && self.matches == self.remaining_matches {
+            self.match_limited = true;
+            return Ok(false);
+        }
+        if !matched && self.remaining_matches == 0 {
+            return Ok(true);
+        }
+        let line = std::str::from_utf8(bytes)
+            .map_err(std::io::Error::other)?
+            .trim_end_matches(['\r', '\n']);
+        let mark = if !self.context {
+            ""
+        } else if matched {
+            "> "
+        } else {
+            "  "
+        };
+        let prefix = format!("{}:{number}:{mark}", self.path);
+        let size = prefix.len() + line.len() + 1;
+        if size > self.remaining_bytes.saturating_sub(self.bytes) {
+            self.byte_limited = true;
+            return Ok(false);
+        }
+        self.bytes += size;
+        self.matches += usize::from(matched);
+        self.lines.push(prefix + line);
+        Ok(true)
+    }
+}
+
+#[cfg(feature = "search")]
+impl grep_searcher::Sink for SearchPage<'_> {
+    type Error = std::io::Error;
+    fn matched(
+        &mut self,
+        _: &grep_searcher::Searcher,
+        hit: &grep_searcher::SinkMatch<'_>,
+    ) -> std::io::Result<bool> {
+        self.push(
+            hit.line_number().expect("line numbers enabled"),
+            hit.bytes(),
+            true,
+        )
+    }
+    fn context(
+        &mut self,
+        _: &grep_searcher::Searcher,
+        line: &grep_searcher::SinkContext<'_>,
+    ) -> std::io::Result<bool> {
+        self.push(
+            line.line_number().expect("line numbers enabled"),
+            line.bytes(),
+            false,
+        )
+    }
+    fn context_break(&mut self, _: &grep_searcher::Searcher) -> std::io::Result<bool> {
+        if self.lines.is_empty() {
+            return Ok(true);
+        }
+        if self.bytes + 4 > self.remaining_bytes {
+            self.byte_limited = true;
+            return Ok(false);
+        }
+        self.lines.push("---".into());
+        self.bytes += 4;
+        Ok(true)
+    }
+}
+
+#[cfg(feature = "search")]
+struct SearchReader<'a> {
+    input: std::fs::File,
+    ctx: &'a ToolExecutionContext,
+}
+
+#[cfg(feature = "search")]
+impl std::io::Read for SearchReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.ctx.is_cancelled() {
+            return Err(std::io::Error::other("Search cancelled"));
+        }
+        self.input.read(buf)
+    }
+}
+
+#[cfg(feature = "search")]
+fn search_file<'a>(
     matcher: &grep_regex::RegexMatcher,
     path: &std::path::Path,
-    display_path: &str,
+    display_path: &'a str,
     context_lines: usize,
-) -> std::io::Result<(Vec<String>, usize)> {
-    use grep_searcher::{sinks::UTF8, Searcher};
-
-    let mut match_lines: Vec<(u64, String)> = Vec::new();
-    let mut searcher = Searcher::new();
-    searcher.search_path(
-        matcher,
-        path,
-        UTF8(|line_num, line| {
-            match_lines.push((line_num, line.trim_end().to_string()));
-            Ok(true)
-        }),
-    )?;
-
-    let match_count = match_lines.len();
-    if match_count == 0 {
-        return Ok((vec![], 0));
-    }
-
-    if context_lines == 0 {
-        let output: Vec<String> = match_lines
-            .iter()
-            .map(|(line_num, content)| format!("{display_path}:{line_num}:{content}"))
-            .collect();
-        return Ok((output, match_count));
-    }
-
-    let raw_bytes = std::fs::read(path)?;
-
-    let content = String::from_utf8_lossy(&raw_bytes);
-    let all_lines: Vec<&str> = content.lines().collect();
-    let match_nums: std::collections::HashSet<u64> = match_lines.iter().map(|(n, _)| *n).collect();
-    let match_line_nums: Vec<u64> = match_lines.iter().map(|(n, _)| *n).collect();
-
-    let mut output_lines: Vec<String> = Vec::new();
-    let mut last_output_line: Option<u64> = None;
-
-    for &match_num in &match_line_nums {
-        let idx = (match_num as usize).saturating_sub(1);
-        let start_idx = idx.saturating_sub(context_lines);
-        let end_idx = (idx + context_lines + 1).min(all_lines.len());
-
-        if let Some(last) = last_output_line {
-            if (start_idx as u64) + 1 > last + 1 {
-                output_lines.push("---".to_string());
-            }
-        }
-
-        for (j, line_content) in all_lines.iter().enumerate().take(end_idx).skip(start_idx) {
-            let line_num = (j as u64) + 1;
-            if let Some(last) = last_output_line {
-                if line_num <= last {
-                    continue;
-                }
-            }
-            let is_match = match_nums.contains(&line_num);
-            let prefix = if is_match { ">" } else { " " };
-            output_lines.push(format!("{display_path}:{line_num}:{prefix} {line_content}"));
-            last_output_line = Some(line_num);
-        }
-    }
-
-    Ok((output_lines, match_count))
+    (remaining_matches, remaining_bytes, skip): (usize, usize, usize),
+    ctx: &'a ToolExecutionContext,
+) -> std::io::Result<SearchPage<'a>> {
+    let mut page = SearchPage {
+        path: display_path,
+        context: context_lines > 0,
+        remaining_matches,
+        remaining_bytes,
+        skip,
+        match_limited: false,
+        cancel: &ctx.cancel,
+        lines: Vec::new(),
+        matches: 0,
+        bytes: 0,
+        byte_limited: false,
+    };
+    grep_searcher::SearcherBuilder::new()
+        .before_context(context_lines)
+        .after_context(context_lines)
+        .line_number(true)
+        .heap_limit(Some(1024 * 1024))
+        .binary_detection(grep_searcher::BinaryDetection::quit(0))
+        .build()
+        .search_reader(
+            matcher,
+            SearchReader {
+                input: std::fs::File::open(path)?,
+                ctx,
+            },
+            &mut page,
+        )?;
+    Ok(page)
 }

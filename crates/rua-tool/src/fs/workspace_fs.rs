@@ -7,6 +7,7 @@ const SECRET_DIR_PATTERNS: &[&str] = &[".secret", ".ssh", ".gnupg", ".aws", ".az
 #[derive(Debug, Clone)]
 pub struct WorkspaceFs {
     root: PathBuf,
+    execution: Option<(rua_core::runtime_layout::RuntimeLayout, PathBuf)>,
 
     check_symlinks: bool,
 
@@ -24,6 +25,7 @@ impl WorkspaceFs {
         })?;
         Ok(Self {
             root,
+            execution: None,
             check_symlinks: true,
             deny_secret_dirs: true,
         })
@@ -32,6 +34,7 @@ impl WorkspaceFs {
     pub fn new_unchecked(root: PathBuf) -> Self {
         Self {
             root,
+            execution: None,
             check_symlinks: true,
             deny_secret_dirs: true,
         }
@@ -45,24 +48,74 @@ impl WorkspaceFs {
         &self.root
     }
 
+    pub fn for_execution(
+        root: &Path,
+        layout: rua_core::runtime_layout::RuntimeLayout,
+    ) -> Result<Self, ToolError> {
+        let mut fs = Self::new(root)?;
+        if layout.host_profile.is_mobile() || layout.os_family == "android" {
+            let public_root = layout
+                .linux_compat
+                .as_ref()
+                .and_then(|guest| guest.map_host_path(&fs.root))
+                .ok_or_else(|| ToolError::PathSecurity {
+                    message:
+                        "Execution directory is unavailable in the Linux Compatibility Runtime"
+                            .into(),
+                })?;
+            layout
+                .execution_host_path(&public_root)
+                .map_err(|e| ToolError::PathSecurity {
+                    message: e.to_string(),
+                })?;
+            fs.execution = Some((layout, public_root));
+        }
+        Ok(fs)
+    }
+
+    pub(crate) fn public_path(&self, path: &Path) -> PathBuf {
+        if let Some((layout, public_root)) = &self.execution {
+            if let (Some(guest), Ok(suffix)) =
+                (layout.linux_compat.as_ref(), path.strip_prefix("~"))
+            {
+                return guest.guest_home.join(suffix);
+            }
+            return public_root.join(path);
+        }
+        self.root.join(expand_tilde(path))
+    }
+
+    fn backing_path(&self, path: &Path) -> Result<PathBuf, ToolError> {
+        let public = self.public_path(path);
+        match &self.execution {
+            Some((layout, _)) => {
+                layout
+                    .execution_host_path(&public)
+                    .map_err(|e| ToolError::PathSecurity {
+                        message: e.to_string(),
+                    })
+            }
+            None => Ok(public),
+        }
+    }
+
     pub fn resolve(&self, path: impl AsRef<Path>) -> Result<PathBuf, ToolError> {
-        let path = path.as_ref();
-        let expanded = expand_tilde(path);
+        self.resolve_host_path(&self.backing_path(path.as_ref())?)
+    }
 
-        let absolute = if expanded.is_absolute() {
-            expanded
-        } else {
-            self.root.join(&expanded)
-        };
-
+    pub(crate) fn resolve_host_path(&self, absolute: &Path) -> Result<PathBuf, ToolError> {
         let canonical = if self.check_symlinks {
-            absolute
-                .canonicalize()
-                .map_err(|_| ToolError::FileNotFound {
-                    path: path.to_path_buf(),
-                })?
+            absolute.canonicalize().map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    ToolError::FileNotFound {
+                        path: absolute.to_path_buf(),
+                    }
+                } else {
+                    ToolError::Io(error)
+                }
+            })?
         } else {
-            normalize_path(&absolute)
+            normalize_path(absolute)
         };
 
         if self.deny_secret_dirs {
@@ -74,13 +127,7 @@ impl WorkspaceFs {
 
     pub fn resolve_for_write(&self, path: impl AsRef<Path>) -> Result<PathBuf, ToolError> {
         let path = path.as_ref();
-        let expanded = expand_tilde(path);
-
-        let absolute = if expanded.is_absolute() {
-            expanded
-        } else {
-            self.root.join(&expanded)
-        };
+        let absolute = self.backing_path(path)?;
 
         let parent = absolute.parent().ok_or_else(|| ToolError::PathSecurity {
             message: format!("path '{}' has no parent directory", path.display()),
@@ -111,16 +158,24 @@ impl WorkspaceFs {
 
     pub fn resolve_for_create(&self, path: impl AsRef<Path>) -> Result<PathBuf, ToolError> {
         let path = path.as_ref();
-        let expanded = expand_tilde(path);
+        let absolute = self.backing_path(path)?;
 
-        let absolute = if expanded.is_absolute() {
-            expanded
+        let normalized = if self.check_symlinks {
+            let ancestor = absolute
+                .ancestors()
+                .find(|ancestor| std::fs::symlink_metadata(ancestor).is_ok())
+                .ok_or_else(|| ToolError::FileNotFound {
+                    path: absolute.clone(),
+                })?;
+            let backing = ancestor
+                .canonicalize()
+                .map_err(|_| ToolError::FileNotFound {
+                    path: ancestor.into(),
+                })?;
+            normalize_path(&backing.join(absolute.strip_prefix(ancestor).expect("path ancestor")))
         } else {
-            self.root.join(&expanded)
+            normalize_path(&absolute)
         };
-
-        let normalized = normalize_path(&absolute);
-
         if self.deny_secret_dirs {
             self.check_secret_dir(&normalized)?;
         }
@@ -128,7 +183,7 @@ impl WorkspaceFs {
         Ok(normalized)
     }
 
-    fn check_secret_dir(&self, path: &Path) -> Result<(), ToolError> {
+    pub(crate) fn check_secret_dir(&self, path: &Path) -> Result<(), ToolError> {
         let resolved_secret_name = rua_config::dirs::resolve_secret_dir()
             .file_name()
             .map(|n| n.to_string_lossy().to_string());

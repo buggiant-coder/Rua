@@ -269,6 +269,77 @@ fn android_os_family_cannot_be_overridden_to_native_external_runtime() {
     assert_eq!(plan.runtime_kind, RuntimeKind::LinuxCompat);
 }
 
+#[cfg(unix)]
+#[test]
+fn android_git_and_file_reads_share_only_the_verified_private_home_alias() {
+    let temp = tempfile::tempdir().unwrap();
+    let native = temp.path().join("native");
+    let data = temp.path().join("user/0/app/files");
+    let registered = temp.path().join("registered-home");
+    let saved = data.join("home/repo");
+    touch(&native.join("libproot.so"));
+    touch(&data.join("runtime/debian/usr/bin/env"));
+    touch(&data.join("runtime/debian/usr/bin/git"));
+    touch(&saved.join("tracked"));
+    touch(&data.join("neighbor/private"));
+    std::os::unix::fs::symlink(data.join("home"), &registered).unwrap();
+    std::os::unix::fs::symlink(data.join("neighbor/private"), saved.join("link")).unwrap();
+
+    let layout = RuntimeLayout::android(&native, &data, &registered);
+    let guest = layout.linux_compat.as_ref().unwrap();
+    assert_eq!(guest.map_host_path(&saved).as_ref(), Some(&saved));
+    assert_eq!(
+        layout.execution_host_path(&saved.join("tracked")).unwrap(),
+        registered.join("repo/tracked")
+    );
+    assert!(layout
+        .execution_host_path(&saved.join("tracked"))
+        .unwrap()
+        .is_file());
+    for outside in [
+        data.join("neighbor/private"),
+        saved.join("../..").join("neighbor/private"),
+        saved.join("link"),
+    ] {
+        assert!(!layout.execution_host_path(&outside).unwrap().is_file());
+    }
+
+    let authority = RuntimeAuthority::from_layout_with_probe(
+        layout,
+        RuntimeAuthorityConfig {
+            workspace_dir: saved.clone(),
+            cache_dir: temp.path().join("cache"),
+            path_entries: vec![native.clone()],
+            pathext: Vec::new(),
+            windows_shell_preference: None,
+        },
+        |path| path.is_file(),
+    );
+    let plan = authority.plan(
+        ProcessShape::Direct,
+        ToolchainIntent::GenericCommand {
+            command: "git".into(),
+        },
+        RuntimeLaunchRequest {
+            cwd: Some(saved.clone()),
+            args: vec!["status".into()],
+            ..Default::default()
+        },
+    );
+    let git = plan.process().expect("Git cwd must be usable in the guest");
+    assert!(git.args.contains(&format!("--cwd={}", saved.display())));
+    assert!(git.args.contains(&format!(
+        "--bind={}:{}",
+        registered.display(),
+        data.join("home").display()
+    )));
+
+    let separate = temp.path().join("different-home");
+    fs::create_dir(&separate).unwrap();
+    let other = RuntimeLayout::android(&native, &data, separate);
+    assert!(!other.execution_host_path(&saved).unwrap().is_dir());
+}
+
 #[test]
 fn android_agent_shell_uses_linux_compat_runtime() {
     let temp = tempfile::tempdir().expect("tempdir");

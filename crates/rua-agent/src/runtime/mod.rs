@@ -2761,6 +2761,10 @@ impl AgentRuntime for ReactAgentRuntime {
             let configured_user_timezone = self.configured_user_timezone()?;
 
             let tool_ctx = ToolContext {
+                local_device_id: self
+                    .task_runtime
+                    .as_ref()
+                    .and_then(|rt| rt.device_context().device_id.clone()),
                 agent_id: req.agent_id.to_string(),
                 session_id: security_session_id.clone(),
                 working_dir: working_dir.to_path_buf(),

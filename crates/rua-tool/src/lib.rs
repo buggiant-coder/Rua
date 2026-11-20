@@ -4,6 +4,7 @@ pub mod builtin;
 pub mod config_store;
 pub mod context;
 pub mod core;
+mod device_file;
 pub mod error;
 pub mod executor;
 pub mod extended;

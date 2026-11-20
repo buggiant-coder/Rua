@@ -1,5 +1,9 @@
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
+
+use rua_core::runtime_authority::{
+    ProcessShape, RuntimeAuthority, RuntimeLaunchRequest, ToolchainIntent,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -46,11 +50,50 @@ pub struct ProjectGitHistoryPage {
     pub total: usize,
 }
 
+fn git_output(root: &Path, args: &[&str]) -> Result<Output, String> {
+    let cache_dir = rua_config::dirs::resolve_cache_dir(&rua_config::dirs::resolve_rua_root(None));
+    let authority = RuntimeAuthority::from_current_process(None, root, cache_dir);
+    let launch = authority.plan(
+        ProcessShape::Direct,
+        ToolchainIntent::GenericCommand {
+            command: "git".into(),
+        },
+        RuntimeLaunchRequest {
+            cwd: Some(root.to_owned()),
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+            env: [
+                ("LC_ALL".into(), "C".into()),
+                ("GIT_OPTIONAL_LOCKS".into(), "0".into()),
+            ]
+            .into(),
+            ..Default::default()
+        },
+    );
+    let process = launch.process().map_err(|error| error.to_string())?;
+    let mut command = Command::new(&process.command);
+    command.args(&process.args).envs(&process.env);
+    if let Some(cwd) = &process.cwd {
+        command.current_dir(cwd);
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("Run Git in {}: {error}", root.display()))?;
+    if !output.status.success()
+        && !String::from_utf8_lossy(&output.stderr).contains("not a git repository")
+    {
+        return Err(format!(
+            "Git in {}: {}",
+            root.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(output)
+}
+
 pub fn inspect_project_git(root: &Path) -> Result<ProjectGitStatus, String> {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args([
+    let status = git_output(
+        root,
+        &[
             "-c",
             "status.relativePaths=true",
             "status",
@@ -60,9 +103,8 @@ pub fn inspect_project_git(root: &Path) -> Result<ProjectGitStatus, String> {
             "--untracked-files=all",
             "--",
             ".",
-        ])
-        .output()
-        .map_err(|error| format!("run git status: {error}"))?;
+        ],
+    )?;
     if !status.status.success() {
         return Ok(ProjectGitStatus {
             repository: false,
@@ -152,12 +194,7 @@ pub fn inspect_project_git_history(
     offset: usize,
     limit: usize,
 ) -> Result<ProjectGitHistoryPage, String> {
-    let count = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-list", "--all", "--count"])
-        .output()
-        .map_err(|error| format!("count git history: {error}"))?;
+    let count = git_output(root, &["rev-list", "--all", "--count"])?;
     if !count.status.success() {
         return Ok(ProjectGitHistoryPage {
             items: Vec::new(),
@@ -170,19 +207,17 @@ pub fn inspect_project_git_history(
         .trim()
         .parse()
         .map_err(|error| format!("parse git history count: {error}"))?;
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args([
+    let output = git_output(
+        root,
+        &[
             "log",
             "--all",
             "--topo-order",
             &format!("--skip={offset}"),
             &format!("--max-count={limit}"),
             "--format=%H%x00%P%x00%s%x00%aI%x00%D%x1e",
-        ])
-        .output()
-        .map_err(|error| format!("read git history: {error}"))?;
+        ],
+    )?;
     if !output.status.success() {
         return Err(format!(
             "read git history: {}",
@@ -234,12 +269,7 @@ fn parse_tracking_count(header: &str, prefix: &str) -> u32 {
 }
 
 fn inspect_head(root: &Path) -> Option<ProjectGitHead> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["log", "-1", "--format=%H%x00%s%x00%aI"])
-        .output()
-        .ok()?;
+    let output = git_output(root, &["log", "-1", "--format=%H%x00%s%x00%aI"]).ok()?;
     if !output.status.success() {
         return None;
     }

@@ -210,6 +210,106 @@ async fn project_http(
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 
+#[test]
+fn directory_command_binds_authenticated_source_and_intended_target() {
+    let cmd = ProjectDeviceCommand {
+        command_id: "directory".into(),
+        source_device_id: "controller".into(),
+        target_device_id: "owner".into(),
+        action: ProjectDeviceAction::BrowseDirectory { path: "/".into() },
+    };
+    assert!(cmd
+        .validate_session_route(Some("controller"), "owner")
+        .is_ok());
+    assert!(matches!(
+        cmd.validate_session_route(None, "owner"),
+        Err(rua_server::services::device_command_bus::DeviceCommandBusError::UnauthenticatedSource)
+    ));
+    assert!(matches!(
+        cmd.validate_session_route(Some("other"), "owner"),
+        Err(rua_server::services::device_command_bus::DeviceCommandBusError::UnauthenticatedSource)
+    ));
+    assert!(matches!(
+        cmd.validate_session_route(Some("controller"), "other"),
+        Err(rua_server::services::device_command_bus::DeviceCommandBusError::WrongTarget { .. })
+    ));
+}
+
+struct DisconnectAfterCreate {
+    handler: DeviceCommandHandler,
+    sessions: std::sync::Mutex<Option<rua_device_network::DeviceSessionManager>>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl DeviceSessionCommandHandler for DisconnectAfterCreate {
+    async fn handle_command(&self, _payload: &[u8]) -> Result<Vec<u8>, String> {
+        Err("Authenticated Device Session required".into())
+    }
+    async fn handle_command_from(&self, peer: &str, payload: &[u8]) -> Result<Vec<u8>, String> {
+        let response = self.handler.handle_command_from(peer, payload).await?;
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let sessions = self.sessions.lock().unwrap().take();
+        if let Some(sessions) = sessions {
+            sessions
+                .disconnect_peer(peer)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(response)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn console_directory_create_reports_lost_receipt_without_repeating_the_write() {
+    use axum::http::{Method, StatusCode};
+    use serde_json::json;
+    let temp = tempfile::tempdir().unwrap();
+    let selected = temp.path().join("selected-parent");
+    std::fs::create_dir(&selected).unwrap();
+    let source = build_peer(1, [44; 32], Vec::new(), None).await;
+    let target_device =
+        hex::encode(&iroh::SecretKey::from_bytes(&[2; 32]).public().as_bytes()[..8]);
+    let receiver = Arc::new(DisconnectAfterCreate {
+        handler: DeviceCommandHandler::new(
+            temp.path().join("device_commands"),
+            target_device.clone(),
+        ),
+        sessions: Default::default(),
+        calls: Default::default(),
+    });
+    let target = build_peer(2, [44; 32], vec![peer_entry(1)], Some(receiver.clone())).await;
+    *receiver.sessions.lock().unwrap() = Some(target.runtime.session_manager().clone());
+    install_connectable_peer(&source, &target);
+    let state = rua_server::AppState::from_tempdir(
+        source.dir.path().join("controller"),
+        rua_server::ServerProfile::Test,
+    );
+    state.wait_platform_initialization().await.unwrap();
+    *state.sync_device.write().unwrap() = Some(Arc::new(
+        serde_json::from_value(json!({"secret_bytes":vec![1u8;32]})).unwrap(),
+    ));
+    *state.device_network.lock().await = Some(source.runtime.clone());
+    let app = rua_server::router::build_app(state, None);
+    let (status, response) = project_http(
+        &app,
+        Method::POST,
+        "/api/projects/directory/create",
+        json!({"device_id":target_device,"parent":selected,"name":"new-folder"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{response}");
+    let detail = response["detail"].as_str().unwrap();
+    assert!(
+        detail.contains(&target_device) && detail.contains("is unconfirmed"),
+        "{detail}"
+    );
+    assert!(selected.join("new-folder").is_dir());
+    assert_eq!(receiver.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    source.runtime.shutdown().await.unwrap();
+    target.runtime.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_resource_validation_and_inspection_use_device_sessions_and_only_creator_commits() {
     let network_secret = [44; 32];
@@ -322,20 +422,21 @@ async fn remote_resource_validation_and_inspection_use_device_sessions_and_only_
     assert!(stores.list().unwrap().is_empty());
     stores.apply_descriptor(project.clone()).unwrap();
 
-    let inspect = |id: &str| ProjectDeviceCommand {
-        command_id: format!("inspect-{id}"),
+    let inspect = |directory: &rua_project::ProjectResourceDirectory| ProjectDeviceCommand {
+        command_id: format!("inspect-{}", directory.directory_id),
         source_device_id: source.device_id.clone(),
         target_device_id: target.device_id.clone(),
         action: ProjectDeviceAction::InspectResource {
             project_id: project.project_id.clone(),
-            directory_id: id.to_owned(),
+            device_id: directory.device_id.clone(),
+            resource_root: directory.resource_root.clone(),
             operation:
                 rua_server::services::device_command_bus::ProjectResourceOperation::GitStatus,
         },
     };
     let git = deliver_project_device_command_via_session(
         source.runtime.session_manager(),
-        &inspect(&directories[1].directory_id),
+        &inspect(&directories[1]),
         Duration::from_secs(5),
     )
     .await
@@ -350,7 +451,7 @@ async fn remote_resource_validation_and_inspection_use_device_sessions_and_only_
     }
     assert!(deliver_project_device_command_via_session(
         source.runtime.session_manager(),
-        &inspect(&directories[0].directory_id),
+        &inspect(&directories[0]),
         Duration::from_secs(5)
     )
     .await

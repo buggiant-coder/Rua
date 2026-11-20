@@ -308,6 +308,7 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             );
         }
         let tool_context = rua_core::tool::ToolContext {
+            local_device_id: Some(directory.device_id),
             chat_media_loader: runtime.chat_media_loader(),
             agent_id: execution_agent_id,
             session_id: chat_id,

@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
 use async_trait::async_trait;
 use rua_contract::Tool;
 use rua_core::tool::{ToolContext, ToolResult, ToolSchema};
-use rua_core::Result;
 use tokio::fs;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt};
 
 use crate::annotations::ExtendedToolAnnotations;
 use crate::context::{ToolExecutionContext, DEFAULT_READ_LINES};
@@ -46,7 +46,7 @@ impl ReadFileTool {
         ToolSpec {
             name: "read".to_string(),
             description: format!(
-                "Read a line window from a text file. Each call returns at most `limit` lines \
+                "Read a line window from a text file or list one directory page sorted by filename. Each call returns at most `limit` lines \
                  (default {DEFAULT_READ_LINES}) with line numbers formatted as `line | text`; it \
                  does not read past that window. Explicit `limit` windows are returned as complete \
                  results. If the tool applies its default or runtime safety limit, the \
@@ -56,6 +56,9 @@ impl ReadFileTool {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "device_id": crate::device_file::device_id_parameter(),
+                    "byte_offset": {"type":"integer","minimum":0,"description":"Continue a bounded text preview of a very long line at the returned byte offset."},
+                    "after": {"type":"string","description":"For a directory, resume after the exact name from the previous page."},
                     "file_path": {
                         "type": "string",
                         "description": "Path to the text file to read"
@@ -86,7 +89,7 @@ impl ReadFileTool {
         self.read_from(args, ctx, None).await
     }
 
-    async fn read_from(
+    pub(crate) async fn read_from(
         &self,
         args: serde_json::Value,
         ctx: &ToolExecutionContext,
@@ -146,7 +149,11 @@ impl ReadFileTool {
             .as_ref()
             .map(|m| m.path.as_path())
             .unwrap_or_else(|| std::path::Path::new(file_path));
-        let resolved = match ctx.workspace_fs.resolve(read_path) {
+        let resolved = match if media.is_some() {
+            ctx.workspace_fs.resolve_host_path(read_path)
+        } else {
+            ctx.workspace_fs.resolve(read_path)
+        } {
             Ok(path) => path,
             Err(ToolError::FileNotFound { .. }) => {
                 return Ok(ToolResult::error(
@@ -159,130 +166,310 @@ impl ReadFileTool {
 
         let metadata = match fs::metadata(&resolved).await {
             Ok(m) => m,
-            Err(_) => {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(ToolResult::error(
                     &ctx.trace_id,
                     format!("Error: The file {file_path} does not exist."),
                 ));
             }
+            Err(error) => return Err(error.into()),
         };
 
+        if metadata.is_dir() {
+            return directory_page(&args, &resolved, file_path, ctx, limit).await;
+        }
         if !metadata.is_file() {
             return Ok(ToolResult::error(
                 &ctx.trace_id,
-                format!("Error: The path {file_path} is not a file."),
+                format!("The path {file_path} is not a regular file or directory."),
             ));
         }
-
-        let raw_bytes = match fs::read(&resolved).await {
-            Ok(b) => b,
-            Err(e) => {
-                return Ok(ToolResult::error(
-                    &ctx.trace_id,
-                    format!("Error: Read file failed due to \n{e}"),
-                ));
-            }
-        };
-
-        let check_len = raw_bytes.len().min(8192);
-        if raw_bytes[..check_len].contains(&0) {
-            return Err(ToolError::BinaryFile {
-                path: PathBuf::from(file_path),
-            });
+        if args.get("after").is_some() {
+            return Ok(ToolResult::error(
+                &ctx.trace_id,
+                "after is only supported for a directory",
+            ));
         }
-
-        let content = String::from_utf8_lossy(&raw_bytes);
-        let lines: Vec<&str> = content.lines().collect();
-        let total_lines = lines.len();
-
-        let start = start_line.map(|n| n.saturating_sub(1)).unwrap_or(0);
-        let tool_applied_line_limit =
-            limit.is_none() || limit.is_some_and(|requested| requested > ctx.limits.max_read_lines);
+        let start = start_line.unwrap_or(1);
         let requested_limit = limit
             .unwrap_or(ctx.limits.default_read_lines)
             .min(ctx.limits.max_read_lines)
             .max(1);
-        let end = start.saturating_add(requested_limit).min(total_lines);
-
-        if start >= total_lines {
+        let tool_limited = limit.is_none() || limit.is_some_and(|n| n > ctx.limits.max_read_lines);
+        let mut reader = tokio::io::BufReader::new(fs::File::open(&resolved).await?);
+        let budget = ctx.raw_capture_max_bytes.max(1);
+        if reader.fill_buf().await?.contains(&0) {
+            return Err(ToolError::BinaryFile {
+                path: file_path.into(),
+            });
+        }
+        if let Some(offset) = args.get("byte_offset") {
+            let Some(offset) = offset
+                .as_u64()
+                .filter(|_| start_line.is_none() && limit.is_none())
+            else {
+                return Ok(ToolResult::error(
+                    &ctx.trace_id,
+                    "Use a nonnegative byte_offset without start_line or limit.",
+                ));
+            };
+            return text_bytes(&mut reader, offset, metadata.len(), file_path, ctx).await;
+        }
+        let mut byte_position = 0u64;
+        // Skip preceding lines without allocating them, including very long lines.
+        let mut line_no = 1;
+        while line_no < start {
+            if ctx.is_cancelled() {
+                return Ok(ToolResult::error(&ctx.trace_id, "Read cancelled"));
+            }
+            let chunk = reader.fill_buf().await?;
+            if chunk.is_empty() {
+                break;
+            }
+            let mut count = 0;
+            for &byte in chunk {
+                count += 1;
+                if byte == b'\n' {
+                    line_no += 1;
+                    if line_no == start {
+                        break;
+                    }
+                }
+            }
+            reader.consume(count);
+            byte_position += count as u64;
+        }
+        if reader.fill_buf().await?.is_empty() {
             return Ok(ToolResult::error(
                 &ctx.trace_id,
-                format!(
-                    "Error: start_line {} exceeds file length ({total_lines} lines).",
-                    start + 1
-                ),
+                format!("Error: start_line {start} exceeds file length."),
             ));
         }
-
         let mut output = String::new();
-        let truncated = end < total_lines;
-
-        for (i, line) in lines[start..end].iter().enumerate() {
-            let line_num = start + i + 1;
-            output.push_str(&format!("{line_num:>6} | {line}\n"));
-        }
-
-        let max_output_bytes = ctx.raw_capture_max_bytes.max(1);
-        let total_bytes = raw_bytes.len();
-        let mut truncation_meta: Option<agent_types::TruncationMeta> = None;
-        if output.len() > max_output_bytes {
-            let mut cut = max_output_bytes;
-            while cut > 0 && !output.is_char_boundary(cut) {
-                cut -= 1;
+        let mut row = Vec::new();
+        let mut count = 0;
+        let mut byte_limited = false;
+        let mut has_more = false;
+        while count < requested_limit {
+            if ctx.is_cancelled() {
+                return Ok(ToolResult::error(&ctx.trace_id, "Read cancelled"));
             }
-            output.truncate(cut);
-
-            let complete_lines = if let Some(last_newline) = output.rfind('\n') {
-                output.truncate(last_newline + 1);
-                output.matches('\n').count()
-            } else {
-                1
-            };
-            let next_start = start + complete_lines + 1;
-            let shown_start = (start + 1) as u64;
-            let shown_end = (start + complete_lines) as u64;
-            let hint = format!(
-                "read(file_path=\"{file_path}\", start_line={next_start}, limit={requested_limit})"
-            );
-            truncation_meta = Some(crate::result_store::continuation_meta(
-                "read",
-                Some(total_lines as u64),
-                Some(total_bytes as u64),
-                shown_start,
-                shown_end,
-                hint,
-            ));
-        } else if truncated && tool_applied_line_limit {
-            let next_start = end + 1;
-            let hint = format!(
-                "read(file_path=\"{file_path}\", start_line={next_start}, limit={requested_limit})"
-            );
-            truncation_meta = Some(crate::result_store::continuation_meta(
-                "read",
-                Some(total_lines as u64),
-                Some(total_bytes as u64),
-                (start + 1) as u64,
-                end as u64,
-                hint,
-            ));
+            row.clear();
+            let n = (&mut reader)
+                .take(budget as u64 + 1)
+                .read_until(b'\n', &mut row)
+                .await?;
+            if n == 0 {
+                break;
+            }
+            if row.contains(&0) {
+                return Err(ToolError::BinaryFile {
+                    path: file_path.into(),
+                });
+            }
+            let text = String::from_utf8_lossy(&row);
+            let line = format!("{line_no:>6} | {}\n", text.trim_end_matches(['\r', '\n']));
+            if output.len() + line.len() > budget {
+                if count == 0 {
+                    return text_bytes(&mut reader, byte_position, metadata.len(), file_path, ctx)
+                        .await;
+                }
+                has_more = true;
+                byte_limited = true;
+                break;
+            }
+            output.push_str(&line);
+            byte_position += n as u64;
+            count += 1;
+            line_no += 1;
         }
-
-        let body = if let Some(ref meta) = truncation_meta {
-            let mut s = crate::result_store::format_truncation_warning(meta);
-            s.push_str(&output);
-            s
-        } else {
-            output
-        };
-
+        has_more |= !reader.fill_buf().await?.is_empty();
+        let mut result = ToolResult::text(&ctx.trace_id, &output);
+        if has_more {
+            result.metadata.insert("continuation".into(), serde_json::json!({"file_path":file_path,"start_line":line_no,"limit":requested_limit}));
+            if byte_limited || tool_limited {
+                let hint = format!(
+                    "read(file_path={file_path:?}, start_line={line_no}, limit={requested_limit})"
+                );
+                let meta = crate::result_store::continuation_meta(
+                    "read",
+                    None,
+                    Some(metadata.len()),
+                    start as u64,
+                    (line_no - 1) as u64,
+                    hint,
+                );
+                let mut body = crate::result_store::format_truncation_warning(&meta);
+                body.push_str(&output);
+                result.content = vec![agent_types::ContentPart::Text { text: body }];
+                result.truncation = Some(meta);
+            }
+        }
         if let Ok(mtime) = metadata.modified() {
             record_file_mtime(&resolved, mtime);
         }
 
-        let mut result = ToolResult::text(&ctx.trace_id, body);
-        result.truncation = truncation_meta;
         Ok(result)
     }
+}
+
+async fn text_bytes(
+    reader: &mut tokio::io::BufReader<fs::File>,
+    offset: u64,
+    length: u64,
+    path: &str,
+    ctx: &ToolExecutionContext,
+) -> std::result::Result<ToolResult, ToolError> {
+    if offset >= length {
+        return Ok(ToolResult::error(
+            &ctx.trace_id,
+            format!("Byte offset {offset} exceeds the text file range of {length} bytes."),
+        ));
+    }
+    reader.seek(std::io::SeekFrom::Start(offset)).await?;
+    let mut bytes = Vec::new();
+    let budget = ctx.raw_capture_max_bytes.max(4);
+    // Three bytes of lookahead distinguish a split scalar from invalid input.
+    reader
+        .take((budget as u64).saturating_add(3).min(length - offset))
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.contains(&0) {
+        return Err(ToolError::BinaryFile { path: path.into() });
+    }
+    if bytes.is_empty() {
+        return Ok(ToolResult::error(
+            &ctx.trace_id,
+            "The text file changed while reading this range.",
+        ));
+    }
+    let mut shown = String::new();
+    let mut consumed = 0;
+    for chunk in bytes.utf8_chunks() {
+        let valid = chunk.valid();
+        let mut take = valid.len().min(budget - shown.len());
+        while !valid.is_char_boundary(take) {
+            take -= 1;
+        }
+        shown.push_str(&valid[..take]);
+        consumed += take;
+        if take < valid.len() {
+            break;
+        }
+        if !chunk.invalid().is_empty() {
+            if budget - shown.len() < char::REPLACEMENT_CHARACTER.len_utf8() {
+                break;
+            }
+            shown.push(char::REPLACEMENT_CHARACTER);
+            consumed += chunk.invalid().len();
+        }
+    }
+    let end = offset + consumed as u64;
+    let mut result = ToolResult::text(&ctx.trace_id, shown);
+    result.metadata.insert(
+        "byte_range".into(),
+        serde_json::json!({"start":offset,"end_exclusive":end,"total_bytes":length}),
+    );
+    if end < length {
+        let next = serde_json::json!({"file_path":path,"byte_offset":end});
+        result.content.push(agent_types::ContentPart::Text {
+            text: format!("\nText bytes {offset}..{end} of {length}. Continue with read({next})."),
+        });
+        result.metadata.insert("continuation".into(), next);
+    }
+    Ok(result)
+}
+
+async fn directory_page(
+    args: &serde_json::Value,
+    directory: &std::path::Path,
+    path: &str,
+    ctx: &ToolExecutionContext,
+    limit: Option<usize>,
+) -> std::result::Result<ToolResult, ToolError> {
+    if args.get("byte_offset").is_some()
+        || args.get("start_line").is_some()
+        || args.get("after").is_some_and(|value| !value.is_string())
+    {
+        return Ok(ToolResult::error(
+            &ctx.trace_id,
+            "Directory pages use after (a filename) and limit.",
+        ));
+    }
+    let after = args.get("after").and_then(|value| value.as_str());
+    let limit = limit.unwrap_or(100).min(200);
+    let mut names = std::collections::BTreeSet::new();
+    let mut entries = fs::read_dir(directory).await?;
+    let mut omitted = 0;
+    while let Some(entry) = entries.next_entry().await? {
+        if ctx.is_cancelled() {
+            return Ok(ToolResult::error(&ctx.trace_id, "Directory read cancelled"));
+        }
+        let Ok(name) = entry.file_name().into_string() else {
+            omitted += 1;
+            continue;
+        };
+        if after.is_some_and(|last| name.as_str() <= last) {
+            continue;
+        }
+        if names.len() > limit && names.last().is_some_and(|last| &name >= last) {
+            continue;
+        }
+        if ctx.workspace_fs.resolve_host_path(&entry.path()).is_err() {
+            omitted += 1;
+            continue;
+        }
+        names.insert(name);
+        if names.len() > limit + 1 {
+            names.pop_last();
+        }
+    }
+    let has_more = names.len() > limit;
+    if has_more {
+        names.pop_last();
+    }
+    let mut listing = Vec::with_capacity(names.len());
+    let mut entries = Vec::with_capacity(names.len());
+    for name in &names {
+        match fs::symlink_metadata(directory.join(name)).await {
+            Ok(meta) => {
+                let kind = if meta.is_dir() {
+                    "directory"
+                } else if meta.is_symlink() {
+                    "symlink"
+                } else if meta.is_file() {
+                    "file"
+                } else {
+                    "other"
+                };
+                listing.push(if meta.is_dir() {
+                    format!("{name}/")
+                } else {
+                    name.clone()
+                });
+                entries.push(serde_json::json!({"name":name,"kind":kind}));
+            }
+            Err(_) => omitted += 1,
+        }
+    }
+    let mut result = ToolResult::text(&ctx.trace_id, listing.join("\n"));
+    result
+        .metadata
+        .insert("directory_entries".into(), entries.into());
+    if has_more {
+        let next = serde_json::json!({"file_path":path,"limit":limit,"after":names.last()});
+        result.content.push(agent_types::ContentPart::Text {
+            text: format!("\nContinue with read({next})."),
+        });
+        result.metadata.insert("continuation".into(), next);
+    }
+    if omitted > 0 {
+        result.content.push(agent_types::ContentPart::Text {text: format!("\nIncomplete listing: {omitted} inaccessible or unrepresentable entries were omitted.")});
+        result
+            .metadata
+            .insert("omitted_entries".into(), serde_json::json!(omitted));
+    }
+    Ok(result)
 }
 
 impl Default for ReadFileTool {
@@ -306,51 +493,11 @@ impl Tool for ReadFileTool {
         }
     }
 
-    async fn call(&self, args: serde_json::Value, ctx: ToolContext) -> Result<ToolResult> {
-        let media = match args["file_path"].as_str() {
-            Some(path) => ctx.open_chat_media_reference(path).await?,
-            None => None,
-        };
-        let tool_result_store_dir = crate::result_store::archive_dir_for_context(&ctx)?;
-        let cancel = ctx.cancel.unwrap_or_else(|| {
-            let (_, rx) = tokio::sync::watch::channel(false);
-            rx
-        });
-
-        let workspace_fs =
-            Arc::new(crate::fs::WorkspaceFs::new(&ctx.working_dir).map_err(|e| {
-                rua_core::RuaError::Tool {
-                    tool: "read".into(),
-                    message: e.to_string(),
-                }
-            })?);
-
-        let exec_ctx = ToolExecutionContext {
-            workspace_fs,
-            tool_result_store_dir,
-            working_dir: ctx.working_dir,
-            session_id: ctx.session_id,
-            user_id: String::new(),
-            agent_id: ctx.agent_id,
-            channel: "console".into(),
-            trace_id: uuid::Uuid::new_v4().to_string(),
-            cancel,
-            security_context: crate::context::SecurityContext::default(),
-            executor: Arc::new(crate::executor::DisabledCommandExecutor::default()),
-            task_session: None,
-            limits: crate::context::ToolExecutionLimits::default(),
-
-            execution_output_max_tokens: rua_core::tool::DEFAULT_TOOL_EXECUTION_OUTPUT_MAX_TOKENS,
-            raw_capture_max_bytes: rua_core::tool::DEFAULT_TOOL_RAW_CAPTURE_MAX_BYTES,
-            recall_slice_max_tokens: rua_core::tool::DEFAULT_TOOL_RECALL_SLICE_MAX_TOKENS,
-
-            old_max_bytes: rua_core::tool::DEFAULT_TOOL_OLD_MAX_BYTES,
-
-            token_estimate_divisor: rua_core::tool::DEFAULT_TOKEN_ESTIMATE_DIVISOR,
-        };
-
-        self.read_from(args, &exec_ctx, media)
-            .await
-            .map_err(rua_core::RuaError::from)
+    async fn call(
+        &self,
+        args: serde_json::Value,
+        ctx: ToolContext,
+    ) -> rua_core::Result<ToolResult> {
+        crate::device_file::call("read", args, ctx).await
     }
 }

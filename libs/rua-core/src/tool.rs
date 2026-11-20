@@ -32,6 +32,7 @@ pub const DEFAULT_TOKEN_ESTIMATE_DIVISOR: f64 = 4.0;
 pub struct ToolContext {
     pub agent_id: String,
     pub session_id: String,
+    pub local_device_id: Option<String>,
     pub working_dir: std::path::PathBuf,
 
     pub conversation_store_dir: Option<std::path::PathBuf>,
@@ -90,6 +91,7 @@ impl Default for ToolContext {
         Self {
             agent_id: String::new(),
             session_id: String::new(),
+            local_device_id: None,
             working_dir: std::path::PathBuf::new(),
             conversation_store_dir: None,
             tool_result_store_dir: None,
