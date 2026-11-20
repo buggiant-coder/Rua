@@ -56,32 +56,16 @@ describe("chatApi file helpers", () => {
     vi.clearAllMocks();
   });
 
-  it("builds Rust file preview URLs and appends the API token when present", () => {
-    expect(chatApi.filePreviewUrl("")).toBe("");
-    expect(chatApi.filePreviewUrl("https://cdn.example/img.png")).toBe(
-      "https://cdn.example/img.png",
-    );
-    expect(chatApi.filePreviewUrl("/img.png")).toBe(
-      "/api/files/preview/img.png",
-    );
-
-    vi.mocked(getApiToken).mockReturnValueOnce("tok en+1");
-    expect(chatApi.filePreviewUrl("img.png")).toBe(
-      "/api/files/preview/img.png?token=tok%20en%2B1",
-    );
-  });
-
-  it("builds agent-scoped local image preview URLs without changing the source path", () => {
-    expect(
-      chatApi.localImagePreviewUrl("/sdcard/DCIM/Camera/IMG 20260722_HDR.jpg"),
-    ).toBe(
-      "/api/agents/selected-agent/files/preview?path=%2Fsdcard%2FDCIM%2FCamera%2FIMG+20260722_HDR.jpg",
-    );
-
-    vi.mocked(getApiToken).mockReturnValueOnce("tok en+1");
-    expect(chatApi.localImagePreviewUrl("~/Pictures/照片.jpg", "agent/1")).toBe(
-      "/api/agents/agent%2F1/files/preview?path=%7E%2FPictures%2F%E7%85%A7%E7%89%87.jpg&token=tok+en%2B1",
-    );
+  it("writes the viewer's known authority epoch when uploading to a saved Chat", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("{}"));
+    vi.stubGlobal("fetch", fetchMock);
+    await chatApi.uploadFile("chat-1", new File(["bytes"], "photo.jpg"), {
+      expectedAuthorityEpoch: "epoch-1",
+    });
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/chats/chat-1/media");
+    expect(init.body.get("expected_authority_epoch")).toBe("epoch-1");
+    expect(init.body.has("agent_id")).toBe(false);
   });
 
   it("stages Chat Media with explicit draft context", async () => {

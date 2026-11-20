@@ -675,48 +675,41 @@ async fn gc_preserves_current_media_and_skill_payloads_after_restart_and_reclaim
         network.derive_sync_key(),
         store.api_store(),
     );
-    let media = MediaSyncAdapter::new(data.path().to_path_buf(), &device_id)
-        .with_blob_store(store.api_store(), network.derive_sync_key());
-    let path = data.path().join("image.bin");
-    std::fs::write(&path, vec![b'a'; 300 * 1024]).unwrap();
-    let old = media
-        .snapshot_change_for_media_path(
-            "7f705ce4-77ce-4303-9c78-55545538b29b",
-            &path,
-            "old-media",
-            &device_id,
-            network_hlc(10),
-        )
+    let media = MediaSyncAdapter::new(data.path().to_path_buf(), &device_id);
+    let id = uuid::Uuid::new_v4();
+    let image = vec![b'a'; 300 * 1024];
+    let manifest = rua_session::chat_media::ChatMediaManifest::new(
+        id,
+        "photo-chat",
+        &device_id,
+        "image/png".into(),
+        &image,
+    )
+    .unwrap();
+    let media_dir = data.path().join("chats/media");
+    manifest.store_copy(&media_dir, &image).unwrap();
+    let announced = media
+        .snapshot_change_for_file(&id.to_string(), "media", &device_id, network_hlc(10))
         .await
         .unwrap();
-    let old_hash = old.payload["hash_ref"]
-        .as_str()
-        .unwrap()
-        .parse::<iroh_blobs::Hash>()
-        .unwrap();
-    log.append_change(&old).await.unwrap();
-    std::fs::write(&path, vec![b'b'; 300 * 1024]).unwrap();
-    let current = media
-        .snapshot_change_for_media_path(
-            "7f705ce4-77ce-4303-9c78-55545538b29b",
-            &path,
-            "current-media",
-            &device_id,
-            network_hlc(20),
-        )
-        .await
-        .unwrap();
-    let media_hash = current.payload["hash_ref"]
-        .as_str()
-        .unwrap()
-        .parse::<iroh_blobs::Hash>()
-        .unwrap();
-    log.append_change(&current).await.unwrap();
+    assert!(announced.payload.get("hash_ref").is_none());
+    log.append_change(&announced).await.unwrap();
     let skill_dir = data.path().join("skill_pool").join("writer");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(skill_dir.join("resource.bin"), vec![b'c'; 300 * 1024]).unwrap();
     let skills = SkillBlobManifestSyncAdapter::new(data.path().to_path_buf(), &device_id)
         .with_blob_store(store.api_store(), network.derive_sync_key());
+    let superseded = skills
+        .snapshot_change_for_skill("writer", "old-skill", &device_id, network_hlc(10))
+        .await
+        .unwrap();
+    let old_hash = superseded.payload["files"][0]["hash_ref"]
+        .as_str()
+        .unwrap()
+        .parse::<iroh_blobs::Hash>()
+        .unwrap();
+    log.append_change(&superseded).await.unwrap();
+    std::fs::write(skill_dir.join("resource.bin"), vec![b'd'; 300 * 1024]).unwrap();
     let skill = skills
         .snapshot_change_for_skill("writer", "current-skill", &device_id, network_hlc(20))
         .await
@@ -768,15 +761,14 @@ async fn gc_preserves_current_media_and_skill_payloads_after_restart_and_reclaim
     })
     .await
     .expect("orphan and overwritten payloads must be reclaimed");
-    for (label, hash) in [("media", media_hash), ("skill", skill_hash)] {
-        assert!(
-            matches!(
-                store.api_store().status(hash).await.unwrap(),
-                BlobStatus::Complete { .. }
-            ),
-            "current {label} payload must survive restart and GC"
-        );
-    }
+    assert!(
+        matches!(
+            store.api_store().status(skill_hash).await.unwrap(),
+            BlobStatus::Complete { .. }
+        ),
+        "current skill payload must survive restart and GC"
+    );
+    manifest.verify_copy(&media_dir).unwrap();
     node.shutdown().await;
 }
 

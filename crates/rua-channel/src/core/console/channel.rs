@@ -132,6 +132,11 @@ fn content_part_from_request_json(part: &serde_json::Value) -> Option<ContentPar
 }
 
 fn content_part_from_attachment(attachment: &AttachmentInfo) -> ContentPart {
+    let url = attachment
+        .stored_name
+        .as_ref()
+        .map(|id| format!("media/{id}"))
+        .unwrap_or_else(|| attachment.url.clone());
     let mime = attachment
         .mime_type
         .clone()
@@ -141,13 +146,13 @@ fn content_part_from_attachment(attachment: &AttachmentInfo) -> ContentPart {
         .is_some_and(|value| value.starts_with("image/"))
     {
         ContentPart::Image {
-            url: attachment.url.clone(),
+            url,
             media_type: mime,
             alt: Some(attachment.name.clone()),
         }
     } else {
         ContentPart::File {
-            url: attachment.url.clone(),
+            url,
             name: attachment.name.clone(),
             media_type: mime,
             size: attachment.size,

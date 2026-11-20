@@ -76,12 +76,22 @@ async fn remote_managed_media_requirement_is_derived_only_from_media_ref() {
     std::fs::create_dir_all(&workspace_dir).expect("workspace");
     let handoff = handoff(temp.path());
     let address = rua_core::ChatAddress::new(CHAT_ID);
+    let id = uuid::Uuid::new_v4();
+    let manifest = rua_session::chat_media::ChatMediaManifest::new(
+        id,
+        CHAT_ID,
+        "holder",
+        "image/png".into(),
+        b"png",
+    )
+    .unwrap();
+    manifest.register(&workspace_dir.join("media")).unwrap();
     let mut console_request = request("look at this");
     console_request.input = Some(vec![serde_json::json!({
         "role": "user",
         "content": [
             { "type": "text", "text": "look at this" },
-            { "type": "image", "media_ref": "media/uuid-image.png" }
+            { "type": "image", "media_ref": manifest.media_ref }
         ]
     })]);
 
@@ -96,18 +106,28 @@ async fn remote_managed_media_requirement_is_derived_only_from_media_ref() {
 
     assert_eq!(remote_request.media_requirements.len(), 1);
     let requirement = &remote_request.media_requirements[0];
-    assert_eq!(requirement.media_ref, "media/uuid-image.png");
-    assert_eq!(requirement.filename, "uuid-image.png");
+    assert_eq!(requirement.media_ref, manifest.media_ref);
+    assert_eq!(requirement.filename, id.to_string());
+    assert!(!workspace_dir.join("media").join(id.to_string()).exists());
     assert_eq!(remote_request.input, console_request.input);
 }
 
 #[tokio::test]
-async fn first_input_media_requirements_fingerprint_staged_bytes() {
+async fn first_input_reuses_registered_digest_without_reading_bytes_and_rejects_foreign_references()
+{
     let tmp = TempDir::new().unwrap();
     let root = tmp.path().join("chats");
     std::fs::create_dir_all(root.join("media")).unwrap();
     let media_id = "00000000-0000-4000-8000-000000000111";
-    std::fs::write(root.join("media").join(media_id), b"abc").unwrap();
+    let manifest = rua_session::chat_media::ChatMediaManifest::new(
+        uuid::Uuid::parse_str(media_id).unwrap(),
+        CHAT_ID,
+        "holder",
+        "text/plain".into(),
+        b"abc",
+    )
+    .unwrap();
+    manifest.register(&root.join("media")).unwrap();
     let mut request = request("first staged media");
     request.input = Some(vec![
         serde_json::json!({"role":"user","content":[{"type":"file","media_ref":format!("media/{media_id}")} ]}),
@@ -125,7 +145,9 @@ async fn first_input_media_requirements_fingerprint_staged_bytes() {
         media.sha256,
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     );
-    std::fs::remove_file(root.join("media").join(media_id)).unwrap();
+    assert!(!root.join("media").join(media_id).exists());
+    let foreign = rua_core::ChatAddress::new(uuid::Uuid::new_v4().to_string());
+    params.address = &foreign;
     assert!(handoff(tmp.path())
         .build_remote_conversation_input_request(&params)
         .await

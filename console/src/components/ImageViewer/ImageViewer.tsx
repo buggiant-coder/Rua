@@ -1,4 +1,4 @@
-import { Minus, Plus, RotateCcw, X } from "lucide-react";
+import { ImageIcon, Minus, Plus, RotateCcw, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -8,8 +8,9 @@ import {
   type WheelEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import { useRenderProtection } from "../ChatRenderBlock/useRenderState";
-import { useImageSource } from "./useImageSource";
+import { useMediaSource } from "./useMediaSource";
 import "./image-viewer.css";
 
 const MIN_SCALE = 0.25;
@@ -23,7 +24,6 @@ type ImageViewerProps = {
   triggerClassName?: string;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
-  hideTrigger?: boolean;
 };
 
 type Point = {
@@ -42,11 +42,11 @@ export default function ImageViewer({
   triggerClassName,
   open: controlledOpen,
   onOpenChange,
-  hideTrigger = false,
 }: ImageViewerProps) {
-  const imageSource = useImageSource(src);
+  const { t } = useTranslation();
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
+  const { url: imageSource, error, retry } = useMediaSource(src, open);
   useRenderProtection(open);
   const setOpen = useCallback(
     (nextOpen: boolean) => {
@@ -130,23 +130,28 @@ export default function ImageViewer({
 
   return (
     <>
-      {!hideTrigger && (
-        <button
-          type="button"
-          className={["rua-image-viewer-trigger", triggerClassName]
-            .filter(Boolean)
-            .join(" ")}
-          aria-label={`Open ${alt || "image"}`}
-          onClick={() => setOpen(true)}
-        >
+      <button
+        type="button"
+        className={["rua-image-viewer-trigger", triggerClassName]
+          .filter(Boolean)
+          .join(" ")}
+        aria-label={`Open ${alt || "image"}`}
+        onClick={() => setOpen(true)}
+      >
+        {imageSource ? (
           <img
             src={imageSource}
             alt={alt}
             className={imageClassName}
             draggable={false}
           />
-        </button>
-      )}
+        ) : (
+          <span className="rua-image-preview-name">
+            <ImageIcon size={16} aria-hidden="true" />
+            {alt || t("chat.previewImage")}
+          </span>
+        )}
+      </button>
       {open &&
         createPortal(
           <div
@@ -184,21 +189,37 @@ export default function ImageViewer({
               </button>
             </div>
             <div className="rua-image-viewer-stage">
-              <img
-                src={imageSource}
-                alt={alt}
-                draggable={false}
-                onClick={(event) => event.stopPropagation()}
-                onDoubleClick={() => changeScale(scale === 1 ? 2 : 1)}
-                onPointerDown={handlePointerDown}
-                onPointerMove={handlePointerMove}
-                onPointerUp={stopDragging}
-                onPointerCancel={stopDragging}
-                style={{
-                  transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
-                  cursor: scale > 1 ? "grab" : "zoom-in",
-                }}
-              />
+              {error ? (
+                <div
+                  className="rua-image-preview-error"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <span role="alert">{error}</span>
+                  <button type="button" onClick={retry}>
+                    {t("common.retry", { defaultValue: "Retry" })}
+                  </button>
+                </div>
+              ) : imageSource ? (
+                <img
+                  src={imageSource}
+                  alt={alt}
+                  draggable={false}
+                  onClick={(event) => event.stopPropagation()}
+                  onDoubleClick={() => changeScale(scale === 1 ? 2 : 1)}
+                  onPointerDown={handlePointerDown}
+                  onPointerMove={handlePointerMove}
+                  onPointerUp={stopDragging}
+                  onPointerCancel={stopDragging}
+                  style={{
+                    transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+                    cursor: scale > 1 ? "grab" : "zoom-in",
+                  }}
+                />
+              ) : (
+                <span role="status">
+                  {t("common.loading", { defaultValue: "Loading…" })}
+                </span>
+              )}
             </div>
           </div>,
           document.body,

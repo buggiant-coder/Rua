@@ -21,7 +21,7 @@ import { Btn, Tooltip, toast } from "@/ui";
 import { chatApi, type ChatMediaUploadContext } from "@/api/modules/chat";
 import ImageViewer from "@/components/ImageViewer";
 import { useSlashCommands } from "@/hooks/useSlashCommands";
-import { toDisplayUrl } from "../utils";
+import { chatMediaDisplayUrl } from "@/api/chatMedia";
 import * as drafts from "../drafts";
 import { requestBrowserNotificationPermissionFromUserGesture } from "@/userNotifications/browserPermission";
 import "./owned-conversation-composer.css";
@@ -296,11 +296,19 @@ export default memo(function OwnedConversationComposer({
   const canSubmit =
     !uploading && !submitting && (!!value.trim() || attachments.length > 0);
   const uploadAttachment = (file: File) =>
-    chatApi.uploadFile(chatId, file, draftContext);
+    chatApi.uploadFile(
+      chatId,
+      file,
+      draftContext ??
+        (currentAuthorityEpoch
+          ? { expectedAuthorityEpoch: currentAuthorityEpoch }
+          : undefined),
+    );
   const attachmentDisplayUrl = (attachment: ComposerAttachment) =>
-    attachment.storedName
-      ? chatApi.mediaUrl(chatId, attachment.storedName)
-      : toDisplayUrl(attachment.url);
+    chatMediaDisplayUrl(
+      attachment.storedName ? `media/${attachment.storedName}` : attachment.url,
+      chatId,
+    );
   const showStopAction = turnActive && !canSubmit;
   const slashCommands = useSlashCommands();
 
@@ -680,6 +688,10 @@ export default memo(function OwnedConversationComposer({
               {attachment.type === "image" ? (
                 <ImageViewer
                   src={attachmentDisplayUrl(attachment)}
+                  open={markerPreview?.id === attachment.id}
+                  onOpenChange={(open) =>
+                    setMarkerPreview(open ? attachment : null)
+                  }
                   alt={attachment.name}
                   imageClassName="rua-owned-composer-attachment-image"
                 />
@@ -879,17 +891,6 @@ export default memo(function OwnedConversationComposer({
           }}
         />
       </div>
-      {markerPreview && (
-        <ImageViewer
-          src={attachmentDisplayUrl(markerPreview)}
-          alt={markerPreview.name}
-          open
-          hideTrigger
-          onOpenChange={(open) => {
-            if (!open) setMarkerPreview(null);
-          }}
-        />
-      )}
       {filteredSlashCommands.length > 0 && (
         <div className="rua-owned-composer-slash" data-rua-chat-slash>
           {filteredSlashCommands.map((item, index) => (

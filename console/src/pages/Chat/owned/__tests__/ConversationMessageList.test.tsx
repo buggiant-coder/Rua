@@ -74,9 +74,6 @@ const mobileMock = vi.hoisted(() => ({
 
 vi.mock("@/api/modules/chat", () => ({
   chatApi: {
-    filePreviewUrl: (path: string) => `/preview${path}`,
-    localImagePreviewUrl: (path: string, agentId = "default") =>
-      `/agents/${agentId}/files/preview?path=${encodeURIComponent(path)}`,
     mediaUrl: (chatId: string, mediaId: string) =>
       `/api/chats/${chatId}/media/${mediaId}?token=test`,
   },
@@ -788,7 +785,7 @@ describe("ConversationMessageList", () => {
             { type: "text", text: "A long user input" },
             {
               type: "image",
-              image_url: "/uploads/picture.png",
+              image_url: "https://example.com/picture.png",
               file_name: "picture.png",
             },
           ],
@@ -855,7 +852,7 @@ describe("ConversationMessageList", () => {
       ],
     });
     const { container } = render(
-      <ConversationMessageList projection={projection} agentId="agent-one" />,
+      <ConversationMessageList projection={projection} />,
     );
     const list = container.querySelector(
       ".rua-chat-message-list",
@@ -887,7 +884,7 @@ describe("ConversationMessageList", () => {
             { type: "text", text: "Before " },
             {
               type: "image",
-              image_url: "/uploads/picture.png",
+              image_url: "https://example.com/picture.png",
               file_name: "picture.png",
             },
             { type: "text", text: " after" },
@@ -907,14 +904,14 @@ describe("ConversationMessageList", () => {
     expect(link).toHaveAttribute("href", "#rua-image-1");
     expect(content?.querySelector(".rua-chat-user-images img")).toHaveAttribute(
       "src",
-      "/preview/uploads/picture.png",
+      "https://example.com/picture.png",
     );
 
     fireEvent.click(link);
     expect(screen.getByRole("dialog", { name: "picture.png" })).toBeVisible();
   });
 
-  it("resolves managed media references through the current agent workspace", () => {
+  it("keeps an invalid attachment reference unavailable across Agent changes", () => {
     const projection = projectConversation("chat-1", {
       status: "idle",
       messages: [
@@ -927,15 +924,11 @@ describe("ConversationMessageList", () => {
     });
 
     const { container } = render(
-      <ConversationMessageList projection={projection} agentId="agent-one" />,
+      <ConversationMessageList projection={projection} />,
     );
 
-    expect(
-      container.querySelector(".rua-chat-user-images img"),
-    ).toHaveAttribute(
-      "src",
-      "/preview/agents/agent-one/files/preview?path=media%2Fuuid-image.png",
-    );
+    expect(container.querySelector(".rua-chat-user-images img")).toBeNull();
+    expect(screen.getByRole("status")).toBeVisible();
   });
 
   it("reads submitted user images by Chat ID after reopening history", async () => {
@@ -965,49 +958,35 @@ describe("ConversationMessageList", () => {
     });
 
     const view = <ConversationMessageList projection={projection} />;
-    const { container, unmount } = render(view);
-
-    await waitFor(() =>
-      expect(
-        container.querySelector(".rua-chat-user-images img"),
-      ).toHaveAttribute("src", "blob:submitted-media"),
-    );
-    expect(fetchMock).toHaveBeenCalledWith(
-      new URL(
-        `/api/chats/chat-project-1/media/00000000-0000-4000-8000-000000000001`,
-        window.location.href,
-      ).href,
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: expect.any(String),
-        }),
-      }),
-    );
+    const { unmount } = render(view);
+    expect(fetchMock).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Open submitted.png" }));
-    expect(
-      within(screen.getByRole("dialog")).getByAltText("submitted.png"),
-    ).toHaveAttribute("src", "blob:submitted-media");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole("button", { name: "Close image" }));
-
-    fireEvent.click(screen.getByRole("link", { name: "[Image #1]" }));
     await waitFor(() =>
       expect(
         within(screen.getByRole("dialog")).getByAltText("submitted.png"),
       ).toHaveAttribute("src", "blob:submitted-media"),
     );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL(
+        "/api/chats/chat-project-1/media/00000000-0000-4000-8000-000000000001",
+        window.location.href,
+      ).href,
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: expect.any(String) }),
+      }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Close image" }));
+    fireEvent.click(screen.getByRole("link", { name: "[Image #1]" }));
+    expect(
+      within(screen.getByRole("dialog")).getByAltText("submitted.png"),
+    ).toHaveAttribute("src", "blob:submitted-media");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     unmount();
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:submitted-media");
-
     const reopened = render(view);
-    await waitFor(() =>
-      expect(
-        reopened.container.querySelector(".rua-chat-user-images img"),
-      ).toHaveAttribute("src", "blob:submitted-media"),
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("link", { name: "[Image #1]" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     reopened.unmount();
     fetchMock.mockRestore();
     createObjectURL.mockRestore();
@@ -1041,14 +1020,8 @@ describe("ConversationMessageList", () => {
     );
 
     expect(screen.queryByText(/已经下载到/)).not.toBeInTheDocument();
-    expect(screen.getByAltText("photo.png")).toHaveAttribute(
-      "src",
-      "/preview/tmp/photo.png",
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Open photo.png" }));
-    expect(
-      screen.getByRole("dialog", { name: "photo.png" }),
-    ).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: "photo.png" })).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent("photo.png");
     expect(container.querySelector(".rua-chat-bubble--user")).toHaveClass(
       "has-media",
       "is-media-only",
@@ -1066,13 +1039,13 @@ describe("ConversationMessageList", () => {
             { type: "text", text: "Compare these:\n" },
             {
               type: "image",
-              url: "/tmp/one.png",
+              url: "https://example.com/one.png",
               alt: "one.png",
             },
             { type: "text", text: "\nwith this:\n" },
             {
               type: "image",
-              url: "/tmp/two.png",
+              url: "https://example.com/two.png",
               alt: "two.png",
             },
           ],
@@ -1123,10 +1096,10 @@ describe("ConversationMessageList", () => {
     });
     render(<ConversationMessageList projection={projection} />);
     for (const name of ["Markdown preview", "Figure"]) {
-      expect(screen.getByRole("img", { name })).toHaveAttribute(
-        "src",
-        `/api/chats/chat-1/media/${id}?token=test`,
-      );
+      expect(
+        screen.getByRole("button", { name: "Open " + name }),
+      ).toBeVisible();
+      expect(screen.queryByRole("img", { name })).toBeNull();
     }
   });
 
@@ -1695,7 +1668,7 @@ describe("ConversationMessageList", () => {
           content: [
             {
               type: "file",
-              file_url: "/tmp/report.txt",
+              file_url: "https://example.com/report.txt",
               file_name: "report.txt",
             },
           ],
@@ -1707,7 +1680,7 @@ describe("ConversationMessageList", () => {
     fireEvent.click(screen.getByRole("link", { name: /report\.txt/ }));
 
     await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith("/preview/tmp/report.txt"),
+      expect(fetchMock).toHaveBeenCalledWith("https://example.com/report.txt"),
     );
     expect(mobileMock.saveFile).toHaveBeenCalledWith(
       expect.any(Blob),
@@ -1754,16 +1727,28 @@ describe("ConversationMessageList", () => {
 
   it("locates a linked turn before it has an assistant reply", async () => {
     const turnId = "turn-user-only";
-    sessionStorage.setItem("rua_search_scroll_target", JSON.stringify({ turnId }));
+    sessionStorage.setItem(
+      "rua_search_scroll_target",
+      JSON.stringify({ turnId }),
+    );
     const projection = projectConversation("chat-1", {
-      messages: [{ id: "user-only", turn_id: turnId, role: "user", content: "Waiting for a reply" }],
+      messages: [
+        {
+          id: "user-only",
+          turn_id: turnId,
+          role: "user",
+          content: "Waiting for a reply",
+        },
+      ],
     });
     const locate = vi.fn();
     const { container } = render(
       <ConversationMessageList projection={projection} onLocateTurn={locate} />,
     );
     await waitFor(() => {
-      expect(container.querySelector(".rua-chat-message--search-jump")).toHaveTextContent("Waiting for a reply");
+      expect(
+        container.querySelector(".rua-chat-message--search-jump"),
+      ).toHaveTextContent("Waiting for a reply");
     });
     expect(locate).not.toHaveBeenCalled();
   });

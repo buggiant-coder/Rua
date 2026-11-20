@@ -271,6 +271,25 @@ async fn checkpoint_publisher_passes_typed_history_through_the_real_summary_mana
         ChatMetadata, ChatSessionHeader, NewConversationMessage, NewConversationTurn,
         ProjectionPlanner, TurnLifecycle, WorkspaceSessionStore,
     };
+    struct SummaryMedia {
+        id: uuid::Uuid,
+        path: std::path::PathBuf,
+    }
+    #[async_trait]
+    impl rua_core::ChatMediaLoader for SummaryMedia {
+        async fn open(
+            &self,
+            address: &rua_core::ChatAddress,
+            id: uuid::Uuid,
+        ) -> rua_core::Result<rua_core::ResolvedChatMedia> {
+            assert_eq!(address.chat_id().as_str(), "summary-chat");
+            assert_eq!(id, self.id);
+            Ok(rua_core::ResolvedChatMedia {
+                path: self.path.clone(),
+                mime_type: "image/png".into(),
+            })
+        }
+    }
     let workspace = tempfile::tempdir().unwrap();
     let store = WorkspaceSessionStore::new(workspace.path());
     store
@@ -318,6 +337,9 @@ async fn checkpoint_publisher_passes_typed_history_through_the_real_summary_mana
         .unwrap();
     let frontier = ProjectionPlanner::widest_fold_frontier(&groups).unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
+    let id = uuid::Uuid::new_v4();
+    let image_path = workspace.path().join("origin.png");
+    std::fs::write(&image_path, b"image").unwrap();
     let generator = LlmSummaryGenerator::new(Arc::new(CapturingModel {
         requests: requests.clone(),
         info: model_info(),
@@ -340,7 +362,7 @@ async fn checkpoint_publisher_passes_typed_history_through_the_real_summary_mana
         },
         ModelDialogueItem {
             content: vec![ContentPart::Image {
-                url: "media/test-image.png".into(),
+                url: format!("media/{id}"),
                 media_type: None,
                 alt: None,
             }],
@@ -361,7 +383,11 @@ async fn checkpoint_publisher_passes_typed_history_through_the_real_summary_mana
         workspace_dir: workspace.path().to_path_buf(),
         replication_hook: None,
         model_call_identity: None,
-    });
+    })
+    .with_media_loader(Some(Arc::new(SummaryMedia {
+        id,
+        path: image_path,
+    })));
     publisher
         .publish(
             &frontier,
@@ -379,7 +405,7 @@ async fn checkpoint_publisher_passes_typed_history_through_the_real_summary_mana
     assert_eq!(&requests[0].messages[1..4], &source[..3]);
     assert!(
         matches!(&requests[0].messages[4].content[0], ContentPart::Image { url, .. }
-        if url == &workspace.path().join("media/test-image.png").to_string_lossy())
+        if url == "data:image/png;base64,aW1hZ2U=")
     );
 }
 

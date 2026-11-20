@@ -319,6 +319,127 @@ fn request(workspace_dir: std::path::PathBuf) -> AgentRequest {
 }
 
 #[tokio::test]
+async fn provider_and_tools_open_only_the_media_used_by_the_current_chat() {
+    use rua_contract::Tool;
+    struct Reader {
+        files: std::path::PathBuf,
+        owner: String,
+        opened: Mutex<Vec<uuid::Uuid>>,
+    }
+    #[async_trait]
+    impl rua_core::ChatMediaLoader for Reader {
+        async fn open(
+            &self,
+            address: &rua_core::ChatAddress,
+            id: uuid::Uuid,
+        ) -> rua_core::Result<rua_core::ResolvedChatMedia> {
+            if address.chat_id().as_str() != self.owner {
+                return Err(rua_core::RuaError::Security {
+                    message: "wrong Chat".into(),
+                });
+            }
+            self.opened.lock().unwrap().push(id);
+            Ok(rua_core::ResolvedChatMedia {
+                path: self.files.join(id.to_string()),
+                mime_type: "image/png".into(),
+            })
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let image_id = uuid::Uuid::new_v4();
+    let document_id = uuid::Uuid::new_v4();
+    std::fs::write(files.path().join(image_id.to_string()), b"image").unwrap();
+    std::fs::write(
+        files.path().join(document_id.to_string()),
+        b"this is the document",
+    )
+    .unwrap();
+    let mut req = request(root.path().to_owned());
+    let owner = req.session_id.to_string();
+    let reader = Arc::new(Reader {
+        files: files.path().to_owned(),
+        owner: owner.clone(),
+        opened: Default::default(),
+    });
+    let image = ContentPart::Image {
+        url: format!("media/{image_id}"),
+        media_type: None,
+        alt: None,
+    };
+    let document = format!("media/{document_id}");
+    req.messages[0].content.extend([
+        image.clone(),
+        image,
+        ContentPart::File {
+            url: document.clone(),
+            name: "notes.txt".into(),
+            media_type: Some("text/plain".into()),
+            size: None,
+        },
+    ]);
+    for supports_media in [true, false] {
+        let (runtime, calls) = runtime_with_model_capability(
+            vec![text_round("done")],
+            Arc::new(AgentToolkit::new()),
+            Some(supports_media),
+        )
+        .await;
+        let runtime = runtime.with_chat_media_loader(Some(reader.clone()));
+        let events: Vec<_> = runtime.stream(req.clone()).await.unwrap().collect().await;
+        assert!(events.iter().all(Result::is_ok), "{events:?}");
+
+        let actual = calls.lock().unwrap();
+        assert_eq!(actual.len(), 1);
+        let content: Vec<_> = actual[0].messages.iter().flat_map(|m| &m.content).collect();
+        let images: Vec<_> = content
+            .iter()
+            .filter_map(|part| match part {
+                ContentPart::Image { url, .. } => Some(url.as_str()),
+                _ => None,
+            })
+            .collect();
+        if supports_media {
+            assert_eq!(images, ["data:image/png;base64,aW1hZ2U="; 2]);
+        } else {
+            assert!(images.is_empty());
+        }
+        assert!(content.iter().any(|part| matches!(part,
+            ContentPart::Text {text} if text.contains("read") && text.contains(&document))));
+    }
+    assert_eq!(*reader.opened.lock().unwrap(), [image_id]);
+    let mut ctx = rua_core::tool::ToolContext {
+        session_id: owner,
+        working_dir: root.path().to_owned(),
+        tool_result_store_dir: Some(root.path().join("tool-results")),
+        chat_media_loader: Some(reader.clone()),
+        ..Default::default()
+    };
+    let args = serde_json::json!({"file_path":document});
+    let read = rua_tool::ReadFileTool::new()
+        .call(args.clone(), ctx.clone())
+        .await
+        .unwrap();
+    assert!(read.content.iter().any(
+        |part| matches!(part, ContentPart::Text {text} if text.contains("this is the document"))
+    ));
+    let image = rua_tool::extended::media::ViewImageTool::new()
+        .call(
+            serde_json::json!({"image_path":format!("media/{image_id}")}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(image.content.iter().any(|part| matches!(part, ContentPart::Image {url,..} if url == "data:image/png;base64,aW1hZ2U=")));
+    ctx.session_id = "different-chat".into();
+    assert!(rua_tool::ReadFileTool::new().call(args, ctx).await.is_err());
+    assert_eq!(
+        *reader.opened.lock().unwrap(),
+        [image_id, document_id, image_id]
+    );
+}
+
+#[tokio::test]
 async fn agent_scoped_model_calls_do_not_inject_legacy_static_sections() {
     let workspace = tempfile::tempdir().expect("workspace");
     let (runtime, requests) = runtime_with_sequences_and_toolkit_recording(

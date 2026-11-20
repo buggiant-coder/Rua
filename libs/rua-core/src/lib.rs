@@ -1,4 +1,5 @@
 pub mod chat;
+pub mod chat_media;
 pub mod chat_store;
 pub mod desktop_automation;
 pub mod desktop_cli;
@@ -22,6 +23,7 @@ pub use chat::{
     AgentCollaborationMode, ChatAddress, ConversationActivityPosition,
     CHAT_COLLABORATION_MODE_META_KEY, TURN_COLLABORATION_MODE_OVERRIDE_KEY,
 };
+pub use chat_media::{ChatMediaLoader, ResolvedChatMedia};
 pub use chat_store::ChatStore;
 pub use error::{Result, RuaError};
 pub use event::RuntimeEvent;

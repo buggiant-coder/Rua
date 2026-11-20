@@ -35,7 +35,7 @@ use crate::services::device_command_bus::{
     ConversationApprovalDecision, ConversationAuthorityRedirect, ConversationControlDeviceAction,
     ConversationControlDeviceCommand, ConversationControlDeviceResponse,
     DeviceCommandDeliveryError, ProjectResourcePolicyView, RemoteConversationInputAck,
-    RemoteConversationInputMediaRequirement, RemoteConversationInputRequest,
+    RemoteConversationInputRequest,
 };
 use crate::services::device_context::current_sync_device_id;
 use crate::services::project_lifecycle::{
@@ -4724,6 +4724,12 @@ impl ConversationInputIntake {
             target_device_id: Some(placement.device_id.clone()),
             failure_kind: Some("business".to_string()),
         };
+        if let Err(detail) = self
+            .validate_local_submission_media(&address, &request, &placement.device_id)
+            .await
+        {
+            return reject(detail);
+        }
         let Some(catalog) = self.project_catalog.as_ref() else {
             return reject("Project catalog unavailable".into());
         };
@@ -6433,6 +6439,16 @@ impl ConversationInputIntake {
         first_submission: Option<FirstAgentSubmission>,
     ) -> ConversationInputDeliveryOutcome {
         let address = rua_core::ChatAddress::new(&chat_id);
+        if let Err(detail) = self
+            .validate_local_submission_media(&address, &request, route_target.device_id)
+            .await
+        {
+            return ConversationInputDeliveryOutcome::Rejected {
+                detail,
+                target_device_id: Some(route_target.device_id.to_owned()),
+                failure_kind: Some("invalid_request".into()),
+            };
+        }
         let directory = async {
             if let Some(first) = first_submission.as_ref() {
                 let value = first
@@ -7245,8 +7261,43 @@ impl ConversationInputIntake {
             );
         }
 
-        let input = self.materialize_remote_media(&scope_root, &request).await?;
-        request.input = input;
+        let media =
+            crate::services::remote_conversation_input::input_media_ids(request.input.as_deref())?;
+        for claim in &request.media_requirements {
+            if !rua_core::chat_media::reference_id(&claim.media_ref)
+                .is_some_and(|id| media.contains(&id) && id.to_string() == claim.filename)
+            {
+                return Err(
+                    "Attachment declaration does not match the submitted references".into(),
+                );
+            }
+        }
+        for id in media {
+            let media_id = id.to_string();
+            let manifest = self
+                .remote_input_delivery
+                .submission_manifest(
+                    &request.address,
+                    &media_id,
+                    &request.target_device_id,
+                    Some(&request.source_device_id),
+                    requires_atomic_materialization
+                        .then(|| project_id.as_ref().map(|id| id.as_str())),
+                )
+                .await?;
+            if let Some(claim) = request
+                .media_requirements
+                .iter()
+                .find(|claim| claim.filename == media_id)
+            {
+                if manifest.sha256 != claim.sha256
+                    || manifest.byte_size != claim.byte_size
+                    || manifest.mime_type != claim.mime_type
+                {
+                    return Err(format!("Attachment integrity mismatch: media/{media_id}"));
+                }
+            }
+        }
 
         let key = StreamKey::new(
             CONSOLE_CHANNEL_ID,
@@ -7528,37 +7579,28 @@ impl ConversationInputIntake {
         });
     }
 
-    async fn materialize_remote_media(
+    async fn validate_local_submission_media(
         &self,
-        workspace_dir: &Path,
-        request: &RemoteConversationInputRequest,
-    ) -> std::result::Result<Option<Vec<serde_json::Value>>, String> {
-        if request.media_requirements.is_empty() {
-            return Ok(request.input.clone());
+        address: &ChatAddress,
+        request: &ConsoleChatRequest,
+        device: &str,
+    ) -> Result<(), String> {
+        let pending = build_input_payload(request);
+        for id in crate::services::first_chat_submission::submission_media_ids(&pending)? {
+            let scope = ChatStore::resolve(self.session_sync.rua_root(), address.clone());
+            let project = request.extra.get("project_id").and_then(|v| v.as_str());
+            crate::services::first_chat_submission::validate_staged_media(
+                &scope.root().join("media"),
+                &id,
+                address,
+                Some(project),
+            )
+            .await?;
+            self.remote_input_delivery
+                .submission_manifest(address, &id, device, None, None)
+                .await?;
         }
-
-        for media in &request.media_requirements {
-            self.ensure_remote_media_file(workspace_dir, media).await?;
-            if !media.sha256.is_empty()
-                || request
-                    .metadata
-                    .get("first_submission")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(true)
-            {
-                let path = remote_media_path(workspace_dir, &media.filename)?;
-                let (size, digest) =
-                    crate::services::remote_conversation_input::media_fingerprint(&path).await?;
-                if size != media.byte_size || digest != media.sha256 {
-                    return Err(format!(
-                        "Attachment integrity mismatch: {}",
-                        media.media_ref
-                    ));
-                }
-            }
-        }
-
-        Ok(request.input.clone())
+        Ok(())
     }
 
     async fn sync_committed_state_after_foreground(
@@ -7578,22 +7620,6 @@ impl ConversationInputIntake {
                 .priority_sync_to_device(source_device_id)
                 .await;
         }
-    }
-
-    async fn ensure_remote_media_file(
-        &self,
-        workspace_dir: &Path,
-        media: &RemoteConversationInputMediaRequirement,
-    ) -> std::result::Result<(), String> {
-        let path = remote_media_path(workspace_dir, &media.filename)?;
-        if path.is_file() {
-            return Ok(());
-        }
-
-        Err(format!(
-            "required Chat Media is unavailable: {}",
-            media.media_ref
-        ))
     }
 
     async fn conversation_driver_for(
@@ -7996,19 +8022,6 @@ fn conversation_input_ack(
         accepted_at,
         control,
     }
-}
-
-fn remote_media_path(workspace_dir: &Path, filename: &str) -> std::result::Result<PathBuf, String> {
-    if filename.is_empty()
-        || filename.contains('/')
-        || filename.contains('\\')
-        || filename.contains("..")
-        || filename == "."
-        || filename == ".."
-    {
-        return Err(format!("invalid remote media filename: {filename}"));
-    }
-    Ok(workspace_dir.join("media").join(filename))
 }
 
 struct PersistedRemoteInputAcceptance {

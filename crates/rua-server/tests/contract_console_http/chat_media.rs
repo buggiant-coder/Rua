@@ -8,7 +8,6 @@ use uuid::Uuid;
 use super::support::{
     build_app, multipart_upload, multipart_upload_with_fields, read_json, request_json,
 };
-use rua_contract::agent::AgentInputMessage;
 use rua_core::{ChatAddress, ChatStore};
 use rua_project::ProjectCreateRequest;
 use rua_provider::config_loader::ProviderConfig;
@@ -30,9 +29,12 @@ async fn staged_media_collection_preserves_materialized_chat_media() {
                 address: address.clone(),
                 project_id: None,
             },
-            b"temporary".to_vec(),
-            Some("text/plain".into()),
-            None,
+            "desktop",
+            rua_server::services::chat_media::ChatMediaUpload {
+                bytes: b"temporary".to_vec(),
+                mime_type: Some("text/plain".into()),
+                original_filename: None,
+            },
         )
         .await
         .unwrap();
@@ -60,9 +62,12 @@ async fn staged_media_collection_preserves_materialized_chat_media() {
                 address: address.clone(),
                 project_id: None,
             },
-            b"accepted".to_vec(),
-            Some("text/plain".into()),
-            None,
+            "desktop",
+            rua_server::services::chat_media::ChatMediaUpload {
+                bytes: b"accepted".to_vec(),
+                mime_type: Some("text/plain".into()),
+                original_filename: None,
+            },
         )
         .await
         .unwrap();
@@ -133,6 +138,37 @@ async fn staged_media_collection_preserves_materialized_chat_media() {
             .await
             .unwrap(),
         0
+    );
+    let count_before = std::fs::read_dir(scope.root().join("media"))
+        .unwrap()
+        .count();
+    let late = ChatMediaService
+        .store_staged(
+            &test.state.conversation_authority,
+            &test.state.rua_root,
+            rua_server::services::chat_media::StagedChatMedia {
+                address: address.clone(),
+                project_id: None,
+            },
+            "desktop",
+            rua_server::services::chat_media::ChatMediaUpload {
+                bytes: b"late".to_vec(),
+                mime_type: None,
+                original_filename: None,
+            },
+        )
+        .await;
+    assert!(matches!(
+        late,
+        Err(rua_server::services::chat_media::ChatMediaError::Conflict(
+            _
+        ))
+    ));
+    assert_eq!(
+        std::fs::read_dir(scope.root().join("media"))
+            .unwrap()
+            .count(),
+        count_before
     );
     assert!(ChatMediaService
         .open(&test.state.rua_root, address, &staged.media_id)
@@ -205,6 +241,77 @@ async fn draft_media_round_trip_uses_the_shared_chat_workspace() {
             .expect("media body"),
         payload
     );
+}
+
+#[tokio::test]
+async fn saved_upload_rejects_stale_epoch_without_registering_media() {
+    use rua_server::services::conversation_authority_placement::{
+        ConversationAuthorityEpoch, ConversationAuthorityPlacement,
+    };
+    let test = build_app();
+    test.state.wait_platform_initialization().await.unwrap();
+    let address = ChatAddress::new(Uuid::new_v4().to_string());
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
+    let device = current_sync_device_id(&test.state.sync_device).unwrap();
+    let epoch = ConversationAuthorityEpoch::next_for_device(&device, None);
+    let placement = ConversationAuthorityPlacement {
+        device_id: device.clone(),
+        authority_epoch: epoch,
+        base_manifest_hash:
+            rua_server::services::conversation_manifest::initial_conversation_manifest_hash(
+                &address,
+            )
+            .unwrap(),
+    };
+    rua_server::services::console_chat::materialize_targeted_chat(
+        scope.root(),
+        "default",
+        address.chat_id().as_str(),
+        "Media",
+        &placement,
+    )
+    .await
+    .unwrap();
+    let stale = ConversationAuthorityEpoch::next_for_device(&device, Some(epoch)).to_string();
+    let uri = format!("/api/chats/{}/media", address.chat_id());
+    let rejected = multipart_upload_with_fields(
+        &test.app,
+        &uri,
+        &[("expected_authority_epoch", &stale)],
+        "file",
+        "file.bin",
+        vec![1, 2],
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::CONFLICT);
+    assert!(read_json(rejected).await["detail"]
+        .as_str()
+        .unwrap()
+        .contains("Epoch"));
+    let dir = scope.root().join("media");
+    assert!(std::fs::read_dir(&dir)
+        .map(|entries| entries.count() == 0)
+        .unwrap_or(true));
+    let accepted = multipart_upload_with_fields(
+        &test.app,
+        &uri,
+        &[("expected_authority_epoch", &epoch.to_string())],
+        "file",
+        "file.bin",
+        vec![1, 2],
+    )
+    .await;
+    assert_eq!(accepted.status(), StatusCode::CREATED);
+    let stored = read_json(accepted).await;
+    assert_eq!(stored["authority_epoch"], epoch.to_string());
+    let manifest = rua_session::chat_media::ChatMediaManifest::load(
+        &dir,
+        Uuid::parse_str(stored["media_id"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(manifest.chat_ids, [address.chat_id().to_string()].into());
+    assert_eq!(manifest.device_ids, [device].into());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -355,30 +462,58 @@ async fn project_draft_media_is_staged_until_submission() {
     assert_eq!(submit["accepted"], true);
 }
 
-#[test]
-fn project_managed_media_materializes_from_the_project_workspace() {
-    let rua_root = tempfile::tempdir().expect("Rua root");
-    let address = ChatAddress::new("chat-1");
-    let mut messages = vec![AgentInputMessage {
-        role: "user".to_string(),
-        content: vec![rua_core::ContentPart::Image {
-            url: "media/00000000-0000-4000-8000-000000000001".to_string(),
-            media_type: Some("image/png".to_string()),
-            alt: None,
-        }],
-    }];
-
-    ChatMediaService.materialize_message_parts(rua_root.path(), &address, &mut messages);
-    let expected_path = rua_root
-        .path()
-        .join("chats/media")
-        .join("00000000-0000-4000-8000-000000000001");
-
-    assert!(matches!(
-        &messages[0].content[0],
-        rua_core::ContentPart::Image { url, .. }
-            if std::path::Path::new(url) == expected_path.as_path()
-    ));
+#[tokio::test]
+async fn a_chat_reference_survives_global_metadata_loss_and_reports_a_corrupt_local_copy() {
+    use rua_server::services::chat_media::{ChatMediaError, ChatMediaUpload};
+    let root = tempfile::tempdir().unwrap();
+    let owner = ChatAddress::new("photo-chat");
+    let bytes = b"original bytes";
+    let stored = ChatMediaService
+        .store(
+            root.path(),
+            owner.clone(),
+            "pc",
+            ChatMediaUpload {
+                bytes: bytes.to_vec(),
+                mime_type: Some("image/png".into()),
+                original_filename: Some("picture.png".into()),
+            },
+        )
+        .await
+        .unwrap();
+    let id = Uuid::parse_str(&stored.media_id).unwrap();
+    let dir = root.path().join("chats/media");
+    let manifest = rua_session::chat_media::ChatMediaManifest::load(&dir, id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(manifest.original_filename.as_deref(), Some("picture.png"));
+    let chat_dir = WorkspaceSessionStore::new(root.path().join("chats")).chat_dir("photo-chat");
+    manifest.record_reference(&chat_dir, "photo-chat").unwrap();
+    std::fs::remove_file(dir.join(format!(".{id}.media.json"))).unwrap();
+    let opened = ChatMediaService
+        .open(root.path(), owner.clone(), &stored.media_id)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(&opened.path).unwrap(), bytes);
+    std::fs::write(&opened.path, b"modified bytes").unwrap();
+    let error = ChatMediaService
+        .open(root.path(), owner.clone(), &stored.media_id)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ChatMediaError::Unavailable(_)));
+    assert!(
+        rua_session::chat_media::ChatMediaManifest::load_reference(&chat_dir, id)
+            .unwrap()
+            .is_some()
+    );
+    assert!(ChatMediaService
+        .open(
+            root.path(),
+            ChatAddress::new("another-chat"),
+            &stored.media_id
+        )
+        .await
+        .is_err());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -428,13 +563,20 @@ async fn media_open_rejects_symlink_and_orphan_gc_preserves_references() {
     let referenced = "00000000-0000-4000-8000-000000000301";
     let orphan = "00000000-0000-4000-8000-000000000302";
     let rescued = "00000000-0000-4000-8000-000000000303";
-    for media_id in [referenced, orphan, rescued] {
-        std::fs::write(media_dir.join(media_id), b"media").expect("media file");
-        std::fs::write(
-            media_dir.join(format!(".{media_id}.media.json")),
-            br#"{"mime_type":"image/png"}"#,
+    let shared = "00000000-0000-4000-8000-000000000305";
+    for media_id in [referenced, orphan, rescued, shared] {
+        let mut item = rua_session::chat_media::ChatMediaManifest::new(
+            Uuid::parse_str(media_id).unwrap(),
+            address.chat_id().as_str(),
+            "desktop",
+            "image/png".into(),
+            b"media",
         )
-        .expect("sidecar");
+        .unwrap();
+        if media_id == shared {
+            item.chat_ids.insert("second-chat".into());
+        }
+        item.store_copy(&media_dir, b"media").unwrap();
     }
     let checks = AtomicUsize::new(0);
     let report = rua_server::services::chat_media::ChatMediaService
@@ -457,6 +599,7 @@ async fn media_open_rejects_symlink_and_orphan_gc_preserves_references() {
     assert_eq!(report.restored_after_recheck, 1);
     assert!(media_dir.join(referenced).is_file());
     assert!(media_dir.join(rescued).is_file());
+    assert!(media_dir.join(shared).is_file());
     assert!(!media_dir.join(orphan).exists());
     assert!(!media_dir.join(format!(".{orphan}.media.json")).exists());
 

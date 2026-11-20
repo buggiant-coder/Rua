@@ -202,15 +202,19 @@ async fn storage_chat_list_reports_breakdown_sorting_and_before_filter() {
         b"123456",
     )
     .expect("tool output");
-    std::fs::create_dir_all(workspace.join("media")).expect("media dir");
-    std::fs::write(workspace.join("media").join(media_id), b"1234").expect("media");
-    std::fs::write(
-        workspace
-            .join("media")
-            .join(format!(".{media_id}.media.json")),
-        b"123",
+    let dir = workspace.join("media");
+    let manifest = rua_session::chat_media::ChatMediaManifest::new(
+        uuid::Uuid::parse_str(media_id).unwrap(),
+        "chat-large",
+        "desktop",
+        "text/plain".into(),
+        b"1234",
     )
-    .expect("media metadata");
+    .unwrap();
+    manifest.store_copy(&dir, b"1234").unwrap();
+    let media_bytes = 4 + std::fs::metadata(dir.join(format!(".{media_id}.media.json")))
+        .unwrap()
+        .len();
 
     let response = json_request(
         &app,
@@ -227,12 +231,12 @@ async fn storage_chat_list_reports_breakdown_sorting_and_before_filter() {
     );
     assert_eq!(body[0]["task_bytes"], 7);
     assert_eq!(body[0]["tool_log_bytes"], 11);
-    assert_eq!(body[0]["media_bytes"], 7);
+    assert_eq!(body[0]["media_bytes"], media_bytes);
     assert_eq!(body[0]["attributed_bytes"], body[0]["total_bytes"]);
     assert_eq!(body[0]["reclaimable_bytes"], body[0]["total_bytes"]);
     assert_eq!(
         body[0]["total_bytes"].as_u64().unwrap(),
-        body[0]["session_bytes"].as_u64().unwrap() + 25
+        body[0]["session_bytes"].as_u64().unwrap() + 7 + 11 + media_bytes
     );
 
     let response = json_request(
@@ -595,4 +599,50 @@ async fn deletion_scan_preserves_shared_media_and_batch_accounting() {
             assert_eq!(entry.total_bytes, original.total_bytes);
         }
     }
+}
+
+#[tokio::test]
+async fn deleting_a_chat_preserves_an_object_retained_by_a_chat_not_yet_synced_here() {
+    let (_app, state, _temp) = build_app();
+    let id = uuid::Uuid::new_v4();
+    let workspace = state.rua_root.join("chats");
+    let mut manifest = rua_session::chat_media::ChatMediaManifest::new(
+        id,
+        CHAT_DELETE_ID,
+        "desktop",
+        "image/png".into(),
+        b"shared photo",
+    )
+    .unwrap();
+    manifest.chat_ids.insert(CHAT_KEEP_ID.into());
+    manifest
+        .store_copy(&workspace.join("media"), b"shared photo")
+        .unwrap();
+    seed_chat(
+        &state,
+        CHAT_DELETE_ID,
+        "Album",
+        "2026-08-21T00:00:00Z",
+        false,
+        json!([{"type":"image","media_ref":manifest.media_ref}]),
+    )
+    .await;
+    let deleting = [CHAT_DELETE_ID.to_owned()].into();
+    let plan = rua_server::services::chat_storage::scan_scope_for_deletion(&workspace, &deleting)
+        .await
+        .unwrap();
+    let (removable, retained) =
+        rua_server::services::chat_storage::removable_media(&plan, &deleting);
+    assert!(removable.is_empty());
+    assert_eq!(retained[CHAT_DELETE_ID], vec![id.to_string()]);
+    rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(&state.rua_root)
+        .persist(&ChatAddress::new(CHAT_KEEP_ID))
+        .unwrap();
+    let plan = rua_server::services::chat_storage::scan_scope_for_deletion(&workspace, &deleting)
+        .await
+        .unwrap();
+    assert_eq!(
+        rua_server::services::chat_storage::removable_media(&plan, &deleting).0,
+        [id.to_string()].into()
+    );
 }

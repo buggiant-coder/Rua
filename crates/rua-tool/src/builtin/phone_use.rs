@@ -664,6 +664,7 @@ fn archive_phone_image(
         .ok_or_else(|| invalid("Missing execution device identity for phone media"))?;
     rua_session::display_media::DisplayMediaArchive::store_image_bytes(
         storage,
+        &ctx.session_id,
         bytes,
         "image/jpeg",
         device,

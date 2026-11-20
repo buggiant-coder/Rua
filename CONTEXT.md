@@ -265,7 +265,7 @@ Details: [address and lazy materialization](docs/adr/0018-chat-address-scope-and
 | **Workspace Root** | A Rua-managed workspace directory. Agent configuration and prompt files use the Agent workspace. Chat headers and history use the Chat store. |
 | **Project Resource Root** | A directory identified by its owning Device and real absolute path. Multiple Devices can advertise the same path spelling. |
 | **Secret Root** | Secret-material root configured separately from Rua Root and Workspace paths. Its location does not determine each domain's replication policy. |
-| **Chat Media** | Scope-workspace attachments with portable `media/<uuid>` references. Foreground transfer routes to Authority; authority-switch readiness verifies Required Media separately from the Conversation Manifest. |
+| **Chat Media** | Attachments and imported output identified by `media/<uuid>`. Each committed reference records its Chat, known holding Devices, byte size and SHA-256. Sync carries the reference. A preview, model or Tool reads a verified copy when needed. |
 | **Lazy Chat** | Valid scoped address before durable materialization. Read-only navigation/discovery and staged attachments do not create a Chat; the first accepted stateful operation materializes coherent state/configuration. |
 | **Chat Draft / Draft Agent Assignment** | Browser-local unsent input, attachments, and draft executor/options. Draft state is not saved history or execution Authority. |
 | **Empty Conversation State** | Valid empty/lazy presentation; it does not prove a backend Chat was created. |

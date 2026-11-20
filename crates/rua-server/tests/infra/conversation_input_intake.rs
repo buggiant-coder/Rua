@@ -860,7 +860,7 @@ async fn accepted_remote_first_agent_input_materializes_chat_and_turn() {
 }
 
 #[tokio::test]
-async fn corrupted_first_input_attachment_is_rejected_without_chat() {
+async fn unregistered_bytes_and_a_claimed_digest_cannot_authorize_a_first_attachment() {
     let temp = TempDir::new().unwrap();
     let state = AppState::from_tempdir(temp.path().to_path_buf(), ServerProfile::Test);
     state.wait_platform_initialization().await.unwrap();
@@ -883,7 +883,6 @@ async fn corrupted_first_input_attachment_is_rejected_without_chat() {
     ]);
     remote.media_requirements = vec![
         rua_server::services::device_command_bus::RemoteConversationInputMediaRequirement {
-            agent_id: "default".into(),
             media_ref: format!("media/{media_id}"),
             filename: media_id.into(),
             byte_size: 3,
@@ -895,7 +894,10 @@ async fn corrupted_first_input_attachment_is_rejected_without_chat() {
         .accept_remote_conversation_input(remote, chrono::Utc::now().to_rfc3339())
         .await
         .unwrap_err();
-    assert!(error.contains("integrity mismatch"), "{error}");
+    assert!(
+        error.contains("Cannot confirm staged Chat Media"),
+        "{error}"
+    );
     assert!(WorkspaceSessionStore::new(&root)
         .load_chat_header(CHAT_ID)
         .await

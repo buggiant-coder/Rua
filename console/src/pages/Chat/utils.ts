@@ -1,4 +1,3 @@
-import { chatApi } from "../../api/modules/chat";
 export type CopyableContent = {
   type?: string;
   text?: string;
@@ -154,32 +153,6 @@ export function normalizeContentUrls<T extends TextContentPart>(part: T): T {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function toDisplayUrl(url: string | undefined): string {
-  if (!url) return "";
-  if (/^data:image\/(png|jpeg|webp|gif);base64,/i.test(url)) return url;
-  if (url.startsWith("http://") || url.startsWith("https://")) return url;
-  if (url.startsWith("/api/")) return url;
-  if (url.startsWith("file://")) url = url.replace("file://", "");
-  return chatApi.filePreviewUrl(url.startsWith("/") ? url : `/${url}`);
-}
-
-export function toMarkdownImageDisplayUrl(
-  source: string,
-  chatId?: string,
-): string {
-  if (/^(https?:|data:|blob:)/i.test(source)) return source;
-  const mediaId = source.startsWith("media/") ? source.slice(6) : "";
-  if (
-    chatId &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-      mediaId,
-    )
-  ) {
-    return chatApi.mediaUrl(chatId, mediaId);
-  }
-  return "";
 }
 
 export interface ConversationTurn {

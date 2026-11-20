@@ -1,5 +1,4 @@
 use rua_channel::core::console::ConsoleChatRequest;
-use rua_core::ChatAddress;
 use rua_server::services::chat_index::{self, ChatIndexEntry};
 use rua_server::services::conversation_authority_placement::{
     parse_conversation_authority_placement, ConversationAuthorityEpoch,
@@ -13,7 +12,6 @@ use rua_server::services::conversation_authority_target::{
     load_optional_chat_authority_placement, resolve_acp_route, resolve_submit_target,
     route_for_local_device, PlacementTarget, PlacementTargetSource, RemotePlacementRoute,
 };
-use rua_server::services::conversation_history_readiness::required_media_set;
 use rua_session::{ChatMetadata, ChatSessionHeader, WorkspaceSessionStore};
 use serde_json::json;
 use tempfile::TempDir;
@@ -154,7 +152,7 @@ async fn submit_rejects_media_uploaded_under_a_stale_authority_epoch() {
 }
 
 #[tokio::test]
-async fn only_the_authority_requires_referenced_media_to_exist_locally() {
+async fn routing_a_media_reference_is_independent_of_locally_cached_bytes() {
     let tmp = TempDir::new().expect("tempdir");
     let workspace = tmp.path().join("workspace");
     let current_epoch = epoch(6);
@@ -186,7 +184,7 @@ async fn only_the_authority_requires_referenced_media_to_exist_locally() {
     .expect("placement target");
     assert_eq!(remote_target.device_id, "device-authority");
 
-    let error = resolve_submit_target(
+    let local_target = resolve_submit_target(
         Some(&workspace),
         CHAT_ID,
         &request,
@@ -194,80 +192,9 @@ async fn only_the_authority_requires_referenced_media_to_exist_locally() {
         None,
     )
     .await
-    .expect_err("Authority must reject missing required Media");
-    assert!(error.contains("required Chat Media is unavailable"));
-}
-
-#[test]
-fn required_media_set_is_canonical_deduplicated_and_sorted() {
-    let tmp = TempDir::new().expect("tempdir");
-    let workspace = tmp.path().join("workspace");
-    let address = ChatAddress::new(CHAT_ID);
-    let chat_dir = workspace.join("sessions").join(CHAT_ID);
-    std::fs::create_dir_all(&chat_dir).expect("chat dir");
-    std::fs::write(
-        chat_dir.join("events.json"),
-        serde_json::to_vec(&serde_json::json!({
-            "content": [
-                {"media_ref": "media/00000000-0000-4000-8000-000000000002"},
-                {"media_ref": "media/00000000-0000-4000-8000-000000000001"},
-                {"media_ref": "media/00000000-0000-4000-8000-000000000002"},
-                {"text": "media/not-a-reference"}
-            ]
-        }))
-        .expect("json"),
-    )
-    .expect("write stable state");
-
-    let required = required_media_set(&workspace, &address).expect("required Media Set");
-    assert_eq!(
-        required.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        vec![
-            "00000000-0000-4000-8000-000000000001",
-            "00000000-0000-4000-8000-000000000002"
-        ]
-    );
-
-    std::fs::write(
-        chat_dir.join("malformed.json"),
-        br#"{"media_ref":"media/not-a-uuid"}"#,
-    )
-    .expect("write malformed reference");
-    let error = required_media_set(&workspace, &address)
-        .expect_err("malformed Media Reference must fail readiness");
-    assert!(error.contains("invalid Media Reference"));
-}
-
-#[test]
-fn required_media_set_reads_canonical_message_log_segments() {
-    let tmp = TempDir::new().unwrap();
-    let address = ChatAddress::new(CHAT_ID);
-    let messages = tmp.path().join("sessions").join(CHAT_ID).join("messages");
-    std::fs::create_dir_all(&messages).unwrap();
-    let entry = serde_json::json!({
-        "role": "assistant",
-        "content": [{"type": "text", "text": "![Preview](media/00000000-0000-4000-8000-000000000002)"}],
-        "metadata": {"display_media": [{
-            "media_ref": "media/00000000-0000-4000-8000-000000000001",
-            "origin": {"device_id": "desktop", "src": "/tmp/preview.png"}
-        }]}
-    });
-    std::fs::write(
-        messages.join("000000000000.jsonl"),
-        format!("{{\"header\":true}}\n{entry}\n"),
-    )
-    .unwrap();
-    assert_eq!(
-        required_media_set(tmp.path(), &address)
-            .unwrap()
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        vec![
-            "00000000-0000-4000-8000-000000000001",
-            "00000000-0000-4000-8000-000000000002"
-        ]
-    );
+    .expect("Authority routes a Chat before its referenced media is opened")
+    .expect("placement target");
+    assert_eq!(local_target.device_id, remote_target.device_id);
 }
 
 #[tokio::test]

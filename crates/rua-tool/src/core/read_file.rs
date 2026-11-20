@@ -83,6 +83,15 @@ impl ReadFileTool {
         args: serde_json::Value,
         ctx: &ToolExecutionContext,
     ) -> std::result::Result<ToolResult, ToolError> {
+        self.read_from(args, ctx, None).await
+    }
+
+    async fn read_from(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolExecutionContext,
+        media: Option<rua_core::ResolvedChatMedia>,
+    ) -> std::result::Result<ToolResult, ToolError> {
         let file_path = args["file_path"]
             .as_str()
             .ok_or_else(|| ToolError::SchemaValidation {
@@ -133,7 +142,11 @@ impl ReadFileTool {
             ));
         }
 
-        let resolved = match ctx.workspace_fs.resolve(file_path) {
+        let read_path = media
+            .as_ref()
+            .map(|m| m.path.as_path())
+            .unwrap_or_else(|| std::path::Path::new(file_path));
+        let resolved = match ctx.workspace_fs.resolve(read_path) {
             Ok(path) => path,
             Err(ToolError::FileNotFound { .. }) => {
                 return Ok(ToolResult::error(
@@ -294,6 +307,10 @@ impl Tool for ReadFileTool {
     }
 
     async fn call(&self, args: serde_json::Value, ctx: ToolContext) -> Result<ToolResult> {
+        let media = match args["file_path"].as_str() {
+            Some(path) => ctx.open_chat_media_reference(path).await?,
+            None => None,
+        };
         let tool_result_store_dir = crate::result_store::archive_dir_for_context(&ctx)?;
         let cancel = ctx.cancel.unwrap_or_else(|| {
             let (_, rx) = tokio::sync::watch::channel(false);
@@ -332,7 +349,7 @@ impl Tool for ReadFileTool {
             token_estimate_divisor: rua_core::tool::DEFAULT_TOKEN_ESTIMATE_DIVISOR,
         };
 
-        self.execute_with_context(args, &exec_ctx)
+        self.read_from(args, &exec_ctx, media)
             .await
             .map_err(rua_core::RuaError::from)
     }

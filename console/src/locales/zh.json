@@ -2328,6 +2328,9 @@
     "saveSuccess": "Prompt 配置已保存"
   },
   "chat": {
+    "previewImage": "预览图片",
+    "mediaUnavailable": "附件不可用",
+    "playMedia": "播放 {{name}}",
     "conversationView": "对话视图",
     "backgroundWork": {
       "waiting": "后台任务运行中",

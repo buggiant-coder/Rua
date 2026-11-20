@@ -9,6 +9,7 @@ publish = false
 autotests = false
 
 [dependencies]
+async-trait.workspace = true
 agent-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true

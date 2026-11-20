@@ -1991,6 +1991,9 @@
     "saveSuccess": "プロンプト設定を保存しました"
   },
   "chat": {
+    "previewImage": "画像をプレビュー",
+    "mediaUnavailable": "添付ファイルを利用できません",
+    "playMedia": "{{name}} を再生",
     "conversationView": "会話ビュー",
     "backgroundWork": {
       "waiting": "バックグラウンドで実行中",

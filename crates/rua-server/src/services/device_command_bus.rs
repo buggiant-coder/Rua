@@ -72,7 +72,6 @@ pub struct RemoteConversationInputMediaRequirement {
     pub mime_type: String,
     pub byte_size: u64,
     pub sha256: String,
-    pub agent_id: String,
     pub media_ref: String,
     pub filename: String,
 }
@@ -903,13 +902,9 @@ pub struct RemoteConversationInputAck {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatMediaPrepareCommand {
-    pub agent_id: String,
+    pub sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project_id: Option<String>,
-    #[serde(default)]
-    pub sha256: Option<String>,
-    #[serde(default)]
-    pub first_submission: bool,
+    pub original_filename: Option<String>,
     pub command_id: String,
     pub operation_id: String,
     pub address: ChatAddress,
@@ -1722,185 +1717,66 @@ impl DeviceCommandHandler {
         &self,
         command: ChatMediaPrepareCommand,
     ) -> DeviceCommandResponse {
+        let reject = |reason: &str, detail: String| DeviceCommandResponse::Rejected {
+            reason: reason.into(),
+            detail,
+        };
         if command.target_device_id != self.local_device_id
-            || command.operation_id.trim().is_empty()
+            || !command.operation_id.starts_with("chat-media-")
             || command.source_device_id.trim().is_empty()
-            || command.byte_size == 0
             || uuid::Uuid::parse_str(command.address.chat_id().as_str()).is_err()
-            || uuid::Uuid::parse_str(&command.media_id).is_err()
         {
-            return DeviceCommandResponse::Rejected {
-                reason: "invalid_chat_media_prepare".to_string(),
-                detail: "Chat Media prepare identity fields are invalid".to_string(),
-            };
+            return reject(
+                "invalid_chat_media_prepare",
+                "Invalid Chat Media transfer identity".into(),
+            );
         }
-        let Some(rua_root) = self.data_dir.as_deref() else {
-            return DeviceCommandResponse::Rejected {
-                reason: "chat_media_unavailable".to_string(),
-                detail: "target Device has no Rua Root".to_string(),
-            };
+        let (Some(rua_root), Some(registry)) =
+            (self.data_dir.as_deref(), self.chat_media_transfers.as_ref())
+        else {
+            return reject(
+                "chat_media_unavailable",
+                "Chat Media transfer is unavailable".into(),
+            );
         };
-        let scope = rua_core::chat_store::ChatStore::resolve(rua_root, command.address.clone());
-        let placement = match crate::services::conversation_authority_target::load_optional_chat_authority_placement(
-            scope.root(),
-            command.address.chat_id().as_str(),
-        )
-        .await
-        {
-            Ok(Some(placement)) => Some(placement),
-            Ok(None) if command.first_submission => {
-                let reject = |reason: &str, detail: String| DeviceCommandResponse::Rejected {
-                    reason: reason.to_string(),
-                    detail,
-                };
-                let store = rua_session::WorkspaceSessionStore::new(scope.root());
-                match store.load_chat_header(command.address.chat_id().as_str()).await {
-                    Ok(None) => {}
-                    Ok(Some(_)) => return reject("chat_not_ready", "Chat already exists".into()),
-                    Err(error) => return reject("chat_not_ready", error.to_string()),
-                }
-                if let Some(project_id) = command.project_id.as_deref() {
-                    let Some(catalog) = self.project_catalog.as_ref() else {
-                        return reject("project_runtime_unavailable", "Project catalog unavailable".into());
-                    };
-                    let project = match catalog.get(&rua_core::ProjectId::new(project_id)) {
-                        Ok(Some(project)) => project,
-                        Ok(None) => return reject("project_not_found", "Project not found".into()),
-                        Err(error) => return reject("project_store_failed", error.to_string()),
-                    };
-                    if project.lifecycle != rua_project::ProjectLifecycle::Active {
-                        return reject("project_archived", "Archived Project cannot prepare Chat media".into());
-                    }
-                }
-                let manager = crate::services::agent_manager::AgentManager::new(rua_root.to_path_buf());
-                match manager.get_agent(&command.agent_id).await {
-                    Ok(Some(_)) => {}
-                    Ok(None) => return reject("agent_unavailable", "Agent is not registered".into()),
-                    Err(error) => return reject("agent_unavailable", error.to_string()),
-                }
-                None
-            }
-            _ => {
-                return DeviceCommandResponse::Rejected {
-                    reason: "conversation_authority_missing".to_string(),
-                    detail: "Conversation Authority placement is not materialized".to_string(),
-                }
-            }
+        let gate = self
+            .conversation_authority
+            .as_ref()
+            .map(|authority| authority.transition_gate_at(&command.address));
+        let _guard = match &gate {
+            Some(gate) => Some(gate.lock().await),
+            None => None,
         };
-        if let Some(placement) = placement.filter(|placement| {
-            placement.device_id != self.local_device_id
-                || placement.authority_epoch != command.authority_epoch
-        }) {
-            return DeviceCommandResponse::Rejected {
-                reason: "conversation_authority_redirect".to_string(),
-                detail: format!(
-                    "Conversation Authority is on Device '{}' at epoch '{}'",
-                    placement.device_id, placement.authority_epoch
-                ),
-            };
-        }
-        let media_dir = scope.root().join("media");
-        if let Some(expected) = command.sha256.as_deref() {
-            let path = media_dir.join(&command.media_id);
-            if path.exists() {
-                if let Err(detail) = crate::services::first_chat_submission::validate_staged_media(
-                    &media_dir,
-                    &command.media_id,
-                    &command.address,
-                    command
-                        .first_submission
-                        .then_some(command.project_id.as_deref()),
-                )
-                .await
-                {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "media_conflict".into(),
-                        detail,
-                    };
-                }
-                match crate::services::remote_conversation_input::media_fingerprint(&path).await {
-                    Ok((size, digest)) if size == command.byte_size && digest == expected => {
-                        return DeviceCommandResponse::ChatMediaPrepared {
-                            response: ChatMediaPreparedResponse {
-                                already_present: true,
-                                operation_id: command.operation_id,
-                                media_ref: format!("media/{}", command.media_id),
-                                media_id: command.media_id,
-                                authority_epoch: command.authority_epoch,
-                            },
-                        };
-                    }
-                    _ => {
-                        return DeviceCommandResponse::Rejected {
-                            reason: "media_conflict".into(),
-                            detail: "Existing attachment does not match the submitted content"
-                                .into(),
-                        }
-                    }
-                }
-            }
-        }
-        let Some(registry) = self.chat_media_transfers.as_ref() else {
-            return DeviceCommandResponse::Rejected {
-                reason: "chat_media_unavailable".to_string(),
-                detail: "target Device has no Chat Media transfer registry".to_string(),
-            };
+        let upload = match crate::services::chat_media_transfer::AuthorizedMediaUpload::new(
+            command.clone(),
+            rua_chat::ChatService::new(rua_root).media_root(),
+            gate.clone(),
+        ) {
+            Ok(upload) => upload,
+            Err(e) => return reject("chat_media_unavailable", e.to_string()),
         };
-        if registry
-            .authorize_upload(
-                crate::services::chat_media_transfer::AuthorizedMediaUpload {
-                    operation_id: command.operation_id.clone(),
-                    source_device_id: command.source_device_id,
-                    target_device_id: command.target_device_id,
-                    media_dir: media_dir.clone(),
-                    media_id: command.media_id.clone(),
-                    byte_size: command.byte_size,
-                    mime_type: command.mime_type,
-                    authorized_at: std::time::Instant::now(),
-                },
-            )
-            .is_err()
-        {
-            return DeviceCommandResponse::Rejected {
-                reason: "chat_media_prepare_conflict".to_string(),
-                detail: "Chat Media transfer operation already exists".to_string(),
-            };
+        if let Err(detail) = upload.check_placement().await {
+            return reject("conversation_authority_redirect", detail);
         }
-        if let Err(detail) = crate::services::first_chat_submission::validate_staged_media(
-            &media_dir,
-            &command.media_id,
-            &command.address,
-            command
-                .first_submission
-                .then_some(command.project_id.as_deref()),
-        )
-        .await
-        {
-            registry.abort(&command.operation_id);
-            return DeviceCommandResponse::Rejected {
-                reason: "media_conflict".into(),
-                detail,
-            };
+        if let Err(error) = command.manifest().id() {
+            return reject("invalid_chat_media_prepare", error.to_string());
         }
-        if command.first_submission {
-            let marker = media_dir.join(format!(".staged-{}.json", command.media_id));
-            if let Err(error) = rua_config::atomic_write_json(
-                &marker,
-                &serde_json::json!(crate::services::chat_media::StagedChatMedia {
-                    address: command.address,
-                    project_id: command.project_id,
-                }),
-            ) {
+        if let Err(detail) = registry.authorize_upload(upload.clone()) {
+            return reject("chat_media_prepare_conflict", detail);
+        }
+        let already_present = match upload.check_existing() {
+            Ok(present) => present,
+            Err(detail) => {
                 registry.abort(&command.operation_id);
-                return DeviceCommandResponse::Rejected {
-                    reason: "media_staging_failed".into(),
-                    detail: error.to_string(),
-                };
+                return reject("media_conflict", detail);
             }
+        };
+        if already_present {
+            registry.abort(&command.operation_id);
         }
         DeviceCommandResponse::ChatMediaPrepared {
             response: ChatMediaPreparedResponse {
-                already_present: false,
+                already_present,
                 operation_id: command.operation_id,
                 media_ref: format!("media/{}", command.media_id),
                 media_id: command.media_id,
@@ -3504,7 +3380,6 @@ impl DeviceCommandHandler {
                 agent_id: &command.agent_id,
                 chat_id: command.chat_id(),
                 source_device_id: &command.source_device_id,
-                media_source_device_id: &command.authority_source_device_id,
                 target_device_id: &command.target_device_id,
                 expected_authority_epoch: command.expected_authority_epoch,
                 requirement: &command.required_manifest,
@@ -4368,8 +4243,10 @@ impl RemoteConversationInputRequest {
         }
         for media in &self.media_requirements {
             validate_media_filename(&media.filename)?;
-            if media.agent_id.trim().is_empty() {
-                return Err(DeviceCommandBusError::InvalidId(media.agent_id.clone()));
+            if rua_core::chat_media::reference_id(&media.media_ref)
+                .is_none_or(|id| id.to_string() != media.filename)
+            {
+                return Err(DeviceCommandBusError::InvalidId(media.media_ref.clone()));
             }
         }
         Ok(())

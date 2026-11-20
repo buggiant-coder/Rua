@@ -1,3 +1,4 @@
+import { chatMediaDisplayUrl } from "@/api/chatMedia";
 import { describe, expect, it, vi } from "vitest";
 import {
   buildModelError,
@@ -8,28 +9,9 @@ import {
   groupIntoMessageBlocks,
   groupIntoTurns,
   normalizeContentUrls,
-  toDisplayUrl,
-  toMarkdownImageDisplayUrl,
   toStoredName,
   type CopyableResponse,
 } from "./utils";
-
-const { mockFilePreviewUrl, mockLocalImagePreviewUrl } = vi.hoisted(() => ({
-  mockFilePreviewUrl: vi.fn((path: string) => `/api/files/preview${path}`),
-  mockLocalImagePreviewUrl: vi.fn(
-    (path: string) =>
-      `/api/agents/default/files/preview?path=${encodeURIComponent(path)}`,
-  ),
-}));
-
-vi.mock("../../api/modules/chat", () => ({
-  chatApi: {
-    filePreviewUrl: mockFilePreviewUrl,
-    localImagePreviewUrl: mockLocalImagePreviewUrl,
-    mediaUrl: (chatId: string, id: string) =>
-      `/api/chats/${chatId}/media/${id}`,
-  },
-}));
 
 describe("Chat text extraction utilities", () => {
   it("extractCopyableText returns assistant text and refusal content only", () => {
@@ -130,41 +112,52 @@ describe("Chat URL utilities", () => {
     ).toMatchObject({ video_url: "/movie.mp4" });
   });
 
-  it("toDisplayUrl leaves remote URLs alone and delegates stored paths", () => {
-    expect(toDisplayUrl("https://cdn.example/a.png")).toBe(
-      "https://cdn.example/a.png",
-    );
-    expect(toDisplayUrl("file:///uploads/a.png")).toBe(
-      "/api/files/preview/uploads/a.png",
-    );
-    expect(mockFilePreviewUrl).toHaveBeenCalledWith("/uploads/a.png");
-  });
-
-  it("toDisplayUrl preserves canonical API media URLs", () => {
+  it("only retains API media that belongs to this Chat", () => {
+    const id = "00000000-0000-4000-8000-000000000001";
+    const url = `/api/chats/chat-1/media/${id}`;
+    expect(chatMediaDisplayUrl(url + "?token=old", "chat-1")).toBe(url);
+    expect(chatMediaDisplayUrl(url, "other-chat")).toBe("");
     expect(
-      toDisplayUrl(
-        "/api/chats/chat-1/media/00000000-0000-4000-8000-000000000001?token=secret",
+      chatMediaDisplayUrl("https://other-device.example" + url, "chat-1"),
+    ).toBe("");
+    expect(
+      chatMediaDisplayUrl(
+        "/api/agents/selected/chats/chat-1/media/" + id,
+        "chat-1",
       ),
-    ).toBe(
-      "/api/chats/chat-1/media/00000000-0000-4000-8000-000000000001?token=secret",
-    );
+    ).toBe("");
+    expect(chatMediaDisplayUrl("file:///uploads/a.png", "chat-1")).toBe("");
   });
 
-  it("toMarkdownImageDisplayUrl keeps browser sources direct and rejects local paths", () => {
-    expect(toMarkdownImageDisplayUrl("https://cdn.example/a.png")).toBe(
+  it("resolves a same-Chat relative API link on the configured backend", () => {
+    vi.stubGlobal("VITE_API_BASE_URL", "https://configured.example");
+    try {
+      const path =
+        "/api/chats/chat-1/media/00000000-0000-4000-8000-000000000001";
+      expect(chatMediaDisplayUrl(path + "?token=previous", "chat-1")).toBe(
+        "https://configured.example" + path,
+      );
+      expect(chatMediaDisplayUrl(path, "different")).toBe("");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("chatMediaDisplayUrl keeps browser sources direct and rejects local paths", () => {
+    expect(chatMediaDisplayUrl("https://cdn.example/a.png")).toBe(
       "https://cdn.example/a.png",
     );
-    expect(toMarkdownImageDisplayUrl("data:image/png;base64,AA==")).toBe(
+    expect(chatMediaDisplayUrl("data:image/png;base64,AA==")).toBe(
       "data:image/png;base64,AA==",
     );
-    expect(toMarkdownImageDisplayUrl("blob:https://console.example/id")).toBe(
+    expect(chatMediaDisplayUrl("blob:https://console.example/id")).toBe(
       "blob:https://console.example/id",
     );
-    expect(toMarkdownImageDisplayUrl("~/Pictures/照片.jpg")).toBe("");
-    expect(toMarkdownImageDisplayUrl("/tmp/preview.png")).toBe("");
+    expect(chatMediaDisplayUrl("~/Pictures/照片.jpg")).toBe("");
+    expect(chatMediaDisplayUrl("/tmp/preview.png")).toBe("");
     const id = "00000000-0000-4000-8000-000000000001";
-    expect(toMarkdownImageDisplayUrl(`media/${id}`)).toBe("");
-    expect(toMarkdownImageDisplayUrl(`media/${id}`, "chat-1")).toBe(
+    expect(chatMediaDisplayUrl(`media/${id}`)).toBe("");
+    expect(chatMediaDisplayUrl(`media/${id}`, "chat-1")).toBe(
       `/api/chats/chat-1/media/${id}`,
     );
   });

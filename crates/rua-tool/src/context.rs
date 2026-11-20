@@ -108,6 +108,7 @@ impl ToolExecutionContext {
                 )) as Arc<dyn std::any::Any + Send + Sync>
             }),
             collaboration_runtime: None,
+            chat_media_loader: None,
             sync_transfer_runtime: None,
             event_tx: None,
             execution_output_max_tokens: self.execution_output_max_tokens,

@@ -10,6 +10,7 @@ pub mod chat_deletion;
 pub mod chat_device_activity;
 pub mod chat_index;
 pub mod chat_media;
+pub(crate) mod chat_media_loader;
 pub mod chat_media_transfer;
 pub mod chat_metadata_store;
 pub mod chat_storage;

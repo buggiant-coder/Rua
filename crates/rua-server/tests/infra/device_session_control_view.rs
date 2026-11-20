@@ -7443,7 +7443,7 @@ async fn higher_epoch_wake_interrupts_only_the_old_live_route() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn target_prepares_history_and_required_media_before_adopting_authority() {
+async fn target_adopts_history_without_copying_referenced_media() {
     let source_state_dir = TempDir::new().expect("source state tempdir");
     let source_state =
         AppState::from_tempdir(source_state_dir.path().to_path_buf(), ServerProfile::Test);
@@ -7462,8 +7462,8 @@ async fn target_prepares_history_and_required_media_before_adopting_authority() 
     let old_authority_device_id = source_device_id.as_str();
     let chat_id = "00000000-0000-0000-0000-000000009920";
     let empty_chat_id = "00000000-0000-0000-0000-000000009921";
-    let source_workspace = source_state.rua_root.join("workspaces").join("default");
-    let target_workspace = target_state.rua_root.join("workspaces").join("default");
+    let source_workspace = source_state.chat_workspace().as_path().to_path_buf();
+    let target_workspace = target_state.chat_workspace().as_path().to_path_buf();
     seed_adoptable_chat(
         &source_workspace,
         chat_id,
@@ -7623,9 +7623,12 @@ async fn target_prepares_history_and_required_media_before_adopting_authority() 
         .expect("load target manifest")
         .expect("target manifest");
     assert!(target_manifest.compare(&required_manifest).matches);
+    assert!(!target_workspace
+        .join("media")
+        .join(required_media_id)
+        .exists());
     assert_eq!(
-        std::fs::read(target_workspace.join("media").join(required_media_id))
-            .expect("Required Media transferred before adoption"),
+        std::fs::read(source_workspace.join("media").join(required_media_id)).unwrap(),
         b"required authority media"
     );
 

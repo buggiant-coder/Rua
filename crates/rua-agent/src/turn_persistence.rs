@@ -60,7 +60,9 @@ impl TurnPersistenceHook {
                 .working_dir()
                 .unwrap_or(&conversation_store_dir)
                 .to_path_buf(),
-            display_media: Mutex::new(Default::default()),
+            display_media: Mutex::new(rua_session::display_media::DisplayMediaArchive::new(
+                request.session_id.to_string(),
+            )),
             conversation_store_dir,
             chat_id: request.session_id.to_string(),
             turn_id,

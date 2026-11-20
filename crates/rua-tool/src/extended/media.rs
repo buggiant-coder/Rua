@@ -217,8 +217,15 @@ impl Tool for ViewImageTool {
             });
         }
 
-        let expanded = expand_tilde(&args.image_path);
-        let path = ctx.working_dir.join(expanded);
+        let media = ctx.open_chat_media_reference(&args.image_path).await?;
+        let (path, mime) = match media {
+            Some(media) => (media.path, media.mime_type),
+            None => {
+                let path = ctx.working_dir.join(expand_tilde(&args.image_path));
+                let mime = mime_from_extension(&path);
+                (path, mime)
+            }
+        };
 
         if !path.exists() {
             return Ok(ToolResult::error(
@@ -234,7 +241,7 @@ impl Tool for ViewImageTool {
             ));
         }
 
-        if !is_image_extension(&path) {
+        if !mime.starts_with("image/") {
             return Ok(ToolResult::error(
                 "view_image",
                 format!(
@@ -263,8 +270,6 @@ impl Tool for ViewImageTool {
                 ),
             ));
         }
-
-        let mime = mime_from_extension(&path);
 
         let image_bytes = std::fs::read(&path).map_err(|e| rua_core::RuaError::Tool {
             tool: "view_image".into(),
@@ -409,8 +414,15 @@ impl Tool for ViewVideoTool {
             });
         }
 
-        let expanded = expand_tilde(&args.video_path);
-        let path = ctx.working_dir.join(expanded);
+        let media = ctx.open_chat_media_reference(&args.video_path).await?;
+        let (path, mime) = match media {
+            Some(media) => (media.path, media.mime_type),
+            None => {
+                let path = ctx.working_dir.join(expand_tilde(&args.video_path));
+                let mime = mime_from_extension(&path);
+                (path, mime)
+            }
+        };
 
         if !path.exists() {
             return Ok(ToolResult::error(
@@ -426,7 +438,7 @@ impl Tool for ViewVideoTool {
             ));
         }
 
-        if !is_video_extension(&path) {
+        if !mime.starts_with("video/") {
             return Ok(ToolResult::error(
                 "view_video",
                 format!(
@@ -456,7 +468,6 @@ impl Tool for ViewVideoTool {
             ));
         }
 
-        let mime = mime_from_extension(&path);
         let file_name = path
             .file_name()
             .unwrap_or_default()

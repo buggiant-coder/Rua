@@ -5,6 +5,7 @@ fn native_image_bytes_use_existing_managed_media_layout() {
     let temp = tempfile::tempdir().unwrap();
     let media = DisplayMediaArchive::store_image_bytes(
         temp.path(),
+        "chat-display",
         b"jpeg-bytes",
         "image/jpeg",
         "device-a",
@@ -20,6 +21,7 @@ fn native_image_bytes_use_existing_managed_media_layout() {
     assert!(media.origin.base_dir.is_none());
     assert!(DisplayMediaArchive::store_image_bytes(
         temp.path(),
+        "chat-display",
         b"",
         "image/jpeg",
         "device-a",
@@ -28,6 +30,7 @@ fn native_image_bytes_use_existing_managed_media_layout() {
     .is_err());
     assert!(DisplayMediaArchive::store_image_bytes(
         temp.path(),
+        "chat-display",
         b"text",
         "text/plain",
         "device-a",
@@ -43,7 +46,7 @@ fn archives_local_markdown_and_figure_preserving_origin_and_identity() {
     let path = source.path().join("preview.png");
     std::fs::write(&path, b"png bytes").unwrap();
     let text = "![预览](preview.png)\n\n@figure\n  - src=preview.png caption=测试\n@end";
-    let mut archive = DisplayMediaArchive::default();
+    let mut archive = DisplayMediaArchive::new("chat-display");
     let (rewritten, media) = archive
         .rewrite(text, workspace.path(), source.path(), "desktop", |p| {
             source.path().join(p).canonicalize()
@@ -72,7 +75,7 @@ fn archives_local_markdown_and_figure_preserving_origin_and_identity() {
 fn ignores_examples_links_and_incomplete_figures() {
     let text = "`![x](missing.png)`\n\n```text\n@figure\n- src=missing.png\n@end\n```\n\n[link](missing.png)\n\n@figure\n- src=missing.png";
     let root = tempfile::tempdir().unwrap();
-    let (rewritten, media) = DisplayMediaArchive::default()
+    let (rewritten, media) = DisplayMediaArchive::new("chat-display")
         .rewrite(text, root.path(), root.path(), "desktop", |_| {
             panic!("not an image display")
         })
@@ -86,7 +89,7 @@ fn imports_reference_images_and_quoted_unicode_figure_paths() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("图片 a.png"), b"png").unwrap();
     let text = "![alt][preview]\n\n[preview]: <图片 a.png>\n\n@figure\n- caption=图 src=\"图片 a.png\"\n@end";
-    let (rewritten, media) = DisplayMediaArchive::default()
+    let (rewritten, media) = DisplayMediaArchive::new("chat-display")
         .rewrite(text, root.path(), root.path(), "desktop", |p| {
             root.path().join(p).canonicalize()
         })
@@ -98,7 +101,7 @@ fn imports_reference_images_and_quoted_unicode_figure_paths() {
 #[test]
 fn failed_import_does_not_return_local_reference_as_success() {
     let root = tempfile::tempdir().unwrap();
-    let error = DisplayMediaArchive::default()
+    let error = DisplayMediaArchive::new("chat-display")
         .rewrite(
             "![x](/tmp/private.png)",
             root.path(),
@@ -119,7 +122,7 @@ fn failed_import_does_not_return_local_reference_as_success() {
 fn canonical_references_do_not_resolve_original_paths() {
     let root = tempfile::tempdir().unwrap();
     let text = "![x](media/00000000-0000-4000-8000-000000000001)";
-    let (rewritten, imported) = DisplayMediaArchive::default()
+    let (rewritten, imported) = DisplayMediaArchive::new("chat-display")
         .rewrite(text, root.path(), root.path(), "phone", |_| {
             panic!("canonical refs must not resolve local paths")
         })
@@ -133,11 +136,57 @@ fn markdown_syntax_inside_a_figure_caption_is_not_a_second_image() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("image.png"), b"png").unwrap();
     let text = "@figure\n- src=image.png caption=\"![example](missing.png)\"\n@end";
-    let (rewritten, imported) = DisplayMediaArchive::default()
+    let (rewritten, imported) = DisplayMediaArchive::new("chat-display")
         .rewrite(text, root.path(), root.path(), "desktop", |p| {
             root.path().join(p).canonicalize()
         })
         .unwrap();
     assert_eq!(imported.len(), 1);
     assert!(rewritten.contains("![example](missing.png)"));
+}
+
+#[test]
+fn a_failed_import_or_corrupt_copy_never_replaces_the_original_object() {
+    use rua_session::chat_media::ChatMediaManifest;
+    let temp = tempfile::tempdir().unwrap();
+    let id = uuid::Uuid::new_v4();
+    let manifest =
+        ChatMediaManifest::new(id, "photos", "phone", "image/png".into(), b"source").unwrap();
+    assert!(manifest.store_copy(temp.path(), b"broken").is_err());
+    assert!(ChatMediaManifest::load(temp.path(), id).unwrap().is_none());
+    manifest.store_copy(temp.path(), b"source").unwrap();
+    let competing =
+        ChatMediaManifest::new(id, "another", "pc", "image/png".into(), b"second").unwrap();
+    assert!(competing.store_copy(temp.path(), b"second").is_err());
+    assert_eq!(
+        std::fs::read(temp.path().join(id.to_string())).unwrap(),
+        b"source"
+    );
+    assert_eq!(
+        ChatMediaManifest::load(temp.path(), id).unwrap(),
+        Some(manifest.clone())
+    );
+    std::fs::write(temp.path().join(id.to_string()), b"broken").unwrap();
+    assert!(manifest.verify_copy(temp.path()).is_err());
+}
+
+#[test]
+fn ordinary_relative_media_directory_images_are_imported_on_the_execution_device() {
+    let source = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::create_dir(source.path().join("media")).unwrap();
+    std::fs::write(source.path().join("media/cover.png"), b"cover").unwrap();
+    let (text, items) = DisplayMediaArchive::new("photos")
+        .rewrite(
+            "![Cover](media/cover.png)",
+            workspace.path(),
+            source.path(),
+            "phone",
+            |p| source.path().join(p).canonicalize(),
+        )
+        .unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].origin.src, "media/cover.png");
+    assert_eq!(items[0].origin.base_dir.as_deref(), Some(source.path()));
+    assert_eq!(managed_image_refs(&text), vec![items[0].media_ref.clone()]);
 }

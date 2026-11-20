@@ -4,7 +4,7 @@ declare const TOKEN: string;
 const AUTH_TOKEN_KEY = "rua_auth_token";
 
 export function getApiUrl(path: string): string {
-  const base = VITE_API_BASE_URL || "";
+  const base = typeof VITE_API_BASE_URL === "string" ? VITE_API_BASE_URL : "";
   const apiPrefix = "/api";
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   return `${base}${apiPrefix}${normalizedPath}`;

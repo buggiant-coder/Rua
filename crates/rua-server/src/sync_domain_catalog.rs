@@ -138,12 +138,12 @@ pub fn build_export_registry(
     ))?;
     registry.register(Arc::new(
         SkillBlobManifestSyncAdapter::new(data_dir.clone(), device_id.clone())
-            .with_blob_store(blobs_store.clone(), sync_key.clone()),
-    ))?;
-    registry.register(Arc::new(
-        MediaSyncAdapter::new(data_dir.clone(), device_id.clone())
             .with_blob_store(blobs_store, sync_key),
     ))?;
+    registry.register(Arc::new(MediaSyncAdapter::new(
+        data_dir.clone(),
+        device_id.clone(),
+    )))?;
     registry.register(Arc::new(AgentPromptFileSyncAdapter::new(
         data_dir.clone(),
         device_id.clone(),
@@ -231,23 +231,15 @@ pub fn build_apply_registry(
     if let Some((blobs_store, sync_key)) = blob_context {
         let skill_adapter =
             SkillBlobManifestSyncAdapter::new(data_dir.clone(), local_device_id.clone())
-                .with_blob_store(blobs_store.clone(), sync_key.clone());
-        let skill_adapter = if let Some(download) = blob_download.clone() {
+                .with_blob_store(blobs_store, sync_key);
+        let skill_adapter = if let Some(download) = blob_download {
             skill_adapter.with_blob_download(download.downloader, download.providers)
         } else {
             skill_adapter
         };
         registry.register(Arc::new(skill_adapter))?;
-
-        let media_adapter =
-            MediaSyncAdapter::new(data_dir, local_device_id).with_blob_store(blobs_store, sync_key);
-        let media_adapter = if let Some(download) = blob_download {
-            media_adapter.with_blob_download(download.downloader, download.providers)
-        } else {
-            media_adapter
-        };
-        registry.register(Arc::new(media_adapter))?;
     }
+    registry.register(Arc::new(MediaSyncAdapter::new(data_dir, local_device_id)))?;
 
     Ok(registry)
 }

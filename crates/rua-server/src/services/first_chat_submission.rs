@@ -42,7 +42,14 @@ pub(crate) async fn persist_first_agent_submission(
             let external_route = rua_session::external_chat::route_for_chat(scope_root, address)
                 .await
                 .map_err(|error| error.to_string())?;
+            let references = &media_ids;
             materialize_staged_chat(scope_root, address, |staging_root| async move {
+                crate::services::chat_media::ChatMediaService::record_first_references(
+                    scope_root,
+                    &staging_root,
+                    address,
+                    references,
+                )?;
                 crate::services::console_chat::materialize_targeted_chat_with_model(
                     &staging_root,
                     agent_id,
@@ -256,32 +263,51 @@ pub(crate) async fn validate_submission_media(
     project_id: Option<&str>,
     input: &ConversationInputPayload,
 ) -> Result<Vec<String>, String> {
-    let mut ids = Vec::new();
     let media_dir = root.join("media");
-    let messages = input.input.as_ref().or(input.messages.as_ref());
-    if let Some(messages) = messages {
-        for message in messages {
-            if let Some(parts) = message.get("content").and_then(serde_json::Value::as_array) {
-                for part in parts {
-                    if let Some(reference) =
-                        part.get("media_ref").and_then(serde_json::Value::as_str)
-                    {
-                        let id = reference
-                            .strip_prefix("media/")
-                            .ok_or("invalid media reference")?;
-                        uuid::Uuid::parse_str(id).map_err(|_| "invalid media identity")?;
-                        validate_staged_media(&media_dir, id, address, Some(project_id)).await?;
-                        crate::services::remote_conversation_input::media_fingerprint(
-                            &media_dir.join(id),
-                        )
-                        .await?;
-                        ids.push(id.to_string());
-                    }
-                }
-            }
+    let ids = submission_media_ids(input)?;
+    for id in &ids {
+        validate_staged_media(&media_dir, id, address, Some(project_id)).await?;
+        let media_id = uuid::Uuid::parse_str(id).map_err(|error| error.to_string())?;
+        if !rua_session::chat_media::ChatMediaManifest::load(&media_dir, media_id)
+            .map_err(|error| error.to_string())?
+            .is_some_and(|manifest| manifest.chat_ids.contains(address.chat_id().as_str()))
+        {
+            return Err(format!("Media {id} is not registered for this Chat"));
         }
     }
     Ok(ids)
+}
+
+pub(crate) fn submission_media_ids(
+    input: &ConversationInputPayload,
+) -> Result<Vec<String>, String> {
+    let mut ids = super::remote_conversation_input::input_media_ids(
+        input
+            .input
+            .as_ref()
+            .or(input.messages.as_ref())
+            .map(Vec::as_slice),
+    )?;
+    for attachment in &input.attachments {
+        let referenced = attachment
+            .get("url")
+            .and_then(|v| v.as_str())
+            .and_then(rua_core::chat_media::reference_id);
+        let stored = attachment
+            .get("stored_name")
+            .and_then(|v| v.as_str())
+            .map(uuid::Uuid::parse_str)
+            .transpose()
+            .map_err(|_| "Chat attachment Media id must be a UUID")?;
+        if stored
+            .zip(referenced)
+            .is_some_and(|(id, reference)| id != reference)
+        {
+            return Err("Chat attachment identifiers disagree".into());
+        }
+        ids.extend(stored.or(referenced));
+    }
+    Ok(ids.into_iter().map(|id| id.to_string()).collect())
 }
 
 pub(crate) async fn validate_staged_media(
@@ -289,11 +315,11 @@ pub(crate) async fn validate_staged_media(
     id: &str,
     address: &ChatAddress,
     requested_project: Option<Option<&str>>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let marker = media_dir.join(format!(".staged-{id}.json"));
     let bytes = match tokio::fs::read(marker).await {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(format!("read staging marker for media {id}: {error}")),
     };
     let staged: crate::services::chat_media::StagedChatMedia = serde_json::from_slice(&bytes)
@@ -305,7 +331,8 @@ pub(crate) async fn validate_staged_media(
         staged.project_id.as_deref(),
         requested_project,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 pub(crate) async fn append_accepted_submission(

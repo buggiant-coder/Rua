@@ -43,7 +43,6 @@ import {
 import { useTranslation } from "react-i18next";
 import { Modal, Popover, toast } from "@/ui";
 import type { ApprovalSnapshot } from "@/api/modules/console";
-import { chatApi } from "@/api/modules/chat";
 import { ChatRenderBlock } from "@/components/ChatRenderBlock";
 import { RuaMarkdown } from "@/components/RuaMarkdown";
 import ImageViewer from "@/components/ImageViewer";
@@ -52,7 +51,13 @@ import { isMobile } from "@/utils/isMobile";
 import { getDownloadFolderHint, saveFile } from "@/utils/saveFile";
 import { formatCompact } from "@/utils/formatNumber";
 import { useTTS } from "@/hooks/useTTS";
-import { toDisplayUrl, toMarkdownImageDisplayUrl } from "../utils";
+import {
+  chatMediaDisplayUrl,
+  chatMediaId,
+  isChatMediaUrl,
+  mediaReadError,
+} from "@/api/chatMedia";
+import { useMediaSource } from "@/components/ImageViewer/useMediaSource";
 import {
   approvalSnapshotForAssistant,
   dataAt,
@@ -120,7 +125,6 @@ type ConversationMessageListProps = {
   historyGap?: { beforeMessageId: string; count: number } | null;
   onLoadHistoryGap?: () => Promise<void>;
   projection: ConversationProjection;
-  agentId?: string;
   approvalSnapshot?: ApprovalSnapshot;
   activeAcpRunner?: string | null;
   onSelectVariant?: (turnId: string, variantId: string) => Promise<void> | void;
@@ -153,9 +157,6 @@ const SearchRevealContext = createContext<ReadonlySet<string> | null>(null);
 const MarkdownMediaContext = createContext<{
   chatId?: string;
 }>({});
-const MEDIA_ID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
 function textFromParts(parts: ConversationContentPart[]): string {
   return parts
     .filter((part) => part.type === "text" && typeof part.text === "string")
@@ -164,36 +165,32 @@ function textFromParts(parts: ConversationContentPart[]): string {
     .join("\n");
 }
 
-function partUrl(
-  part: ConversationContentPart,
-  agentId?: string,
-  chatId?: string,
-): string | undefined {
-  if (part.media_ref) {
-    const mediaId = part.media_ref.startsWith("media/")
-      ? part.media_ref.slice("media/".length)
-      : "";
-    if (chatId && MEDIA_ID_RE.test(mediaId)) {
-      return chatApi.mediaUrl(chatId, mediaId);
-    }
-    if (agentId) {
-      return chatApi.localImagePreviewUrl(part.media_ref, agentId);
-    }
-  }
-  const url =
+function partSource(part: ConversationContentPart) {
+  return (
     part.image_url ||
     part.video_url ||
     part.audio_url ||
     part.file_url ||
     part.file_id ||
-    part.url;
-  return typeof url === "string" && url ? url : undefined;
+    part.url ||
+    (part.type === "audio" && typeof part.data === "string"
+      ? part.data
+      : undefined)
+  );
+}
+
+function partUrl(part: ConversationContentPart, chatId: string) {
+  if (part.media_ref != null)
+    return chatMediaId(part.media_ref)
+      ? chatMediaDisplayUrl(part.media_ref, chatId)
+      : "";
+  return chatMediaDisplayUrl(partSource(part), chatId);
 }
 
 function legacyAttachmentPathHint(
   part: ConversationContentPart,
 ): string | null {
-  const url = partUrl(part);
+  const url = partSource(part);
   if (!url) return null;
   if (part.type === "file") {
     const name = part.file_name || part.filename || part.name || "file";
@@ -405,7 +402,7 @@ function MarkdownBlock({
   const deferredText = useDeferredValue(text);
   const media = useContext(MarkdownMediaContext);
   const resolveImageSrc = useCallback(
-    (source: string) => toMarkdownImageDisplayUrl(source, media.chatId),
+    (source: string) => chatMediaDisplayUrl(source, media.chatId),
     [media.chatId],
   );
   const content = streaming ? deferredText : text;
@@ -538,21 +535,14 @@ function fallbackDownloadName(label: string): string {
 
 function FilePart({
   part,
-  agentId,
   chatId,
 }: {
   part: ConversationContentPart;
-  agentId?: string;
-  chatId?: string;
+  chatId: string;
 }) {
   const { t } = useTranslation();
-  const url = partUrl(part, agentId, chatId);
-  const label =
-    part.file_name ||
-    part.filename ||
-    part.name ||
-    (typeof url === "string" ? url : "file");
-  const href = typeof url === "string" ? toDisplayUrl(url) : undefined;
+  const href = partUrl(part, chatId);
+  const label = part.file_name || part.filename || part.name || href || "file";
 
   const handleClick = async (event: MouseEvent<HTMLAnchorElement>) => {
     if (!href || !isMobile()) return;
@@ -560,7 +550,7 @@ function FilePart({
     try {
       const response = await fetch(href);
       if (!response.ok) {
-        throw new Error(`${response.status} ${response.statusText}`.trim());
+        throw new Error(await mediaReadError(response));
       }
       const contentType =
         response.headers.get("content-type") || "application/octet-stream";
@@ -588,6 +578,12 @@ function FilePart({
     }
   };
 
+  if (!href)
+    return (
+      <span role="status">
+        {label} · {t("chat.mediaUnavailable")}
+      </span>
+    );
   return (
     <a
       className="rua-chat-file-part"
@@ -602,6 +598,59 @@ function FilePart({
   );
 }
 
+function MediaPlayer({
+  part,
+  chatId,
+}: {
+  part: ConversationContentPart;
+  chatId: string;
+}) {
+  const { t } = useTranslation();
+  const source = partUrl(part, chatId);
+  const [requestedSource, setRequestedSource] = useState("");
+  const requested = source === requestedSource;
+  const { url, error, retry } = useMediaSource(source, requested);
+  const filename = part.file_name || part.filename || part.name || part.type;
+  if (!source)
+    return (
+      <span role="status">
+        {filename} · {t("chat.mediaUnavailable")}
+      </span>
+    );
+  if (error)
+    return (
+      <span role="alert">
+        {error}{" "}
+        <button type="button" onClick={retry}>
+          {t("common.retry")}
+        </button>
+      </span>
+    );
+  if (!url)
+    return (
+      <button
+        type="button"
+        disabled={requested}
+        onClick={() => setRequestedSource(source)}
+      >
+        {t("chat.playMedia", { name: filename })}
+      </button>
+    );
+  const poster = chatMediaDisplayUrl(part.video_poster, chatId);
+  return part.type === "video" ? (
+    <video
+      preload="none"
+      src={url}
+      autoPlay={requested}
+      poster={poster && !isChatMediaUrl(poster) ? poster : undefined}
+      controls
+      className="rua-chat-video-part"
+    />
+  ) : (
+    <audio preload="none" src={url} autoPlay={requested} controls />
+  );
+}
+
 function ContentParts({
   parts,
   streaming = false,
@@ -609,62 +658,36 @@ function ContentParts({
   parts: ConversationContentPart[];
   streaming?: boolean;
 }) {
-  const text = textFromParts(parts);
+  const { chatId = "" } = useContext(MarkdownMediaContext);
+  const { t } = useTranslation();
   const media = parts.filter((part) => part.type !== "text");
-
   return (
     <>
-      <MarkdownBlock text={text} streaming={streaming} />
+      <MarkdownBlock text={textFromParts(parts)} streaming={streaming} />
       {media.length > 0 && (
         <div className="rua-chat-media-grid">
           {media.map((part, index) => {
-            const mediaUrl = partUrl(part);
-            if (part.type === "image" && mediaUrl) {
-              return (
+            if (part.type === "image") {
+              const source = partUrl(part, chatId);
+              const label =
+                part.file_name || part.filename || part.alt || part.name || "";
+              return source ? (
                 <ImageViewer
                   key={index}
-                  src={toDisplayUrl(mediaUrl)}
-                  alt={
-                    part.file_name ||
-                    part.filename ||
-                    part.alt ||
-                    part.name ||
-                    ""
-                  }
+                  src={source}
+                  alt={label}
                   imageClassName="rua-chat-image-part"
                 />
+              ) : (
+                <span key={index} role="status">
+                  {label} · {t("chat.mediaUnavailable")}
+                </span>
               );
             }
-            if (part.type === "video" && mediaUrl) {
-              return (
-                <video
-                  preload="none"
-                  key={index}
-                  src={toDisplayUrl(mediaUrl)}
-                  poster={
-                    part.video_poster ? toDisplayUrl(part.video_poster) : ""
-                  }
-                  className="rua-chat-video-part"
-                  controls
-                />
-              );
-            }
-            if (
-              part.type === "audio" &&
-              (mediaUrl || typeof part.data === "string")
-            ) {
-              return (
-                <audio
-                  preload="none"
-                  key={index}
-                  src={toDisplayUrl(String(mediaUrl || part.data))}
-                  controls
-                />
-              );
-            }
-            if (part.type === "file") {
-              return <FilePart key={index} part={part} />;
-            }
+            if (part.type === "video" || part.type === "audio")
+              return <MediaPlayer key={index} part={part} chatId={chatId} />;
+            if (part.type === "file")
+              return <FilePart key={index} part={part} chatId={chatId} />;
             return null;
           })}
         </div>
@@ -675,13 +698,12 @@ function ContentParts({
 
 function UserContentParts({
   parts,
-  agentId,
   chatId,
 }: {
   parts: ConversationContentPart[];
-  agentId?: string;
   chatId: string;
 }) {
+  const { t } = useTranslation();
   const [previewImageIndex, setPreviewImageIndex] = useState<number | null>(
     null,
   );
@@ -700,8 +722,6 @@ function UserContentParts({
     })
     .join("");
 
-  const previewImage =
-    previewImageIndex === null ? null : images[previewImageIndex];
   const handleContentClick = (event: MouseEvent<HTMLDivElement>) => {
     const link = (event.target as HTMLElement).closest<HTMLAnchorElement>(
       'a[href^="#rua-image-"]',
@@ -719,11 +739,15 @@ function UserContentParts({
       {images.length > 0 && (
         <div className="rua-chat-user-images">
           {images.map((part, index) => {
-            const mediaUrl = partUrl(part, agentId, chatId);
+            const mediaUrl = partUrl(part, chatId);
             return mediaUrl ? (
               <div key={index} className="rua-chat-user-image">
                 <ImageViewer
-                  src={toDisplayUrl(mediaUrl)}
+                  src={mediaUrl}
+                  open={previewImageIndex === index}
+                  onOpenChange={(open) =>
+                    setPreviewImageIndex(open ? index : null)
+                  }
                   alt={
                     part.file_name ||
                     part.filename ||
@@ -735,56 +759,23 @@ function UserContentParts({
                   imageClassName="rua-chat-image-part rua-chat-image-part--thumbnail"
                 />
               </div>
-            ) : null;
+            ) : (
+              <span key={index} role="status">
+                {part.file_name || part.filename || part.alt} ·{" "}
+                {t("chat.mediaUnavailable")}
+              </span>
+            );
           })}
         </div>
       )}
-      {otherMedia.map((part, index) => {
-        const mediaUrl = partUrl(part, agentId, chatId);
-        return (
-          <div key={index} className="rua-chat-media-grid">
-            {part.type === "video" && mediaUrl && (
-              <video
-                preload="none"
-                src={toDisplayUrl(mediaUrl)}
-                poster={
-                  part.video_poster ? toDisplayUrl(part.video_poster) : ""
-                }
-                className="rua-chat-video-part"
-                controls
-              />
-            )}
-            {part.type === "audio" &&
-              (mediaUrl || typeof part.data === "string") && (
-                <audio
-                  preload="none"
-                  src={toDisplayUrl(String(mediaUrl || part.data))}
-                  controls
-                />
-              )}
-            {part.type === "file" && (
-              <FilePart part={part} agentId={agentId} chatId={chatId} />
-            )}
-          </div>
-        );
-      })}
-      {previewImage && partUrl(previewImage, agentId, chatId) && (
-        <ImageViewer
-          src={toDisplayUrl(partUrl(previewImage, agentId, chatId)!)}
-          alt={
-            previewImage.file_name ||
-            previewImage.filename ||
-            previewImage.alt ||
-            previewImage.name ||
-            ""
-          }
-          open
-          hideTrigger
-          onOpenChange={(open) => {
-            if (!open) setPreviewImageIndex(null);
-          }}
-        />
-      )}
+      {otherMedia.map((part, index) => (
+        <div key={index} className="rua-chat-media-grid">
+          {(part.type === "audio" || part.type === "video") && (
+            <MediaPlayer part={part} chatId={chatId} />
+          )}
+          {part.type === "file" && <FilePart part={part} chatId={chatId} />}
+        </div>
+      ))}
     </div>
   );
 }
@@ -939,7 +930,6 @@ function LocalOperateCard({
 
 const UserBubble = memo(function UserBubble({
   item,
-  agentId,
   chatId,
   cardIndex,
   branchActionsDisabled,
@@ -949,7 +939,6 @@ const UserBubble = memo(function UserBubble({
   onTapReveal,
 }: {
   item: ConversationUserMessage;
-  agentId?: string;
   chatId: string;
   cardIndex: number;
   branchActionsDisabled?: boolean;
@@ -1053,11 +1042,7 @@ const UserBubble = memo(function UserBubble({
             contentCollapsed ? " is-collapsed" : ""
           }`}
         >
-          <UserContentParts
-            parts={visibleContent}
-            agentId={agentId}
-            chatId={chatId}
-          />
+          <UserContentParts parts={visibleContent} chatId={chatId} />
         </div>
         {contentCollapsible && (
           <button
@@ -3249,7 +3234,6 @@ export default memo(function ConversationMessageList({
   historyGap,
   onLoadHistoryGap,
   projection,
-  agentId,
   approvalSnapshot,
   activeAcpRunner,
   onSelectVariant,
@@ -3726,7 +3710,6 @@ export default memo(function ConversationMessageList({
                             >
                               <UserBubble
                                 item={item}
-                                agentId={agentId}
                                 chatId={projection.conversationId}
                                 cardIndex={index}
                                 branchActionsDisabled={

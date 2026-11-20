@@ -1,5 +1,5 @@
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -14,8 +14,8 @@ use tokio_util::io::ReaderStream;
 
 use crate::errors::ApiError;
 use crate::services::chat_media::{
-    ChatMediaError, ChatMediaService, MediaId, MediaReference, StoredChatMedia,
-    MAX_CHAT_MEDIA_BYTES,
+    resolve_chat_media, ChatMediaError, ChatMediaService, ChatMediaUpload, MediaId, MediaReference,
+    StoredChatMedia, MAX_CHAT_MEDIA_BYTES,
 };
 use crate::services::conversation_authority_placement::{
     ConversationAuthorityEpoch, ConversationAuthorityPlacement,
@@ -25,9 +25,8 @@ use crate::services::device_command_bus::{
 };
 use crate::services::device_context::current_sync_device_id;
 use crate::services::sync_transfer::{
-    open_chat_media_read_stream, send_transfer_stream, ReceiveConflictPolicy,
-    TransferExecutionOptions, TransferManifest, TransferManifestEntry, TransferManifestEntryKind,
-    TransferStreamSendRequest,
+    send_transfer_stream, ReceiveConflictPolicy, TransferExecutionOptions, TransferManifest,
+    TransferManifestEntry, TransferManifestEntryKind, TransferStreamSendRequest,
 };
 use crate::state::AppState;
 
@@ -43,6 +42,7 @@ struct ChatMediaUploadResponse {
 struct ChatMediaUploadContext {
     agent_id: Option<String>,
     project_id: Option<String>,
+    expected_epoch: Option<ConversationAuthorityEpoch>,
 }
 
 pub fn router() -> Router<AppState> {
@@ -76,7 +76,11 @@ async fn upload_media(state: AppState, address: ChatAddress, mut multipart: Mult
                     }
                     Err(error) => return ApiError::BadRequest(error.to_string()).into_response(),
                 };
-                upload = Some((bytes, mime_type, filename));
+                upload = Some(ChatMediaUpload {
+                    bytes,
+                    mime_type,
+                    original_filename: filename,
+                });
             }
             Some("agent_id") => match field.text().await {
                 Ok(agent_id) => context.agent_id = Some(agent_id),
@@ -84,6 +88,13 @@ async fn upload_media(state: AppState, address: ChatAddress, mut multipart: Mult
             },
             Some("project_id") => match field.text().await {
                 Ok(project_id) => context.project_id = Some(project_id),
+                Err(error) => return ApiError::BadRequest(error.to_string()).into_response(),
+            },
+            Some("expected_authority_epoch") => match field.text().await {
+                Ok(epoch) => match ConversationAuthorityEpoch::parse(&epoch) {
+                    Ok(epoch) => context.expected_epoch = Some(epoch),
+                    Err(error) => return ApiError::BadRequest(error.to_string()).into_response(),
+                },
                 Err(error) => return ApiError::BadRequest(error.to_string()).into_response(),
             },
             Some("model") => match field.text().await {
@@ -99,15 +110,42 @@ async fn upload_media(state: AppState, address: ChatAddress, mut multipart: Mult
             _ => {}
         }
     }
-    let Some((bytes, mime_type, filename)) = upload else {
-        return ApiError::BadRequest("file field is required".to_string()).into_response();
+    let Some(upload) = upload else {
+        return ApiError::BadRequest("file field is required".into()).into_response();
+    };
+    if upload.bytes.is_empty() {
+        return media_error(ChatMediaError::Empty).into_response();
+    }
+    let Some(local_device_id) = current_sync_device_id(&state.sync_device) else {
+        return ApiError::Unavailable("Local Device identity unavailable".into()).into_response();
     };
     let scope = rua_core::ChatStore::resolve(&state.rua_root, address.clone());
+    let gate = state.conversation_authority.transition_gate_at(&address);
+    let transition = gate.lock().await;
+    match rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(&state.rua_root)
+        .load(&address)
+    {
+        Ok(Some(_)) => return ApiError::NotFound("Chat was deleted".into()).into_response(),
+        Err(detail) => return ApiError::Internal(detail).into_response(),
+        Ok(None) => {}
+    }
     let placement = match crate::services::conversation_authority_target::load_optional_chat_authority_placement(scope.root(), address.chat_id().as_str()).await {
-        Ok(placement) => placement,
+        Ok(Some(p)) => Some(p),
+        Ok(None) => match crate::services::remote_conversation_input::read_source_pending_at(&state.rua_root,&address).await {
+            Ok(pending) => pending.map(|p| ConversationAuthorityPlacement {device_id:p.target_device_id, authority_epoch:p.authority_epoch, base_manifest_hash:p.base_manifest_hash.unwrap_or_default()}),
+            Err(error) => return ApiError::Internal(error).into_response(),
+        },
         Err(error) => return ApiError::Internal(error).into_response(),
     };
+    if context
+        .expected_epoch
+        .is_some_and(|epoch| placement.as_ref().map(|p| p.authority_epoch) != Some(epoch))
+    {
+        return ApiError::Conflict("Chat Media upload Authority Epoch changed".into())
+            .into_response();
+    }
     if placement.is_none() {
+        drop(transition);
         let draft = match crate::services::chat_context::resolve_submission_context(
             &state,
             address.chat_id().as_str(),
@@ -127,9 +165,8 @@ async fn upload_media(state: AppState, address: ChatAddress, mut multipart: Mult
                 &state.conversation_authority,
                 &state.rua_root,
                 draft,
-                bytes,
-                mime_type,
-                filename,
+                &local_device_id,
+                upload,
             )
             .await
         {
@@ -146,24 +183,15 @@ async fn upload_media(state: AppState, address: ChatAddress, mut multipart: Mult
     }
     let placement = placement.expect("existing media placement was checked");
 
-    let local_device_id = current_sync_device_id(&state.sync_device)
-        .expect("placement materialization requires local Device identity");
     let accepted_authority_epoch = placement.authority_epoch;
     let result = if placement.device_id == local_device_id {
         ChatMediaService
-            .store(&state.rua_root, address, bytes, mime_type, filename)
+            .store(&state.rua_root, address, &local_device_id, upload)
             .await
+            .map_err(media_error)
     } else {
-        upload_remote_media(
-            &state,
-            address,
-            placement,
-            local_device_id,
-            bytes,
-            mime_type,
-            filename,
-        )
-        .await
+        drop(transition);
+        upload_remote_media(&state, address, placement, local_device_id, upload).await
     };
     match result {
         Ok(stored) => (
@@ -174,61 +202,27 @@ async fn upload_media(state: AppState, address: ChatAddress, mut multipart: Mult
             }),
         )
             .into_response(),
-        Err(error) => media_error(error).into_response(),
+        Err(error) => error.into_response(),
     }
 }
 
 async fn read_media(state: AppState, address: ChatAddress, media_id: String) -> Response {
-    if MediaId::from_str(&media_id).is_err() {
-        return media_error(ChatMediaError::InvalidId).into_response();
-    }
-    let scope = rua_core::chat_store::ChatStore::resolve(&state.rua_root, address.clone());
-    let placement =
-        match crate::services::conversation_authority_target::load_optional_chat_authority_placement(
-            scope.root(),
-            address.chat_id().as_str(),
-        )
-        .await
-    {
-            Ok(placement) => placement,
-            Err(error) => return ApiError::Internal(error).into_response(),
-        };
-    let local_device_id = current_sync_device_id(&state.sync_device)
-        .expect("placement materialization requires local Device identity");
-    if let Some(placement) = placement.filter(|placement| placement.device_id != local_device_id) {
-        let session_manager = match state
-            .sync_transfer_session_manager
-            .read()
-            .unwrap_or_else(|lock| lock.into_inner())
-            .clone()
-        {
-            Some(manager) => manager,
-            None => {
-                return ApiError::Unavailable("Device Session manager is unavailable".to_string())
-                    .into_response()
-            }
-        };
-        return match open_chat_media_read_stream(
-            &session_manager,
-            &placement.device_id,
-            address,
-            placement.authority_epoch,
-            media_id,
-        )
-        .await
-        {
-            Ok((mime_type, byte_size, reader)) => Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, mime_type)
-                .header(header::CONTENT_LENGTH, byte_size)
-                .body(Body::from_stream(ReaderStream::new(reader)))
-                .expect("valid remote Chat Media response"),
-            Err(error) => ApiError::Unavailable(error).into_response(),
-        };
-    }
-    let opened = match ChatMediaService
-        .open(&state.rua_root, address, &media_id)
-        .await
+    let Some(device_id) = current_sync_device_id(&state.sync_device) else {
+        return ApiError::Unavailable("Local Device identity unavailable".into()).into_response();
+    };
+    let manager = state
+        .sync_transfer_session_manager
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let opened = match resolve_chat_media(
+        &state.rua_root,
+        &address,
+        &media_id,
+        &device_id,
+        manager.as_ref(),
+    )
+    .await
     {
         Ok(opened) => opened,
         Err(error) => return media_error(error).into_response(),
@@ -250,97 +244,107 @@ async fn upload_remote_media(
     address: ChatAddress,
     placement: ConversationAuthorityPlacement,
     local_device_id: String,
-    bytes: Vec<u8>,
-    mime_type: Option<String>,
-    original_filename: Option<String>,
-) -> Result<StoredChatMedia, ChatMediaError> {
+    upload: ChatMediaUpload,
+) -> Result<StoredChatMedia, ApiError> {
+    let ChatMediaUpload {
+        bytes,
+        mime_type,
+        original_filename,
+    } = upload;
+    let original_filename =
+        crate::services::chat_media::normalize_original_filename(original_filename);
     let media_id = MediaId::generate();
     let operation_id = format!("chat-media-{}", uuid::Uuid::new_v4());
-    let mime_type = mime_type
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let mime_type = crate::services::chat_media::normalize_mime_type(mime_type);
     let session_manager = state
         .sync_transfer_session_manager
         .read()
         .unwrap_or_else(|lock| lock.into_inner())
         .clone()
-        .ok_or_else(|| {
-            ChatMediaError::Storage(std::io::Error::other(
-                "Device Session manager is unavailable",
-            ))
-        })?;
-    let context = crate::services::chat_context::load_chat_context(
-        &state.rua_root,
-        address.chat_id().as_str(),
-    )
-    .await
-    .map_err(|e| ChatMediaError::Storage(std::io::Error::other(e.to_string())))?
-    .ok_or(ChatMediaError::NotFound)?;
-    deliver_chat_media_prepare_via_session(
-        &session_manager,
-        &ChatMediaPrepareCommand {
-            agent_id: context.agent_id,
-            project_id: context.project_id,
-            sha256: None,
-            first_submission: false,
-            command_id: uuid::Uuid::new_v4().to_string(),
-            operation_id: operation_id.clone(),
-            address,
-            source_device_id: local_device_id.clone(),
-            target_device_id: placement.device_id.clone(),
-            authority_epoch: placement.authority_epoch,
-            media_id: media_id.to_string(),
-            byte_size: bytes.len() as u64,
-            mime_type: mime_type.clone(),
-        },
-        Duration::from_secs(10),
-    )
-    .await
-    .map_err(|error| ChatMediaError::Storage(std::io::Error::other(error.to_string())))?;
-
-    let temp_dir = tempfile::tempdir().map_err(ChatMediaError::Storage)?;
-    let source_path = temp_dir.path().join(media_id.to_string());
-    tokio::fs::write(&source_path, &bytes)
-        .await
-        .map_err(ChatMediaError::Storage)?;
-    let manifest = TransferManifest {
-        entries: vec![TransferManifestEntry {
-            source_path,
-            relative_path: PathBuf::from(media_id.to_string()),
-            kind: TransferManifestEntryKind::File,
-            size: bytes.len() as u64,
-        }],
-        total_bytes: bytes.len() as u64,
+        .ok_or_else(|| ApiError::Unavailable("Device Session manager unavailable".into()))?;
+    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    let command = ChatMediaPrepareCommand {
+        sha256,
+        original_filename: original_filename.clone(),
+        command_id: uuid::Uuid::new_v4().to_string(),
+        operation_id: operation_id.clone(),
+        address: address.clone(),
+        source_device_id: local_device_id.clone(),
+        target_device_id: placement.device_id.clone(),
+        authority_epoch: placement.authority_epoch,
+        media_id: media_id.to_string(),
+        byte_size: bytes.len() as u64,
+        mime_type: mime_type.clone(),
     };
-    let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(RunControl::Running);
-    send_transfer_stream(
-        &session_manager,
-        TransferStreamSendRequest {
-            operation_id,
-            source_device_id: local_device_id,
-            target_device_id: placement.device_id,
-            manifest,
-            target_dir: PathBuf::from("."),
-            conflict_policy: ReceiveConflictPolicy::Fail,
-            options: TransferExecutionOptions::default(),
-        },
-        cancel_rx,
-        |_| {},
-    )
-    .await
-    .map_err(|error| ChatMediaError::Storage(std::io::Error::other(error.to_string())))?;
-
+    let prepared =
+        deliver_chat_media_prepare_via_session(&session_manager, &command, Duration::from_secs(10))
+            .await
+            .map_err(|error| match error {
+                crate::services::device_command_bus::DeviceCommandDeliveryError::Rejected {
+                    reason,
+                    detail,
+                } if reason == "conversation_authority_redirect" => ApiError::Conflict(detail),
+                other => ApiError::Unavailable(other.to_string()),
+            })?;
+    if prepared.authority_epoch != command.authority_epoch
+        || prepared.media_id != command.media_id
+        || prepared.operation_id != command.operation_id
+    {
+        return Err(ApiError::Unavailable(
+            "Invalid Chat Media preparation receipt".into(),
+        ));
+    }
+    if !prepared.already_present {
+        let temp_dir = tempfile::tempdir().map_err(|e| ApiError::Internal(e.to_string()))?;
+        let source_path = temp_dir.path().join(media_id.to_string());
+        tokio::fs::write(&source_path, &bytes)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        let manifest = TransferManifest {
+            entries: vec![TransferManifestEntry {
+                source_path,
+                relative_path: PathBuf::from(media_id.to_string()),
+                kind: TransferManifestEntryKind::File,
+                size: bytes.len() as u64,
+            }],
+            total_bytes: bytes.len() as u64,
+        };
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(RunControl::Running);
+        send_transfer_stream(
+            &session_manager,
+            TransferStreamSendRequest {
+                operation_id,
+                source_device_id: local_device_id,
+                target_device_id: placement.device_id.clone(),
+                manifest,
+                target_dir: PathBuf::from("."),
+                conflict_policy: ReceiveConflictPolicy::Fail,
+                options: TransferExecutionOptions::default(),
+            },
+            cancel_rx,
+            |_| {},
+        )
+        .await
+        .map_err(|error| match error {
+            crate::services::sync_transfer::SyncTransferPlanError::Remote(detail)
+                if detail.starts_with("Conversation Authority") =>
+            {
+                ApiError::Conflict(detail)
+            }
+            other => ApiError::Unavailable(other.to_string()),
+        })?;
+    }
+    // The authenticated recipient has verified the complete object against this command.
+    command
+        .manifest()
+        .register(&rua_chat::ChatService::new(&state.rua_root).media_root())
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(StoredChatMedia {
         media_ref: MediaReference::from_id(media_id),
         media_id: media_id.to_string(),
         mime_type,
         byte_size: bytes.len() as u64,
-        original_filename: original_filename.and_then(|value| {
-            std::path::Path::new(&value)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(str::to_string)
-        }),
+        original_filename,
     })
 }
 
@@ -353,6 +357,8 @@ fn media_error(error: ChatMediaError) -> ApiError {
             msg: error.to_string(),
             error_type: "value_error.uuid".to_string(),
         }]),
+        ChatMediaError::Conflict(detail) => ApiError::Conflict(detail),
+        ChatMediaError::Unavailable(detail) => ApiError::Unavailable(detail),
         ChatMediaError::NotFound => ApiError::NotFound(error.to_string()),
         ChatMediaError::Storage(_) => ApiError::Internal(error.to_string()),
     }

@@ -23,6 +23,7 @@ import type {
 import type { ChatListSort } from "../types/chatListSort";
 
 export type ChatMediaUploadContext = {
+  expectedAuthorityEpoch?: string;
   agentId?: string;
   projectId?: string | null;
   model?: ModelSlot | null;
@@ -40,8 +41,6 @@ export interface ChatUploadResponse {
 function chatMediaPath(chatId: string): string {
   return `/chats/${encodeURIComponent(chatId)}/media`;
 }
-
-const FILES_PREVIEW = "/files/preview";
 
 export type GetChatOptions = {
   turnLimit?: number;
@@ -178,6 +177,11 @@ export const chatApi = {
       const formData = new FormData();
       const agentId = context?.agentId;
       const projectId = context?.projectId;
+      if (context?.expectedAuthorityEpoch)
+        formData.append(
+          "expected_authority_epoch",
+          context.expectedAuthorityEpoch,
+        );
       if (agentId) formData.append("agent_id", agentId);
       if (projectId) formData.append("project_id", projectId);
       if (context?.model)
@@ -208,34 +212,6 @@ export const chatApi = {
     return token ? `${url}?token=${encodeURIComponent(token)}` : url;
   },
 
-  filePreviewUrl: (filename: string): string => {
-    if (!filename) return "";
-    if (filename.startsWith("http://") || filename.startsWith("https://"))
-      return filename;
-    const path = `${FILES_PREVIEW}/${filename.replace(/^\/+/, "")}`;
-    const url = getApiUrl(path);
-
-    const token = getApiToken();
-    if (token) {
-      return `${url}?token=${encodeURIComponent(token)}`;
-    }
-
-    return url;
-  },
-  localImagePreviewUrl: (
-    source: string,
-    agentId: string = getSelectedAgentId(),
-  ): string => {
-    if (!source) return "";
-    const params = new URLSearchParams({ path: source });
-    const token = getApiToken();
-    if (token) params.set("token", token);
-    return getApiUrl(
-      `/agents/${encodeURIComponent(
-        agentId,
-      )}${FILES_PREVIEW}?${params.toString()}`,
-    );
-  },
   listChats: async (
     params?: ChatListParams,
   ): Promise<{ data: ChatSpec[]; total: number }> => {

@@ -8225,6 +8225,7 @@ version = "0.8.1"
 dependencies = [
  "agent-types",
  "async-trait",
+ "base64 0.22.1",
  "cell-store",
  "chrono",
  "dirs",
@@ -8418,6 +8419,7 @@ name = "rua-core"
 version = "0.8.1"
 dependencies = [
  "agent-types",
+ "async-trait",
  "chrono",
  "serde",
  "serde_json",

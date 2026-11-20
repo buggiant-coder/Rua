@@ -1,16 +1,23 @@
+mod remote;
+pub(crate) use remote::local_chat_media_manifest;
+pub use remote::{
+    chat_media_manifest, chat_media_manifest_from_device,
+    chat_media_manifest_from_device_for_submission, resolve_chat_media,
+};
+
 use std::fmt;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 
-use rua_contract::agent::AgentInputMessage;
-use rua_core::{ChatAddress, ContentPart};
+use rua_core::ChatAddress;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const MAX_CHAT_MEDIA_BYTES: usize = 50 * 1024 * 1024;
+use rua_session::chat_media::ChatMediaManifest;
+pub use rua_session::chat_media::MAX_CHAT_MEDIA_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MediaId(Uuid);
@@ -76,9 +83,11 @@ pub struct OrphanMediaReport {
     pub restored_after_recheck: usize,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct ChatMediaMetadata {
-    mime_type: String,
+#[derive(Debug)]
+pub struct ChatMediaUpload {
+    pub bytes: Vec<u8>,
+    pub mime_type: Option<String>,
+    pub original_filename: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -89,6 +98,10 @@ pub enum ChatMediaError {
     TooLarge,
     #[error("invalid media id")]
     InvalidId,
+    #[error("Chat Media conflict: {0}")]
+    Conflict(String),
+    #[error("Chat Media unavailable: {0}")]
+    Unavailable(String),
     #[error("media not found")]
     NotFound,
     #[error("media storage error: {0}")]
@@ -119,6 +132,31 @@ impl ChatMediaService {
         .map_err(|error| error.to_string())
     }
 
+    pub(crate) fn record_first_references(
+        scope_root: &Path,
+        staging_root: &Path,
+        address: &ChatAddress,
+        ids: &[String],
+    ) -> Result<(), String> {
+        let dir = scope_root.join("media");
+        let chat_id = address.chat_id().as_str();
+        let committed = rua_session::WorkspaceSessionStore::new(scope_root).chat_dir(chat_id);
+        let staged = rua_session::WorkspaceSessionStore::new(staging_root).chat_dir(chat_id);
+        for id in ids {
+            let id = Uuid::parse_str(id).map_err(|e| e.to_string())?;
+            let item = match ChatMediaManifest::load(&dir, id).map_err(|e| e.to_string())? {
+                Some(item) => Some(item),
+                None => {
+                    ChatMediaManifest::load_reference(&committed, id).map_err(|e| e.to_string())?
+                }
+            }
+            .ok_or_else(|| format!("Missing admitted Chat Media reference: media/{id}"))?;
+            item.record_reference(&staged, chat_id)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn confirm_staged_media(root: &Path, ids: &[String]) -> Result<(), String> {
         for id in ids {
             MediaId::from_str(id).map_err(|error| error.to_string())?;
@@ -137,30 +175,49 @@ impl ChatMediaService {
         authority: &crate::services::conversation_authority::ConversationAuthority,
         rua_root: &Path,
         draft: StagedChatMedia,
-        bytes: Vec<u8>,
-        mime_type: Option<String>,
-        original_filename: Option<String>,
+        device_id: &str,
+        upload: ChatMediaUpload,
     ) -> Result<StoredChatMedia, ChatMediaError> {
-        self.collect_expired_staged(
-            authority,
-            rua_root,
-            &draft.address,
-            Duration::from_secs(24 * 60 * 60),
-        )
-        .await?;
-        let stored = self
-            .store(
+        // Expiration runs in the background. An upload touches only this draft and object.
+        let gate = authority.transition_gate_at(&draft.address);
+        let _transition = gate.lock().await;
+        let scope = rua_core::ChatStore::resolve(rua_root, draft.address.clone());
+        if rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(rua_root)
+            .load(&draft.address)
+            .map_err(io::Error::other)?
+            .is_some()
+        {
+            return Err(ChatMediaError::NotFound);
+        }
+        if rua_session::WorkspaceSessionStore::new(scope.root())
+            .load_stored_chat_header(draft.address.chat_id().as_str())
+            .await
+            .map_err(io::Error::other)?
+            .is_some()
+            || crate::services::remote_conversation_input::read_source_pending_at(
                 rua_root,
-                draft.address.clone(),
-                bytes,
-                mime_type,
-                original_filename,
+                &draft.address,
             )
-            .await?;
-        let marker = media_dir(rua_root).join(format!(".staged-{}.json", stored.media_id));
-        rua_config::atomic_write_json(&marker, &serde_json::json!(draft))
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        Ok(stored)
+            .await
+            .map_err(io::Error::other)?
+            .is_some()
+        {
+            return Err(ChatMediaError::Conflict(
+                "Chat was already created; refresh its Authority before uploading".into(),
+            ));
+        }
+        let id = MediaId::generate();
+        let marker = media_dir(rua_root).join(format!(".staged-{id}.json"));
+        rua_config::atomic_write_json(&marker, &serde_json::json!(draft))?;
+        let result = self
+            .store_upload(rua_root, draft.address, device_id, id, upload)
+            .await;
+        if result.is_err() {
+            if let Err(error) = tokio::fs::remove_file(&marker).await {
+                tracing::warn!(%error, %id, "Could not remove failed Chat Media staging marker");
+            }
+        }
+        result
     }
 
     pub async fn collect_expired_staged(
@@ -240,6 +297,12 @@ impl ChatMediaService {
                 }
                 Err(_) => continue,
             }
+            if let Some(manifest) = ChatMediaManifest::load(&dir, media_id.as_uuid())? {
+                if retained_by_another_chat(rua_root, &manifest, &owner)? {
+                    tokio::fs::remove_file(entry.path()).await?;
+                    continue;
+                }
+            }
             let file = dir.join(media_id.to_string());
             let metadata = match tokio::fs::symlink_metadata(&file).await {
                 Ok(metadata) => metadata,
@@ -261,109 +324,53 @@ impl ChatMediaService {
         Ok(removed)
     }
 
-    pub fn materialize_message_parts(
-        &self,
-        rua_root: &Path,
-        _address: &ChatAddress,
-        messages: &mut [AgentInputMessage],
-    ) {
-        self.materialize_message_parts_at(
-            rua_chat::ChatService::new(rua_root).storage_root(),
-            messages,
-        );
-    }
-
-    pub fn materialize_message_parts_at(
-        &self,
-        workspace_root: &Path,
-        messages: &mut [AgentInputMessage],
-    ) {
-        for message in messages {
-            for part in &mut message.content {
-                let url = match part {
-                    ContentPart::Image { url, .. }
-                    | ContentPart::Audio { url, .. }
-                    | ContentPart::Video { url, .. }
-                    | ContentPart::File { url, .. } => url,
-                    _ => continue,
-                };
-                if agent_types::content::is_managed_media_ref(url) {
-                    *url = workspace_root
-                        .join(url.as_str())
-                        .to_string_lossy()
-                        .into_owned();
-                }
-            }
-        }
-    }
-
     pub async fn store(
         &self,
         rua_root: &Path,
-        _address: ChatAddress,
-        bytes: Vec<u8>,
-        mime_type: Option<String>,
-        original_filename: Option<String>,
+        address: ChatAddress,
+        device_id: &str,
+        upload: ChatMediaUpload,
     ) -> Result<StoredChatMedia, ChatMediaError> {
-        if bytes.is_empty() {
-            return Err(ChatMediaError::Empty);
-        }
-        if bytes.len() > MAX_CHAT_MEDIA_BYTES {
-            return Err(ChatMediaError::TooLarge);
-        }
-
-        let media_id = MediaId::generate();
-        let media_dir = media_dir(rua_root);
-        let target = media_dir.join(media_id.to_string());
-        let metadata_path = metadata_path(&media_dir, media_id);
-        let normalized_mime_type = normalize_mime_type(mime_type);
-        let metadata_bytes = serde_json::to_vec(&ChatMediaMetadata {
-            mime_type: normalized_mime_type.clone(),
-        })
-        .map_err(|error| io::Error::other(format!("serialize media metadata: {error}")))?;
-        let byte_size = bytes.len() as u64;
-        tokio::task::spawn_blocking(move || {
-            atomic_write_media(&media_dir, &target, &bytes, &metadata_path, &metadata_bytes)
-        })
-        .await
-        .map_err(|error| io::Error::other(format!("media write task failed: {error}")))??;
-
-        Ok(StoredChatMedia {
-            media_ref: MediaReference::from_id(media_id),
-            media_id: media_id.to_string(),
-            mime_type: normalized_mime_type,
-            byte_size,
-            original_filename: normalize_original_filename(original_filename),
-        })
+        self.store_upload(rua_root, address, device_id, MediaId::generate(), upload)
+            .await
     }
 
-    pub async fn store_existing(
+    async fn store_upload(
         &self,
         rua_root: &Path,
-        _address: ChatAddress,
-        media_id: MediaId,
-        bytes: Vec<u8>,
-        mime_type: String,
-    ) -> Result<(), ChatMediaError> {
-        if bytes.is_empty() {
+        address: ChatAddress,
+        device_id: &str,
+        id: MediaId,
+        upload: ChatMediaUpload,
+    ) -> Result<StoredChatMedia, ChatMediaError> {
+        if upload.bytes.is_empty() {
             return Err(ChatMediaError::Empty);
         }
-        if bytes.len() > MAX_CHAT_MEDIA_BYTES {
+        if upload.bytes.len() > MAX_CHAT_MEDIA_BYTES {
             return Err(ChatMediaError::TooLarge);
         }
-        let media_dir = media_dir(rua_root);
-        let target = media_dir.join(media_id.to_string());
-        let metadata_path = metadata_path(&media_dir, media_id);
-        let metadata_bytes = serde_json::to_vec(&ChatMediaMetadata {
-            mime_type: normalize_mime_type(Some(mime_type)),
-        })
-        .map_err(|error| io::Error::other(format!("serialize media metadata: {error}")))?;
+        let dir = media_dir(rua_root);
+        let device_id = device_id.to_owned();
         tokio::task::spawn_blocking(move || {
-            atomic_write_media(&media_dir, &target, &bytes, &metadata_path, &metadata_bytes)
+            let mut manifest = ChatMediaManifest::new(
+                id.as_uuid(),
+                address.chat_id().as_str(),
+                &device_id,
+                normalize_mime_type(upload.mime_type),
+                &upload.bytes,
+            )?;
+            manifest.original_filename = normalize_original_filename(upload.original_filename);
+            manifest.store_copy(&dir, &upload.bytes)?;
+            Ok(StoredChatMedia {
+                media_ref: MediaReference::from_id(id),
+                media_id: id.to_string(),
+                mime_type: manifest.mime_type,
+                byte_size: manifest.byte_size,
+                original_filename: manifest.original_filename,
+            })
         })
         .await
-        .map_err(|error| io::Error::other(format!("media write task failed: {error}")))??;
-        Ok(())
+        .map_err(|error| io::Error::other(error.to_string()))?
     }
 
     pub async fn open(
@@ -373,38 +380,26 @@ impl ChatMediaService {
         raw_media_id: &str,
     ) -> Result<OpenedChatMedia, ChatMediaError> {
         let media_id = MediaId::from_str(raw_media_id).map_err(|_| ChatMediaError::InvalidId)?;
-        let media_dir = media_dir(rua_root);
-        crate::services::first_chat_submission::validate_staged_media(
-            &media_dir,
-            &media_id.to_string(),
-            &address,
-            None,
-        )
-        .await
-        .map_err(|_| ChatMediaError::NotFound)?;
-        let path = media_dir.join(media_id.to_string());
-        let metadata = tokio::fs::symlink_metadata(&path).await.map_err(|error| {
-            if error.kind() == io::ErrorKind::NotFound {
-                ChatMediaError::NotFound
-            } else {
-                ChatMediaError::Storage(error)
-            }
-        })?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(ChatMediaError::NotFound);
-        }
-        let mime_type = read_mime_type(&media_dir, media_id).await;
-        Ok(OpenedChatMedia {
-            mime_type,
-            path,
-            byte_size: metadata.len(),
+        let manifest = local_chat_media_manifest(rua_root, &address, raw_media_id).await?;
+        let dir = media_dir(rua_root);
+        tokio::task::spawn_blocking(move || {
+            manifest
+                .verify_copy(&dir)
+                .map_err(|error| ChatMediaError::Unavailable(error.to_string()))?;
+            Ok(OpenedChatMedia {
+                path: dir.join(media_id.to_string()),
+                byte_size: manifest.byte_size,
+                mime_type: manifest.mime_type,
+            })
         })
+        .await
+        .map_err(|e| io::Error::other(e.to_string()))?
     }
 
     pub fn collect_orphans<F>(
         &self,
         rua_root: &Path,
-        _address: ChatAddress,
+        address: ChatAddress,
         grace: Duration,
         is_referenced: F,
     ) -> Result<OrphanMediaReport, ChatMediaError>
@@ -434,13 +429,28 @@ impl ChatMediaService {
                 .ok()
                 .and_then(|modified| modified.elapsed().ok())
                 .unwrap_or_default();
-            if age < grace || is_referenced(media_id) {
+            let Some(manifest) = ChatMediaManifest::load(&media_dir, media_id.as_uuid())? else {
+                continue;
+            };
+            if age < grace
+                || !manifest.chat_ids.contains(address.chat_id().as_str())
+                || retained_by_another_chat(rua_root, &manifest, &address)?
+                || is_referenced(media_id)
+            {
                 continue;
             }
             let quarantine = media_dir.join(format!(".gc-{media_id}-{}", Uuid::new_v4()));
             fs::rename(entry.path(), &quarantine)?;
-            if is_referenced(media_id) {
+            let retained =
+                ChatMediaManifest::load(&media_dir, media_id.as_uuid()).and_then(|manifest| {
+                    match manifest {
+                        Some(manifest) => retained_by_another_chat(rua_root, &manifest, &address),
+                        None => Ok(true),
+                    }
+                });
+            if !matches!(retained, Ok(false)) || is_referenced(media_id) {
                 fs::rename(&quarantine, entry.path())?;
+                retained?;
                 report.restored_after_recheck += 1;
                 continue;
             }
@@ -459,6 +469,25 @@ impl ChatMediaService {
     }
 }
 
+fn retained_by_another_chat(
+    rua_root: &Path,
+    manifest: &ChatMediaManifest,
+    owner: &ChatAddress,
+) -> io::Result<bool> {
+    let deletes = rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(rua_root);
+    for id in &manifest.chat_ids {
+        if id != owner.chat_id().as_str()
+            && deletes
+                .load(&ChatAddress::new(id.clone()))
+                .map_err(io::Error::other)?
+                .is_none()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn media_dir(rua_root: &Path) -> PathBuf {
     rua_chat::ChatService::new(rua_root).media_root()
 }
@@ -467,59 +496,13 @@ fn metadata_path(media_dir: &Path, media_id: MediaId) -> PathBuf {
     media_dir.join(format!(".{media_id}.media.json"))
 }
 
-async fn read_mime_type(media_dir: &Path, media_id: MediaId) -> String {
-    let metadata = tokio::fs::read(metadata_path(media_dir, media_id))
-        .await
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<ChatMediaMetadata>(&bytes).ok());
-    metadata
-        .map(|metadata| normalize_mime_type(Some(metadata.mime_type)))
-        .unwrap_or_else(|| "application/octet-stream".to_string())
-}
-
-fn atomic_write_media(
-    media_dir: &Path,
-    target: &Path,
-    bytes: &[u8],
-    metadata_path: &Path,
-    metadata_bytes: &[u8],
-) -> io::Result<()> {
-    fs::create_dir_all(media_dir)?;
-    atomic_write_file(media_dir, metadata_path, metadata_bytes)?;
-    let result = atomic_write_file(media_dir, target, bytes);
-    if result.is_err() {
-        let _ = fs::remove_file(metadata_path);
-        let _ = rua_core::fs::sync_directory(media_dir);
-    }
-    result
-}
-
-fn atomic_write_file(parent: &Path, target: &Path, bytes: &[u8]) -> io::Result<()> {
-    let temp_path = parent.join(format!(".upload-{}.tmp", Uuid::new_v4()));
-    let result = (|| {
-        let mut temp = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp_path)?;
-        temp.write_all(bytes)?;
-        temp.sync_all()?;
-        fs::rename(&temp_path, target)?;
-        rua_core::fs::sync_directory(parent)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp_path);
-    }
-    result
-}
-
-fn normalize_mime_type(value: Option<String>) -> String {
+pub(crate) fn normalize_mime_type(value: Option<String>) -> String {
     value
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "application/octet-stream".to_string())
 }
 
-fn normalize_original_filename(value: Option<String>) -> Option<String> {
+pub(crate) fn normalize_original_filename(value: Option<String>) -> Option<String> {
     value.and_then(|value| {
         Path::new(&value)
             .file_name()

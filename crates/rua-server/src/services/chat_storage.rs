@@ -193,6 +193,25 @@ async fn scan_scope_selected(
         }
     }
 
+    if let Some(rua_root) = scope_root.parent() {
+        let deleted = rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(rua_root);
+        for (raw, owners) in &mut media_references {
+            let Ok(id) = uuid::Uuid::parse_str(raw) else {
+                continue;
+            };
+            if let Some(manifest) =
+                rua_session::chat_media::ChatMediaManifest::load(&scope_root.join("media"), id)
+                    .map_err(|e| e.to_string())?
+            {
+                for owner in manifest.chat_ids {
+                    if deleted.load(&ChatAddress::new(owner.clone()))?.is_none() {
+                        owners.insert(owner);
+                    }
+                }
+            }
+        }
+    }
+
     for (record, address, refs, sizes, owner) in measured {
         let attributed_bytes = sizes.total_bytes();
         let shared_media_bytes = refs
@@ -289,7 +308,6 @@ pub fn remove_local_attachments(
         for path in [
             media_dir.join(media_id),
             media_dir.join(format!(".{media_id}.media.json")),
-            media_dir.join(format!("{media_id}.blobhash")),
         ] {
             cleanup.freed_bytes += remove_regular_file(&path)?;
         }
@@ -329,18 +347,7 @@ pub fn planned_freed_bytes(
             )?);
     }
     for media_id in removable_media_ids {
-        total = total
-            .saturating_add(file_size(&scope_root.join("media").join(media_id))?)
-            .saturating_add(file_size(
-                &scope_root
-                    .join("media")
-                    .join(format!(".{media_id}.media.json")),
-            )?)
-            .saturating_add(file_size(
-                &scope_root
-                    .join("media")
-                    .join(format!("{media_id}.blobhash")),
-            )?);
+        total = total.saturating_add(media_size(scope_root, media_id)?);
     }
     Ok(total)
 }
@@ -382,15 +389,9 @@ fn measure_chat(
             .saturating_add(file_size(&tool_log_dir.join(format!("{key}.output")))?);
     }
 
-    let media_dir = scope_root.join("media");
     let mut media_bytes = 0_u64;
     for media_id in &references.media_ids {
-        media_bytes = media_bytes
-            .saturating_add(file_size(&media_dir.join(media_id))?)
-            .saturating_add(file_size(
-                &media_dir.join(format!(".{media_id}.media.json")),
-            )?)
-            .saturating_add(file_size(&media_dir.join(format!("{media_id}.blobhash")))?);
+        media_bytes = media_bytes.saturating_add(media_size(scope_root, media_id)?);
     }
 
     Ok(ChatSizes {
@@ -403,11 +404,11 @@ fn measure_chat(
 
 fn media_size(scope_root: &Path, media_id: &str) -> Result<u64, String> {
     let media_dir = scope_root.join("media");
-    Ok(file_size(&media_dir.join(media_id))?
-        .saturating_add(file_size(
+    Ok(
+        file_size(&media_dir.join(media_id))?.saturating_add(file_size(
             &media_dir.join(format!(".{media_id}.media.json")),
-        )?)
-        .saturating_add(file_size(&media_dir.join(format!("{media_id}.blobhash")))?))
+        )?),
+    )
 }
 
 pub(crate) async fn collect_chat_references(
@@ -428,10 +429,15 @@ pub(crate) async fn collect_chat_references(
         .await
         .map_err(|error| error.to_string())?;
     let mut references = ChatReferences::default();
+    let mut media_ids = BTreeSet::new();
     for message in messages {
         let value = serde_json::to_value(message).map_err(|error| error.to_string())?;
-        collect_references(&value, &mut references);
+        rua_session::chat_media::referenced_ids(&value, &mut media_ids);
+        collect_tool_ids(&value, &mut references.tool_use_ids);
     }
+    references
+        .media_ids
+        .extend(media_ids.into_iter().map(|id| id.to_string()));
     Ok(references)
 }
 
@@ -452,28 +458,21 @@ pub(crate) fn remove_tool_archives(
     Ok(freed)
 }
 
-fn collect_references(value: &serde_json::Value, references: &mut ChatReferences) {
+fn collect_tool_ids(value: &serde_json::Value, tool_ids: &mut BTreeSet<String>) {
     match value {
         serde_json::Value::Object(map) => {
             for (key, value) in map {
                 if matches!(key.as_str(), "tool_use_id" | "tool_call_id") {
                     if let Some(tool_use_id) = value.as_str().filter(|value| !value.is_empty()) {
-                        references.tool_use_ids.insert(tool_use_id.to_string());
+                        tool_ids.insert(tool_use_id.to_string());
                     }
                 }
-                collect_references(value, references);
+                collect_tool_ids(value, tool_ids);
             }
         }
         serde_json::Value::Array(values) => {
             for value in values {
-                collect_references(value, references);
-            }
-        }
-        serde_json::Value::String(value) => {
-            if let Some(media_id) = value.strip_prefix("media/") {
-                if uuid::Uuid::parse_str(media_id).is_ok() {
-                    references.media_ids.insert(media_id.to_string());
-                }
+                collect_tool_ids(value, tool_ids);
             }
         }
         _ => {}

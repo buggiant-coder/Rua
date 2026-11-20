@@ -92,3 +92,14 @@
   font-size: var(--font-xs);
   text-align: center;
 }
+
+.rua-image-preview-name,
+.rua-image-preview-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+.rua-image-preview-error {
+  color: white;
+}

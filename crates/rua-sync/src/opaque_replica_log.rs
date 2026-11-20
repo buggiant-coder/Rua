@@ -522,11 +522,10 @@ fn protect_change_payloads(change: &SyncChange, live: &mut HashSet<Hash>) -> Res
         crate::media_adapter::MEDIA_DOMAIN => match change.kind.as_str() {
             crate::media_adapter::MEDIA_KIND_DELETE => {}
             crate::media_adapter::MEDIA_KIND_UPSERT | crate::media_adapter::MEDIA_KIND_SNAPSHOT => {
-                let payload: crate::media_adapter::MediaFilePayload =
+                // Media Sync records retain locations and checksums. Bytes stay on their Devices.
+                let manifest: rua_session::chat_media::ChatMediaManifest =
                     serde_json::from_value(change.payload.clone())?;
-                if payload.inline_ciphertext_b64.is_none() {
-                    live.insert(parse_hash(&payload.hash_ref)?);
-                }
+                manifest.id()?;
             }
             _ => {
                 return Err(SyncError::InvalidPayload(

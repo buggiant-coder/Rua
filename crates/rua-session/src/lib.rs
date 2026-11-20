@@ -1,6 +1,7 @@
 pub mod active_work_plan;
 pub mod chat_deletion;
 pub mod chat_index;
+pub mod chat_media;
 pub mod collaboration;
 pub mod commands;
 pub mod display_media;

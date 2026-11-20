@@ -47,6 +47,8 @@ pub struct ToolContext {
 
     pub collaboration_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
 
+    pub chat_media_loader: Option<Arc<dyn crate::ChatMediaLoader>>,
+
     pub sync_transfer_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
 
     pub event_tx: Option<tokio::sync::mpsc::Sender<agent_types::AgentEvent>>,
@@ -62,6 +64,27 @@ pub struct ToolContext {
     pub token_estimate_divisor: f64,
 }
 
+impl ToolContext {
+    pub async fn open_chat_media_reference(
+        &self,
+        path: &str,
+    ) -> crate::Result<Option<crate::ResolvedChatMedia>> {
+        let Some(id) = crate::chat_media::reference_id(path) else {
+            return Ok(None);
+        };
+        let loader = self
+            .chat_media_loader
+            .as_deref()
+            .ok_or_else(|| crate::RuaError::Runtime {
+                message: format!("Chat media reader is unavailable for {path}"),
+            })?;
+        loader
+            .open(&crate::ChatAddress::new(self.session_id.as_str()), id)
+            .await
+            .map(Some)
+    }
+}
+
 impl Default for ToolContext {
     fn default() -> Self {
         Self {
@@ -75,6 +98,7 @@ impl Default for ToolContext {
             task_runtime: None,
             task_session: None,
             collaboration_runtime: None,
+            chat_media_loader: None,
             sync_transfer_runtime: None,
             event_tx: None,
             execution_output_max_tokens: DEFAULT_TOOL_EXECUTION_OUTPUT_MAX_TOKENS,

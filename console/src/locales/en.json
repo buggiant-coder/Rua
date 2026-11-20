@@ -2411,6 +2411,9 @@
     "saveSuccess": "Prompt configuration saved"
   },
   "chat": {
+    "previewImage": "Preview image",
+    "mediaUnavailable": "Attachment unavailable",
+    "playMedia": "Play {{name}}",
     "conversationView": "Conversation view",
     "backgroundWork": {
       "waiting": "Background work running",

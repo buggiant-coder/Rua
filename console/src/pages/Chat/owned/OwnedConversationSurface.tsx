@@ -575,7 +575,6 @@ export default function OwnedConversationSurface({
   const { identity, executionAgentId: selectedAgent } = runtime;
   const {
     chatId: conversationId,
-    agentId,
     projectId,
     target,
     ownerKey: runtimeOwnerKey,
@@ -868,7 +867,6 @@ export default function OwnedConversationSurface({
               conversationId,
             )}
             projection={runtime.projection}
-            agentId={agentId}
             approvalSnapshot={runtime.approvalSnapshot}
             onSelectVariant={runtime.selectVariant}
             onRegenerate={runtime.regenerate}

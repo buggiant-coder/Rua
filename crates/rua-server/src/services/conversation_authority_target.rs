@@ -117,22 +117,6 @@ pub async fn resolve_submit_target(
             ));
         }
     }
-    if local_device_id.is_some_and(|device_id| device_id == target.device_id) {
-        for attachment in &request.attachments {
-            let media_id = attachment
-                .stored_name
-                .as_deref()
-                .ok_or_else(|| "Chat attachment is missing its Media id".to_string())?;
-            let media_id = uuid::Uuid::parse_str(media_id)
-                .map_err(|_| "Chat attachment Media id must be a UUID".to_string())?;
-            let path = workspace_dir.join("media").join(media_id.to_string());
-            if !path.is_file() {
-                return Err(format!(
-                    "required Chat Media is unavailable: media/{media_id}"
-                ));
-            }
-        }
-    }
     Ok(Some(target))
 }
 

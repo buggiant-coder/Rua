@@ -996,6 +996,10 @@ impl WorkspaceRuntime {
         ))
     }
 
+    pub(crate) fn chat_media_loader(&self) -> Option<Arc<dyn rua_core::ChatMediaLoader>> {
+        self.ctx.chat_media_loader.clone()
+    }
+
     pub(crate) fn task_runtime(&self) -> Arc<rua_task::TaskRuntime> {
         Arc::clone(&self.ctx.task_runtime)
     }
@@ -1706,6 +1710,7 @@ impl WorkspaceRuntime {
             .with_toolkit(toolkit)
             .with_task_runtime(Arc::clone(&self.ctx.task_runtime))
             .with_collaboration_runtime(Arc::clone(&self.ctx.collaboration_runtime))
+            .with_chat_media_loader(self.chat_media_loader())
             .with_sync_transfer_runtime(Arc::clone(&self.ctx.sync_transfer_runtime))
             .with_plugin_registry(Arc::clone(&self.ctx.plugin_registry))
             .with_active_plugin_registry(Arc::clone(&self.ctx.active_plugin_registry));

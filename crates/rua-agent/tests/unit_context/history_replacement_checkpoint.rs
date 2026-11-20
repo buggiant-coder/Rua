@@ -1064,7 +1064,7 @@ async fn checkpoint_summary_uses_projection_tool_result_truncation_without_mutat
 }
 
 #[tokio::test]
-async fn context_projection_materializes_historical_media_absent_from_runtime_messages() {
+async fn context_projection_keeps_historical_media_portable_before_the_model_call() {
     let workspace = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     let store = WorkspaceSessionStore::new(project.path());
@@ -1087,7 +1087,7 @@ async fn context_projection_materializes_historical_media_absent_from_runtime_me
                     "user",
                     json!([
                         {"type":"text","text":"inspect the earlier image"},
-                        {"type":"image","media_ref":"media/historical-image.png"},
+                        {"type":"image","media_ref":"media/00000000-0000-4000-8000-000000000001"},
                         {"type":"image","url":"https://example.com/external.png"}
                     ]),
                 )],
@@ -1143,16 +1143,15 @@ async fn context_projection_materializes_historical_media_absent_from_runtime_me
             _ => None,
         })
         .collect::<Vec<_>>();
-    let expected = project.path().join("media/historical-image.png");
     assert_eq!(
         urls,
         vec![
-            expected.to_str().unwrap(),
+            "media/00000000-0000-4000-8000-000000000001",
             "https://example.com/external.png"
         ]
     );
     assert!(store.read_message_range(chat_id, 1, 1).await.unwrap()[0]
         .content
         .to_string()
-        .contains("media/historical-image.png"));
+        .contains("media/00000000-0000-4000-8000-000000000001"));
 }

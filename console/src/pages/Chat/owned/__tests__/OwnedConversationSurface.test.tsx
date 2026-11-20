@@ -104,7 +104,6 @@ vi.mock("@/api/modules/chat", async (importOriginal) => {
         mockGetChat(...args) ?? actual.chatApi.getChat(...args),
       stopChat: (...args: unknown[]) => mockStopChat(...args),
       uploadFile: (...args: unknown[]) => mockUploadFile(...args),
-      filePreviewUrl: (path: string) => `/preview${path}`,
     },
   };
 });

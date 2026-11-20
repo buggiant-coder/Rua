@@ -1,8 +1,11 @@
-import ReactMarkdown from "react-markdown";
+import ImageViewer from "@/components/ImageViewer";
+import { isChatMediaUrl, isChatMediaReference } from "@/api/chatMedia";
+import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { memo, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { RenderStateScope } from "@/components/ChatRenderBlock/viewState";
 import type { CSSProperties } from "react";
 import { createMarkdownComponents } from "./markdownComponents";
@@ -89,9 +92,10 @@ const MarkdownFragment = memo(function MarkdownFragment({
   collapsibleRenderBlocks?: boolean;
   resolveImageSrc?: (source: string) => string;
 }) {
-  const markdownComponents = useMemo(
-    () =>
-      createMarkdownComponents({
+  const { t } = useTranslation();
+  const markdownComponents = useMemo<Components>(
+    () => ({
+      ...createMarkdownComponents({
         collapsibleRenderBlocks,
         renderMarkdown: (body) => (
           <MarkdownFragment
@@ -101,7 +105,38 @@ const MarkdownFragment = memo(function MarkdownFragment({
           />
         ),
       }),
-    [collapsibleRenderBlocks, resolveImageSrc],
+      a: ({ href, children, title }) => {
+        if (!resolveImageSrc || !href || !isChatMediaReference(href))
+          return (
+            <a href={href} title={title}>
+              {children}
+            </a>
+          );
+        const target = resolveImageSrc(href);
+        return target ? (
+          <a href={target} target="_blank" rel="noreferrer" title={title}>
+            {children}
+          </a>
+        ) : (
+          <span>{children}</span>
+        );
+      },
+      img: ({ src, alt, title }) => {
+        const resolved =
+          typeof src === "string" ? resolveImageSrc?.(src) ?? src : "";
+        if (resolved && isChatMediaUrl(resolved))
+          return <ImageViewer src={resolved} alt={alt || title || ""} />;
+        return resolved ? (
+          <img src={resolved} alt={alt} title={title} />
+        ) : (
+          <span role="status">
+            {alt ? alt + " · " : ""}
+            {t("chat.mediaUnavailable")}
+          </span>
+        );
+      },
+    }),
+    [collapsibleRenderBlocks, resolveImageSrc, t],
   );
 
   if (!text) return null;
@@ -110,18 +145,7 @@ const MarkdownFragment = memo(function MarkdownFragment({
 
   return (
     <ReactMarkdown
-      components={{
-        ...markdownComponents,
-        img: ({ src, alt, title }) => {
-          const resolved =
-            typeof src === "string" ? resolveImageSrc?.(src) ?? src : "";
-          return resolved ? (
-            <img src={resolved} alt={alt} title={title} />
-          ) : (
-            <span role="status">{alt || "Image unavailable"}</span>
-          );
-        },
-      }}
+      components={markdownComponents}
       remarkPlugins={[remarkGfm, remarkMath]}
       rehypePlugins={[
         [rehypeKatex, { strict: "warn", throwOnError: false, trust: false }],

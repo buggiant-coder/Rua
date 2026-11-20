@@ -259,26 +259,38 @@ impl RemoteConversationInputDelivery {
         };
         let now = chrono::Utc::now();
         let input = build_remote_conversation_input(params.request);
-        let mut media_requirements = collect_remote_conversation_input_media_requirements(
-            params.execution_agent_id,
-            input.as_deref(),
-        )?;
-        if let Some(root) = params.workspace_dir {
-            for media in &mut media_requirements {
-                let path = root.join("media").join(&media.filename);
-                if path.is_file() {
-                    let (size, digest) = media_fingerprint(&path).await?;
-                    media.byte_size = size;
-                    media.sha256 = digest;
-                    media.mime_type = crate::services::chat_media::ChatMediaService
-                        .open(&self.data_dir, params.address.clone(), &media.filename)
-                        .await
-                        .map_err(|error| error.to_string())?
-                        .mime_type;
-                } else if params.materialize_conversation {
-                    return Err(format!("staged attachment is missing: {}", media.media_ref));
-                }
+        let mut media_requirements = Vec::new();
+        for id in input_media_ids(input.as_deref())? {
+            if let Some(dir) = params.workspace_dir {
+                let project = params
+                    .request
+                    .extra
+                    .get("project_id")
+                    .and_then(|v| v.as_str());
+                crate::services::first_chat_submission::validate_staged_media(
+                    &dir.join("media"),
+                    &id.to_string(),
+                    params.address,
+                    Some(project),
+                )
+                .await?;
             }
+            let manifest = self
+                .submission_manifest(
+                    params.address,
+                    &id.to_string(),
+                    params.source_device_id,
+                    Some(params.target_device_id),
+                    None,
+                )
+                .await?;
+            media_requirements.push(RemoteConversationInputMediaRequirement {
+                media_ref: manifest.media_ref,
+                filename: id.to_string(),
+                mime_type: manifest.mime_type,
+                byte_size: manifest.byte_size,
+                sha256: manifest.sha256,
+            });
         }
         let submission_id = params
             .request
@@ -343,14 +355,6 @@ impl RemoteConversationInputDelivery {
         request: &RemoteConversationInputRequest,
         log_context: &str,
     ) -> Result<RemoteConversationInputDeliveryOutcome, DeviceCommandDeliveryError> {
-        self.transfer_staged_media(request).await.map_err(|error| {
-            // The input command has not been dispatched, so this is a confirmed
-            // preparation failure rather than an ambiguously delivered input.
-            DeviceCommandDeliveryError::Rejected {
-                reason: "remote_input_media_preparation_failed".to_string(),
-                detail: error.to_string(),
-            }
-        })?;
         let ack = self
             .deliver_remote_conversation_input_to_target(request)
             .await?;
@@ -378,104 +382,65 @@ impl RemoteConversationInputDelivery {
         Ok(outcome)
     }
 
-    async fn transfer_staged_media(
+    pub(crate) async fn submission_manifest(
         &self,
-        request: &RemoteConversationInputRequest,
-    ) -> Result<(), DeviceCommandDeliveryError> {
-        use crate::services::sync_transfer::*;
-        let first_submission = request
-            .metadata
-            .get("first_submission")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true);
-        let scope = ChatStore::resolve(&self.data_dir, request.address.clone());
-        let media_dir = scope.root().join("media");
-        let project_id = request
-            .metadata
-            .get("project_id")
-            .and_then(serde_json::Value::as_str);
-        for media in &request.media_requirements {
-            let path = media_dir.join(&media.filename);
-            if !path.is_file() {
-                if first_submission {
-                    return Err(DeviceCommandDeliveryError::Rejected {
-                        reason: "staged_media_missing".into(),
-                        detail: format!("Attachment unavailable: {}", media.media_ref),
-                    });
-                }
-                continue;
+        address: &ChatAddress,
+        media_id: &str,
+        local_device: &str,
+        source: Option<&str>,
+        first_project: Option<Option<&str>>,
+    ) -> Result<rua_session::chat_media::ChatMediaManifest, String> {
+        use crate::services::chat_media::{
+            chat_media_manifest, chat_media_manifest_from_device,
+            chat_media_manifest_from_device_for_submission, local_chat_media_manifest,
+            ChatMediaError,
+        };
+        if first_project.is_none() {
+            match local_chat_media_manifest(&self.data_dir, address, media_id).await {
+                Ok(manifest) => return Ok(manifest),
+                Err(ChatMediaError::NotFound) => {}
+                Err(error) => return Err(error.to_string()),
             }
-            if first_submission {
-                crate::services::first_chat_submission::validate_staged_media(
-                    &media_dir,
-                    &media.filename,
-                    &request.address,
-                    Some(project_id),
-                )
-                .await
-                .map_err(|detail| DeviceCommandDeliveryError::Rejected {
-                    reason: "invalid_staged_media".into(),
-                    detail,
-                })?;
-            }
-            let manager = current_session_manager(&self.device_network)
-                .await
-                .map_err(DeviceCommandDeliveryError::Connect)?;
-            let operation_id = format!("input-media-{}", uuid::Uuid::new_v4());
-            let prepared =
-                crate::services::device_command_bus::deliver_chat_media_prepare_via_session(
-                    &manager,
-                    &crate::services::device_command_bus::ChatMediaPrepareCommand {
-                        agent_id: request.agent_id.clone(),
-                        project_id: project_id.map(str::to_owned),
-                        sha256: Some(media.sha256.clone()),
-                        first_submission,
-                        command_id: operation_id.clone(),
-                        operation_id: operation_id.clone(),
-                        address: request.address.clone(),
-                        source_device_id: request.source_device_id.clone(),
-                        target_device_id: request.target_device_id.clone(),
-                        authority_epoch: request.authority_epoch,
-                        media_id: media.filename.clone(),
-                        byte_size: media.byte_size,
-                        mime_type: media.mime_type.clone(),
-                    },
-                    DEVICE_COMMAND_DELIVERY_TIMEOUT,
-                )
-                .await?;
-            if prepared.already_present {
-                continue;
-            }
-            let (_control, receiver) = tokio::sync::watch::channel(rua_core::RunControl::Running);
-            send_transfer_stream(
-                &manager,
-                TransferStreamSendRequest {
-                    operation_id,
-                    source_device_id: request.source_device_id.clone(),
-                    target_device_id: request.target_device_id.clone(),
-                    manifest: TransferManifest {
-                        total_bytes: media.byte_size,
-                        entries: vec![TransferManifestEntry {
-                            source_path: path,
-                            relative_path: PathBuf::from(&media.filename),
-                            kind: TransferManifestEntryKind::File,
-                            size: media.byte_size,
-                        }],
-                    },
-                    target_dir: PathBuf::from("."),
-                    conflict_policy: ReceiveConflictPolicy::Fail,
-                    options: TransferExecutionOptions::default(),
-                },
-                receiver,
-                |_| {},
-            )
-            .await
-            .map_err(|error| DeviceCommandDeliveryError::Rejected {
-                reason: "media_transfer_failed".into(),
-                detail: error.to_string(),
-            })?;
         }
-        Ok(())
+        let manager = self
+            .device_network
+            .lock()
+            .await
+            .as_ref()
+            .map(|runtime| runtime.session_manager().clone());
+        let manifest = match (source, manager.as_ref(), first_project) {
+            (Some(holder), Some(manager), Some(project)) => {
+                chat_media_manifest_from_device_for_submission(
+                    manager, holder, address, media_id, project,
+                )
+                .await
+            }
+            (_, _, Some(_)) => {
+                return Err("Cannot confirm staged Chat Media on the submitting Device".into())
+            }
+            (Some(holder), Some(manager), None) if holder != local_device => {
+                chat_media_manifest_from_device(manager, holder, address, media_id).await
+            }
+            _ => {
+                chat_media_manifest(
+                    &self.data_dir,
+                    address,
+                    media_id,
+                    local_device,
+                    manager.as_ref(),
+                )
+                .await
+            }
+        }
+        .map_err(|error| error.to_string())?;
+        let media_dir = rua_core::RuaRoot::new(&self.data_dir)
+            .chat_workspace()
+            .as_path()
+            .join("media");
+        manifest
+            .register(&media_dir)
+            .map_err(|error| error.to_string())?;
+        Ok(manifest)
     }
 
     pub async fn send_remote_control(
@@ -582,32 +547,7 @@ impl RemoteConversationInputDelivery {
         &self,
         address: &ChatAddress,
     ) -> std::result::Result<Option<SourcePendingConversationInput>, String> {
-        let path = source_pending_conversation_input_path(&self.data_dir, address);
-        match tokio::fs::read(&path).await {
-            Ok(bytes) => {
-                let pending: SourcePendingConversationInput = serde_json::from_slice(&bytes)
-                    .map_err(|error| {
-                        format!(
-                            "read pending remote conversation input marker {}: {error}",
-                            path.display()
-                        )
-                    })?;
-                if pending.address != *address {
-                    return Err(format!(
-                        "pending remote conversation input marker {} belongs to {}, not {}",
-                        path.display(),
-                        pending.address,
-                        address
-                    ));
-                }
-                Ok(Some(pending))
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(format!(
-                "read pending remote conversation input marker {}: {error}",
-                path.display()
-            )),
-        }
+        read_source_pending_at(&self.data_dir, address).await
     }
 
     pub async fn clear_source_pending(
@@ -729,35 +669,8 @@ impl RemoteConversationInputDelivery {
     }
 }
 
-pub(crate) async fn media_fingerprint(path: &Path) -> Result<(u64, String), String> {
-    use sha2::{Digest, Sha256};
-    use tokio::io::AsyncReadExt;
-    let metadata = tokio::fs::symlink_metadata(path)
-        .await
-        .map_err(|error| error.to_string())?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err("media must be a regular file".into());
-    }
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .map_err(|error| error.to_string())?;
-    let mut digest = Sha256::new();
-    let mut buffer = vec![0; 64 * 1024];
-    loop {
-        let count = file
-            .read(&mut buffer)
-            .await
-            .map_err(|error| error.to_string())?;
-        if count == 0 {
-            break;
-        }
-        digest.update(&buffer[..count]);
-    }
-    Ok((metadata.len(), format!("{:x}", digest.finalize())))
-}
-
 fn build_remote_conversation_input(request: &ConsoleChatRequest) -> Option<Vec<serde_json::Value>> {
-    let input = request
+    let mut input = request
         .input
         .as_ref()
         .filter(|value| !value.is_empty())
@@ -774,73 +687,61 @@ fn build_remote_conversation_input(request: &ConsoleChatRequest) -> Option<Vec<s
             })]
         });
 
+    if !request.attachments.is_empty() {
+        let parts = rua_channel::core::console::ordered_user_content_parts(
+            "",
+            None,
+            None,
+            &request.attachments,
+        )
+        .iter()
+        .map(agent_types::content::content_part_to_stored_value)
+        .collect::<Vec<_>>();
+        if let Some(content) = input
+            .iter_mut()
+            .rev()
+            .find(|m| m["role"] == "user")
+            .and_then(|m| m["content"].as_array_mut())
+        {
+            content.extend(parts);
+        } else {
+            input.push(serde_json::json!({"role":"user","content":parts}));
+        }
+    }
     (!input.is_empty()).then_some(input)
 }
 
-fn collect_remote_conversation_input_media_requirements(
-    agent_id: &str,
+pub(crate) fn input_media_ids(
     input: Option<&[serde_json::Value]>,
-) -> std::result::Result<Vec<RemoteConversationInputMediaRequirement>, String> {
-    let Some(input) = input else {
-        return Ok(Vec::new());
-    };
-    let mut requirements =
-        std::collections::BTreeMap::<String, RemoteConversationInputMediaRequirement>::new();
-    for message in input {
-        let Some(content) = message
-            .get("content")
-            .and_then(|content| content.as_array())
-        else {
+) -> Result<std::collections::BTreeSet<uuid::Uuid>, String> {
+    let mut ids = std::collections::BTreeSet::new();
+    for message in input.unwrap_or_default() {
+        let Some(parts) = message.get("content").and_then(|v| v.as_array()) else {
             continue;
         };
-        for part in content {
-            if let Some(requirement) = remote_media_requirement_from_part(agent_id, part)? {
-                requirements.insert(requirement.filename.clone(), requirement);
+        for part in parts {
+            if !matches!(
+                part.get("type").and_then(|v| v.as_str()),
+                Some("image" | "file" | "audio" | "video")
+            ) {
+                continue;
+            }
+            if let Some(value) = part.get("media_ref") {
+                let id = value
+                    .as_str()
+                    .and_then(rua_core::chat_media::reference_id)
+                    .ok_or("Invalid Chat media reference")?;
+                ids.insert(id);
+            } else if let Some(id) = ["url", "file_url", "image_url", "audio_url", "video_url"]
+                .iter()
+                .filter_map(|key| part.get(key)?.as_str())
+                .find_map(rua_core::chat_media::reference_id)
+            {
+                ids.insert(id);
             }
         }
     }
-    Ok(requirements.into_values().collect())
-}
-
-fn remote_media_requirement_from_part(
-    agent_id: &str,
-    part: &serde_json::Value,
-) -> std::result::Result<Option<RemoteConversationInputMediaRequirement>, String> {
-    let Some(part_type) = part.get("type").and_then(|value| value.as_str()) else {
-        return Ok(None);
-    };
-    if !matches!(part_type, "image" | "file" | "audio" | "video") {
-        return Ok(None);
-    }
-    let Some(media_ref) = part.get("media_ref").and_then(|value| value.as_str()) else {
-        return Ok(None);
-    };
-    if !agent_types::content::is_managed_media_ref(media_ref) {
-        return Err(format!("invalid managed media reference: {media_ref}"));
-    }
-    let filename = media_ref.trim_start_matches("media/").to_string();
-    validate_media_filename_for_remote_input(&filename)?;
-    Ok(Some(RemoteConversationInputMediaRequirement {
-        mime_type: String::new(),
-        byte_size: 0,
-        sha256: String::new(),
-        agent_id: agent_id.to_string(),
-        media_ref: media_ref.to_string(),
-        filename,
-    }))
-}
-
-fn validate_media_filename_for_remote_input(filename: &str) -> std::result::Result<(), String> {
-    if filename.is_empty()
-        || filename.contains('/')
-        || filename.contains('\\')
-        || filename.contains("..")
-        || filename == "."
-        || filename == ".."
-    {
-        return Err(format!("invalid remote media filename: {filename}"));
-    }
-    Ok(())
+    Ok(ids)
 }
 
 async fn device_delivery_finalized_locally(
@@ -870,6 +771,38 @@ async fn device_delivery_finalized_locally(
         }
     }
     Ok(false)
+}
+
+pub(crate) async fn read_source_pending_at(
+    rua_root: &Path,
+    address: &ChatAddress,
+) -> Result<Option<SourcePendingConversationInput>, String> {
+    let path = source_pending_conversation_input_path(rua_root, address);
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => {
+            let pending: SourcePendingConversationInput =
+                serde_json::from_slice(&bytes).map_err(|error| {
+                    format!(
+                        "read pending remote conversation input marker {}: {error}",
+                        path.display()
+                    )
+                })?;
+            if pending.address != *address {
+                return Err(format!(
+                    "pending remote conversation input marker {} belongs to {}, not {}",
+                    path.display(),
+                    pending.address,
+                    address
+                ));
+            }
+            Ok(Some(pending))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "read pending remote conversation input marker {}: {error}",
+            path.display()
+        )),
+    }
 }
 
 fn source_pending_conversation_input_path(data_dir: &Path, address: &ChatAddress) -> PathBuf {

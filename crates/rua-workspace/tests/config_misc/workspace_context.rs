@@ -32,6 +32,7 @@ fn workspace_context_has_all_fields() {
             rua_task::TaskRuntime::open(rua_task::TaskRuntimeConfig::new(dir.path())).unwrap(),
         ),
         collaboration_runtime: Arc::new(()),
+        chat_media_loader: None,
         sync_transfer_runtime: Arc::new(()),
         tool_config_store: Arc::new(rua_tool::ToolConfigStore::new(Arc::new(
             rua_tool::AgentToolsCells::new(cell_store, dir.path().join("workspaces")),

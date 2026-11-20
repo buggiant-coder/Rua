@@ -133,7 +133,14 @@ pub async fn materialize_first_project_turn(
         input,
     )
     .await?;
+    let references = &media_ids;
     materialize_staged_project_chat(scope_root, address, |staging_root| async move {
+        crate::services::chat_media::ChatMediaService::record_first_references(
+            scope_root,
+            &staging_root,
+            address,
+            references,
+        )?;
         stage_first_turn(
             &staging_root,
             address,

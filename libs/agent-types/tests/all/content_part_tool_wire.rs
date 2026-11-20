@@ -6,22 +6,25 @@ use serde_json::json;
 fn managed_media_ref_is_the_only_location_field_for_uploaded_media() {
     let part = agent_types::content::content_part_from_value(json!({
         "type": "image",
-        "media_ref": "media/uuid-image.png",
+        "media_ref": "media/00000000-0000-4000-8000-000000000001",
     }));
 
     assert!(matches!(
         part,
-        ContentPart::Image { ref url, .. } if url == "media/uuid-image.png"
+        ContentPart::Image { ref url, .. } if url == "media/00000000-0000-4000-8000-000000000001"
     ));
     assert_eq!(
         agent_types::content::content_part_to_stored_value(&part),
         json!({
             "type": "image",
-            "media_ref": "media/uuid-image.png",
+            "media_ref": "media/00000000-0000-4000-8000-000000000001",
         })
     );
     assert!(agent_types::content::is_managed_media_ref(
-        "media/uuid-image.png"
+        "media/00000000-0000-4000-8000-000000000001"
+    ));
+    assert!(!agent_types::content::is_managed_media_ref(
+        "media/ordinary-picture.png"
     ));
     assert!(!agent_types::content::is_managed_media_ref(
         "/tmp/uuid-image.png"

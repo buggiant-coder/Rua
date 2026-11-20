@@ -824,7 +824,23 @@ impl AppState {
                 )),
             )),
         );
+        let device_network_availability = Arc::new(
+            crate::services::device_network_availability::DeviceNetworkAvailability::new(),
+        );
+        let device_network_cell = Arc::new(
+            crate::services::device_session_access::DeviceNetworkAccess::new(
+                None,
+                Arc::clone(&device_network_availability),
+            ),
+        );
         let workspace_context = Arc::new(WorkspaceContext {
+            chat_media_loader: Some(Arc::new(
+                crate::services::chat_media_loader::RuntimeChatMediaLoader {
+                    rua_root: data_dir.clone(),
+                    device: Arc::clone(&sync_device_cell),
+                    network: Arc::clone(&device_network_cell),
+                },
+            )),
             agent_cells: Arc::clone(&agent_cells),
             agent_profile_store,
             provider_manager: Arc::clone(&provider_manager),
@@ -1033,15 +1049,6 @@ impl AppState {
         );
         let chat_media_transfers =
             Arc::new(crate::services::chat_media_transfer::ChatMediaTransferRegistry::default());
-        let device_network_availability = Arc::new(
-            crate::services::device_network_availability::DeviceNetworkAvailability::new(),
-        );
-        let device_network_cell = Arc::new(
-            crate::services::device_session_access::DeviceNetworkAccess::new(
-                None,
-                Arc::clone(&device_network_availability),
-            ),
-        );
         let active_stream_broadcast_hub =
             Arc::new(crate::services::active_stream_broadcast::ActiveStreamBroadcastHub::new());
         let chat_activity_wake_hub =

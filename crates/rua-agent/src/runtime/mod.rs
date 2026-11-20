@@ -258,6 +258,7 @@ pub struct ReactAgentRuntime {
     toolkit: Option<Arc<AgentToolkit>>,
     task_runtime: Option<Arc<rua_task::TaskRuntime>>,
     collaboration_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    chat_media_loader: Option<Arc<dyn rua_core::ChatMediaLoader>>,
     sync_transfer_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
     approval_channel: Option<Arc<dyn ApprovalChannel>>,
     approval_timeout: std::time::Duration,
@@ -688,6 +689,7 @@ impl ReactAgentRuntime {
             toolkit: None,
             task_runtime: None,
             collaboration_runtime: None,
+            chat_media_loader: None,
             sync_transfer_runtime: None,
             approval_channel: None,
             approval_timeout: std::time::Duration::from_secs(300),
@@ -1534,6 +1536,9 @@ fn project_capability_context(
 }
 
 struct CapabilityContextProjector {
+    model_rejects_multimodal: bool,
+    model_capability_key: String,
+    chat_media_loader: Option<Arc<dyn rua_core::ChatMediaLoader>>,
     source: rua_core::ChatAddress,
     collaboration: Option<Arc<dyn rua_tool::extended::collaboration::CollaborationRuntime>>,
     collaboration_mode: Option<rua_core::AgentCollaborationMode>,
@@ -1619,10 +1624,23 @@ impl ModelCallProjector for CapabilityContextProjector {
             }),
         );
         self.toolkit_handle.replace(toolkit);
-        match self.history.as_ref() {
-            Some(history) => history.project(request, event_tx).await,
-            None => Ok(request),
+        let mut request = match self.history.as_ref() {
+            Some(history) => history.project(request, event_tx).await?,
+            None => request,
+        };
+        if self.model_rejects_multimodal
+            || rua_provider::capability_cache::rejects_media(&self.model_capability_key)
+        {
+            react_agent::strip_media_blocks_from_memory(&mut request.messages);
         }
+        crate::media::resolve_model_media(
+            &mut request.messages,
+            &self.source,
+            self.chat_media_loader.as_deref(),
+        )
+        .await
+        .map_err(|error| react_agent::AgentError::Internal(error.to_string()))?;
+        Ok(request)
     }
 
     async fn recover_context_overflow(
@@ -1835,6 +1853,14 @@ impl ReactAgentRuntime {
         runtime: Arc<dyn std::any::Any + Send + Sync>,
     ) -> Self {
         self.collaboration_runtime = Some(runtime);
+        self
+    }
+
+    pub fn with_chat_media_loader(
+        mut self,
+        loader: Option<Arc<dyn rua_core::ChatMediaLoader>>,
+    ) -> Self {
+        self.chat_media_loader = loader;
         self
     }
 
@@ -2367,6 +2393,7 @@ impl AgentRuntime for ReactAgentRuntime {
                             .unwrap_or_else(|| "zh".into());
                         let ctx = crate::command_adapters::build_conversation_context(
                             crate::command_adapters::ConversationContextParams {
+                                media_loader: self.chat_media_loader.clone(),
                                 agent_id: req.agent_id.to_string(),
                                 session_id: req.session_id.to_string(),
                                 chat_address: req
@@ -2768,6 +2795,7 @@ impl AgentRuntime for ReactAgentRuntime {
                 task_runtime: task_runtime_handle,
                 task_session: None,
                 collaboration_runtime: self.collaboration_runtime.clone(),
+                chat_media_loader: self.chat_media_loader.clone(),
                 sync_transfer_runtime: self.sync_transfer_runtime.clone(),
                 event_tx: None,
                 execution_output_max_tokens,
@@ -2897,7 +2925,10 @@ impl AgentRuntime for ReactAgentRuntime {
                 .model_info()
                 .context_window
                 .map(|tokens| tokens as usize),
-            history: history_projector,
+            model_rejects_multimodal: model_info.supports_multimodal == Some(false),
+            model_capability_key: rua_provider::capability_cache::cache_key(&provider_id, &model_name),
+            chat_media_loader: self.chat_media_loader.clone(),
+            history: history_projector.map(|history| history.with_media_loader(self.chat_media_loader.clone())),
         }));
 
         if !hooks.is_empty() {

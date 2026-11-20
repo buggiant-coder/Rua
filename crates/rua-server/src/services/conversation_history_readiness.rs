@@ -1,12 +1,9 @@
-use std::collections::BTreeSet;
 use std::path::Path;
-use std::str::FromStr;
 use std::time::Duration;
 
 use rua_core::{ChatAddress, ChatStore, RunControl};
 use rua_session::WorkspaceSessionStore;
 
-use crate::services::chat_media::{ChatMediaService, MediaId, MAX_CHAT_MEDIA_BYTES};
 use crate::services::chat_metadata_store::{
     load_chat_record, stage_synced_chat_metadata, ChatMetadataRecord,
 };
@@ -17,7 +14,6 @@ use crate::services::conversation_manifest::{
     load_conversation_manifest, ConversationManifest, ConversationManifestMismatch,
 };
 use crate::services::device_command_bus::{SyncTransferDeviceAction, SyncTransferDeviceCommand};
-use crate::services::sync_transfer::open_chat_media_read_stream;
 use crate::services::sync_transfer::{build_transfer_inventory, command_remote_chat_gap_to};
 
 const HISTORY_SYNC_ATTEMPTS: usize = 3;
@@ -67,7 +63,6 @@ pub struct ConversationHistoryGapRequest<'a> {
     pub agent_id: &'a str,
     pub chat_id: &'a str,
     pub source_device_id: &'a str,
-    pub media_source_device_id: &'a str,
     pub target_device_id: &'a str,
     pub expected_authority_epoch: ConversationAuthorityEpoch,
     pub requirement: &'a ConversationManifest,
@@ -82,152 +77,6 @@ pub async fn build_conversation_history_requirement(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "conversation manifest is unavailable".to_string())
-}
-
-pub fn required_media_set(
-    scope_root: &Path,
-    address: &ChatAddress,
-) -> Result<Vec<MediaId>, String> {
-    let chat_dir = WorkspaceSessionStore::new(scope_root).chat_dir(address.chat_id().as_str());
-    if !chat_dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut media = BTreeSet::new();
-    for entry in walkdir::WalkDir::new(chat_dir).follow_links(false) {
-        let entry = entry.map_err(|error| error.to_string())?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let extension = entry.path().extension().and_then(|value| value.to_str());
-        if !matches!(extension, Some("json" | "jsonl")) {
-            continue;
-        }
-        let bytes = std::fs::read(entry.path()).map_err(|error| error.to_string())?;
-        let values = serde_json::Deserializer::from_slice(&bytes).into_iter::<serde_json::Value>();
-        for value in values {
-            let value =
-                value.map_err(|error| format!("parse stable Conversation State: {error}"))?;
-            collect_media_refs(&value, &mut media)?;
-        }
-    }
-    media
-        .into_iter()
-        .map(|value| {
-            MediaId::from_str(&value).map_err(|_| format!("invalid Media Reference: media/{value}"))
-        })
-        .collect()
-}
-
-fn collect_media_refs(
-    value: &serde_json::Value,
-    media: &mut BTreeSet<String>,
-) -> Result<(), String> {
-    match value {
-        serde_json::Value::Object(map) => {
-            for (key, value) in map {
-                if key == "media_ref" {
-                    let media_ref = value
-                        .as_str()
-                        .ok_or_else(|| "Media Reference must be a string".to_string())?;
-                    let media_id = media_ref
-                        .strip_prefix("media/")
-                        .ok_or_else(|| format!("invalid Media Reference: {media_ref}"))?;
-                    uuid::Uuid::parse_str(media_id)
-                        .map_err(|_| format!("invalid Media Reference: {media_ref}"))?;
-                    media.insert(media_id.to_string());
-                } else if key == "text" {
-                    if let Some(text) = value.as_str() {
-                        for reference in rua_session::display_media::managed_image_refs(text) {
-                            let media_id = reference
-                                .strip_prefix("media/")
-                                .expect("managed image reference");
-                            uuid::Uuid::parse_str(media_id)
-                                .map_err(|_| format!("invalid Media Reference: {reference}"))?;
-                            media.insert(media_id.to_string());
-                        }
-                    }
-                } else {
-                    collect_media_refs(value, media)?;
-                }
-            }
-        }
-        serde_json::Value::Array(values) => {
-            for value in values {
-                collect_media_refs(value, media)?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-async fn ensure_required_media_ready(
-    request: &ConversationHistoryGapRequest<'_>,
-    address: &ChatAddress,
-) -> Result<(), String> {
-    let scope = ChatStore::resolve(request.data_dir, address.clone());
-    let required = required_media_set(scope.root(), address)?;
-    if required.is_empty() {
-        return Ok(());
-    }
-    let session_manager = request
-        .session_manager
-        .ok_or_else(|| "target Device has no shared Device Session runtime".to_string())?;
-    for media_id in required {
-        if scope
-            .root()
-            .join("media")
-            .join(media_id.to_string())
-            .is_file()
-        {
-            continue;
-        }
-        let (mime_type, byte_size, mut reader) = open_chat_media_read_stream(
-            session_manager,
-            request.media_source_device_id,
-            address.clone(),
-            request.expected_authority_epoch,
-            media_id.to_string(),
-        )
-        .await?;
-        if byte_size == 0 || byte_size > MAX_CHAT_MEDIA_BYTES as u64 {
-            return Err(format!("Required Media has invalid size: media/{media_id}"));
-        }
-        let mut bytes = Vec::with_capacity(byte_size as usize);
-        tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut bytes)
-            .await
-            .map_err(|error| error.to_string())?;
-        if bytes.len() as u64 != byte_size {
-            return Err(format!(
-                "Required Media transfer was incomplete: media/{media_id}"
-            ));
-        }
-        ChatMediaService
-            .store_existing(
-                request.data_dir,
-                address.clone(),
-                media_id,
-                bytes,
-                mime_type,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-    }
-    let missing = required_media_set(scope.root(), address)?
-        .into_iter()
-        .filter(|media_id| {
-            !scope
-                .root()
-                .join("media")
-                .join(media_id.to_string())
-                .is_file()
-        })
-        .collect::<Vec<_>>();
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(format!("Required Media Set is incomplete: {missing:?}"))
-    }
 }
 
 pub async fn verify_conversation_history_requirement(
@@ -354,7 +203,6 @@ pub async fn ensure_conversation_history_ready_via_device_session(
                     .as_ref()
                     .is_some_and(|manifest| manifest.compare(request.requirement).matches)
             {
-                ensure_required_media_ready(&request, &address).await?;
                 return Ok(chat.clone());
             }
         }
@@ -403,7 +251,6 @@ pub async fn ensure_conversation_history_ready_via_device_session(
 
     verify_conversation_history_requirement(request.data_dir, &address, request.requirement)
         .await?;
-    ensure_required_media_ready(&request, &address).await?;
     stage_synced_chat_metadata(&workspace_dir, &source_chat)
         .await
         .map_err(|error| error.to_string())?;

@@ -4098,16 +4098,6 @@ impl ConsoleChatService {
                         .as_ref()
                         .map(|authority| authority.begin_history_replacement_foreground(model))
                 });
-            if let Some(rua_root) = device_context_data_dir.as_deref() {
-                crate::services::chat_media::ChatMediaService.materialize_message_parts(
-                    rua_root,
-                    &address,
-                    &mut all_messages,
-                );
-            } else {
-                crate::services::chat_media::ChatMediaService
-                    .materialize_message_parts_at(&scope_root, &mut all_messages);
-            }
             let mut process_stream = channel_service.process(ProcessRequest {
                 agent_id: agent_id.clone(),
                 chat_id: chat_id.clone(),

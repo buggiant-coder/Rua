@@ -1,3 +1,5 @@
+import { isChatMediaUrl } from "@/api/chatMedia";
+import ImageViewer from "@/components/ImageViewer";
 import DOMPurify from "dompurify";
 import { ImageOff } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -78,6 +80,8 @@ function MarkdownPlusFigureItem({
             {t("chat.imageUnavailable", { defaultValue: "Image unavailable" })}
           </span>
         </div>
+      ) : isChatMediaUrl(src) ? (
+        <ImageViewer src={src} alt={item.caption || item.src} />
       ) : (
         <img
           src={src}
@@ -882,10 +886,7 @@ function LineChart({
           );
         })}
         {paths.map((path, index) => (
-          <g
-            key={path.name || index}
-            className={`rua-mdp-series-${index % 4}`}
-          >
+          <g key={path.name || index} className={`rua-mdp-series-${index % 4}`}>
             {area && <path className="rua-mdp-area" d={path.areaPath} />}
             <polyline className="rua-mdp-line" points={path.pointString} />
             {path.points.map(([x, y], pointIndex) => (

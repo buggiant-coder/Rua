@@ -415,6 +415,18 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
                 .apply_replicated_configuration_head(address.chat_id().as_str(), &change.payload)
                 .await
                 .map_err(|error| SyncError::Store(error.to_string()))?;
+        } else if let Some(name) = relative.strip_prefix("media_refs/") {
+            let manifest: rua_session::chat_media::ChatMediaManifest =
+                serde_json::from_value(change.payload.clone())?;
+            if name != format!(".{}.media.json", manifest.id()?)
+                || manifest.chat_ids.len() != 1
+                || !manifest.chat_ids.contains(address.chat_id().as_str())
+            {
+                return Err(SyncError::InvalidPayload(
+                    "Chat Media reference belongs to a different record".into(),
+                ));
+            }
+            manifest.register(path.parent().expect("validated media reference path"))?;
         } else if relative.starts_with("messages/") {
             write_message_log_payload(&path, &change.payload)?;
         } else {
@@ -533,6 +545,12 @@ pub fn collect_evergreen_chat_file_snapshots(
     );
     collect_json_dir(
         &mut items,
+        &chat_dir.join("media_refs"),
+        "media_refs",
+        device_id,
+    );
+    collect_json_dir(
+        &mut items,
         &chat_dir.join("checkpoints"),
         "checkpoints",
         device_id,
@@ -619,6 +637,11 @@ fn evergreen_chat_file_path(
     }
     if let Some(name) = relative.strip_prefix("messages/") {
         return safe_leaf_file(name).map(|name| chat_dir.join("messages").join(name));
+    }
+    if let Some(name) = relative.strip_prefix("media_refs/") {
+        let raw = name.strip_prefix('.')?.strip_suffix(".media.json")?;
+        let id = uuid::Uuid::parse_str(raw).ok()?;
+        return (raw == id.to_string()).then(|| chat_dir.join("media_refs").join(name));
     }
     if let Some(name) = relative.strip_prefix("checkpoints/") {
         return safe_leaf_file(name).map(|name| chat_dir.join("checkpoints").join(name));

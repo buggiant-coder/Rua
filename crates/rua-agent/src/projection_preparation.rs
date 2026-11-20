@@ -204,6 +204,14 @@ impl ContextProjectionProjector {
         })
     }
 
+    pub(crate) fn with_media_loader(
+        mut self,
+        loader: Option<Arc<dyn rua_core::ChatMediaLoader>>,
+    ) -> Self {
+        self.publisher = self.publisher.with_media_loader(loader);
+        self
+    }
+
     async fn prepare_request(
         &self,
         request: ChatRequest,
@@ -691,11 +699,6 @@ impl ContextProjectionProjector {
         active_work_plan: Option<&ModelDialogueItem>,
     ) -> Vec<ModelDialogueItem> {
         let static_count = self.current_static_message_count(original);
-        let storage_root = self
-            .store
-            .sessions_dir()
-            .parent()
-            .expect("session storage root");
         let mut rebuilt = original[..static_count].to_vec();
         if let Some(summary) = projection.summary {
             rebuilt.push(ModelDialogueItem::text(
@@ -704,7 +707,7 @@ impl ContextProjectionProjector {
             ));
         }
 
-        let mut projected = project_message_log_entries_for_model(
+        let projected = project_message_log_entries_for_model(
             &projection
                 .retained_messages
                 .iter()
@@ -712,10 +715,6 @@ impl ContextProjectionProjector {
                 .cloned()
                 .collect::<Vec<_>>(),
         );
-        // Durable projection owns membership, order, and portable media references.
-        // Resolve every reference from the Chat store, including history absent
-        // from the original request after truncation or checkpoint changes.
-        crate::media::resolve_projected_media(&mut projected, storage_root);
         rebuilt.extend(projected);
         if let Some(active_work_plan) = active_work_plan {
             rebuilt.push(active_work_plan.clone());

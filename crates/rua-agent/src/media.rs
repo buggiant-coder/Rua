@@ -4,27 +4,62 @@ use llm_multiplex::ModelInfo;
 
 use crate::error::AgentError;
 
-pub(crate) fn resolve_projected_media(
+/// Materialize only provider-visible binary parts of the final request. File parts
+/// carry a portable reference for the read tool and need no bytes at this point.
+pub(crate) async fn resolve_model_media(
     messages: &mut [agent_types::ModelDialogueItem],
-    storage_root: &Path,
-) {
-    for message in messages {
-        for part in &mut message.content {
-            let url = match part {
-                agent_types::ContentPart::Image { url, .. }
-                | agent_types::ContentPart::Audio { url, .. }
-                | agent_types::ContentPart::Video { url, .. }
-                | agent_types::ContentPart::File { url, .. } => url,
-                _ => continue,
-            };
-            if agent_types::content::is_managed_media_ref(url) {
-                *url = storage_root
-                    .join(url.as_str())
-                    .to_string_lossy()
-                    .into_owned();
+    address: &rua_core::ChatAddress,
+    loader: Option<&dyn rua_core::ChatMediaLoader>,
+) -> rua_core::Result<()> {
+    use agent_types::ContentPart;
+    use base64::Engine;
+
+    let mut resolved = std::collections::HashMap::new();
+    let mut parts: Vec<_> = messages.iter_mut().flat_map(|m| &mut m.content).collect();
+    while let Some(part) = parts.pop() {
+        let (url, media_type) = match part {
+            ContentPart::File { url, name, .. }
+                if rua_core::chat_media::reference_id(url).is_some() =>
+            {
+                let label = if name.is_empty() {
+                    "Attached file".to_owned()
+                } else {
+                    format!("Attached file {name}")
+                };
+                *part = ContentPart::Text {
+                    text: format!("{label}. Use the read tool with file_path `{url}`."),
+                };
+                continue;
             }
+            ContentPart::Image {
+                url, media_type, ..
+            }
+            | ContentPart::Video { url, media_type }
+            | ContentPart::Audio { url, media_type } => (url, media_type),
+            ContentPart::ToolResult { result } => {
+                parts.extend(&mut result.content);
+                continue;
+            }
+            _ => continue,
+        };
+        let Some(id) = rua_core::chat_media::reference_id(url) else {
+            continue;
+        };
+        if let std::collections::hash_map::Entry::Vacant(entry) = resolved.entry(id) {
+            let loader = loader.ok_or_else(|| rua_core::RuaError::Runtime {
+                message: format!("Chat media reader is unavailable for {url}"),
+            })?;
+            let media = loader.open(address, id).await?;
+            let bytes = tokio::fs::read(&media.path).await?;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+            let data_uri = format!("data:{};base64,{encoded}", media.mime_type);
+            entry.insert((data_uri, media.mime_type));
         }
+        let (data_uri, mime_type) = &resolved[&id];
+        url.clone_from(data_uri);
+        *media_type = Some(mime_type.clone());
     }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

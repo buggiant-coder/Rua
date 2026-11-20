@@ -5402,6 +5402,20 @@ impl WorkspaceSessionStore {
         entries: &[MessageLogEntry],
     ) -> Result<()> {
         let base = self.messages_dir(chat_id);
+        let mut media_ids = std::collections::BTreeSet::new();
+        for entry in entries {
+            crate::chat_media::referenced_ids(&entry.content, &mut media_ids);
+            if let Some(display) = entry.metadata.get("display_media") {
+                crate::chat_media::referenced_ids(display, &mut media_ids);
+            }
+        }
+        let media_dir = self
+            .sessions_dir
+            .parent()
+            .expect("sessions are under the Chat store")
+            .join("media");
+        let chat_dir = self.chat_dir(chat_id);
+        let chat_id = chat_id.to_owned();
         let mut by_chunk: Vec<(u64, Vec<MessageLogEntry>)> = Vec::new();
         for entry in entries {
             let chunk_start = chunk_start_sequence(entry.sequence, chunk_size);
@@ -5414,6 +5428,13 @@ impl WorkspaceSessionStore {
         }
 
         tokio::task::spawn_blocking(move || {
+            for id in media_ids {
+                if let Some(manifest) = crate::chat_media::ChatMediaManifest::load(&media_dir, id)?
+                    .filter(|manifest| manifest.chat_ids.contains(&chat_id))
+                {
+                    manifest.record_reference(&chat_dir, &chat_id)?;
+                }
+            }
             for (chunk_start, entries) in by_chunk {
                 append_message_chunk_sync(&base, chunk_start, chunk_size, &entries)?;
             }

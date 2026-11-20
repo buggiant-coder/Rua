@@ -3,18 +3,97 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
+use rua_session::chat_media::ChatMediaManifest;
+use tokio::sync::Mutex as AsyncMutex;
+
+use super::device_command_bus::ChatMediaPrepareCommand;
+
+impl ChatMediaPrepareCommand {
+    pub(crate) fn manifest(&self) -> ChatMediaManifest {
+        ChatMediaManifest {
+            media_ref: format!("media/{}", self.media_id),
+            chat_ids: [self.address.chat_id().to_string()].into(),
+            device_ids: [self.target_device_id.clone()].into(),
+            mime_type: self.mime_type.clone(),
+            byte_size: self.byte_size,
+            sha256: self.sha256.clone(),
+            original_filename: self.original_filename.clone(),
+            origin: None,
+            extra: Default::default(),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AuthorizedMediaUpload {
-    pub operation_id: String,
-    pub source_device_id: String,
-    pub target_device_id: String,
+    pub command: ChatMediaPrepareCommand,
     pub media_dir: PathBuf,
-    pub media_id: String,
-    pub byte_size: u64,
-    pub mime_type: String,
     pub authorized_at: Instant,
+    pub(crate) staging: Arc<tempfile::TempDir>,
+    transition_gate: Option<Arc<AsyncMutex<()>>>,
+}
+
+impl AuthorizedMediaUpload {
+    pub fn new(
+        command: ChatMediaPrepareCommand,
+        media_dir: PathBuf,
+        transition_gate: Option<Arc<AsyncMutex<()>>>,
+    ) -> std::io::Result<Self> {
+        Ok(Self {
+            command,
+            media_dir,
+            staging: Arc::new(tempfile::tempdir()?),
+            transition_gate,
+            authorized_at: Instant::now(),
+        })
+    }
+
+    pub(crate) async fn check_placement(&self) -> Result<(), String> {
+        let workspace = self.media_dir.parent().ok_or("Missing Chat workspace")?;
+        let placement =
+            super::conversation_authority_target::load_optional_chat_authority_placement(
+                workspace,
+                self.command.address.chat_id().as_str(),
+            )
+            .await?
+            .ok_or("Conversation Authority placement is not materialized")?;
+        if placement.device_id != self.command.target_device_id
+            || placement.authority_epoch != self.command.authority_epoch
+        {
+            return Err(format!(
+                "Conversation Authority changed to '{}' at epoch '{}'",
+                placement.device_id, placement.authority_epoch
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_existing(&self) -> Result<bool, String> {
+        let manifest = self.command.manifest();
+        let id = manifest.id().map_err(|e| e.to_string())?;
+        if let Some(existing) =
+            ChatMediaManifest::load(&self.media_dir, id).map_err(|e| e.to_string())?
+        {
+            if !existing
+                .chat_ids
+                .contains(self.command.address.chat_id().as_str())
+                || existing.sha256 != manifest.sha256
+                || existing.byte_size != manifest.byte_size
+                || existing.mime_type != manifest.mime_type
+                || existing.original_filename != manifest.original_filename
+            {
+                return Err(
+                    "Existing Chat Media belongs to a different Chat or has different metadata"
+                        .into(),
+                );
+            }
+            return Ok(existing.verify_copy(&self.media_dir).is_ok());
+        }
+        if self.media_dir.join(id.to_string()).exists() {
+            return Err("Existing Chat Media has no authorized reference".into());
+        }
+        Ok(false)
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -26,21 +105,17 @@ impl ChatMediaTransferRegistry {
     pub const AUTHORIZATION_TTL: Duration = Duration::from_secs(5 * 60);
 
     pub fn authorize_upload(&self, upload: AuthorizedMediaUpload) -> Result<(), String> {
-        std::fs::create_dir_all(&upload.media_dir)
-            .map_err(|error| format!("create Chat Media directory: {error}"))?;
-        rua_core::fs::sync_directory(&upload.media_dir)
-            .map_err(|error| format!("sync Chat Media directory: {error}"))?;
         let mut uploads = self.uploads.lock().unwrap_or_else(|lock| lock.into_inner());
         uploads.retain(|_, upload| upload.authorized_at.elapsed() < Self::AUTHORIZATION_TTL);
-        if uploads.contains_key(&upload.operation_id) {
-            return Err("Media transfer operation already exists".to_string());
+        if uploads.contains_key(&upload.command.operation_id)
+            || uploads.values().any(|active| {
+                active.media_dir == upload.media_dir
+                    && active.command.media_id == upload.command.media_id
+            })
+        {
+            return Err("Chat Media already has a pending upload".into());
         }
-        if uploads.values().any(|active| {
-            active.media_dir == upload.media_dir && active.media_id == upload.media_id
-        }) {
-            return Err("Media already has a pending upload".into());
-        }
-        uploads.insert(upload.operation_id.clone(), upload);
+        uploads.insert(upload.command.operation_id.clone(), upload);
         Ok(())
     }
 
@@ -57,80 +132,63 @@ impl ChatMediaTransferRegistry {
             return Ok(None);
         };
         if upload.authorized_at.elapsed() >= Self::AUTHORIZATION_TTL {
-            return Err("Media transfer authorization expired".to_string());
+            return Err("Media transfer authorization expired".into());
         }
-        if upload.source_device_id != source_device_id
-            || upload.target_device_id != target_device_id
-            || relative_path != Path::new(&upload.media_id)
-            || upload.byte_size != byte_size
+        let command = &upload.command;
+        if command.source_device_id != source_device_id
+            || command.target_device_id != target_device_id
+            || relative_path != Path::new(&command.media_id)
+            || command.byte_size != byte_size
         {
-            return Err("Media transfer does not match its authorized operation".to_string());
+            return Err("Media transfer does not match its authorized operation".into());
         }
         Ok(Some(upload.clone()))
     }
 
-    pub fn complete_upload(&self, operation_id: &str) -> Result<bool, String> {
-        let Some(upload) = self
+    pub async fn complete_upload(&self, operation_id: &str) -> Result<(), String> {
+        let upload = self
             .uploads
             .lock()
-            .unwrap_or_else(|lock| lock.into_inner())
-            .remove(operation_id)
-        else {
-            return Ok(false);
+            .unwrap_or_else(|e| e.into_inner())
+            .get(operation_id)
+            .cloned()
+            .ok_or("Media transfer is not authorized")?;
+        let transition = match upload.transition_gate.clone() {
+            Some(gate) => Some(gate.lock_owned().await),
+            None => None,
         };
-        let metadata_path = upload
-            .media_dir
-            .join(format!(".{}.media.json", upload.media_id));
-        let bytes = serde_json::to_vec(&MediaMetadata {
-            mime_type: upload.mime_type,
+        upload.check_placement().await?;
+        let registry = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _transition = transition;
+            let bytes = std::fs::read(upload.staging.path().join(&upload.command.media_id))
+                .map_err(|e| e.to_string())?;
+            let mut uploads = registry.uploads.lock().unwrap_or_else(|e| e.into_inner());
+            if upload.authorized_at.elapsed() >= Self::AUTHORIZATION_TTL
+                || !uploads
+                    .get(&upload.command.operation_id)
+                    .is_some_and(|active| Arc::ptr_eq(&active.staging, &upload.staging))
+            {
+                return Err("Media transfer authorization expired".into());
+            }
+            upload.check_existing()?;
+            upload
+                .command
+                .manifest()
+                .store_copy(&upload.media_dir, &bytes)
+                .map_err(|e| e.to_string())?;
+            uploads.remove(&upload.command.operation_id);
+            Ok(())
         })
-        .map_err(|error| error.to_string())?;
-        let temp_path = upload
-            .media_dir
-            .join(format!(".metadata-{}.tmp", uuid::Uuid::new_v4()));
-        let result = (|| {
-            use std::io::Write;
-            let mut temp = std::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&temp_path)?;
-            temp.write_all(&bytes)?;
-            temp.sync_all()?;
-            std::fs::rename(&temp_path, &metadata_path)?;
-            rua_core::fs::sync_directory(&upload.media_dir)
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temp_path);
-        }
-        result.map_err(|error| error.to_string())?;
-        tracing::info!(
-            operation_id,
-            byte_size = upload.byte_size,
-            result = "completed",
-            "Chat Media transfer completed"
-        );
-        Ok(true)
+        .await
+        .map_err(|e| e.to_string())?
     }
 
     pub fn abort(&self, operation_id: &str) -> bool {
-        let removed = self
-            .uploads
+        self.uploads
             .lock()
-            .unwrap_or_else(|lock| lock.into_inner())
+            .unwrap_or_else(|e| e.into_inner())
             .remove(operation_id)
-            .is_some();
-        if removed {
-            tracing::info!(
-                operation_id,
-                result = "aborted",
-                "Chat Media transfer aborted"
-            );
-        }
-        removed
+            .is_some()
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct MediaMetadata {
-    mime_type: String,
 }

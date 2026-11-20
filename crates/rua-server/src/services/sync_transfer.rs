@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::services::conversation_authority_placement::ConversationAuthorityEpoch;
 use crate::services::device_command_bus::{
     deliver_sync_transfer_device_command_via_session, list_device_directory,
     SyncTransferDeviceAction, SyncTransferDeviceCommand, SyncTransferDeviceResponse,
@@ -14,6 +13,7 @@ use crate::services::device_command_bus::{
 };
 use crate::services::foreground_operation::ForegroundOperationRegistry;
 use rua_core::{ChatAddress, RunControl};
+use rua_session::chat_media::ChatMediaManifest;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 const TRANSFER_RECOVERY_ATTEMPTS: usize = 3;
@@ -421,6 +421,14 @@ impl TransferStreamHeader {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "purpose", rename_all = "snake_case")]
+enum ChatMediaRead {
+    Content,
+    Metadata,
+    FirstSubmission { project_id: Option<String> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum TransferStreamRequest {
     Open {
@@ -440,8 +448,8 @@ enum TransferStreamRequest {
     },
     MediaRead {
         address: ChatAddress,
-        authority_epoch: ConversationAuthorityEpoch,
         media_id: String,
+        purpose: ChatMediaRead,
     },
     SyncBlobRead {
         hash: String,
@@ -475,6 +483,10 @@ enum TransferStreamResponse {
     Aborted {
         operation_id: String,
     },
+    MediaManifest {
+        manifest: Box<ChatMediaManifest>,
+    },
+    MediaMissing,
     MediaReadReady {
         mime_type: String,
         byte_size: u64,
@@ -1109,7 +1121,7 @@ impl SyncTransferBulkHandler {
             ));
         }
         if let Some(upload) = authorized_media {
-            header.target_dir = upload.media_dir;
+            header.target_dir = upload.staging.path().to_owned();
         }
 
         for _ in 0..40 {
@@ -1481,12 +1493,12 @@ impl rua_device_network::DeviceSessionBulkTransferHandler for SyncTransferBulkHa
             .map_err(|error| error.to_string())?;
         if let TransferStreamRequest::MediaRead {
             address,
-            authority_epoch,
             media_id,
+            purpose,
         } = request
         {
             return self
-                .handle_chat_media_read(stream, address, authority_epoch, media_id)
+                .handle_chat_media_read(stream, address, media_id, purpose)
                 .await;
         }
         if let TransferStreamRequest::SyncBlobRead { hash } = request {
@@ -1606,8 +1618,16 @@ impl rua_device_network::DeviceSessionBulkTransferHandler for SyncTransferBulkHa
                     {
                         registry.release(&lease_id);
                     }
-                    if let Some(registry) = &self.media_transfers {
-                        registry.complete_upload(&operation_id)?;
+                    if operation_id.starts_with("chat-media-") {
+                        let registry = self
+                            .media_transfers
+                            .as_ref()
+                            .ok_or("Media transfer is not authorized")?;
+                        if let Err(detail) = registry.complete_upload(&operation_id).await {
+                            registry.abort(&operation_id);
+                            write_transfer_error(&mut stream, &detail).await?;
+                            return Ok(());
+                        }
                     }
                     write_json_frame(
                         stream.send_mut(),
@@ -1723,33 +1743,75 @@ impl SyncTransferBulkHandler {
         &self,
         mut stream: rua_device_network::DeviceSessionBulkStream,
         address: ChatAddress,
-        authority_epoch: ConversationAuthorityEpoch,
         media_id: String,
+        purpose: ChatMediaRead,
     ) -> Result<(), String> {
-        let rua_root = self
-            .chat_media_root
-            .as_deref()
-            .ok_or_else(|| "Chat Media read is unavailable".to_string())?;
-        let scope = rua_core::chat_store::ChatStore::resolve(rua_root, address.clone());
-        let placement =
-            crate::services::conversation_authority_target::load_optional_chat_authority_placement(
-                scope.root(),
-                address.chat_id().as_str(),
+        use crate::services::chat_media::{
+            local_chat_media_manifest, ChatMediaError, ChatMediaService,
+        };
+        let Some(root) = self.chat_media_root.as_deref() else {
+            return write_transfer_error(&mut stream, "Chat Media read is unavailable").await;
+        };
+        let manifest = match local_chat_media_manifest(root, &address, &media_id).await {
+            Ok(manifest) => manifest,
+            Err(ChatMediaError::NotFound) => {
+                write_json_frame(stream.send_mut(), &TransferStreamResponse::MediaMissing)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                return stream.finish().map_err(|e| e.to_string());
+            }
+            Err(error) => return write_transfer_error(&mut stream, &error.to_string()).await,
+        };
+        if let ChatMediaRead::FirstSubmission { project_id } = &purpose {
+            let dir = rua_chat::ChatService::new(root).media_root();
+            match crate::services::first_chat_submission::validate_staged_media(
+                &dir,
+                &media_id,
+                &address,
+                Some(project_id.as_deref()),
             )
-            .await?
-            .ok_or_else(|| "Conversation Authority placement is not materialized".to_string())?;
-        if placement.device_id != self.local_device_id
-            || placement.authority_epoch != authority_epoch
-        {
-            return Err(format!(
-                "Conversation Authority is on Device '{}' at epoch '{}'",
-                placement.device_id, placement.authority_epoch
-            ));
-        }
-        let opened = crate::services::chat_media::ChatMediaService
-            .open(rua_root, address, &media_id)
             .await
-            .map_err(|error| error.to_string())?;
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    let Some(header) = crate::services::chat_context::load_chat_context(
+                        root,
+                        address.chat_id().as_str(),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?
+                    else {
+                        return write_transfer_error(
+                            &mut stream,
+                            "Device has no staged attachment for this first submission",
+                        )
+                        .await;
+                    };
+                    if let Err(error) = crate::services::chat_context::check_project_membership(
+                        header.project_id.as_deref(),
+                        Some(project_id.as_deref()),
+                    ) {
+                        return write_transfer_error(&mut stream, &error.to_string()).await;
+                    }
+                }
+                Err(detail) => return write_transfer_error(&mut stream, &detail).await,
+            }
+        }
+        if !matches!(purpose, ChatMediaRead::Content) {
+            write_json_frame(
+                stream.send_mut(),
+                &TransferStreamResponse::MediaManifest {
+                    manifest: Box::new(manifest),
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            return stream.finish().map_err(|e| e.to_string());
+        }
+        let opened = match ChatMediaService.open(root, address, &media_id).await {
+            Ok(opened) => opened,
+            Err(error) => return write_transfer_error(&mut stream, &error.to_string()).await,
+        };
         write_json_frame(
             stream.send_mut(),
             &TransferStreamResponse::MediaReadReady {
@@ -1838,78 +1900,112 @@ fn classify_bulk_open_error(error: rua_device_network::DeviceSessionError) -> Tr
     }
 }
 
-pub async fn open_chat_media_read_stream(
-    session_manager: &rua_device_network::DeviceSessionManager,
-    target_device_id: &str,
-    address: ChatAddress,
-    authority_epoch: ConversationAuthorityEpoch,
-    media_id: String,
-) -> Result<(String, u64, tokio::io::DuplexStream), String> {
-    let mut stream = session_manager
-        .open_bulk_transfer_to(target_device_id, TRANSFER_IO_TIMEOUT)
+async fn open_chat_media_request(
+    manager: &rua_device_network::DeviceSessionManager,
+    device_id: &str,
+    address: &ChatAddress,
+    media_id: &str,
+    purpose: ChatMediaRead,
+) -> Result<
+    (
+        rua_device_network::DeviceSessionBulkStream,
+        TransferStreamResponse,
+    ),
+    String,
+> {
+    let mut stream = manager
+        .open_bulk_transfer_to(device_id, TRANSFER_IO_TIMEOUT)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|e| e.to_string())?;
     write_json_frame(
         stream.send_mut(),
         &TransferStreamRequest::MediaRead {
-            address,
-            authority_epoch,
-            media_id,
+            address: address.clone(),
+            media_id: media_id.to_owned(),
+            purpose,
         },
     )
     .await
-    .map_err(|error| error.to_string())?;
-    let ready: TransferStreamResponse = read_json_frame(stream.recv_mut())
+    .map_err(|e| e.to_string())?;
+    let response = read_json_frame(stream.recv_mut())
         .await
-        .map_err(|error| error.to_string())?;
-    let TransferStreamResponse::MediaReadReady {
-        mime_type,
-        byte_size,
-    } = ready
-    else {
-        return Err(format!("unexpected Chat Media read response: {ready:?}"));
+        .map_err(|e| e.to_string())?;
+    Ok((stream, response))
+}
+
+pub(crate) async fn request_chat_media_manifest(
+    manager: &rua_device_network::DeviceSessionManager,
+    device_id: &str,
+    address: &ChatAddress,
+    media_id: &str,
+    first_submission_project: Option<Option<&str>>,
+) -> Result<Option<ChatMediaManifest>, String> {
+    let purpose = match first_submission_project {
+        Some(project_id) => ChatMediaRead::FirstSubmission {
+            project_id: project_id.map(str::to_owned),
+        },
+        None => ChatMediaRead::Metadata,
     };
-    let (reader, mut writer) = tokio::io::duplex(MAX_TRANSFER_CHUNK_BYTES * 2);
-    tokio::spawn(async move {
-        let mut expected_offset = 0u64;
-        loop {
-            let response: TransferStreamResponse = match read_json_frame(stream.recv_mut()).await {
-                Ok(response) => response,
-                Err(error) => {
-                    tracing::warn!(error = %error, "remote Chat Media read response failed");
-                    return;
-                }
-            };
-            match response {
-                TransferStreamResponse::MediaReadChunk { offset, len }
-                    if offset == expected_offset && len <= MAX_TRANSFER_CHUNK_BYTES =>
-                {
-                    let mut bytes = vec![0u8; len];
-                    if let Err(error) = stream.recv_mut().read_exact(&mut bytes).await {
-                        tracing::warn!(error = %error, "remote Chat Media read chunk failed");
-                        return;
-                    }
-                    if writer.write_all(&bytes).await.is_err() {
-                        return;
-                    }
-                    expected_offset += len as u64;
-                }
-                TransferStreamResponse::MediaReadComplete if expected_offset == byte_size => {
-                    let _ = writer.shutdown().await;
-                    return;
-                }
-                TransferStreamResponse::Error { detail } => {
-                    tracing::warn!(error = %detail, "remote Chat Media read rejected");
-                    return;
-                }
-                other => {
-                    tracing::warn!(?other, "invalid remote Chat Media read response");
-                    return;
-                }
+    let (_stream, response) =
+        open_chat_media_request(manager, device_id, address, media_id, purpose).await?;
+    match response {
+        TransferStreamResponse::MediaManifest { manifest } => Ok(Some(*manifest)),
+        TransferStreamResponse::MediaMissing => Ok(None),
+        TransferStreamResponse::Error { detail } => Err(detail),
+        _ => Err("invalid Chat Media manifest response".into()),
+    }
+}
+
+pub(crate) async fn read_chat_media_bytes(
+    manager: &rua_device_network::DeviceSessionManager,
+    device_id: &str,
+    address: &ChatAddress,
+    media_id: &str,
+    manifest: &ChatMediaManifest,
+) -> Result<Vec<u8>, String> {
+    let (mut stream, ready) = open_chat_media_request(
+        manager,
+        device_id,
+        address,
+        media_id,
+        ChatMediaRead::Content,
+    )
+    .await?;
+    match ready {
+        TransferStreamResponse::MediaReadReady {
+            mime_type,
+            byte_size,
+        } if mime_type == manifest.mime_type && byte_size == manifest.byte_size => {}
+        TransferStreamResponse::Error { detail } => return Err(detail),
+        _ => return Err("source has no matching Chat Media copy".into()),
+    }
+    let mut bytes = Vec::with_capacity(manifest.byte_size as usize);
+    loop {
+        match read_json_frame(stream.recv_mut())
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            TransferStreamResponse::MediaReadChunk { offset, len }
+                if offset == bytes.len() as u64
+                    && (1..=MAX_TRANSFER_CHUNK_BYTES).contains(&len)
+                    && offset + len as u64 <= manifest.byte_size =>
+            {
+                bytes.resize(offset as usize + len, 0);
+                stream
+                    .recv_mut()
+                    .read_exact(&mut bytes[offset as usize..])
+                    .await
+                    .map_err(|e| e.to_string())?;
             }
+            TransferStreamResponse::MediaReadComplete
+                if bytes.len() as u64 == manifest.byte_size =>
+            {
+                return Ok(bytes)
+            }
+            TransferStreamResponse::Error { detail } => return Err(detail),
+            _ => return Err("incomplete or invalid Chat Media content".into()),
         }
-    });
-    Ok((mime_type, byte_size, reader))
+    }
 }
 
 pub async fn read_sync_blob_via_session(

@@ -202,6 +202,7 @@ pub struct ContextCompactorAdapter {
     agent_id: String,
     session_id: String,
     model: rua_session::CheckpointModelIdentity,
+    media_loader: Option<Arc<dyn rua_core::ChatMediaLoader>>,
 }
 
 impl ContextCompactorAdapter {
@@ -210,12 +211,14 @@ impl ContextCompactorAdapter {
         agent_id: String,
         session_id: String,
         model: rua_session::CheckpointModelIdentity,
+        media_loader: Option<Arc<dyn rua_core::ChatMediaLoader>>,
     ) -> Self {
         Self {
             context_manager,
             agent_id,
             session_id,
             model,
+            media_loader,
         }
     }
 }
@@ -235,6 +238,12 @@ impl ContextCompactorSeam for ContextCompactorAdapter {
                 format!("Additional instruction for context summarization: {extra_instruction}"),
             ));
         }
+        crate::media::resolve_model_media(
+            &mut messages,
+            &rua_core::ChatAddress::new(self.session_id.as_str()),
+            self.media_loader.as_deref(),
+        )
+        .await?;
         let req = ContextSummaryRequest {
             session_id: self.session_id.clone(),
             agent_id: self.agent_id.clone(),
@@ -325,6 +334,7 @@ impl PendingActionSeam for PendingActionAdapter {
 }
 
 pub struct ConversationContextParams {
+    pub media_loader: Option<Arc<dyn rua_core::ChatMediaLoader>>,
     pub agent_id: String,
     pub session_id: String,
     pub chat_address: rua_core::ChatAddress,
@@ -366,6 +376,7 @@ pub fn build_conversation_context(params: ConversationContextParams) -> Conversa
                 params.agent_id.clone(),
                 params.session_id.clone(),
                 model,
+                params.media_loader.clone(),
             )) as Arc<dyn ContextCompactorSeam>)
         });
 

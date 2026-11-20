@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::fs::File;
+use std::io::{self, Read};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -8,9 +8,9 @@ use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const MAX_DISPLAY_MEDIA_BYTES: u64 = 50 * 1024 * 1024;
+pub const MAX_DISPLAY_MEDIA_BYTES: u64 = crate::chat_media::MAX_CHAT_MEDIA_BYTES as u64;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MediaOrigin {
     pub device_id: String,
     pub src: String,
@@ -31,6 +31,23 @@ pub struct DisplayMedia {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
+impl DisplayMedia {
+    fn store(&self, storage_root: &Path, chat_id: &str, bytes: &[u8]) -> io::Result<()> {
+        let manifest = crate::chat_media::ChatMediaManifest {
+            media_ref: self.media_ref.clone(),
+            mime_type: self.mime_type.clone(),
+            sha256: self.sha256.clone(),
+            byte_size: self.byte_size,
+            chat_ids: [chat_id.to_owned()].into(),
+            device_ids: [self.origin.device_id.clone()].into(),
+            original_filename: None,
+            origin: Some(self.origin.clone()),
+            extra: self.extra.clone(),
+        };
+        manifest.store_copy(&storage_root.join("media"), bytes)
+    }
+}
+
 struct ImageSource {
     range: Range<usize>,
     src: String,
@@ -39,14 +56,22 @@ struct ImageSource {
 }
 
 /// One cache belongs to one Turn, so repeated incremental writes retain identity.
-#[derive(Default)]
 pub struct DisplayMediaArchive {
+    chat_id: String,
     imported: HashMap<String, DisplayMedia>,
 }
 
 impl DisplayMediaArchive {
+    pub fn new(chat_id: impl Into<String>) -> Self {
+        Self {
+            chat_id: chat_id.into(),
+            imported: HashMap::new(),
+        }
+    }
+
     pub fn store_image_bytes(
         storage_root: &Path,
+        chat_id: &str,
         bytes: &[u8],
         mime: &str,
         device_id: &str,
@@ -72,13 +97,7 @@ impl DisplayMediaArchive {
             },
             extra: Default::default(),
         };
-        let directory = storage_root.join("media");
-        fs::create_dir_all(&directory)?;
-        atomic_write(
-            &directory.join(format!(".{id}.media.json")),
-            &serde_json::to_vec(&item)?,
-        )?;
-        atomic_write(&directory.join(id.to_string()), bytes)?;
+        item.store(storage_root, chat_id, bytes)?;
         Ok(item)
     }
 
@@ -146,13 +165,7 @@ impl DisplayMediaArchive {
                     },
                     extra: Default::default(),
                 };
-                let directory = storage_root.join("media");
-                fs::create_dir_all(&directory)?;
-                atomic_write(
-                    &directory.join(format!(".{id}.media.json")),
-                    &serde_json::to_vec(&item)?,
-                )?;
-                atomic_write(&directory.join(id.to_string()), &bytes)?;
+                item.store(storage_root, &self.chat_id, &bytes)?;
                 self.imported.insert(image.src.clone(), item.clone());
                 item
             };
@@ -192,7 +205,7 @@ pub fn managed_image_refs(text: &str) -> Vec<String> {
     image_sources(text)
         .into_iter()
         .filter_map(|image| {
-            image.src.strip_prefix("media/")?;
+            agent_types::content::managed_media_id(&image.src)?;
             Some(image.src)
         })
         .collect()
@@ -200,7 +213,7 @@ pub fn managed_image_refs(text: &str) -> Vec<String> {
 
 fn is_local_source(src: &str) -> bool {
     !src.is_empty()
-        && !src.starts_with("media/")
+        && !agent_types::content::is_managed_media_ref(src)
         && !["http:", "https:", "data:", "blob:"]
             .iter()
             .any(|prefix| src.to_ascii_lowercase().starts_with(prefix))
@@ -340,25 +353,4 @@ fn figure_src(body: &str) -> Option<(Range<usize>, String)> {
         }
     }
     None
-}
-
-fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("media path has no parent"))?;
-    let temp = parent.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&temp, path)?;
-        rua_core::fs::sync_directory(parent)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temp);
-    }
-    result
 }

@@ -244,6 +244,7 @@ pub struct SummaryCheckpointPublisherInput {
 }
 
 pub struct SummaryCheckpointPublisher {
+    media_loader: Option<Arc<dyn rua_core::ChatMediaLoader>>,
     store: WorkspaceSessionStore,
     chat_id: String,
     chat_address: rua_core::ChatAddress,
@@ -267,6 +268,7 @@ struct CheckpointPublicationBase {
 impl SummaryCheckpointPublisher {
     pub fn new(input: SummaryCheckpointPublisherInput) -> Self {
         Self {
+            media_loader: None,
             store: input.store,
             chat_id: input.chat_id,
             chat_address: input.chat_address,
@@ -278,6 +280,11 @@ impl SummaryCheckpointPublisher {
             replication_hook: input.replication_hook,
             model_call_identity: input.model_call_identity,
         }
+    }
+
+    pub fn with_media_loader(mut self, loader: Option<Arc<dyn rua_core::ChatMediaLoader>>) -> Self {
+        self.media_loader = loader;
+        self
     }
 
     pub async fn publish<F>(
@@ -300,7 +307,6 @@ impl SummaryCheckpointPublisher {
         {
             return Ok(None);
         }
-        crate::media::resolve_projected_media(&mut source.messages, &self.workspace_dir);
         let context_manager =
             self.context_manager
                 .as_ref()
@@ -308,6 +314,12 @@ impl SummaryCheckpointPublisher {
                     message: "context manager is required to generate a checkpoint summary"
                         .to_string(),
                 })?;
+        crate::media::resolve_model_media(
+            &mut source.messages,
+            &self.chat_address,
+            self.media_loader.as_deref(),
+        )
+        .await?;
         let summary = context_manager
             .summarize_context(ContextSummaryRequest {
                 session_id: self.chat_id.clone(),

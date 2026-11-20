@@ -423,15 +423,14 @@ fn managed_media_part(value: &serde_json::Value) -> Option<ContentPart> {
     }
 }
 
+pub fn managed_media_id(value: &str) -> Option<uuid::Uuid> {
+    let raw = value.strip_prefix("media/")?;
+    let id = uuid::Uuid::parse_str(raw).ok()?;
+    (id.to_string() == raw).then_some(id)
+}
+
 pub fn is_managed_media_ref(value: &str) -> bool {
-    let Some(filename) = value.strip_prefix("media/") else {
-        return false;
-    };
-    !filename.is_empty()
-        && !filename.contains('/')
-        && !filename.contains('\\')
-        && !filename.contains("..")
-        && filename != "."
+    managed_media_id(value).is_some()
 }
 
 pub fn content_part_to_stored_value(part: &ContentPart) -> serde_json::Value {

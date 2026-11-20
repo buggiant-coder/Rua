@@ -16,14 +16,16 @@ const requestBrowserNotificationPermissionMock = vi.hoisted(() => vi.fn());
 const composerRenderMock = vi.hoisted(() => vi.fn());
 
 const mediaUrlMock = vi.hoisted(() =>
-  vi.fn((_chatId, mediaId: string) => `/media/${mediaId}`),
+  vi.fn(
+    (chatId: string, mediaId: string) =>
+      `/api/chats/${chatId}/media/${mediaId}`,
+  ),
 );
 
 vi.mock("@/api/modules/chat", () => ({
   chatApi: {
     uploadFile: uploadFileMock,
     mediaUrl: mediaUrlMock,
-    filePreviewUrl: (path: string) => `/preview${path}`,
   },
 }));
 
@@ -50,7 +52,10 @@ function OwnedConversationComposer({
   );
 }
 
-function mediaUpload(filename: string, mediaId: string) {
+const firstMediaId = "00000000-0000-4000-8000-000000000001";
+const secondMediaId = "00000000-0000-4000-8000-000000000002";
+
+function mediaUpload(filename: string, mediaId = firstMediaId) {
   return {
     media_ref: `media/${mediaId}`,
     media_id: mediaId,
@@ -370,7 +375,7 @@ describe("OwnedConversationComposer", () => {
   });
 
   it("restores uploaded image attachments after the composer remounts", async () => {
-    uploadFileMock.mockResolvedValue(mediaUpload("photo.png", "stored-photo"));
+    uploadFileMock.mockResolvedValue(mediaUpload("photo.png"));
     const first = render(
       <OwnedConversationComposer
         draftKey="chat-with-image"
@@ -385,7 +390,7 @@ describe("OwnedConversationComposer", () => {
         files: [new File(["image"], "photo.png", { type: "image/png" })],
       },
     });
-    await screen.findByAltText("photo.png");
+    await screen.findByLabelText("Remove photo.png");
     expect(drafts.loadDraft("chat-with-image").attachments).toHaveLength(1);
     first.unmount();
 
@@ -399,19 +404,19 @@ describe("OwnedConversationComposer", () => {
     );
     const restoredInput = screen.getByPlaceholderText("Message");
     expect(restoredInput).toHaveValue("[Image #1]");
-    expect(screen.getByAltText("photo.png")).toHaveAttribute(
-      "src",
-      "/media/stored-photo",
-    );
+    expect(
+      screen.getByRole("button", { name: "Open photo.png" }),
+    ).toBeVisible();
+    expect(screen.queryByAltText("photo.png")).toBeNull();
 
     fireEvent.keyDown(restoredInput, { key: "Enter" });
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith("[Image #1]", [
         expect.objectContaining({
           name: "photo.png",
-          url: "media/stored-photo",
+          url: `media/${firstMediaId}`,
           marker: "[Image #1]",
-          storedName: "stored-photo",
+          storedName: firstMediaId,
         }),
       ]),
     );
@@ -642,9 +647,9 @@ describe("OwnedConversationComposer", () => {
     expect(uploadFileMock).toHaveBeenCalledWith("chat-1", file, undefined);
 
     await act(async () => {
-      resolveUpload?.(mediaUpload("photo.png", "photo-1"));
+      resolveUpload?.(mediaUpload("photo.png"));
     });
-    await screen.findByAltText("photo.png");
+    await screen.findByLabelText("Remove photo.png");
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:local-preview");
 
     fireEvent.click(screen.getByLabelText("Remove photo.png"));
@@ -652,13 +657,15 @@ describe("OwnedConversationComposer", () => {
       expect(screen.queryByAltText("photo.png")).not.toBeInTheDocument(),
     );
 
-    uploadFileMock.mockResolvedValueOnce(mediaUpload("photo.png", "photo-2"));
+    uploadFileMock.mockResolvedValueOnce(
+      mediaUpload("photo.png", secondMediaId),
+    );
     fireEvent.paste(input, {
       clipboardData: {
         files: [file],
       },
     });
-    await screen.findByAltText("photo.png");
+    await screen.findByLabelText("Remove photo.png");
     expect(input).toHaveValue("[Image #1]");
 
     fireEvent.click(screen.getByLabelText("Send message"));
@@ -668,9 +675,9 @@ describe("OwnedConversationComposer", () => {
         id: "attachment-uuid",
         name: "photo.png",
         type: "image",
-        url: "media/photo-2",
+        url: `media/${secondMediaId}`,
         marker: "[Image #1]",
-        storedName: "photo-2",
+        storedName: secondMediaId,
         mimeType: "image/png",
         size: 5,
         authorityEpoch: "000001a00343124c00000000f8e40a95f10d7f0e",
@@ -821,9 +828,9 @@ describe("OwnedConversationComposer", () => {
 
   it("re-uploads pending attachments when the Authority epoch changes", async () => {
     uploadFileMock
-      .mockResolvedValueOnce(mediaUpload("photo.png", "old-media"))
+      .mockResolvedValueOnce(mediaUpload("photo.png"))
       .mockResolvedValueOnce({
-        ...mediaUpload("photo.png", "new-media"),
+        ...mediaUpload("photo.png", secondMediaId),
         authority_epoch: "epoch-new",
       });
     const onSubmit = vi.fn().mockResolvedValue(true);
@@ -840,7 +847,7 @@ describe("OwnedConversationComposer", () => {
         files: [new File(["image"], "photo.png", { type: "image/png" })],
       },
     });
-    await screen.findByAltText("photo.png");
+    await screen.findByLabelText("Remove photo.png");
 
     rerender(
       <OwnedConversationComposer
@@ -853,10 +860,16 @@ describe("OwnedConversationComposer", () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(uploadFileMock).toHaveBeenCalledTimes(2);
+    expect(uploadFileMock).toHaveBeenNthCalledWith(
+      2,
+      "chat-1",
+      expect.any(File),
+      { expectedAuthorityEpoch: "epoch-new" },
+    );
     expect(onSubmit.mock.calls[0][1][0]).toMatchObject({
-      storedName: "new-media",
+      storedName: secondMediaId,
       authorityEpoch: "epoch-new",
-      url: "media/new-media",
+      url: `media/${secondMediaId}`,
     });
     unmount();
   });
@@ -872,8 +885,8 @@ describe("OwnedConversationComposer", () => {
       configurable: true,
     });
     uploadFileMock
-      .mockResolvedValueOnce(mediaUpload("one.png", "one"))
-      .mockResolvedValueOnce(mediaUpload("two.png", "two"));
+      .mockResolvedValueOnce(mediaUpload("one.png"))
+      .mockResolvedValueOnce(mediaUpload("two.png", secondMediaId));
 
     render(<OwnedConversationComposer onSubmit={vi.fn()} onStop={vi.fn()} />);
 
@@ -888,16 +901,18 @@ describe("OwnedConversationComposer", () => {
       },
     });
 
-    await screen.findByAltText("two.png");
+    await screen.findByLabelText("Remove two.png");
     expect(input).toHaveValue("Compare: [Image #1] [Image #2]");
 
     fireEvent.click(screen.getByLabelText("Remove one.png"));
     expect(input).toHaveValue("Compare: [Image #1]");
-    expect(screen.getByAltText("two.png")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Open two.png" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps image upload available regardless of model capability", async () => {
-    uploadFileMock.mockResolvedValue(mediaUpload("accepted.png", "accepted"));
+    uploadFileMock.mockResolvedValue(mediaUpload("accepted.png"));
     render(<OwnedConversationComposer onSubmit={vi.fn()} onStop={vi.fn()} />);
 
     const input = screen.getByPlaceholderText("Message");
@@ -913,7 +928,7 @@ describe("OwnedConversationComposer", () => {
   });
 
   it("opens pasted image previews in the shared full-screen viewer", async () => {
-    uploadFileMock.mockResolvedValue(mediaUpload("photo.png", "preview"));
+    uploadFileMock.mockResolvedValue(mediaUpload("photo.png"));
     render(<OwnedConversationComposer onSubmit={vi.fn()} onStop={vi.fn()} />);
 
     const input = screen.getByPlaceholderText("Message");
@@ -923,7 +938,7 @@ describe("OwnedConversationComposer", () => {
       },
     });
 
-    await screen.findByAltText("photo.png");
+    await screen.findByLabelText("Remove photo.png");
     fireEvent.click(screen.getByRole("button", { name: "Open photo.png" }));
     expect(
       screen.getByRole("dialog", { name: "photo.png" }),
@@ -939,7 +954,7 @@ describe("OwnedConversationComposer", () => {
   });
 
   it("opens the matching image preview when its placeholder is clicked", async () => {
-    uploadFileMock.mockResolvedValue(mediaUpload("photo.png", "placeholder"));
+    uploadFileMock.mockResolvedValue(mediaUpload("photo.png"));
     render(<OwnedConversationComposer onSubmit={vi.fn()} onStop={vi.fn()} />);
 
     const input = screen.getByPlaceholderText("Message");
@@ -948,7 +963,7 @@ describe("OwnedConversationComposer", () => {
         files: [new File(["image"], "photo.png", { type: "image/png" })],
       },
     });
-    await screen.findByAltText("photo.png");
+    await screen.findByLabelText("Remove photo.png");
 
     fireEvent.click(screen.getByRole("button", { name: "Open [Image #1]" }));
 
@@ -959,7 +974,7 @@ describe("OwnedConversationComposer", () => {
     ["Backspace", "after"],
     ["Delete", "before"],
   ])("deletes an image placeholder atomically with %s", async (key, caret) => {
-    uploadFileMock.mockResolvedValue(mediaUpload("photo.png", "delete"));
+    uploadFileMock.mockResolvedValue(mediaUpload("photo.png"));
     render(<OwnedConversationComposer onSubmit={vi.fn()} onStop={vi.fn()} />);
 
     const input = screen.getByPlaceholderText("Message") as HTMLTextAreaElement;
@@ -968,7 +983,7 @@ describe("OwnedConversationComposer", () => {
         files: [new File(["image"], "photo.png", { type: "image/png" })],
       },
     });
-    await screen.findByAltText("photo.png");
+    await screen.findByLabelText("Remove photo.png");
     const position = caret === "after" ? input.value.length : 0;
     input.setSelectionRange(position, position);
 

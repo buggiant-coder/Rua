@@ -18,7 +18,7 @@ describe("ImageViewer authenticated media", () => {
   const createObjectURL = vi.fn();
   const revokeObjectURL = vi.fn();
   const src =
-    "/api/projects/project-1/chats/chat-1/media/image-1?token=test-token";
+    "/api/chats/chat-1/media/00000000-0000-4000-8000-000000000001?token=test-token";
 
   beforeEach(() => {
     vi.stubGlobal("fetch", fetchMock);
@@ -42,10 +42,14 @@ describe("ImageViewer authenticated media", () => {
     const blob = new Blob(["image"], { type: "image/png" });
     fetchMock.mockResolvedValue({ ok: true, blob: async () => blob });
     const { unmount } = render(<ImageViewer src={src} alt="uploaded image" />);
+    expect(fetchMock).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open uploaded image" }),
+    );
     await waitFor(() =>
-      expect(screen.getByAltText("uploaded image").getAttribute("src")).toBe(
-        "blob:authenticated-image",
-      ),
+      expect(
+        screen.getAllByAltText("uploaded image")[0].getAttribute("src"),
+      ).toBe("blob:authenticated-image"),
     );
     expect(fetchMock).toHaveBeenCalledWith(
       new URL(src.split("?")[0], window.location.href).href,
@@ -56,9 +60,6 @@ describe("ImageViewer authenticated media", () => {
       }),
     );
     expect(createObjectURL).toHaveBeenCalledWith(blob);
-    fireEvent.click(
-      screen.getByRole("button", { name: "Open uploaded image" }),
-    );
     expect(screen.getAllByAltText("uploaded image")).toHaveLength(2);
     for (const image of screen.getAllByAltText("uploaded image")) {
       expect(image.getAttribute("src")).toBe("blob:authenticated-image");
@@ -84,20 +85,31 @@ describe("ImageViewer authenticated media", () => {
       ok: true,
       blob: async () => new Blob(["image"]),
     });
-    const { rerender } = render(<ImageViewer src={src} alt="image" />);
+    const { rerender } = render(<ImageViewer src={src} alt="image" open />);
     await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
-    fetchMock.mockResolvedValue({ ok: false });
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ detail: "Source offline" }), {
+        status: 503,
+      }),
+    );
     rerender(
       <ImageViewer
-        src="/api/agents/default/chats/chat-2/media/image-2"
+        open
+        src="/api/chats/chat-2/media/00000000-0000-4000-8000-000000000002"
         alt="image"
       />,
     );
-    expect(screen.getByAltText("image").getAttribute("src")).toBeNull();
+    expect(screen.queryByAltText("image")).toBeNull();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Source offline",
+    );
+    fetchMock.mockResolvedValue(new Response(new Blob(["valid"])));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:authenticated-image");
     rerender(<ImageViewer src={src} alt="image" />);
-    expect(screen.getByAltText("image").getAttribute("src")).toBeNull();
+    expect(screen.queryByAltText("image")).toBeNull();
   });
 
   it("discards a late read after unmount", async () => {
@@ -109,7 +121,7 @@ describe("ImageViewer authenticated media", () => {
           finish = resolve;
         }),
     });
-    const { unmount } = render(<ImageViewer src={src} alt="image" />);
+    const { unmount } = render(<ImageViewer src={src} alt="image" open />);
     await waitFor(() => expect(finish).toBeDefined());
     unmount();
     await act(async () => finish(new Blob(["late image"])));

@@ -1996,6 +1996,9 @@
     "saveSuccess": "Конфигурация промптов сохранена"
   },
   "chat": {
+    "previewImage": "Открыть изображение",
+    "mediaUnavailable": "Вложение недоступно",
+    "playMedia": "Воспроизвести {{name}}",
     "conversationView": "Режим просмотра",
     "backgroundWork": {
       "waiting": "Фоновые задачи выполняются",
