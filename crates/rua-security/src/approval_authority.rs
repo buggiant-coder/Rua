@@ -915,9 +915,9 @@ impl ApprovalAuthority {
                 extra: BTreeMap::new(),
             });
         let updated = request.clone();
-        drop(requests);
 
         if let Some(rule) = rule_to_insert {
+            drop(requests);
             match rule.scope {
                 ApprovalReuseScope::Agent => {
                     if let Some(store) = &self.agent_rule_store {
@@ -1033,6 +1033,69 @@ impl ApprovalAuthority {
                 && &request.tool_call.args == arguments
                 && request.status == ApprovalStatus::Approved
         })
+    }
+
+    /// Claim the user's one-time decision for this exact Chat file read.
+    /// The target still has to verify the local file and apply its permissions.
+    pub async fn consume_authenticated_read_once(
+        &self,
+        ctx: &crate::ToolCallContext,
+        target_device_id: &str,
+        file_path: &str,
+    ) -> Option<String> {
+        let address = ctx.approval_owner.as_chat_address()?;
+        let turn_id = ctx.metadata.get("turn_id")?.as_str()?;
+        let tool_call_id = ctx.metadata.get("tool_call_id")?.as_str()?;
+        let args = ctx.tool_input.as_object()?;
+        if ctx.tool_name != "read"
+            || [
+                ctx.agent_id.as_str(),
+                address.chat_id().as_str(),
+                turn_id,
+                tool_call_id,
+                target_device_id,
+            ]
+            .iter()
+            .any(|id| id.trim().is_empty())
+            || args.get("device_id")?.as_str()? != target_device_id
+            || args.get("file_path")?.as_str()? != file_path
+            || !rua_core::execution_directory::is_device_absolute_path(file_path)
+            || file_path.starts_with("//")
+            || file_path.starts_with(r"\\")
+            || args.keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    "device_id" | "file_path" | "start_line" | "limit" | "byte_offset"
+                )
+            })
+        {
+            return None;
+        }
+
+        let mut requests = self.requests.write().await;
+        let mut matches = requests.values_mut().filter(|request| {
+            request.agent_id == ctx.agent_id
+                && request.owner == ctx.approval_owner
+                && request.turn_id == turn_id
+                && request.tool_call_id == tool_call_id
+        });
+        let request = matches.next()?;
+        if matches.next().is_some()
+            || request.status != ApprovalStatus::Approved
+            || request.tool_name != ctx.tool_name
+            || request.tool_call.args != ctx.tool_input
+            || request.authenticated_user_decision.as_ref()?.decision
+                != AuthenticatedApprovalDecision::RunOnce
+        {
+            return None;
+        }
+
+        request.status = ApprovalStatus::Consumed;
+        let _ = self.tx.send(ApprovalEvent {
+            event: "approval.updated".into(),
+            request: request.clone(),
+        });
+        Some(request.id.clone())
     }
 
     pub async fn find_reuse_rule_for_owner(

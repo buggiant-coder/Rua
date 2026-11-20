@@ -37,6 +37,229 @@ fn bash_request(tool_call_id: &str, command: &str) -> ApprovalRequestInput {
     }
 }
 
+fn chat_file_read(
+    args: serde_json::Value,
+) -> (ApprovalRequestInput, rua_security::ToolCallContext) {
+    let mut input = request("read-1", "read");
+    input.tool_call.args = args.clone();
+    let mut ctx = rua_security::ToolCallContext::new(&input.agent_id, "chat-1", "read", args)
+        .with_chat_address(ChatAddress::new("chat-1"));
+    ctx.metadata.insert("turn_id".into(), json!(input.turn_id));
+    ctx.metadata
+        .insert("tool_call_id".into(), json!(input.tool_call_id));
+    (input, ctx)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authenticated_read_claim_matches_the_entire_invocation_and_is_consumed_once() {
+    use std::sync::Arc;
+    use tokio::sync::Barrier;
+    const FILE: &str = "/selected/note.txt";
+    let authority = Arc::new(ApprovalAuthority::new());
+    let (request, ctx) = chat_file_read(json!({"device_id":"phone","file_path":FILE,"limit":3}));
+    let pending = authority.create_request(request).await;
+    let approved = authority
+        .decide_for_authenticated_user(
+            &pending.agent_id,
+            &pending.id,
+            ApprovalDecision::RunOnce {
+                decided_by: "console".into(),
+            },
+            "alice",
+        )
+        .await
+        .unwrap();
+    let mut updates = authority.subscribe();
+
+    for mismatch in [
+        "agent", "chat", "owner", "turn", "call", "tool", "limit", "device", "path",
+    ] {
+        let mut other = ctx.clone();
+        match mismatch {
+            "agent" => other.agent_id.push('2'),
+            "chat" => other.approval_owner = ApprovalOwner::chat(ChatAddress::new("chat-2")),
+            "owner" => other.approval_owner = ApprovalOwner::runtime_session("agent-1", "chat-1"),
+            "turn" => {
+                other.metadata.insert("turn_id".into(), json!("turn-2"));
+            }
+            "call" => {
+                other
+                    .metadata
+                    .insert("tool_call_id".into(), json!("read-2"));
+            }
+            "tool" => other.tool_name = "edit".into(),
+            "limit" => other.tool_input["limit"] = json!(4),
+            "device" => other.tool_input["device_id"] = json!("desktop"),
+            "path" => other.tool_input["file_path"] = json!("/other/note.txt"),
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            authority
+                .consume_authenticated_read_once(
+                    &other,
+                    other.tool_input["device_id"].as_str().unwrap(),
+                    other.tool_input["file_path"].as_str().unwrap()
+                )
+                .await,
+            None,
+            "{mismatch}"
+        );
+    }
+    assert_eq!(
+        authority
+            .consume_authenticated_read_once(&ctx, "tablet", FILE)
+            .await,
+        None
+    );
+    assert_eq!(
+        authority
+            .consume_authenticated_read_once(&ctx, "phone", "/another/file")
+            .await,
+        None
+    );
+    assert_eq!(authority.request(&pending.id).await, Some(approved.clone()));
+
+    let start = Arc::new(Barrier::new(2));
+    let claim = || {
+        let authority = Arc::clone(&authority);
+        let start = Arc::clone(&start);
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            start.wait().await;
+            authority
+                .consume_authenticated_read_once(&ctx, "phone", FILE)
+                .await
+        })
+    };
+    let (one, two) = tokio::join!(claim(), claim());
+    assert_eq!(
+        [one.unwrap(), two.unwrap()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+        std::slice::from_ref(&pending.id)
+    );
+    let consumed = authority.request(&pending.id).await.unwrap();
+    assert_eq!(consumed.status, ApprovalStatus::Consumed);
+    assert_eq!(
+        consumed.authenticated_user_decision,
+        approved.authenticated_user_decision
+    );
+    assert_eq!(updates.recv().await.unwrap().request, consumed);
+    assert!(matches!(
+        updates.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn authenticated_read_claim_excludes_directory_paging_media_and_nonlocal_paths() {
+    for (path, extras) in [
+        ("/folder", json!({"after":"a.txt"})),
+        ("media/704d76eb-dee7-47d7-bef3-915891f200db", json!({})),
+        ("relative.txt", json!({})),
+        (r"\\server\share\note.txt", json!({})),
+    ] {
+        let authority = ApprovalAuthority::new();
+        let mut args = extras;
+        args["device_id"] = json!("phone");
+        args["file_path"] = json!(path);
+        let (request, ctx) = chat_file_read(args);
+        let pending = authority.create_request(request).await;
+        let approved = authority
+            .decide_for_authenticated_user(
+                &ctx.agent_id,
+                &pending.id,
+                ApprovalDecision::RunOnce {
+                    decided_by: "console".into(),
+                },
+                "alice",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            authority
+                .consume_authenticated_read_once(&ctx, "phone", path)
+                .await,
+            None
+        );
+        assert_eq!(authority.request(&pending.id).await.unwrap(), approved);
+    }
+}
+
+#[tokio::test]
+async fn authenticated_read_claim_does_not_convert_hook_or_reusable_approval_to_run_once() {
+    let path = "/selected/note.txt";
+    for reuse in [false, true] {
+        let authority = ApprovalAuthority::new();
+        let (request, ctx) = chat_file_read(json!({"device_id":"phone","file_path":path}));
+        let pending = authority.create_request(request).await;
+        let approved = if reuse {
+            authority
+                .decide_for_authenticated_user(
+                    &pending.agent_id,
+                    &pending.id,
+                    ApprovalDecision::AllowChat {
+                        decided_by: "console".into(),
+                        matcher: pending.reuse_options[0].matcher.clone(),
+                    },
+                    "alice",
+                )
+                .await
+        } else {
+            authority
+                .decide(
+                    &pending.id,
+                    ApprovalDecision::RunOnce {
+                        decided_by: "product_hook:auto".into(),
+                    },
+                )
+                .await
+        }
+        .unwrap();
+        assert_eq!(
+            authority
+                .consume_authenticated_read_once(&ctx, "phone", path)
+                .await,
+            None
+        );
+        assert_eq!(authority.request(&pending.id).await.unwrap(), approved);
+    }
+}
+
+#[tokio::test]
+async fn authenticated_read_claim_requires_one_unambiguous_approval_request() {
+    let authority = ApprovalAuthority::new();
+    let path = "/selected/note.txt";
+    let (input, ctx) = chat_file_read(json!({"device_id":"phone","file_path":path}));
+    for _ in 0..2 {
+        let pending = authority.create_request(input.clone()).await;
+        authority
+            .decide_for_authenticated_user(
+                &ctx.agent_id,
+                &pending.id,
+                ApprovalDecision::RunOnce {
+                    decided_by: "console".into(),
+                },
+                "alice",
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        authority
+            .consume_authenticated_read_once(&ctx, "phone", path)
+            .await,
+        None
+    );
+    let snapshot = authority.snapshot_for_owner(&ctx.approval_owner).await;
+    assert_eq!(snapshot.resolved.len(), 2);
+    assert!(snapshot
+        .resolved
+        .iter()
+        .all(|r| r.status == ApprovalStatus::Approved));
+}
+
 #[tokio::test]
 async fn approval_labels_and_permission_hooks_do_not_record_an_authenticated_user() {
     let authority = ApprovalAuthority::new();
