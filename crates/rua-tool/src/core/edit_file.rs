@@ -61,16 +61,12 @@ impl EditFileTool {
             }
         };
 
-        let prepared = match prepare_patch_hunks(&hunks, ctx).await {
-            Ok(prepared) => prepared,
-            Err(PatchApplyError::UserVisible(message)) => {
-                return Ok(ToolResult::error(&ctx.trace_id, message));
-            }
-            Err(PatchApplyError::Tool(error)) => return Err(error),
-            Err(PatchApplyError::Commit(_)) => unreachable!("preflight cannot commit files"),
-        };
-
-        let summary = match commit_patch_hunks(&prepared).await {
+        let outcome = async {
+            let prepared = prepare_patch_hunks(&hunks, ctx).await?;
+            commit_patch_hunks(&prepared, ctx).await
+        }
+        .await;
+        let summary = match outcome {
             Ok(summary) => summary,
             Err(PatchApplyError::UserVisible(message)) => {
                 return Ok(ToolResult::error(&ctx.trace_id, message));
@@ -380,6 +376,12 @@ async fn prepare_patch_hunks(
     let mut virtual_contents = HashMap::<PathBuf, String>::new();
 
     for hunk in hunks {
+        if ctx.is_cancelled() {
+            return Err(commit_failure(
+                "edit was cancelled during patch verification".into(),
+                Vec::new(),
+            ));
+        }
         match hunk {
             PatchHunk::Add { path, content } => {
                 check_write_size(path, content, ctx)?;
@@ -431,18 +433,20 @@ async fn prepare_patch_hunks(
 
 async fn commit_patch_hunks(
     hunks: &[PreparedPatchHunk],
+    ctx: &ToolExecutionContext,
 ) -> std::result::Result<String, PatchApplyError> {
     let mut added = Vec::new();
     let mut modified = Vec::new();
     let mut committed = Vec::new();
 
     for hunk in hunks {
-        match hunk {
+        let (path, resolved, content, is_add) = match hunk {
             PreparedPatchHunk::Add {
                 path,
                 resolved,
                 content,
             } => {
+                check_edit_cancelled(ctx, path, &committed)?;
                 match fs::symlink_metadata(resolved).await {
                     Ok(_) => {
                         return Err(commit_failure(
@@ -458,12 +462,7 @@ async fn commit_patch_hunks(
                         ));
                     }
                 }
-                if let Err(error) = atomic_write(resolved, content.as_bytes(), true).await {
-                    return Err(commit_write_failure(path, error, committed));
-                }
-                update_recorded_mtime(resolved).await;
-                added.push(path.clone());
-                committed.push(format!("A {path}"));
+                (path, resolved, content, true)
             }
             PreparedPatchHunk::Update {
                 path,
@@ -471,6 +470,7 @@ async fn commit_patch_hunks(
                 expected_content,
                 new_content,
             } => {
+                check_edit_cancelled(ctx, path, &committed)?;
                 let current_content = match read_text_file(path, resolved).await {
                     Ok((content, _)) => content,
                     Err(PatchApplyError::UserVisible(message)) => {
@@ -492,17 +492,38 @@ async fn commit_patch_hunks(
                         committed,
                     ));
                 }
-                if let Err(error) = atomic_write(resolved, new_content.as_bytes(), false).await {
-                    return Err(commit_write_failure(path, error, committed));
-                }
-                update_recorded_mtime(resolved).await;
-                modified.push(path.clone());
-                committed.push(format!("M {path}"));
+                (path, resolved, new_content, false)
             }
+        };
+        check_edit_cancelled(ctx, path, &committed)?;
+        if let Err(error) = atomic_write(resolved, content.as_bytes(), is_add).await {
+            return Err(commit_write_failure(path, error, committed));
+        }
+        update_recorded_mtime(resolved).await;
+        if is_add {
+            added.push(path.clone());
+            committed.push(format!("A {path}"));
+        } else {
+            modified.push(path.clone());
+            committed.push(format!("M {path}"));
         }
     }
 
     Ok(format_patch_summary(&added, &modified))
+}
+
+fn check_edit_cancelled(
+    ctx: &ToolExecutionContext,
+    path: &str,
+    committed: &[String],
+) -> std::result::Result<(), PatchApplyError> {
+    if ctx.is_cancelled() {
+        return Err(commit_failure(
+            format!("edit was cancelled before writing {path}"),
+            committed.to_vec(),
+        ));
+    }
+    Ok(())
 }
 
 fn commit_failure(message: String, committed: Vec<String>) -> PatchApplyError {

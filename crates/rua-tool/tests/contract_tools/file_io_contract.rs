@@ -369,6 +369,96 @@ async fn edit_file_reports_patch_parse_and_match_errors_as_tool_results() {
 }
 
 #[tokio::test]
+async fn edit_cancelled_before_preflight_keeps_all_files_untouched() {
+    let root = tempfile::tempdir().unwrap();
+    let existing = root.path().join("existing.txt");
+    std::fs::write(&existing, "original\n").unwrap();
+    let mut ctx = make_ctx(&root);
+    let (cancel, receiver) = tokio::sync::watch::channel(false);
+    ctx.cancel = Some(receiver);
+    cancel.send(true).unwrap();
+    let patch = "*** Begin Patch\n*** Update File: existing.txt\n-original\n+changed\n*** Add File: nested/new.txt\n+new\n*** End Patch";
+
+    let result = EditFileTool.call(patch_arg(patch), ctx).await.unwrap();
+
+    assert_eq!(std::fs::read_to_string(existing).unwrap(), "original\n");
+    assert!(!root.path().join("nested").exists());
+    assert!(result.is_error);
+    assert!(text(&result).contains("cancelled"));
+    assert_eq!(result.metadata["file_edit_committed_paths"], json!([]));
+    assert!(!result.metadata.contains_key("file_edit_unconfirmed_path"));
+}
+
+fn cancel_edit_on_io(
+    mut ctx: ToolContext,
+    patch: &str,
+    should_cancel: impl Fn() -> bool,
+) -> rua_core::tool::ToolResult {
+    let (cancel, receiver) = tokio::sync::watch::channel(false);
+    ctx.cancel = Some(receiver);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut call = EditFileTool.call(patch_arg(patch), ctx);
+        loop {
+            // Poll on the sole filesystem worker so a new I/O operation cannot finish
+            // during the same poll. This lets the test cancel between real I/O steps.
+            let (next, poll) = tokio::task::spawn_blocking(move || {
+                let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                let poll = call.as_mut().poll(&mut cx);
+                (call, poll)
+            })
+            .await
+            .unwrap();
+            if let std::task::Poll::Ready(result) = poll {
+                break result.unwrap();
+            }
+            if should_cancel() {
+                cancel.send_replace(true);
+            }
+            call = next;
+        }
+    })
+}
+
+#[test]
+fn edit_cancelled_while_rechecking_an_add_never_starts_the_write() {
+    let root = tempfile::tempdir().unwrap();
+    let patch = "*** Begin Patch\n*** Add File: new.txt\n+new\n*** End Patch";
+    // Add preflight is synchronous. Its first pending I/O rechecks the destination.
+    let result = cancel_edit_on_io(make_ctx(&root), patch, || true);
+
+    assert!(result.is_error, "{}", text(&result));
+    assert!(text(&result).contains("cancelled before writing new.txt"));
+    assert_eq!(result.metadata["file_edit_committed_paths"], json!([]));
+    assert!(!root.path().join("new.txt").exists());
+}
+
+#[test]
+fn edit_cancelled_after_the_first_publication_reports_only_that_file() {
+    let root = tempfile::tempdir().unwrap();
+    let first = root.path().join("first.txt");
+    let second = root.path().join("second.txt");
+    std::fs::write(&second, "original\n").unwrap();
+    let patch = "*** Begin Patch\n*** Add File: first.txt\n+first\n*** Update File: second.txt\n-original\n+changed\n*** Add File: third.txt\n+third\n*** End Patch";
+    let result = cancel_edit_on_io(make_ctx(&root), patch, || first.exists());
+
+    assert!(result.is_error, "{}", text(&result));
+    assert!(text(&result).contains("cancelled before writing second.txt"));
+    assert!(text(&result).contains("Later patch entries were not attempted"));
+    assert_eq!(
+        result.metadata["file_edit_committed_paths"],
+        json!(["A first.txt"])
+    );
+    assert!(!result.metadata.contains_key("file_edit_unconfirmed_path"));
+    assert_eq!(std::fs::read_to_string(first).unwrap(), "first\n");
+    assert_eq!(std::fs::read_to_string(second).unwrap(), "original\n");
+    assert!(!root.path().join("third.txt").exists());
+}
+
+#[tokio::test]
 async fn edit_file_preflights_all_hunks_before_writing_any_file() {
     let root = tempfile::tempdir().expect("tempdir");
     let edit = EditFileTool::new();
