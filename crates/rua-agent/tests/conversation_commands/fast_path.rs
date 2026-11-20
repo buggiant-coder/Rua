@@ -248,7 +248,7 @@ async fn compact_publishes_summary_checkpoint_for_evergreen_chat() {
         )
         .with_checkpoint_context(
             "agent-1".to_string(),
-            rua_core::ChatAddress::agent("agent-1", chat_id),
+            rua_core::ChatAddress::new(chat_id),
             None,
             Some(rua_session::CheckpointModelIdentity {
                 provider: "test-provider".to_string(),

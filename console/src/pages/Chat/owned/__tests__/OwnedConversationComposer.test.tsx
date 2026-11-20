@@ -16,7 +16,7 @@ const requestBrowserNotificationPermissionMock = vi.hoisted(() => vi.fn());
 const composerRenderMock = vi.hoisted(() => vi.fn());
 
 const mediaUrlMock = vi.hoisted(() =>
-  vi.fn((_scope, _chatId, mediaId: string) => `/media/${mediaId}`),
+  vi.fn((_chatId, mediaId: string) => `/media/${mediaId}`),
 );
 
 vi.mock("@/api/modules/chat", () => ({
@@ -37,14 +37,13 @@ function OwnedConversationComposer({
   ...props
 }: Omit<
   React.ComponentProps<typeof OwnedConversationComposerImpl>,
-  "chatId" | "mediaScope" | "turnActive"
+  "chatId" | "turnActive"
 > & {
   turnActive?: boolean;
 }) {
   return (
     <OwnedConversationComposerImpl
       chatId="chat-1"
-      mediaScope={{ kind: "agent", agentId: "default" }}
       turnActive={turnActive}
       {...props}
     />
@@ -107,7 +106,7 @@ describe("OwnedConversationComposer", () => {
   it("skips unrelated parent updates but reacts to active-turn changes", () => {
     const props = {
       chatId: "chat-1",
-      mediaScope: { kind: "agent" as const, agentId: "default" },
+
       turnActive: true,
       onSubmit: vi.fn(),
       onStop: vi.fn(),
@@ -640,11 +639,7 @@ describe("OwnedConversationComposer", () => {
       "blob:local-preview",
     );
     expect(input).toHaveValue("[Image #1]");
-    expect(uploadFileMock).toHaveBeenCalledWith(
-      { kind: "agent", agentId: "default" },
-      "chat-1",
-      file,
-    );
+    expect(uploadFileMock).toHaveBeenCalledWith("chat-1", file, undefined);
 
     await act(async () => {
       resolveUpload?.(mediaUpload("photo.png", "photo-1"));
@@ -698,8 +693,8 @@ describe("OwnedConversationComposer", () => {
   });
 
   it("does not restore an unconfirmed submission as editable draft after remount", () => {
-    drafts.save("agent-a:chat-1", "already submitted");
-    drafts.saveSubmitted("agent-a:chat-1", {
+    drafts.save("chat:chat-1", "already submitted");
+    drafts.saveSubmitted("chat:chat-1", {
       submissionId: "original",
       text: "already submitted",
       attachments: [],
@@ -708,7 +703,7 @@ describe("OwnedConversationComposer", () => {
     });
     render(
       <OwnedConversationComposer
-        draftKey="agent-a:chat-1"
+        draftKey="chat:chat-1"
         onSubmit={vi.fn()}
         onStop={vi.fn()}
       />,
@@ -716,20 +711,16 @@ describe("OwnedConversationComposer", () => {
     expect(
       (screen.getByPlaceholderText("Message") as HTMLTextAreaElement).value,
     ).toBe("");
-    expect(drafts.loadSubmitted("agent-a:chat-1")?.submissionId).toBe(
-      "original",
-    );
+    expect(drafts.loadSubmitted("chat:chat-1")?.submissionId).toBe("original");
   });
 
   it("converts a long plain-text paste into a text attachment", async () => {
     const pastedText = "a".repeat(50_001);
-    uploadFileMock.mockImplementationOnce(
-      async (_scope, _chatId, file: File) => ({
-        ...mediaUpload(file.name, "pasted-text"),
-        mime_type: file.type,
-        byte_size: file.size,
-      }),
-    );
+    uploadFileMock.mockImplementationOnce(async (_chatId, file: File) => ({
+      ...mediaUpload(file.name, "pasted-text"),
+      mime_type: file.type,
+      byte_size: file.size,
+    }));
     render(<OwnedConversationComposer onSubmit={vi.fn()} onStop={vi.fn()} />);
     const input = screen.getByPlaceholderText("Message");
     const pasteEvent = createEvent.paste(input, {
@@ -744,7 +735,7 @@ describe("OwnedConversationComposer", () => {
     expect(pasteEvent.defaultPrevented).toBe(true);
     expect(input).toHaveValue("[File #1]");
     await waitFor(() => expect(uploadFileMock).toHaveBeenCalledOnce());
-    const uploadedFile = uploadFileMock.mock.calls[0][2] as File;
+    const uploadedFile = uploadFileMock.mock.calls[0][1] as File;
     expect(uploadedFile.name).toMatch(
       /^pasted-text-\d{4}-\d{2}-\d{2}T.*Z\.txt$/,
     );

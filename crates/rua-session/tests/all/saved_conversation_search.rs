@@ -90,7 +90,8 @@ async fn saved_conversation_search_finds_active_messages_across_saved_chats_with
 
     let result = store
         .search_saved_conversations(SavedConversationSearchRequest {
-            agent_id: "agent-1".to_string(),
+            agent_id: Some("agent-1".to_string()),
+            project_id: None,
             query: "ALPHA".to_string(),
             offset: 0,
             limit: 10,
@@ -201,7 +202,8 @@ async fn saved_conversation_search_uses_selected_variants_not_raw_regenerations(
 
     let result = store
         .search_saved_conversations(SavedConversationSearchRequest {
-            agent_id: "agent-1".to_string(),
+            agent_id: Some("agent-1".to_string()),
+            project_id: None,
             query: "saved-marker".to_string(),
             offset: 0,
             limit: 10,
@@ -233,7 +235,8 @@ async fn saved_conversation_search_paginates_hits() {
 
     let first = store
         .search_saved_conversations(SavedConversationSearchRequest {
-            agent_id: "agent-1".to_string(),
+            agent_id: Some("agent-1".to_string()),
+            project_id: None,
             query: "needle".to_string(),
             offset: 0,
             limit: 2,
@@ -242,7 +245,8 @@ async fn saved_conversation_search_paginates_hits() {
         .unwrap();
     let second = store
         .search_saved_conversations(SavedConversationSearchRequest {
-            agent_id: "agent-1".to_string(),
+            agent_id: Some("agent-1".to_string()),
+            project_id: None,
             query: "needle".to_string(),
             offset: 2,
             limit: 2,
@@ -306,7 +310,8 @@ async fn saved_conversation_search_does_not_search_summary_checkpoints() {
 
     let result = store
         .search_saved_conversations(SavedConversationSearchRequest {
-            agent_id: "agent-1".to_string(),
+            agent_id: Some("agent-1".to_string()),
+            project_id: None,
             query: "checkpoint-only-search-token".to_string(),
             offset: 0,
             limit: 10,
@@ -345,7 +350,8 @@ async fn saved_conversation_search_is_agent_scoped() {
 
     let result = store
         .search_saved_conversations(SavedConversationSearchRequest {
-            agent_id: "agent-1".to_string(),
+            agent_id: Some("agent-1".to_string()),
+            project_id: None,
             query: "scoped-needle".to_string(),
             offset: 0,
             limit: 10,
@@ -358,7 +364,7 @@ async fn saved_conversation_search_is_agent_scoped() {
 }
 
 #[tokio::test]
-async fn saved_conversation_search_can_use_the_current_scope_without_agent_filtering() {
+async fn saved_conversation_search_can_omit_agent_filtering() {
     let dir = tempfile::tempdir().unwrap();
     let store = WorkspaceSessionStore::new(dir.path());
     store
@@ -378,8 +384,9 @@ async fn saved_conversation_search_can_use_the_current_scope_without_agent_filte
     .await;
 
     let result = store
-        .search_saved_conversations_in_current_scope(SavedConversationSearchRequest {
-            agent_id: String::new(),
+        .search_saved_conversations(SavedConversationSearchRequest {
+            agent_id: None,
+            project_id: None,
             query: "project-scope-needle".to_string(),
             offset: 0,
             limit: 10,
@@ -399,8 +406,9 @@ async fn saved_conversation_search_can_use_the_current_scope_without_agent_filte
         .await
         .unwrap();
     let hidden = store
-        .search_saved_conversations_in_current_scope(SavedConversationSearchRequest {
-            agent_id: String::new(),
+        .search_saved_conversations(SavedConversationSearchRequest {
+            agent_id: None,
+            project_id: None,
             query: "project-scope-needle".into(),
             offset: 0,
             limit: 10,

@@ -16,7 +16,7 @@ use rua_server::services::conversation_navigation_activity::{
 use serde_json::{json, Value};
 
 fn address() -> ChatAddress {
-    ChatAddress::agent("default", "one")
+    ChatAddress::new("one")
 }
 fn epoch() -> ConversationAuthorityEpoch {
     ConversationAuthorityEpoch::from_parts(10, 0, [1; 8])
@@ -196,13 +196,13 @@ fn distinct_chat_scopes_and_atomic_snapshot_subscription() {
     hub.publish(control(1, active("agent")));
     let (initial, mut updates) = hub.navigation.subscribe();
     let mut project = control(1, active("project"));
-    project.address = ChatAddress::project("default", "one");
+    project.address = ChatAddress::new("one");
     hub.publish(project);
     assert!(
         matches!(initial, ConversationNavigationEvent::Snapshot { activities } if activities.len() == 1)
     );
     assert!(
-        matches!(updates.try_recv().unwrap(), ConversationNavigationEvent::Activity { activity } if activity.address == ChatAddress::project("default", "one"))
+        matches!(updates.try_recv().unwrap(), ConversationNavigationEvent::Activity { activity } if activity.address == ChatAddress::new("one"))
     );
     assert_eq!(snapshot(&hub)["activities"].as_array().unwrap().len(), 2);
 }

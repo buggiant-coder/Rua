@@ -126,7 +126,7 @@ impl AcpPermissionRelay {
         let relay_scope_id = context
             .chat_address
             .clone()
-            .unwrap_or_else(|| rua_core::ChatAddress::agent(&context.agent_id, &context.chat_id))
+            .unwrap_or_else(|| rua_core::ChatAddress::new(&context.chat_id))
             .identity_key();
         self.create_request_in_scope(relay_scope_id, context, request, enriched_tool_call)
             .await
@@ -155,7 +155,7 @@ impl AcpPermissionRelay {
         let chat_address = context
             .chat_address
             .clone()
-            .unwrap_or_else(|| rua_core::ChatAddress::agent(&context.agent_id, &context.chat_id));
+            .unwrap_or_else(|| rua_core::ChatAddress::new(&context.chat_id));
         let permission_request = AcpPermissionRequest {
             id: uuid::Uuid::new_v4().to_string(),
             agent_id: context.agent_id,
@@ -189,8 +189,8 @@ impl AcpPermissionRelay {
         (permission_request, resolution_rx)
     }
 
-    pub async fn snapshot(&self, agent_id: &str, chat_id: &str) -> AcpPermissionSnapshot {
-        self.snapshot_for_address(&rua_core::ChatAddress::agent(agent_id, chat_id))
+    pub async fn snapshot(&self, chat_id: &str) -> AcpPermissionSnapshot {
+        self.snapshot_for_address(&rua_core::ChatAddress::new(chat_id))
             .await
     }
 
@@ -220,17 +220,12 @@ impl AcpPermissionRelay {
 
     pub async fn decide(
         &self,
-        agent_id: &str,
         chat_id: &str,
         request_id: &str,
         option_id: &str,
     ) -> Result<AcpPermissionRequest, AcpPermissionRelayError> {
-        self.decide_for_address(
-            &rua_core::ChatAddress::agent(agent_id, chat_id),
-            request_id,
-            option_id,
-        )
-        .await
+        self.decide_for_address(&rua_core::ChatAddress::new(chat_id), request_id, option_id)
+            .await
     }
 
     pub async fn decide_for_address(
@@ -277,8 +272,8 @@ impl AcpPermissionRelay {
         }
     }
 
-    pub async fn cancel_chat(&self, agent_id: &str, chat_id: &str) {
-        self.cancel_chat_address(&rua_core::ChatAddress::agent(agent_id, chat_id))
+    pub async fn cancel_chat(&self, chat_id: &str) {
+        self.cancel_chat_address(&rua_core::ChatAddress::new(chat_id))
             .await;
     }
 

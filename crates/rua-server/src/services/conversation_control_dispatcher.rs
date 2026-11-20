@@ -263,7 +263,15 @@ async fn verify_control_redirect(
     requested_epoch: ConversationAuthorityEpoch,
     redirect: &ConversationAuthorityRedirect,
 ) -> Result<ConversationAuthorityPlacement, DeviceCommandDeliveryError> {
-    if address.project_id().is_some() {
+    if intake
+        .chat_project_id(address)
+        .await
+        .map_err(|detail| DeviceCommandDeliveryError::Rejected {
+            reason: "invalid_chat_context".into(),
+            detail,
+        })?
+        .is_some()
+    {
         return Err(DeviceCommandDeliveryError::Rejected {
             reason: "project_authority_fixed".to_string(),
             detail: PROJECT_AUTHORITY_FIXED_DETAIL.to_string(),

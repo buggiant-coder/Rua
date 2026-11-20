@@ -23,7 +23,7 @@ pub fn build_app() -> TestApp {
     let state = AppState::from_tempdir(tmp.path().to_path_buf(), ServerProfile::Test);
     let api = Router::new()
         .merge(agents::router())
-        .merge(chats::agent_scoped_router())
+        .merge(chats::router())
         .merge(plugins::router())
         .merge(product_hooks::router());
     let app = Router::new()
@@ -69,15 +69,15 @@ pub async fn seed_materialized_chat(test: &TestApp, agent_id: &str, name: &str) 
     let response = request(
         &test.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats"),
-        Some(serde_json::json!({"name":name})),
+        "/api/chats",
+        Some(serde_json::json!({"agent_id":agent_id,"name":name})),
     )
     .await;
     assert_eq!(response.status(), axum::http::StatusCode::OK);
     let mut draft = read_json(response).await;
     let id = draft["id"].as_str().unwrap().to_string();
     let runtime = test.state.registry.get_or_create(agent_id).await.unwrap();
-    let address = rua_core::ChatAddress::agent(agent_id, &id);
+    let address = rua_core::ChatAddress::new(&id);
     let device =
         rua_server::services::device_context::current_sync_device_id(&test.state.sync_device)
             .unwrap();
@@ -86,7 +86,7 @@ pub async fn seed_materialized_chat(test: &TestApp, agent_id: &str, name: &str) 
         base_manifest_hash: rua_server::services::conversation_manifest::initial_conversation_manifest_hash(&address).unwrap(),
     };
     rua_server::services::console_chat::materialize_targeted_chat(
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         agent_id,
         &id,
         name,
@@ -131,6 +131,7 @@ pub async fn seed_materialized_chat(test: &TestApp, agent_id: &str, name: &str) 
         .resolve_complete_chat_configuration(
             &address,
             rua_server::services::product_hooks::ChatConfigurationMaterialization {
+                project_id: None,
                 selected_agent_id: agent_id.into(),
                 running_config: rua_config::ChatRunningConfig::from_agent_defaults(&running),
                 security_config: test.state.security.config_store().load(agent_id).unwrap(),
@@ -160,7 +161,7 @@ pub async fn seed_materialized_chat(test: &TestApp, agent_id: &str, name: &str) 
         )
         .await
         .unwrap();
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     store
         .update_chat_header(&id, |header| {
             header.extra.insert(

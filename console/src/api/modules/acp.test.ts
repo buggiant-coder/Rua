@@ -74,32 +74,28 @@ describe("acpApi Rust route canaries", () => {
 
     expect(request).toHaveBeenNthCalledWith(
       1,
-      "/agents/agent%2Fa/chats/chat%2F1/acp/runners?target_device_id=device-b",
+      "/chats/chat%2F1/acp/runners?agent_id=agent%2Fa&target_device_id=device-b",
     );
     expect(request).toHaveBeenNthCalledWith(
       2,
-      "/agents/agent%2Fa/chats/chat%2F1/acp/sessions?runner=codex&cwd=%2Fworkspace&target_device_id=device-b",
+      "/chats/chat%2F1/acp/sessions?runner=codex&cwd=%2Fworkspace&agent_id=agent%2Fa&target_device_id=device-b",
     );
-    expect(request).toHaveBeenNthCalledWith(
-      3,
-      "/agents/agent%2Fa/chats/chat%2F1/acp/enter",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          runner: "codex",
-          cwd: "/workspace",
-          target_device_id: "device-b",
-        }),
-      },
-    );
+    expect(request).toHaveBeenNthCalledWith(3, "/chats/chat%2F1/acp/enter", {
+      method: "POST",
+      body: JSON.stringify({
+        runner: "codex",
+        cwd: "/workspace",
+        target_device_id: "device-b",
+      }),
+    });
     expect(request).toHaveBeenNthCalledWith(
       4,
-      "/agents/agent%2Fa/chats/chat%2F1/acp/exit?target_device_id=device-b",
+      "/chats/chat%2F1/acp/exit?target_device_id=device-b",
       { method: "POST" },
     );
     expect(request).toHaveBeenNthCalledWith(
       5,
-      "/agents/agent%2Fa/chats/chat%2F1/acp/status?target_device_id=device-b",
+      "/chats/chat%2F1/acp/status?target_device_id=device-b",
     );
   });
 
@@ -114,11 +110,11 @@ describe("acpApi Rust route canaries", () => {
 
     expect(request).toHaveBeenNthCalledWith(
       1,
-      "/agents/agent%2Fa/chats/chat%2F1/acp/permissions",
+      "/chats/chat%2F1/acp/permissions",
     );
     expect(request).toHaveBeenNthCalledWith(
       2,
-      "/agents/agent%2Fa/chats/chat%2F1/acp/permissions/permission%2F1/decide",
+      "/chats/chat%2F1/acp/permissions/permission%2F1/decide",
       {
         method: "POST",
         body: JSON.stringify({ option_id: "allow_session" }),

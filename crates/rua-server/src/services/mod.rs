@@ -5,6 +5,7 @@ pub mod candidate_completion;
 pub mod chat_activity_wake;
 pub mod chat_completion_notification;
 pub(crate) mod chat_configuration_capture;
+pub mod chat_context;
 pub mod chat_deletion;
 pub mod chat_device_activity;
 pub mod chat_index;

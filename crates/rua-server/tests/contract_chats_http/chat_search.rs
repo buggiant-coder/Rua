@@ -29,17 +29,10 @@ fn text_message(id: &str, role: &str, text: &str) -> StoredMessage {
 
 async fn persist_session(
     app: &super::support::TestApp,
-    agent_id: &str,
     chat_id: &str,
     messages: Vec<StoredMessage>,
 ) {
-    let workspace = app
-        .state
-        .registry
-        .get_or_create(agent_id)
-        .await
-        .expect("workspace runtime")
-        .workspace_dir();
+    let workspace = app.state.rua_root.join("chats");
     WorkspaceSessionStore::new(&workspace)
         .append_conversation_turn(
             chat_id,
@@ -69,7 +62,6 @@ async fn persist_session(
         )
         .await
         .expect("append raw conversation turn");
-    let _ = agent_id;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -78,12 +70,10 @@ async fn chat_search_returns_console_facing_result_shape_from_text_content() {
     let agent_id = "chat_search_contract_01";
     create_agent(&app.app, agent_id, "Chat search agent").await;
 
-    let created =
-        seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Searchable Chat").await;
+    let created = seed_materialized_chat(&app, agent_id, "Searchable Chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     persist_session(
         &app,
-        agent_id,
         &chat_id,
         vec![
             text_message("u1", "user", "Please remember the Rust-only alpha signal."),
@@ -146,12 +136,10 @@ async fn chat_search_ignores_summary_checkpoints_as_transcript_source() {
     let agent_id = "chat_search_checkpoint_01";
     create_agent(&app.app, agent_id, "Checkpoint search agent").await;
 
-    let created =
-        seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Checkpoint Search").await;
+    let created = seed_materialized_chat(&app, agent_id, "Checkpoint Search").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     persist_session(
         &app,
-        agent_id,
         &chat_id,
         vec![text_message(
             "u1",
@@ -161,13 +149,7 @@ async fn chat_search_ignores_summary_checkpoints_as_transcript_source() {
     )
     .await;
 
-    let workspace = app
-        .state
-        .registry
-        .get_or_create(agent_id)
-        .await
-        .expect("workspace runtime")
-        .workspace_dir();
+    let workspace = app.state.rua_root.join("chats");
     WorkspaceSessionStore::new(&workspace)
         .publish_manual_context_checkpoint(
             &chat_id,
@@ -197,43 +179,29 @@ async fn chat_search_ignores_summary_checkpoints_as_transcript_source() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_scoped_chat_search_uses_path_agent_and_respects_limit() {
+async fn chat_search_filters_by_selected_agent_and_respects_limit() {
     let app = build_app();
-    let path_agent = "chat_search_path_agent";
+    let filter_agent = "chat_search_filter_agent";
     let header_agent = "chat_search_header_agent";
-    create_agent(&app.app, path_agent, "Path search agent").await;
+    create_agent(&app.app, filter_agent, "Filter search agent").await;
     create_agent(&app.app, header_agent, "Header search agent").await;
 
-    let path_chat = seed_materialized_chat(
-        &app,
-        &format!("/api/agents/{path_agent}/chats"),
-        None,
-        "Path Scoped Search",
-    )
-    .await;
+    let path_chat = seed_materialized_chat(&app, filter_agent, "Agent-filtered Search").await;
     let path_chat_id = path_chat["id"].as_str().expect("path chat id");
     persist_session(
         &app,
-        path_agent,
         path_chat_id,
         vec![
-            text_message("u1", "user", "needle appears in path scoped chat"),
+            text_message("u1", "user", "needle appears in filtered chat"),
             text_message("a1", "assistant", "second needle should be hidden by limit"),
         ],
     )
     .await;
 
-    let header_chat = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(header_agent),
-        "Header Scoped Search",
-    )
-    .await;
+    let header_chat = seed_materialized_chat(&app, header_agent, "Header Scoped Search").await;
     let header_chat_id = header_chat["id"].as_str().expect("header chat id");
     persist_session(
         &app,
-        header_agent,
         header_chat_id,
         vec![text_message(
             "u1",
@@ -246,7 +214,7 @@ async fn agent_scoped_chat_search_uses_path_agent_and_respects_limit() {
     let resp = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{path_agent}/chats/search?q=needle&limit=1"),
+        &format!("/api/chats/search?agent_id={filter_agent}&q=needle&limit=1"),
         None,
         Some(header_agent),
     )
@@ -260,16 +228,16 @@ async fn agent_scoped_chat_search_uses_path_agent_and_respects_limit() {
     let results = body["results"].as_array().expect("results array");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0]["chat_id"], path_chat["id"]);
-    assert_eq!(results[0]["chat_name"], "Path Scoped Search");
+    assert_eq!(results[0]["chat_name"], "Agent-filtered Search");
     assert!(results[0]["snippet"]
         .as_str()
         .unwrap_or_default()
-        .contains("path scoped"));
+        .contains("filtered chat"));
 
     let empty = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{path_agent}/chats/search?q=%20%20"),
+        &format!("/api/chats/search?agent_id={filter_agent}&q=%20%20"),
         None,
         None,
     )
@@ -280,6 +248,6 @@ async fn agent_scoped_chat_search_uses_path_agent_and_respects_limit() {
         .expect("empty query results")
         .is_empty());
 
-    delete_agent(&app.app, path_agent).await;
+    delete_agent(&app.app, filter_agent).await;
     delete_agent(&app.app, header_agent).await;
 }

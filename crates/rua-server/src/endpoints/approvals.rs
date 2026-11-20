@@ -1,4 +1,4 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -11,13 +11,13 @@ use rua_security::approval_authority::{
 use serde::{Deserialize, Serialize};
 
 use crate::errors::ApiError;
+use crate::extractors::ChatPath;
 use crate::services::conversation_authority::ConversationActiveTurnPhase;
+use crate::services::device_command_bus::{
+    ConversationApprovalDecision, ConversationControlDeviceAction,
+    ConversationControlDeviceResponse,
+};
 use crate::state::AppState;
-
-#[derive(Debug, Deserialize)]
-struct AuthoritySnapshotQuery {
-    chat_id: String,
-}
 
 #[derive(Debug, Deserialize)]
 struct AuthorityDecisionBody {
@@ -85,9 +85,10 @@ impl From<ApprovalReuseRule> for ApprovalRuleResponse {
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/chats/{chatId}/approvals/snapshot", get(chat_snapshot))
         .route(
-            "/agents/{agent_id}/approvals/snapshot",
-            get(get_authority_snapshot),
+            "/chats/{chatId}/approvals/{approvalId}/decide",
+            post(chat_decide),
         )
         .route(
             "/agents/{agent_id}/approvals/runtime-sessions/{session_id}/snapshot",
@@ -125,35 +126,60 @@ async fn get_runtime_session_approval_snapshot(
     (StatusCode::OK, Json::<ApprovalSnapshot>(snapshot)).into_response()
 }
 
-async fn get_authority_snapshot(
+async fn chat_snapshot(
     State(state): State<AppState>,
-    Path(agent_id): Path<String>,
-    Query(query): Query<AuthoritySnapshotQuery>,
+    ChatPath((agent_id, chat_id)): ChatPath<(String, String)>,
 ) -> Response {
-    let runtime = match state.registry.get_or_create(&agent_id).await {
-        Ok(runtime) => runtime,
-        Err(_) => return ApiError::NotFound(agent_id).into_response(),
-    };
-    let Some(security) = runtime.security_module().await else {
-        return ApiError::Unavailable("security module not available".into()).into_response();
-    };
-    let snapshot = security
-        .approval_authority()
-        .snapshot_at(&rua_core::ChatAddress::agent(&agent_id, &query.chat_id))
-        .await;
-    (StatusCode::OK, Json::<ApprovalSnapshot>(snapshot)).into_response()
+    chat_control_approval(
+        &state,
+        &agent_id,
+        &chat_id,
+        ConversationControlDeviceAction::ApprovalSnapshot,
+    )
+    .await
 }
 
-fn authority_error_to_response(e: ApprovalAuthorityError) -> Response {
-    match e {
-        ApprovalAuthorityError::NotFound(id) => ApiError::NotFound(id).into_response(),
-        ApprovalAuthorityError::InvalidState {
-            id,
-            current,
-            attempted,
-        } => ApiError::Conflict(format!("approval {id} is {current:?}, cannot {attempted}"))
-            .into_response(),
-        ApprovalAuthorityError::Store(message) => ApiError::Internal(message).into_response(),
+async fn chat_decide(
+    State(state): State<AppState>,
+    ChatPath((agent_id, chat_id, approval_id)): ChatPath<(String, String, String)>,
+    Json(decision): Json<ConversationApprovalDecision>,
+) -> Response {
+    chat_control_approval(
+        &state,
+        &agent_id,
+        &chat_id,
+        ConversationControlDeviceAction::DecideApproval {
+            approval_id,
+            decision,
+        },
+    )
+    .await
+}
+
+async fn chat_control_approval(
+    state: &AppState,
+    agent_id: &str,
+    chat_id: &str,
+    action: ConversationControlDeviceAction,
+) -> Response {
+    let workspace = state.chat_workspace();
+    match super::chats::dispatch_agent_chat_control(
+        state,
+        agent_id,
+        workspace.as_path(),
+        chat_id,
+        action,
+    )
+    .await
+    {
+        Ok(ConversationControlDeviceResponse::ApprovalSnapshot { snapshot }) => {
+            Json(snapshot).into_response()
+        }
+        Ok(ConversationControlDeviceResponse::ApprovalDecided { request }) => {
+            Json(request).into_response()
+        }
+        Ok(_) => ApiError::Internal("unexpected Chat approval response".into()).into_response(),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -374,5 +400,18 @@ async fn publish_agent_security_config(state: &AppState, agent_id: &str) {
                 "[sync-publication] agent security publication skipped: failed to load config"
             );
         }
+    }
+}
+
+fn authority_error_to_response(e: ApprovalAuthorityError) -> Response {
+    match e {
+        ApprovalAuthorityError::NotFound(id) => ApiError::NotFound(id).into_response(),
+        ApprovalAuthorityError::InvalidState {
+            id,
+            current,
+            attempted,
+        } => ApiError::Conflict(format!("approval {id} is {current:?}, cannot {attempted}"))
+            .into_response(),
+        ApprovalAuthorityError::Store(message) => ApiError::Internal(message).into_response(),
     }
 }

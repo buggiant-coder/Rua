@@ -28,10 +28,7 @@ fn terminal_fact(address: rua_core::ChatAddress, status: &str) -> ConversationTu
 #[test]
 fn completed_chat_notification_targets_the_canonical_chat_uri() {
     let request = request_for_completed_chat(
-        &terminal_fact(
-            rua_core::ChatAddress::agent("agent-a", "chat-42"),
-            "completed",
-        ),
+        &terminal_fact(rua_core::ChatAddress::new("chat-42"), "completed"),
         "device-b",
         Some("Rust 架构改造讨论"),
         "agent-a",
@@ -46,14 +43,14 @@ fn completed_chat_notification_targets_the_canonical_chat_uri() {
     assert_eq!(request.body.as_deref(), Some("已完成回复"));
     assert_eq!(
         request.rua_uri.as_deref(),
-        Some("rua://agents/agent-a/chats/chat-42?turn=turn-1")
+        Some("rua://chats/chat-42?turn=turn-1")
     );
 }
 
 #[test]
 fn failed_chat_does_not_create_a_completion_notification() {
     assert!(request_for_completed_chat(
-        &terminal_fact(rua_core::ChatAddress::agent("agent-a", "chat-42"), "failed"),
+        &terminal_fact(rua_core::ChatAddress::new("chat-42"), "failed"),
         "device-b",
         Some("Rust 架构改造讨论"),
         "agent-a",
@@ -65,10 +62,7 @@ fn failed_chat_does_not_create_a_completion_notification() {
 #[test]
 fn completed_chat_notification_falls_back_to_chat_and_agent_ids() {
     let request = request_for_completed_chat(
-        &terminal_fact(
-            rua_core::ChatAddress::agent("agent-a", "chat-42"),
-            "completed",
-        ),
+        &terminal_fact(rua_core::ChatAddress::new("chat-42"), "completed"),
         "device-b",
         Some("  "),
         "agent-a",
@@ -141,7 +135,7 @@ fn request(target_device_id: &str) -> UserNotificationRequest {
         },
         title: "Run complete".to_string(),
         body: Some("The requested analysis is ready.".to_string()),
-        rua_uri: Some("rua://agents/researcher/chats/chat-42?turn=7#result".to_string()),
+        rua_uri: Some("rua://chats/chat-42?turn=7#result".to_string()),
     }
 }
 
@@ -164,7 +158,7 @@ fn notification_wire_roundtrip_preserves_sender_payload_and_uri() {
     );
     assert_eq!(
         json["payload"]["request"]["rua_uri"],
-        "rua://agents/researcher/chats/chat-42?turn=7#result"
+        "rua://chats/chat-42?turn=7#result"
     );
 }
 

@@ -132,15 +132,10 @@ impl TerminalObserverInvoker for HandlerExecutorTerminalObserverInvoker {
         let (owner_namespace, _) = definition_id
             .rsplit_once('/')
             .ok_or_else(|| "invalid Definition identity".to_string())?;
-        let scope = if let Some(agent_id) = owner_namespace.strip_prefix("agent:") {
-            rua_core::ChatScope::agent(agent_id)
-        } else if let Some(project_id) = owner_namespace.strip_prefix("project:") {
-            rua_core::ChatScope::project(project_id)
-        } else if owner_namespace.starts_with("plugin:") {
-            terminal.address.scope().clone()
-        } else {
-            return Err(format!("unsupported Handler owner: {owner_namespace}"));
-        };
+        let scope = super::product_hook_execution::HandlerResourceScope::for_owner(
+            owner_namespace,
+            &terminal.address,
+        )?;
         let resource_id = format!("{}:{}", scope.kind(), scope.owner_id());
         let working_directory = requirement
             .working_directory

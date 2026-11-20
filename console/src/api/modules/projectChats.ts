@@ -98,10 +98,8 @@ export type ProjectResourcePolicyView = {
   agent_rule_count: number;
 };
 
-function projectChatPath(projectId: string, chatId: string): string {
-  return `/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(
-    chatId,
-  )}`;
+function projectChatPath(_projectId: string, chatId: string): string {
+  return `/chats/${encodeURIComponent(chatId)}`;
 }
 
 function projectChatChildPath(
@@ -193,22 +191,16 @@ export const projectChatsApi = {
     ),
   getLlmDebugCapture: (projectId: string, chatId: string) =>
     request<LlmDebugCaptureStatus>(
-      `/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/llm-debug-capture`,
+      projectChatChildPath(projectId, chatId, "llm-debug-capture"),
     ),
   startLlmDebugCapture: (projectId: string, chatId: string) =>
     request<LlmDebugCaptureStatus>(
-      `/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/llm-debug-capture`,
+      projectChatChildPath(projectId, chatId, "llm-debug-capture"),
       { method: "POST" },
     ),
   stopLlmDebugCapture: (projectId: string, chatId: string) =>
     request<LlmDebugCaptureStatus>(
-      `/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/llm-debug-capture`,
+      projectChatChildPath(projectId, chatId, "llm-debug-capture"),
       { method: "DELETE" },
     ),
   listChats: async (
@@ -257,7 +249,7 @@ export const projectChatsApi = {
 
   updateChat: (projectId: string, chatId: string, update: ProjectChatUpdate) =>
     request<ChatSpec>(projectChatPath(projectId, chatId), {
-      method: "PATCH",
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(update),
     }),

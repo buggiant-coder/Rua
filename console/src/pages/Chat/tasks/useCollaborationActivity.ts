@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { agentsApi } from "@/api/modules/agents";
 import { chatApi } from "@/api/modules/chat";
-import { projectChatsApi } from "@/api/modules/projectChats";
 import type { ConversationApiTarget } from "@/api/modules/conversation";
 import type {
   ChatSpec,
@@ -18,76 +16,31 @@ export interface CollaborationActivity {
 }
 
 export function collaborationAddressKey(address: TaskChatAddress): string {
-  const scope = address.scope;
-  return JSON.stringify([
-    scope.kind,
-    scope.kind === "project" ? scope.project_id : scope.agent_id,
-    address.chat_id,
-  ]);
+  return address.chat_id;
 }
 
 async function listSourceCollaborations(
-  target: ConversationApiTarget,
+  _target: ConversationApiTarget,
   chatId: string,
 ) {
-  const targets: ConversationApiTarget[] =
-    target.scope === "project"
-      ? [target]
-      : Array.from(
-          new Set([
-            target.agentId,
-            ...(await agentsApi.listAgents()).agents.map((agent) => agent.id),
-          ]),
-        ).map((agentId) => ({ scope: "agent", agentId }));
-  const pages = await Promise.all(
-    targets.map(async (scope) => {
-      const chats: ChatSpec[] = [];
-      let offset = 0;
-      while (true) {
-        const params = {
-          view: "collaboration" as const,
-          source_chat_id: chatId,
-          offset,
-          limit: 200,
-          sort_by: "updated_at" as const,
-          sort_order: "desc" as const,
-        };
-        const page =
-          scope.scope === "project"
-            ? await projectChatsApi.listChats(scope.projectId, params)
-            : await chatApi.listChats(params, scope.agentId);
-        chats.push(...page.data);
-        offset += page.data.length;
-        if (page.data.length === 0 || offset >= page.total) break;
-      }
-      return chats
-        .filter((chat) => {
-          const source = chat.collaboration?.source;
-          const sourceScope = source?.scope as
-            | TaskChatAddress["scope"]
-            | undefined;
-          return (
-            source?.chat_id === chatId &&
-            (target.scope === "project"
-              ? sourceScope?.kind === "project" &&
-                sourceScope.project_id === target.projectId
-              : sourceScope?.kind === "agent" &&
-                sourceScope.agent_id === target.agentId)
-          );
-        })
-        .map((chat) => ({
-          chat,
-          address: {
-            scope:
-              scope.scope === "project"
-                ? { kind: "project" as const, project_id: scope.projectId }
-                : { kind: "agent" as const, agent_id: scope.agentId },
-            chat_id: chat.id,
-          },
-        }));
-    }),
-  );
-  return pages.flat();
+  const chats: ChatSpec[] = [];
+  let offset = 0;
+  while (true) {
+    const page = await chatApi.listChats({
+      view: "collaboration",
+      source_chat_id: chatId,
+      offset,
+      limit: 200,
+      sort_by: "updated_at",
+      sort_order: "desc",
+    });
+    chats.push(...page.data);
+    offset += page.data.length;
+    if (page.data.length === 0 || offset >= page.total) break;
+  }
+  return chats
+    .filter((chat) => chat.collaboration?.source.chat_id === chatId)
+    .map((chat) => ({ chat, address: { chat_id: chat.id } }));
 }
 
 export function useCollaborationActivity({

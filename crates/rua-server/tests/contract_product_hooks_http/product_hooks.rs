@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::http::{Method, StatusCode};
-use rua_core::{ChatAddress, ChatScopeStore};
+use rua_core::{ChatAddress, ChatStore};
 use rua_server::services::console_chat::CONSOLE_CHANNEL_ID;
 use rua_server::services::conversation_authority::{
     ConversationActiveTurnStart, ConversationAuthority, ConversationDriverKind,
@@ -24,14 +24,14 @@ const DEFINITION_ID: &str = "rua:native/turn-terminal-audit";
 #[tokio::test]
 async fn configuration_candidate_is_not_adopted_until_persistence_succeeds() {
     let hooks = ProductHookService::new();
-    let address = ChatAddress::agent("candidate-agent", "candidate-chat");
+    let address = ChatAddress::new("candidate-chat");
     hooks
         .set_agent_activation("candidate-agent", DEFINITION_ID, true)
         .await
         .unwrap();
 
     let candidate = hooks
-        .resolve_chat_configuration(&address, "candidate-agent")
+        .resolve_chat_configuration(&address, "candidate-agent", None)
         .await
         .unwrap();
 
@@ -45,7 +45,7 @@ async fn configuration_candidate_is_not_adopted_until_persistence_succeeds() {
 #[tokio::test]
 async fn contributions_api_filters_by_chat_and_turn_with_provenance() {
     let test = build_app();
-    let address = ChatAddress::agent("contribution-agent", "chat-a");
+    let address = ChatAddress::new("chat-a");
     test.state
         .product_hooks
         .record_contribution(
@@ -67,7 +67,7 @@ async fn contributions_api_filters_by_chat_and_turn_with_provenance() {
     let response = request(
         &test.app,
         Method::GET,
-        "/api/agents/contribution-agent/hooks/contributions?chat_id=chat-a&turn_id=turn-a",
+        "/api/chats/chat-a/hooks/contributions?turn_id=turn-a",
         None,
     )
     .await;
@@ -106,7 +106,7 @@ async fn queued_claim_uses_current_epoch_while_active_turn_keeps_frozen_epoch() 
     .await;
     let chat = super::support::seed_materialized_chat(&test, agent_id, "Claim epochs").await;
     let chat_id = chat["id"].as_str().unwrap();
-    let address = ChatAddress::agent(agent_id, chat_id);
+    let address = ChatAddress::new(chat_id);
     let old_configuration = test
         .state
         .product_hooks
@@ -150,7 +150,7 @@ async fn queued_claim_uses_current_epoch_while_active_turn_keeps_frozen_epoch() 
         Some(json!({"definition_id": DEFINITION_ID, "enabled": false})),
     )
     .await;
-    let configuration_path = format!("/api/agents/{agent_id}/chats/{chat_id}/configuration");
+    let configuration_path = format!("/api/chats/{chat_id}/configuration");
     let preview = read_json(request(&test.app, Method::GET, &configuration_path, None).await).await;
     let updated = request(&test.app, Method::PUT, &configuration_path, Some(json!({
         "expected_epoch": preview["current"]["epoch"], "candidate_epoch": preview["candidate"]["epoch"],
@@ -210,7 +210,7 @@ async fn running_configuration_update_preserves_claimed_epoch_and_persists_new_s
     create_configuration_agent(&test.app, agent_id).await;
     let chat = super::support::seed_materialized_chat(&test, agent_id, "Running epochs").await;
     let chat_id = chat["id"].as_str().unwrap();
-    let address = ChatAddress::agent(agent_id, chat_id);
+    let address = ChatAddress::new(chat_id);
     let before = test
         .state
         .product_hooks
@@ -232,7 +232,7 @@ async fn running_configuration_update_preserves_claimed_epoch_and_persists_new_s
             driver_detail: None,
         })
         .await;
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let mut running = before.running_config.clone();
     running.llm_max_concurrent = 2;
     running.llm_max_retries = 8;
@@ -292,8 +292,8 @@ async fn invalid_running_configuration_does_not_replace_current_epoch() {
     create_configuration_agent(&test.app, agent_id).await;
     let chat = super::support::seed_materialized_chat(&test, agent_id, "Invalid running").await;
     let chat_id = chat["id"].as_str().unwrap();
-    let address = ChatAddress::agent(agent_id, chat_id);
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    let address = ChatAddress::new(chat_id);
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let before = test
         .state
         .product_hooks
@@ -330,7 +330,7 @@ async fn collaboration_mode_update_changes_only_future_configuration_epoch() {
     create_configuration_agent(&test.app, agent_id).await;
     let chat = super::support::seed_materialized_chat(&test, agent_id, "Mode epoch").await;
     let chat_id = chat["id"].as_str().unwrap();
-    let address = ChatAddress::agent(agent_id, chat_id);
+    let address = ChatAddress::new(chat_id);
     let before = test
         .state
         .product_hooks
@@ -351,7 +351,7 @@ async fn collaboration_mode_update_changes_only_future_configuration_epoch() {
     let response = request(
         &test.app,
         Method::PUT,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         Some(json!({"collaboration_mode": "plan"})),
     )
     .await;
@@ -397,7 +397,7 @@ async fn chat_security_changes_only_on_explicit_configuration_update() {
         .unwrap();
     let chat = super::support::seed_materialized_chat(&test, agent_id, "Security snapshot").await;
     let chat_id = chat["id"].as_str().unwrap();
-    let address = ChatAddress::agent(agent_id, chat_id);
+    let address = ChatAddress::new(chat_id);
     let before = test
         .state
         .product_hooks
@@ -421,7 +421,7 @@ async fn chat_security_changes_only_on_explicit_configuration_update() {
             .security_config,
         initial
     );
-    let path = format!("/api/agents/{agent_id}/chats/{chat_id}/configuration");
+    let path = format!("/api/chats/{chat_id}/configuration");
     let preview_response = request(&test.app, Method::GET, &path, None).await;
     assert_eq!(preview_response.status(), StatusCode::OK);
     let preview = read_json(preview_response).await;
@@ -462,8 +462,8 @@ async fn complete_configuration_preview_requires_matching_epoch_and_applies_exac
     assert_eq!(created.status(), StatusCode::CREATED);
     let chat = super::support::seed_materialized_chat(&test, agent_id, "Preview epochs").await;
     let chat_id = chat["id"].as_str().unwrap();
-    let address = ChatAddress::agent(agent_id, chat_id);
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    let address = ChatAddress::new(chat_id);
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let intake = &test.state.conversation_input_intake;
     let preview = intake
         .chat_configuration_control(&address, agent_id, scope.root(), None)
@@ -527,7 +527,7 @@ async fn complete_configuration_preview_requires_matching_epoch_and_applies_exac
     let history = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
     )
     .await;
@@ -543,8 +543,8 @@ async fn configuration_persistence_failure_does_not_adopt_or_publish_and_can_be_
     let test = build_app();
     let chat = super::support::seed_materialized_chat(&test, "default", "Failed commit").await;
     let chat_id = chat["id"].as_str().unwrap();
-    let address = ChatAddress::agent("default", chat_id);
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    let address = ChatAddress::new(chat_id);
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let store = rua_session::WorkspaceSessionStore::new(scope.root());
     let intake = &test.state.conversation_input_intake;
     let preview = intake
@@ -642,8 +642,8 @@ async fn configuration_preview_preserves_unset_choices_in_a_complete_snapshot() 
     let test = build_app();
     let chat = super::support::seed_materialized_chat(&test, "default", "Unset choices").await;
     let chat_id = chat["id"].as_str().unwrap();
-    let address = ChatAddress::agent("default", chat_id);
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    let address = ChatAddress::new(chat_id);
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let store = rua_session::WorkspaceSessionStore::new(scope.root());
     let mut header = store.load_chat_header(chat_id).await.unwrap().unwrap();
     let mut configuration = header.extra["hook_configuration"].clone();
@@ -677,7 +677,7 @@ async fn claimed_input_uses_snapshotted_assignment_instead_of_new_sender_default
         Arc::new(ForegroundOperationRegistry::new(true)),
         hooks.clone(),
     );
-    let address = ChatAddress::agent("fixed-agent", uuid::Uuid::new_v4().to_string());
+    let address = ChatAddress::new(uuid::Uuid::new_v4().to_string());
     let mut materialization = complete_materialization("fixed-agent", "test-device");
     let assignment = rua_chat::TurnAgentAssignment {
         agent_id: "fixed-agent".to_string(),
@@ -783,8 +783,8 @@ async fn deleting_agent_default_file_preserves_materialized_chat_configuration()
     let chat =
         super::support::seed_materialized_chat(&test, agent_id, "Retained configuration").await;
     let chat_id = chat["id"].as_str().unwrap();
-    let address = ChatAddress::agent(agent_id, chat_id);
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    let address = ChatAddress::new(chat_id);
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let store = rua_session::WorkspaceSessionStore::new(scope.root());
     let before = store
         .load_chat_running_config(chat_id)
@@ -816,7 +816,7 @@ async fn deleting_agent_default_file_preserves_materialized_chat_configuration()
     let response = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/hooks/chats/{chat_id}/configuration"),
+        &format!("/api/chats/{chat_id}/hooks/configuration"),
         None,
     )
     .await;
@@ -830,7 +830,7 @@ async fn deleting_agent_default_file_preserves_materialized_chat_configuration()
 #[tokio::test]
 async fn invalid_configuration_is_rejected_before_submission_is_accepted() {
     let authority = ConversationAuthority::new();
-    let address = ChatAddress::agent("invalid-config", uuid::Uuid::new_v4().to_string());
+    let address = ChatAddress::new(uuid::Uuid::new_v4().to_string());
     let streams = ActiveStreamRegistry::new();
     let key = StreamKey::new(CONSOLE_CHANNEL_ID, address.clone(), Priority::Normal);
     let mut input = pending_message("must not execute");
@@ -874,7 +874,7 @@ async fn complete_configuration_http_preview_and_apply_preserve_unknown_fields()
     );
     let chat = super::support::seed_materialized_chat(&test, agent_id, "HTTP Preview").await;
     let chat_id = chat["id"].as_str().unwrap();
-    let path = format!("/api/agents/{agent_id}/chats/{chat_id}/configuration");
+    let path = format!("/api/chats/{chat_id}/configuration");
     let response = request(&test.app, Method::GET, &path, None).await;
     assert_eq!(response.status(), StatusCode::OK);
     let preview = read_json(response).await;
@@ -920,16 +920,14 @@ async fn project_materialization_adds_project_hooks_without_agent_scope_leakage(
         .await;
 
     let agent = hooks
-        .resolve_chat_configuration(
-            &ChatAddress::agent("scope-agent", "agent-chat"),
-            "scope-agent",
-        )
+        .resolve_chat_configuration(&ChatAddress::new("agent-chat"), "scope-agent", None)
         .await
         .unwrap();
     let project = hooks
         .resolve_chat_configuration(
-            &ChatAddress::project("scope-project", "project-chat"),
+            &ChatAddress::new("project-chat"),
             "scope-agent",
+            Some("scope-project"),
         )
         .await
         .unwrap();
@@ -946,7 +944,7 @@ async fn project_materialization_adds_project_hooks_without_agent_scope_leakage(
         ]
     );
     assert!(hooks
-        .chat_configuration(&ChatAddress::project("scope-project", "project-chat"))
+        .chat_configuration(&ChatAddress::new("project-chat"))
         .await
         .is_none());
 }
@@ -969,7 +967,7 @@ async fn invalid_composition_preserves_persisted_and_runtime_epoch() {
     let chat =
         super::support::seed_materialized_chat(&test, agent_id, "Atomic configuration").await;
     let chat_id = chat["id"].as_str().unwrap();
-    let address = ChatAddress::agent(agent_id, chat_id);
+    let address = ChatAddress::new(chat_id);
     let previous = test
         .state
         .product_hooks
@@ -996,7 +994,7 @@ async fn invalid_composition_preserves_persisted_and_runtime_epoch() {
     let response = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/configuration"),
+        &format!("/api/chats/{chat_id}/configuration"),
         None,
     )
     .await;
@@ -1006,7 +1004,7 @@ async fn invalid_composition_preserves_persisted_and_runtime_epoch() {
         Some(previous.clone())
     );
 
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address);
+    let scope = ChatStore::resolve(&test.state.rua_root, address);
     let header = rua_session::WorkspaceSessionStore::new(scope.root())
         .load_chat_header(chat_id)
         .await
@@ -1032,8 +1030,8 @@ async fn restart_restores_persisted_configuration_when_the_turn_is_claimed() {
     .await;
     let chat = super::support::seed_materialized_chat(&test, agent_id, "Restart").await;
     let chat_id = chat["id"].as_str().unwrap();
-    let address = ChatAddress::agent(agent_id, chat_id);
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    let address = ChatAddress::new(chat_id);
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let header = rua_session::WorkspaceSessionStore::new(scope.root())
         .load_chat_header(chat_id)
         .await
@@ -1115,7 +1113,7 @@ async fn structured_command_context_and_device_are_preserved_without_fallback() 
         .unwrap();
     let configuration = hooks
         .resolve_complete_chat_configuration(
-            &ChatAddress::agent(agent_id, "requirements-chat"),
+            &ChatAddress::new("requirements-chat"),
             complete_materialization(agent_id, "authority-device"),
         )
         .await
@@ -1160,7 +1158,7 @@ async fn structured_command_context_and_device_are_preserved_without_fallback() 
 
     let error = hooks
         .resolve_complete_chat_configuration(
-            &ChatAddress::agent(agent_id, "missing-device"),
+            &ChatAddress::new("missing-device"),
             complete_materialization(agent_id, ""),
         )
         .await
@@ -1175,7 +1173,7 @@ async fn first_project_claim_adopts_candidate_only_after_persistence_succeeds() 
         .set_agent_activation("project-agent", DEFINITION_ID, true)
         .await
         .unwrap();
-    let address = ChatAddress::project("project-a", "project-first");
+    let address = ChatAddress::new("project-first");
     let candidate = hooks
         .resolve_complete_chat_configuration(
             &address,
@@ -1251,8 +1249,9 @@ async fn new_agent_chat_materializes_one_complete_configuration_epoch() {
     let created = request(
         &test.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats"),
+        "/api/chats",
         Some(json!({
+            "agent_id": agent_id,
             "name": "Complete configuration",
             "user_id": "test",
             "channel": "console",
@@ -1285,7 +1284,7 @@ async fn new_agent_chat_materializes_one_complete_configuration_epoch() {
     }).await;
     assert!(matches!(outcome,rua_server::services::conversation_input_intake::ConversationInputDeliveryOutcome::Delivered { .. }),"{outcome:?}");
     let runtime = test.state.registry.get(agent_id).await.unwrap();
-    let header = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir())
+    let header = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir())
         .load_chat_header(&id)
         .await
         .unwrap()
@@ -1752,7 +1751,7 @@ async fn product_hooks_release_acceptance_spans_registration_adoption_turn_and_a
     let old_configuration = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/hooks/chats/{old_id}/configuration"),
+        &format!("/api/chats/{old_id}/hooks/configuration"),
         None,
     )
     .await;
@@ -1761,7 +1760,7 @@ async fn product_hooks_release_acceptance_spans_registration_adoption_turn_and_a
         json!([])
     );
 
-    let configuration_path = format!("/api/agents/{agent_id}/chats/{old_id}/configuration");
+    let configuration_path = format!("/api/chats/{old_id}/configuration");
     let preview = read_json(request(&test.app, Method::GET, &configuration_path, None).await).await;
     let updated = request(&test.app, Method::PUT, &configuration_path, Some(json!({
         "expected_epoch": preview["current"]["epoch"], "candidate_epoch": preview["candidate"]["epoch"],
@@ -1781,7 +1780,7 @@ async fn product_hooks_release_acceptance_spans_registration_adoption_turn_and_a
     );
 
     let chat_id = new_chat["id"].as_str().unwrap();
-    let address = ChatAddress::agent(agent_id, chat_id);
+    let address = ChatAddress::new(chat_id);
     let turn = test
         .state
         .conversation_authority
@@ -1856,7 +1855,7 @@ async fn product_hooks_release_acceptance_spans_registration_adoption_turn_and_a
         &test.app,
         Method::GET,
         &format!(
-            "/api/agents/{agent_id}/hooks/contributions?chat_id={chat_id}&turn_id={}",
+            "/api/chats/{chat_id}/hooks/contributions?turn_id={}",
             turn.turn_id
         ),
         None,
@@ -1888,6 +1887,7 @@ fn complete_materialization(
     authority_device_id: &str,
 ) -> ChatConfigurationMaterialization {
     ChatConfigurationMaterialization {
+        project_id: None,
         selected_agent_id: agent_id.to_string(),
         running_config: Default::default(),
         security_config: Default::default(),
@@ -1942,7 +1942,7 @@ async fn automation_inventory_is_adopted_only_by_target_chat_and_future_turns() 
     let chat = super::support::seed_materialized_chat(&test, agent, "Adoption").await;
     let other = super::support::seed_materialized_chat(&test, agent, "Keep old tools").await;
     let id = chat["id"].as_str().unwrap();
-    let address = ChatAddress::agent(agent, id);
+    let address = ChatAddress::new(id);
     let before = test
         .state
         .product_hooks
@@ -1970,7 +1970,7 @@ async fn automation_inventory_is_adopted_only_by_target_chat_and_future_turns() 
         config.clients.insert(McpServerId::new(name),serde_json::from_value(json!({"name":name,"enabled":true,"transport":"stdio","command":"python3","args":[driver],"auto_connect":"lazy_on_first_use"})).unwrap());
     }
     manager.load_config(config).await.unwrap();
-    let path = format!("/api/agents/{agent}/chats/{id}/configuration");
+    let path = format!("/api/chats/{id}/configuration");
     let preview = read_json(request(&test.app, Method::GET, &path, None).await).await;
     let capabilities = &preview["candidate"]["capability_configuration"];
     for name in ["rua_browser", "rua_computer"] {
@@ -2013,7 +2013,7 @@ async fn automation_inventory_is_adopted_only_by_target_chat_and_future_turns() 
         frozen.capability_configuration,
         before.capability_configuration
     );
-    let other_address = ChatAddress::agent(agent, other["id"].as_str().unwrap());
+    let other_address = ChatAddress::new(other["id"].as_str().unwrap());
     assert_eq!(
         serde_json::to_value(
             test.state

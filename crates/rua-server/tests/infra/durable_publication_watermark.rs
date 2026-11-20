@@ -10,7 +10,7 @@ use tempfile::TempDir;
 const CHAT_ID: &str = "00000000-0000-0000-0000-000000009963";
 
 fn address() -> ChatAddress {
-    ChatAddress::agent("default", CHAT_ID)
+    ChatAddress::new(CHAT_ID)
 }
 
 fn manifest(sequence: u64) -> ConversationManifest {
@@ -130,7 +130,7 @@ async fn advancement_rejects_wrong_chat_and_same_sequence_divergence() {
         .await
         .expect("first publication");
 
-    let wrong = ChatAddress::project("project-a", CHAT_ID);
+    let wrong = ChatAddress::new(CHAT_ID);
     let error = store
         .advance(&wrong, &manifest(3))
         .await

@@ -82,11 +82,12 @@ async fn frozen_runtime(
             .await
             .unwrap();
     }
-    let address = ChatAddress::agent(agent_id, "chat-a");
+    let address = ChatAddress::new("chat-a");
     let configuration = hooks
         .resolve_complete_chat_configuration(
             &address,
             ChatConfigurationMaterialization {
+                project_id: None,
                 selected_agent_id: agent_id.to_string(),
                 running_config: Default::default(),
                 security_config: Default::default(),
@@ -276,7 +277,7 @@ fn conversation_drivers_declare_candidate_completion_capability() {
 #[test]
 fn continuation_request_reenters_the_same_turn_without_user_input_or_new_epoch() {
     let context = rua_server::services::candidate_completion::HookContinuationContext {
-        address: ChatAddress::agent("candidate-agent", "chat-a"),
+        address: ChatAddress::new("chat-a"),
         turn_id: "turn-a".to_string(),
         definition_revision: "agent:candidate-agent/review@v1".to_string(),
         source: "agent".to_string(),

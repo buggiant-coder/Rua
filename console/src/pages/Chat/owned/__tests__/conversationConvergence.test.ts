@@ -13,7 +13,6 @@ import {
   type ConversationStreamEvent,
 } from "../stream";
 
-const target = { scope: "agent" as const, agentId: "agent-a" };
 const user: Message = {
   id: "user-1",
   role: "user",
@@ -25,7 +24,6 @@ function raw(sequence: number) {
     activity_generation: "generation-1",
     activity_sequence: sequence,
     address: {
-      scope: { kind: "agent", agent_id: "agent-a" },
       chat_id: "chat-1",
     },
   };
@@ -118,8 +116,8 @@ describe("ConversationConvergence", () => {
   it.each(["desktop", "phone"])(
     "converges replay and live to identical content and reconciliation intents on %s",
     (device) => {
-      const view = new ConversationConvergence("agent-a:chat-1");
-      const live = view.openActivity(target, "chat-1", null);
+      const view = new ConversationConvergence("chat:chat-1");
+      const live = view.openActivity("chat-1", null);
       const current = context(device);
       const deliveries: string[] = [];
       const hydration = new Set<string>();
@@ -132,7 +130,7 @@ describe("ConversationConvergence", () => {
         update.hydrationDevices.forEach((id) => hydration.add(id));
         refresh ||= update.refreshHistory;
       }
-      const catchup = view.openActivity(target, "chat-1", null);
+      const catchup = view.openActivity("chat-1", null);
       const recovered = catchup.consume(replay(frames), context(device))!;
       expect(recovered.replay?.fold).toEqual(current.fold);
       expect(recovered.replay?.user).toEqual(user);
@@ -145,13 +143,13 @@ describe("ConversationConvergence", () => {
   );
 
   it("does not commit an incomplete replay cursor, so reconnect can recover the full batch", () => {
-    const view = new ConversationConvergence("agent-a:chat-1");
-    const first = view.openActivity(target, "chat-1", null);
+    const view = new ConversationConvergence("chat:chat-1");
+    const first = view.openActivity("chat-1", null);
     expect(
       first.consume(replay(frames.slice(0, 3), false), context()),
     ).toBeNull();
     expect(first.cursor).toBeNull();
-    const second = view.openActivity(target, "chat-1", first.cursor);
+    const second = view.openActivity("chat-1", first.cursor);
     const recovered = second.consume(replay(frames), context())!;
     expect(JSON.stringify(recovered.replay?.fold.output)).toContain(
       "Hello world",
@@ -161,8 +159,8 @@ describe("ConversationConvergence", () => {
   });
 
   it("stages a checkpoint across chunks without retaining the old tail or skipping earlier positions", () => {
-    const view = new ConversationConvergence("agent-a:chat-1");
-    const reader = view.openActivity(target, "chat-1", {
+    const view = new ConversationConvergence("chat:chat-1");
+    const reader = view.openActivity("chat-1", {
       generation: "generation-1",
       sequence: 99,
     });
@@ -179,16 +177,15 @@ describe("ConversationConvergence", () => {
     expect(reader.cursor?.sequence).toBe(3);
   });
 
-  it("rejects foreign scoped activity before advancing the cursor or requesting hydration", () => {
-    const view = new ConversationConvergence("agent-a:chat-1");
-    const reader = view.openActivity(target, "chat-1", null);
+  it("rejects activity for another Chat before advancing the cursor or requesting hydration", () => {
+    const view = new ConversationConvergence("chat:chat-1");
+    const reader = view.openActivity("chat-1", null);
     const event = {
       ...frames[4],
       raw: {
         ...raw(100),
         address: {
-          scope: { kind: "project", project_id: "project-a" },
-          chat_id: "chat-1",
+          chat_id: "other-chat",
         },
       },
     } as ConversationStreamEvent;
@@ -204,7 +201,7 @@ describe("ConversationConvergence", () => {
   });
 
   it("rejects older history before it can release a live overlay", () => {
-    const view = new ConversationConvergence("agent-a:chat-1");
+    const view = new ConversationConvergence("chat:chat-1");
     const older = view.beginHistoryRead();
     const newer = view.beginHistoryRead();
     expect(view.acceptHistory(newer, history(4))).toBe(true);
@@ -221,7 +218,7 @@ describe("ConversationConvergence", () => {
   });
 
   it("invalidates pre-rollback reads while allowing the shorter rolled-back history", () => {
-    const view = new ConversationConvergence("agent-a:chat-1");
+    const view = new ConversationConvergence("chat:chat-1");
     const old = view.beginHistoryRead();
     expect(view.acceptHistory(old, history(4))).toBe(true);
     view.invalidateHistory();
@@ -234,9 +231,9 @@ describe("ConversationConvergence", () => {
   });
 
   it("keeps uncovered live content, then replaces it in place when matching history arrives", () => {
-    const view = new ConversationConvergence("agent-a:chat-1");
+    const view = new ConversationConvergence("chat:chat-1");
     const recovered = view
-      .openActivity(target, "chat-1", null)
+      .openActivity("chat-1", null)
       .consume(replay(frames), context())!.replay!;
     const partial = history(1);
     expect(view.acceptHistory(view.beginHistoryRead(), partial)).toBe(true);
@@ -277,14 +274,14 @@ describe("ConversationConvergence", () => {
   });
 
   it("does not replace a newer idle control with an older running control", () => {
-    const view = new ConversationConvergence("agent-a:chat-1");
+    const view = new ConversationConvergence("chat:chat-1");
     expect(view.acceptControl(control(8, false))).toBe(true);
     expect(view.acceptControl(control(7, true))).toBe(false);
     expect(view.acceptControl(control(9, true))).toBe(true);
     expect(view.acceptControl(control(1, true, "epoch-2"))).toBe(true);
   });
   it("uses restored durable coverage before accepting a history response", () => {
-    const view = new ConversationConvergence("agent-a:chat-1");
+    const view = new ConversationConvergence("chat:chat-1");
     const ticket = view.beginHistoryRead();
     const input = {
       pendingDeliveries: [],
@@ -299,7 +296,7 @@ describe("ConversationConvergence", () => {
   });
 
   it("preserves rollback/control ordering within a replay commit", () => {
-    const view = new ConversationConvergence("agent-a:chat-1");
+    const view = new ConversationConvergence("chat:chat-1");
     const transitions: ConversationStreamEvent[] = [
       { kind: "conversation_control", control: control(1, true), raw: raw(1) },
       {
@@ -310,7 +307,7 @@ describe("ConversationConvergence", () => {
       },
       { kind: "conversation_control", control: control(2, false), raw: raw(3) },
     ];
-    const reader = view.openActivity(target, "chat-1", null);
+    const reader = view.openActivity("chat-1", null);
     expect(
       reader.consume(replay(transitions.slice(0, 2), false), context()),
     ).toBeNull();
@@ -320,8 +317,8 @@ describe("ConversationConvergence", () => {
     expect(result.replay?.fold.output).toEqual([]);
   });
   it("does not resurrect compaction activity from before a replayed rollback", () => {
-    const view = new ConversationConvergence("agent-a:chat-1");
-    const result = view.openActivity(target, "chat-1", null).consume(
+    const view = new ConversationConvergence("chat:chat-1");
+    const result = view.openActivity("chat-1", null).consume(
       replay([
         { kind: "context_compaction", status: "started", raw: raw(1) },
         {

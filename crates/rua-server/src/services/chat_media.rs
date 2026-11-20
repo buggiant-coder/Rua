@@ -103,45 +103,14 @@ impl ChatMediaService {
         &self,
         state: &crate::state::AppState,
     ) -> Result<usize, String> {
-        let mut removed = 0;
-        for agent in state
-            .agent_service
-            .list_agents()
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            let root = PathBuf::from(agent.workspace_dir);
-            removed += self
-                .collect_staged_directory(
-                    &state.conversation_authority,
-                    &state.rua_root,
-                    root.join("media"),
-                    Duration::from_secs(24 * 60 * 60),
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        for project in state
-            .project_catalog
-            .list()
-            .map_err(|error| error.to_string())?
-        {
-            let root = state
-                .rua_root
-                .join("projects")
-                .join(project.project_id.as_str())
-                .join("media");
-            removed += self
-                .collect_staged_directory(
-                    &state.conversation_authority,
-                    &state.rua_root,
-                    root,
-                    Duration::from_secs(24 * 60 * 60),
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        Ok(removed)
+        self.collect_staged_directory(
+            &state.conversation_authority,
+            &state.rua_root,
+            rua_chat::ChatService::new(&state.rua_root).media_root(),
+            Duration::from_secs(24 * 60 * 60),
+        )
+        .await
+        .map_err(|error| error.to_string())
     }
 
     pub(crate) async fn confirm_staged_media(root: &Path, ids: &[String]) -> Result<(), String> {
@@ -182,8 +151,7 @@ impl ChatMediaService {
                 original_filename,
             )
             .await?;
-        let marker =
-            media_dir(rua_root, address.clone()).join(format!(".staged-{}.json", stored.media_id));
+        let marker = media_dir(rua_root).join(format!(".staged-{}.json", stored.media_id));
         rua_config::atomic_write_json(&marker, &serde_json::json!({"address": address}))
             .map_err(|error| io::Error::other(error.to_string()))?;
         Ok(stored)
@@ -193,10 +161,10 @@ impl ChatMediaService {
         &self,
         authority: &crate::services::conversation_authority::ConversationAuthority,
         rua_root: &Path,
-        address: &ChatAddress,
+        _address: &ChatAddress,
         grace: Duration,
     ) -> Result<usize, ChatMediaError> {
-        let dir = media_dir(rua_root, address.clone());
+        let dir = media_dir(rua_root);
         self.collect_staged_directory(authority, rua_root, dir, grace)
             .await
     }
@@ -252,10 +220,7 @@ impl ChatMediaService {
                 Ok(Some(owner)) => owner,
                 _ => continue,
             };
-            let scope = rua_core::ChatScopeStore::resolve(rua_root, owner.clone());
-            if media_dir(rua_root, owner.clone()) != dir {
-                continue;
-            }
+            let scope = rua_core::ChatStore::resolve(rua_root, owner.clone());
             let gate = authority.transition_gate_at(&owner);
             let _transition = gate.lock().await;
             match rua_session::WorkspaceSessionStore::new(scope.root())
@@ -293,13 +258,13 @@ impl ChatMediaService {
     pub fn materialize_message_parts(
         &self,
         rua_root: &Path,
-        address: &ChatAddress,
+        _address: &ChatAddress,
         messages: &mut [AgentInputMessage],
     ) {
-        let workspace_root = rua_chat::ChatService::new(rua_root)
-            .storage_root(address)
-            .expect("Chat Media address resolves within Rua-owned storage");
-        self.materialize_message_parts_at(&workspace_root, messages);
+        self.materialize_message_parts_at(
+            rua_chat::ChatService::new(rua_root).storage_root(),
+            messages,
+        );
     }
 
     pub fn materialize_message_parts_at(
@@ -329,7 +294,7 @@ impl ChatMediaService {
     pub async fn store(
         &self,
         rua_root: &Path,
-        address: ChatAddress,
+        _address: ChatAddress,
         bytes: Vec<u8>,
         mime_type: Option<String>,
         original_filename: Option<String>,
@@ -342,7 +307,7 @@ impl ChatMediaService {
         }
 
         let media_id = MediaId::generate();
-        let media_dir = media_dir(rua_root, address);
+        let media_dir = media_dir(rua_root);
         let target = media_dir.join(media_id.to_string());
         let metadata_path = metadata_path(&media_dir, media_id);
         let normalized_mime_type = normalize_mime_type(mime_type);
@@ -369,7 +334,7 @@ impl ChatMediaService {
     pub async fn store_existing(
         &self,
         rua_root: &Path,
-        address: ChatAddress,
+        _address: ChatAddress,
         media_id: MediaId,
         bytes: Vec<u8>,
         mime_type: String,
@@ -380,7 +345,7 @@ impl ChatMediaService {
         if bytes.len() > MAX_CHAT_MEDIA_BYTES {
             return Err(ChatMediaError::TooLarge);
         }
-        let media_dir = media_dir(rua_root, address);
+        let media_dir = media_dir(rua_root);
         let target = media_dir.join(media_id.to_string());
         let metadata_path = metadata_path(&media_dir, media_id);
         let metadata_bytes = serde_json::to_vec(&ChatMediaMetadata {
@@ -402,7 +367,14 @@ impl ChatMediaService {
         raw_media_id: &str,
     ) -> Result<OpenedChatMedia, ChatMediaError> {
         let media_id = MediaId::from_str(raw_media_id).map_err(|_| ChatMediaError::InvalidId)?;
-        let media_dir = media_dir(rua_root, address);
+        let media_dir = media_dir(rua_root);
+        crate::services::first_chat_submission::validate_staged_media_address(
+            &media_dir,
+            &media_id.to_string(),
+            &address,
+        )
+        .await
+        .map_err(|_| ChatMediaError::NotFound)?;
         let path = media_dir.join(media_id.to_string());
         let metadata = tokio::fs::symlink_metadata(&path).await.map_err(|error| {
             if error.kind() == io::ErrorKind::NotFound {
@@ -425,14 +397,14 @@ impl ChatMediaService {
     pub fn collect_orphans<F>(
         &self,
         rua_root: &Path,
-        address: ChatAddress,
+        _address: ChatAddress,
         grace: Duration,
         is_referenced: F,
     ) -> Result<OrphanMediaReport, ChatMediaError>
     where
         F: Fn(MediaId) -> bool,
     {
-        let media_dir = media_dir(rua_root, address);
+        let media_dir = media_dir(rua_root);
         if !media_dir.is_dir() {
             return Ok(OrphanMediaReport::default());
         }
@@ -480,10 +452,8 @@ impl ChatMediaService {
     }
 }
 
-fn media_dir(rua_root: &Path, address: ChatAddress) -> PathBuf {
-    rua_chat::ChatService::new(rua_root)
-        .media_root(&address)
-        .expect("Chat Media address resolves within Rua-owned storage")
+fn media_dir(rua_root: &Path) -> PathBuf {
+    rua_chat::ChatService::new(rua_root).media_root()
 }
 
 fn metadata_path(media_dir: &Path, media_id: MediaId) -> PathBuf {

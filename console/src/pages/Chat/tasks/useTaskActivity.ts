@@ -41,15 +41,9 @@ export function useTaskActivity({
   chatId,
   authorizationAgentId,
 }: UseTaskActivityOptions) {
-  const targetScope = target.scope;
-  const targetAgentId = target.scope === "agent" ? target.agentId : null;
-  const targetProjectId = target.scope === "project" ? target.projectId : null;
   const taskTarget = useMemo<ConversationApiTarget>(
-    () =>
-      targetScope === "project"
-        ? { scope: "project", projectId: targetProjectId! }
-        : { scope: "agent", agentId: targetAgentId! },
-    [targetAgentId, targetProjectId, targetScope],
+    () => ({ agentId: target.agentId, projectId: target.projectId }),
+    [target.agentId, target.projectId],
   );
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -61,10 +55,7 @@ export function useTaskActivity({
     () => typeof document === "undefined" || !document.hidden,
   );
   const scopeRef = useRef("");
-  const scope =
-    taskTarget.scope === "project"
-      ? `project:${taskTarget.projectId}:${chatId ?? ""}`
-      : `agent:${taskTarget.agentId}:${chatId ?? ""}`;
+  const scope = `chat:${chatId ?? ""}`;
   scopeRef.current = scope;
 
   const [taskReads] = useState(

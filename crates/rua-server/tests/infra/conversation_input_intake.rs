@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use rua_channel::core::console::{ConsoleChatRequest, ConsoleSubmitKind};
 use rua_chat::{ChatService, ChatSetting, TURN_MODEL_KEY, TURN_THINKING_KEY};
 use rua_contract::agent::{AgentRequest, AgentRuntime, RuntimeWarmupContext};
-use rua_core::{ChatAddress, ChatScopeStore, RuaError, RunControl, RuntimeEvent};
+use rua_core::{ChatAddress, ChatStore, RuaError, RunControl, RuntimeEvent};
 use rua_provider::config_loader::DefaultModel;
 use rua_server::services::active_stream_broadcast::ActiveStreamBroadcastFrame;
 use rua_server::services::chat_metadata_store::{persist_acp_binding, AcpBindingMetadata};
@@ -41,7 +41,7 @@ fn epoch(wall_ms: u64) -> ConversationAuthorityEpoch {
 const CHAT_ID: &str = "00000000-0000-0000-0000-000000009903";
 
 fn chat_address() -> ChatAddress {
-    ChatAddress::agent("default", CHAT_ID)
+    ChatAddress::new(CHAT_ID)
 }
 
 fn stream_key() -> StreamKey {
@@ -114,8 +114,9 @@ async fn capture_fixture_configuration(state: &AppState, chat_id: &str) {
     let configuration = state
         .product_hooks
         .resolve_complete_chat_configuration(
-            &ChatAddress::agent("default", chat_id),
+            &ChatAddress::new(chat_id),
             rua_server::services::product_hooks::ChatConfigurationMaterialization {
+                project_id: None,
                 selected_agent_id: "default".into(),
                 running_config: Default::default(),
                 security_config: Default::default(),
@@ -491,7 +492,7 @@ fn remote_request_to(
     target_device_id: &str,
 ) -> RemoteConversationInputRequest {
     RemoteConversationInputRequest {
-        address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+        address: rua_core::ChatAddress::new(chat_id.to_string()),
         agent_id: "default".to_string(),
         source_device_id: "source-device".to_string(),
         target_device_id: target_device_id.to_string(),
@@ -1229,7 +1230,7 @@ async fn queued_turn_reads_latest_authority_header_model_at_execution() {
     .await;
     seed_local_authority(&state, CHAT_ID, "Queued model switch").await;
 
-    let address = ChatAddress::agent("default", CHAT_ID);
+    let address = ChatAddress::new(CHAT_ID);
     let mut control_events = state
         .conversation_authority
         .subscribe_control_events(&address)
@@ -1444,8 +1445,8 @@ async fn active_agent_turn_keeps_model_and_thinking_captured_at_acceptance() {
     let state = AppState::from_tempdir(temp.path().to_path_buf(), ServerProfile::Test);
     seed_model_switch_provider(&state, "fixture", &["model-a", "model-b"]).await;
     seed_local_authority(&state, CHAT_ID, "Frozen model").await;
-    let scope_store = ChatScopeStore::resolve(temp.path(), chat_address());
-    let chat_service = ChatService::for_scope_store(scope_store.clone());
+    let scope_store = ChatStore::resolve(temp.path(), chat_address());
+    let chat_service = ChatService::for_store(scope_store.clone());
     let model_a = serde_json::json!({
         "provider_id": "fixture",
         "model": "model-a",
@@ -1661,7 +1662,7 @@ async fn intake_marks_acp_bound_chat_as_acp_driver() {
     persist_acp_binding(
         None,
         &workspace,
-        &rua_core::ChatAddress::agent("default", CHAT_ID),
+        &rua_core::ChatAddress::new(CHAT_ID),
         "default",
         AcpBindingMetadata {
             target_device_id: Some(device_id),
@@ -1703,7 +1704,7 @@ async fn acp_passive_queue_uses_conversation_authority_not_stream_pending() {
     state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent("default".to_string(), CHAT_ID.to_string()),
+            address: rua_core::ChatAddress::new(CHAT_ID.to_string()),
             driver: ConversationDriverKind::Acp,
             authority_device_id: local_device_id(&state),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -1736,7 +1737,7 @@ async fn acp_send_now_targets_queued_input_and_signals_active_producer() {
     state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent("default".to_string(), CHAT_ID.to_string()),
+            address: rua_core::ChatAddress::new(CHAT_ID.to_string()),
             driver: ConversationDriverKind::Acp,
             authority_device_id: local_device_id(&state),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -1860,9 +1861,10 @@ async fn agent_scoped_submit_persists_compact_turn_agent_assignment() {
     assert_local_delivery(outcome, CHAT_ID);
 
     let store = WorkspaceSessionStore::new(temp.path().join("workspaces/default"));
-    let address = ChatAddress::agent("default", CHAT_ID);
-    let chat_service =
-        ChatService::for_resolved_scope(temp.path().join("workspaces/default"), address.clone());
+    let address = ChatAddress::new(CHAT_ID);
+    let chat_service = ChatService::from_workspace(rua_core::WorkspaceRoot::new(
+        temp.path().join("workspaces/default"),
+    ));
     let assignment = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let turns = store
@@ -1969,7 +1971,7 @@ async fn intake_queues_to_existing_active_authority_queue() {
     state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent("default".to_string(), CHAT_ID.to_string()),
+            address: rua_core::ChatAddress::new(CHAT_ID.to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: local_device_id(&state),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -2049,7 +2051,7 @@ async fn task_watch_output_continues_active_turn_at_boundary_without_user_interj
         intake
             .deliver_task_watch_output(rua_task::TaskWatchOutputNotification {
                 notification_id: "task-watch-active-1".to_string(),
-                owner: rua_task::TaskOwner::new("default", CHAT_ID),
+                owner: rua_task::TaskOwner::new(CHAT_ID),
                 task_id: "task-active".to_string(),
                 attempt_no: 1,
                 origin_turn_id: Some("turn-active".to_string()),
@@ -2124,7 +2126,7 @@ async fn task_watch_delivery_waits_for_notification_turn_completion() {
         intake
             .deliver_task_watch_output(rua_task::TaskWatchOutputNotification {
                 notification_id: "task-watch-receipt-1".to_string(),
-                owner: rua_task::TaskOwner::new("default", CHAT_ID),
+                owner: rua_task::TaskOwner::new(CHAT_ID),
                 task_id: "task-receipt".to_string(),
                 attempt_no: 1,
                 origin_turn_id: None,
@@ -2175,7 +2177,7 @@ async fn delegated_task_watch_output_does_not_interrupt_the_parent_turn() {
         .conversation_input_intake
         .deliver_task_watch_output(rua_task::TaskWatchOutputNotification {
             notification_id: "task-watch-delegated-1".to_string(),
-            owner: rua_task::TaskOwner::new("default", CHAT_ID),
+            owner: rua_task::TaskOwner::new(CHAT_ID),
             task_id: "task-agent".to_string(),
             attempt_no: 1,
             origin_turn_id: Some("turn-active".to_string()),
@@ -2243,7 +2245,7 @@ async fn submit_delivery_rejects_orphan_active_turn_without_durable_placement() 
     state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent("default".to_string(), CHAT_ID.to_string()),
+            address: rua_core::ChatAddress::new(CHAT_ID.to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: "remote-device".to_string(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -2566,7 +2568,7 @@ async fn local_stop_waits_for_terminal_handoff_before_success() {
     let active_turn = state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent("default".to_string(), CHAT_ID.to_string()),
+            address: rua_core::ChatAddress::new(CHAT_ID.to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: local_device_id(&state),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -2662,7 +2664,7 @@ async fn local_submit_with_active_authority_queues_through_authority() {
     state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent("default".to_string(), CHAT_ID.to_string()),
+            address: rua_core::ChatAddress::new(CHAT_ID.to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: local_device_id(&state),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -2745,7 +2747,7 @@ async fn panicked_producer_persists_failed_terminal_fact_and_drains_stream() {
     state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent("default".to_string(), CHAT_ID.to_string()),
+            address: rua_core::ChatAddress::new(CHAT_ID.to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: local_device_id(&state),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),

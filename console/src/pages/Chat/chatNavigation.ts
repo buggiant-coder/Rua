@@ -1,3 +1,4 @@
+import { readDraftChatContext, saveDraftChatContext } from "./chatContext";
 import type { ModelSlot } from "@/api/types";
 import {
   clearDraftConversation,
@@ -86,9 +87,14 @@ export function clearDraftChatModel(agentId: string, chatId: string): void {
 }
 
 export function resolveOrCreateDraftChatId(agentId: string): string {
-  return resolveOrCreateDraftConversationId(agentId);
+  const chatId = resolveOrCreateDraftConversationId(agentId);
+  if (!readDraftChatContext(chatId)) saveDraftChatContext(chatId, { agentId });
+  return chatId;
 }
 
 export function resolveChatEntry(agentId: string): string {
-  return resolveConversationEntry(agentId);
+  const chatId = resolveConversationEntry(agentId);
+  if (loadDraftChatId(agentId) === chatId && !readDraftChatContext(chatId))
+    saveDraftChatContext(chatId, { agentId });
+  return chatId;
 }

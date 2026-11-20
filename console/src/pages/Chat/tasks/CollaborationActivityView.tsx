@@ -1,7 +1,7 @@
 import { Bot } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { agentChatPath, projectChatPath } from "../conversationAddress";
+import { chatPath } from "../conversationAddress";
 import type { CollaborationActivity } from "./useCollaborationActivity";
 
 function useCollaborationLabel(item: CollaborationActivity) {
@@ -43,9 +43,8 @@ export function CollaborationActivityRow({
         {item.chat?.collaboration?.executor.kind === "acp"
           ? item.chat.collaboration.executor.runner
           : item.chat?.collaboration?.executor_agent_id ??
-            (item.address.scope.kind === "agent"
-              ? item.address.scope.agent_id
-              : "Agent")}
+            item.chat?.agent_id ??
+            "Agent"}
       </span>
     </button>
   );
@@ -60,11 +59,7 @@ export function CollaborationActivityDetail({
 }) {
   const { t } = useTranslation();
   const status = useCollaborationLabel(item);
-  const scope = item.address.scope;
-  const href =
-    scope.kind === "project"
-      ? projectChatPath(scope.project_id, item.address.chat_id)
-      : agentChatPath(scope.agent_id, item.address.chat_id);
+  const href = chatPath(item.address.chat_id);
   return (
     <section
       className="rua-collaboration-detail"

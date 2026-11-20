@@ -274,21 +274,9 @@ function decodeActivity(value: unknown): ConversationActivity | null {
     typeof item.address !== "object"
   )
     return null;
-  const { scope, chat_id } = item.address as {
-    scope?: Record<string, unknown>;
-    chat_id?: unknown;
-  };
-  if (typeof chat_id !== "string" || !scope) return null;
-  let address: ConversationAddress;
-  if (scope.kind === "agent" && typeof scope.agent_id === "string") {
-    address = { scope: "agent", agentId: scope.agent_id, chatId: chat_id };
-  } else if (scope.kind === "project" && typeof scope.project_id === "string") {
-    address = {
-      scope: "project",
-      projectId: scope.project_id,
-      chatId: chat_id,
-    };
-  } else return null;
+  const { chat_id } = item.address as { chat_id?: unknown };
+  if (typeof chat_id !== "string" || !chat_id) return null;
+  const address = { chatId: chat_id };
   return {
     address,
     running: item.running,

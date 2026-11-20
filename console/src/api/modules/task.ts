@@ -2,12 +2,8 @@ import { request } from "../request";
 import type { TaskRecord, TaskState } from "../types/task";
 import type { ConversationApiTarget } from "./conversation";
 
-function taskScope(target: ConversationApiTarget, chatId: string): string {
-  const owner =
-    target.scope === "project"
-      ? `/projects/${encodeURIComponent(target.projectId)}`
-      : `/agents/${encodeURIComponent(target.agentId)}`;
-  return `${owner}/chats/${encodeURIComponent(chatId)}/tasks`;
+function taskScope(_target: ConversationApiTarget, chatId: string): string {
+  return `/chats/${encodeURIComponent(chatId)}/tasks`;
 }
 
 export const taskApi = {
@@ -77,14 +73,12 @@ export const taskApi = {
   ) =>
     request<TaskRecord>(
       `${taskScope(target, chatId)}/${encodeURIComponent(taskId)}/retry`,
-      target.scope === "project"
-        ? {
-            method: "POST",
-            body: JSON.stringify({
-              authorization_agent_id: authorizationAgentId,
-            }),
-          }
-        : { method: "POST" },
+      {
+        method: "POST",
+        body: JSON.stringify({
+          authorization_agent_id: authorizationAgentId,
+        }),
+      },
     ),
 
   getFullResult: (

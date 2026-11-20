@@ -170,9 +170,7 @@ impl ContextProjectionProjector {
             .get(crate::hooks::SECURITY_CHAT_ADDRESS_METADATA_KEY)
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_else(|| {
-                rua_core::ChatAddress::agent(request.agent_id.to_string(), chat_id.clone())
-            });
+            .unwrap_or_else(|| rua_core::ChatAddress::new(chat_id.clone()));
         let early_background_compaction_key =
             format!("{}::{chat_id}", conversation_store_dir.display());
         Some(Self {

@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rua_core::{ChatAddress, ChatScope};
+use rua_core::ChatAddress;
+use rua_server::services::product_hook_execution::HandlerResourceScope;
 #[cfg(unix)]
 use rua_server::services::product_hook_execution::{
     CommandExecutionResource, StrictCommandHandler,
@@ -125,8 +126,8 @@ fn native_invocation(exposure: HandlerExposure) -> HandlerInvocation {
         invocation_id: "hook-invocation-failure".to_string(),
         kind: HandlerKind::Native,
         authority_device_id: "device-authority".to_string(),
-        chat_address: ChatAddress::agent("agent-a", "chat-a"),
-        scope: ChatScope::agent("agent-a"),
+        chat_address: ChatAddress::new("chat-a"),
+        scope: HandlerResourceScope::agent("agent-a"),
         resource_id: "agent:agent-a".to_string(),
         executable: Some("native_handler".to_string()),
         program: None,
@@ -169,8 +170,8 @@ async fn native_handler_executes_once_with_the_declared_context() {
         invocation_id: "hook-invocation-native".to_string(),
         kind: HandlerKind::Native,
         authority_device_id: "device-authority".to_string(),
-        chat_address: ChatAddress::agent("agent-a", "chat-a"),
-        scope: ChatScope::agent("agent-a"),
+        chat_address: ChatAddress::new("chat-a"),
+        scope: HandlerResourceScope::agent("agent-a"),
         resource_id: "agent:agent-a".to_string(),
         executable: Some("turn_terminal_audit".to_string()),
         program: None,
@@ -240,8 +241,8 @@ async fn installed_plugin_handler_executes_once_with_its_explicit_plugin_identit
             plugin_id: "installed-plugin".to_string(),
         },
         authority_device_id: "device-authority".to_string(),
-        chat_address: ChatAddress::project("project-a", "chat-a"),
-        scope: ChatScope::project("project-a"),
+        chat_address: ChatAddress::new("chat-a"),
+        scope: HandlerResourceScope::project("project-a"),
         resource_id: "project:project-a".to_string(),
         executable: Some("before_tool".to_string()),
         program: None,
@@ -267,7 +268,10 @@ async fn installed_plugin_handler_executes_once_with_its_explicit_plugin_identit
     assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0].0, "installed-plugin");
     assert_eq!(recorded[0].1.executable.as_deref(), Some("before_tool"));
-    assert_eq!(recorded[0].1.scope, ChatScope::project("project-a"));
+    assert_eq!(
+        recorded[0].1.scope,
+        HandlerResourceScope::project("project-a")
+    );
 }
 
 #[tokio::test]
@@ -284,8 +288,8 @@ async fn unavailable_plugin_requirement_fails_without_invoking_the_adapter() {
             plugin_id: "installed-plugin".to_string(),
         },
         authority_device_id: "device-authority".to_string(),
-        chat_address: ChatAddress::project("project-a", "chat-a"),
-        scope: ChatScope::project("project-a"),
+        chat_address: ChatAddress::new("chat-a"),
+        scope: HandlerResourceScope::project("project-a"),
         resource_id: "project:project-a".to_string(),
         executable: Some("before_tool".to_string()),
         program: None,
@@ -330,7 +334,7 @@ async fn command_handler_uses_exact_program_args_and_agent_resource_in_a_project
     let command = Arc::new(StrictCommandHandler::new(
         "device-authority",
         vec![CommandExecutionResource {
-            scope: ChatScope::agent("agent-a"),
+            scope: HandlerResourceScope::agent("agent-a"),
             resource_id: "agent:agent-a".to_string(),
             root: agent_root.clone(),
         }],
@@ -344,8 +348,8 @@ async fn command_handler_uses_exact_program_args_and_agent_resource_in_a_project
         invocation_id: "hook-invocation-command".to_string(),
         kind: HandlerKind::Command,
         authority_device_id: "device-authority".to_string(),
-        chat_address: ChatAddress::project("project-a", "chat-a"),
-        scope: ChatScope::agent("agent-a"),
+        chat_address: ChatAddress::new("chat-a"),
+        scope: HandlerResourceScope::agent("agent-a"),
         resource_id: "agent:agent-a".to_string(),
         executable: None,
         program: Some("/bin/sh".to_string()),
@@ -395,8 +399,8 @@ async fn handler_timeout_is_structured_and_never_retried() {
         invocation_id: "hook-invocation-timeout".to_string(),
         kind: HandlerKind::Native,
         authority_device_id: "device-authority".to_string(),
-        chat_address: ChatAddress::agent("agent-a", "chat-a"),
-        scope: ChatScope::agent("agent-a"),
+        chat_address: ChatAddress::new("chat-a"),
+        scope: HandlerResourceScope::agent("agent-a"),
         resource_id: "agent:agent-a".to_string(),
         executable: Some("slow_native".to_string()),
         program: None,
@@ -442,8 +446,8 @@ async fn cancellation_interrupts_in_flight_handler_without_retry() {
         invocation_id: "hook-invocation-cancelled".to_string(),
         kind: HandlerKind::Native,
         authority_device_id: "device-authority".to_string(),
-        chat_address: ChatAddress::agent("agent-a", "chat-a"),
-        scope: ChatScope::agent("agent-a"),
+        chat_address: ChatAddress::new("chat-a"),
+        scope: HandlerResourceScope::agent("agent-a"),
         resource_id: "agent:agent-a".to_string(),
         executable: Some("slow_native".to_string()),
         program: None,
@@ -483,8 +487,8 @@ async fn zero_remaining_turn_budget_fails_before_handler_execution() {
         invocation_id: "hook-invocation-budget-empty".to_string(),
         kind: HandlerKind::Native,
         authority_device_id: "device-authority".to_string(),
-        chat_address: ChatAddress::agent("agent-a", "chat-a"),
-        scope: ChatScope::agent("agent-a"),
+        chat_address: ChatAddress::new("chat-a"),
+        scope: HandlerResourceScope::agent("agent-a"),
         resource_id: "agent:agent-a".to_string(),
         executable: Some("native".to_string()),
         program: None,

@@ -93,7 +93,7 @@ impl Tool for ConversationRecallTool {
                 tool: "conversation_search".into(),
                 message: e.to_string(),
             })?;
-        let store = WorkspaceSessionStore::new(workspace_dir(&ctx));
+        let store = conversation_store(&ctx, self.name())?;
         let result = store
             .conversation_recall(
                 &ctx.session_id,
@@ -182,7 +182,7 @@ impl Tool for ConversationReadSpanTool {
                 tool: "conversation_read_span".into(),
                 message: e.to_string(),
             })?;
-        let store = WorkspaceSessionStore::new(workspace_dir(&ctx));
+        let store = conversation_store(&ctx, self.name())?;
         let result = store
             .conversation_read_span(
                 &ctx.session_id,
@@ -202,12 +202,15 @@ impl Tool for ConversationReadSpanTool {
     }
 }
 
-fn workspace_dir(ctx: &ToolContext) -> std::path::PathBuf {
-    ctx.metadata
-        .get("rua_workspace_dir")
-        .and_then(serde_json::Value::as_str)
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| ctx.working_dir.clone())
+fn conversation_store(ctx: &ToolContext, tool: &str) -> rua_core::Result<WorkspaceSessionStore> {
+    let dir = ctx
+        .conversation_store_dir
+        .as_ref()
+        .ok_or_else(|| rua_core::RuaError::Tool {
+            tool: tool.to_string(),
+            message: "Chat history is unavailable in this context".into(),
+        })?;
+    Ok(WorkspaceSessionStore::new(dir))
 }
 
 fn default_max_results() -> usize {

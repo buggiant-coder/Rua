@@ -42,43 +42,13 @@ struct ChatMediaUploadResponse {
 #[derive(Debug, Default)]
 struct ChatMediaUploadContext {
     agent_id: Option<String>,
-    model: Option<serde_json::Value>,
+    project_id: Option<String>,
 }
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route(
-            "/agents/{agentId}/chats/{chatId}/media",
-            post(upload_agent_media),
-        )
-        .route(
-            "/agents/{agentId}/chats/{chatId}/media/{mediaId}",
-            get(read_agent_media),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/media",
-            post(upload_project_media),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/media/{mediaId}",
-            get(read_project_media),
-        )
-}
-
-async fn upload_agent_media(
-    State(state): State<AppState>,
-    Path((agent_id, chat_id)): Path<(String, String)>,
-    multipart: Multipart,
-) -> Response {
-    upload_media(state, ChatAddress::agent(agent_id, chat_id), multipart).await
-}
-
-async fn upload_project_media(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-    multipart: Multipart,
-) -> Response {
-    upload_media(state, ChatAddress::project(project_id, chat_id), multipart).await
+        .route("/chats/{chatId}/media", post(upload_chat_media))
+        .route("/chats/{chatId}/media/{mediaId}", get(read_chat_media))
 }
 
 async fn upload_media(state: AppState, address: ChatAddress, mut multipart: Multipart) -> Response {
@@ -112,9 +82,13 @@ async fn upload_media(state: AppState, address: ChatAddress, mut multipart: Mult
                 Ok(agent_id) => context.agent_id = Some(agent_id),
                 Err(error) => return ApiError::BadRequest(error.to_string()).into_response(),
             },
+            Some("project_id") => match field.text().await {
+                Ok(project_id) => context.project_id = Some(project_id),
+                Err(error) => return ApiError::BadRequest(error.to_string()).into_response(),
+            },
             Some("model") => match field.text().await {
-                Ok(model) => match serde_json::from_str(&model) {
-                    Ok(model) => context.model = Some(model),
+                Ok(model) => match serde_json::from_str::<serde_json::Value>(&model) {
+                    Ok(_) => {}
                     Err(error) => {
                         return ApiError::BadRequest(format!("invalid Chat Media model: {error}"))
                             .into_response()
@@ -128,13 +102,20 @@ async fn upload_media(state: AppState, address: ChatAddress, mut multipart: Mult
     let Some((bytes, mime_type, filename)) = upload else {
         return ApiError::BadRequest("file field is required".to_string()).into_response();
     };
-    let scope = rua_core::ChatScopeStore::resolve(&state.rua_root, address.clone());
+    let scope = rua_core::ChatStore::resolve(&state.rua_root, address.clone());
     let placement = match crate::services::conversation_authority_target::load_optional_chat_authority_placement(scope.root(), address.chat_id().as_str()).await {
         Ok(placement) => placement,
         Err(error) => return ApiError::Internal(error).into_response(),
     };
     if placement.is_none() {
-        if let Err(error) = validate_media_staging_scope(&state, &address).await {
+        if let Err(error) = crate::services::chat_context::resolve_submission_context(
+            &state,
+            address.chat_id().as_str(),
+            context.agent_id.as_deref(),
+            context.project_id.as_deref(),
+        )
+        .await
+        {
             return error.into_response();
         }
         return match ChatMediaService
@@ -193,55 +174,11 @@ async fn upload_media(state: AppState, address: ChatAddress, mut multipart: Mult
     }
 }
 
-async fn validate_media_staging_scope(
-    state: &AppState,
-    address: &ChatAddress,
-) -> Result<(), ApiError> {
-    crate::services::console_chat::resolve_chat_id(address.chat_id().as_str())
-        .map_err(ApiError::BadRequest)?;
-    match address.scope() {
-        rua_core::ChatScope::Agent { agent_id, .. } => {
-            state
-                .agent_service
-                .get_agent(agent_id.as_str())
-                .await
-                .map_err(|error| ApiError::BadRequest(error.to_string()))?;
-        }
-        rua_core::ChatScope::Project { project_id, .. } => {
-            let project = state
-                .project_catalog
-                .get(project_id)
-                .map_err(|error| ApiError::Internal(error.to_string()))?
-                .ok_or_else(|| ApiError::NotFound(format!("Project not found: {project_id}")))?;
-            if project.lifecycle != rua_project::ProjectLifecycle::Active {
-                return Err(ApiError::Conflict(
-                    "Archived Project cannot accept media uploads".into(),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn read_agent_media(
-    State(state): State<AppState>,
-    Path((agent_id, chat_id, media_id)): Path<(String, String, String)>,
-) -> Response {
-    read_media(state, ChatAddress::agent(agent_id, chat_id), media_id).await
-}
-
-async fn read_project_media(
-    State(state): State<AppState>,
-    Path((project_id, chat_id, media_id)): Path<(String, String, String)>,
-) -> Response {
-    read_media(state, ChatAddress::project(project_id, chat_id), media_id).await
-}
-
 async fn read_media(state: AppState, address: ChatAddress, media_id: String) -> Response {
     if MediaId::from_str(&media_id).is_err() {
         return media_error(ChatMediaError::InvalidId).into_response();
     }
-    let scope = rua_core::chat_store::ChatScopeStore::resolve(&state.rua_root, address.clone());
+    let scope = rua_core::chat_store::ChatStore::resolve(&state.rua_root, address.clone());
     let placement =
         match crate::services::conversation_authority_target::load_optional_chat_authority_placement(
             scope.root(),
@@ -254,11 +191,6 @@ async fn read_media(state: AppState, address: ChatAddress, media_id: String) -> 
         };
     let local_device_id = current_sync_device_id(&state.sync_device)
         .expect("placement materialization requires local Device identity");
-    if placement.is_none() {
-        if let Err(error) = validate_media_staging_scope(&state, &address).await {
-            return error.into_response();
-        }
-    }
     if let Some(placement) = placement.filter(|placement| placement.device_id != local_device_id) {
         let session_manager = match state
             .sync_transfer_session_manager
@@ -333,9 +265,18 @@ async fn upload_remote_media(
                 "Device Session manager is unavailable",
             ))
         })?;
+    let context = crate::services::chat_context::load_chat_context(
+        &state.rua_root,
+        address.chat_id().as_str(),
+    )
+    .await
+    .map_err(|e| ChatMediaError::Storage(std::io::Error::other(e.to_string())))?
+    .ok_or(ChatMediaError::NotFound)?;
     deliver_chat_media_prepare_via_session(
         &session_manager,
         &ChatMediaPrepareCommand {
+            agent_id: context.agent_id,
+            project_id: context.project_id,
             sha256: None,
             first_submission: false,
             command_id: uuid::Uuid::new_v4().to_string(),
@@ -411,4 +352,25 @@ fn media_error(error: ChatMediaError) -> ApiError {
         ChatMediaError::NotFound => ApiError::NotFound(error.to_string()),
         ChatMediaError::Storage(_) => ApiError::Internal(error.to_string()),
     }
+}
+
+async fn upload_chat_media(
+    State(state): State<AppState>,
+    Path(chat_id): Path<String>,
+    multipart: Multipart,
+) -> Response {
+    if let Err(error) = crate::services::console_chat::resolve_chat_id(&chat_id) {
+        return ApiError::BadRequest(error).into_response();
+    }
+    upload_media(state, ChatAddress::new(chat_id), multipart).await
+}
+
+async fn read_chat_media(
+    State(state): State<AppState>,
+    Path((chat_id, media_id)): Path<(String, String)>,
+) -> Response {
+    if let Err(error) = crate::services::console_chat::resolve_chat_id(&chat_id) {
+        return ApiError::BadRequest(error).into_response();
+    }
+    read_media(state, ChatAddress::new(chat_id), media_id).await
 }

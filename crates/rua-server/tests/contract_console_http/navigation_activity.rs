@@ -27,7 +27,7 @@ async fn next_line(body: &mut axum::body::Body) -> Value {
 async fn global_activity_stream_snapshots_running_chats_then_emits_terminal_and_closes_on_shutdown()
 {
     let test = build_app();
-    let address = ChatAddress::project("project-a", "chat-a");
+    let address = ChatAddress::new("chat-a");
     let epoch = ConversationAuthorityEpoch::from_parts(10, 0, [1; 8]);
     let turn = test
         .state

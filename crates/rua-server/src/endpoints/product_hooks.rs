@@ -20,7 +20,6 @@ struct RunsQuery {
 
 #[derive(Debug, Deserialize)]
 struct ContributionsQuery {
-    chat_id: String,
     turn_id: String,
 }
 
@@ -39,12 +38,12 @@ pub fn router() -> Router<AppState> {
             put(update_agent_defaults),
         )
         .route(
-            "/agents/{agentId}/hooks/chats/{chatId}/configuration",
+            "/chats/{chatId}/hooks/configuration",
             get(get_chat_configuration),
         )
         .route("/agents/{agentId}/hooks/runs", get(list_runs))
         .route(
-            "/agents/{agentId}/hooks/contributions",
+            "/chats/{chatId}/hooks/contributions",
             get(list_contributions),
         )
         .route(
@@ -171,10 +170,10 @@ async fn update_project_defaults(
 
 async fn get_chat_configuration(
     State(state): State<AppState>,
-    Path((agent_id, chat_id)): Path<(String, String)>,
+    Path(chat_id): Path<String>,
 ) -> Response {
-    let address = rua_core::ChatAddress::agent(&agent_id, &chat_id);
-    let scope = rua_core::ChatScopeStore::resolve(&state.rua_root, address);
+    let address = rua_core::ChatAddress::new(&chat_id);
+    let scope = rua_core::ChatStore::resolve(&state.rua_root, address);
     let store = rua_session::WorkspaceSessionStore::new(scope.root());
     let header = match store.load_chat_header(&chat_id).await {
         Ok(Some(header)) => header,
@@ -218,10 +217,10 @@ async fn list_runs(
 
 async fn list_contributions(
     State(state): State<AppState>,
-    Path(agent_id): Path<String>,
+    Path(chat_id): Path<String>,
     Query(query): Query<ContributionsQuery>,
 ) -> Response {
-    let address = rua_core::ChatAddress::agent(agent_id, query.chat_id);
+    let address = rua_core::ChatAddress::new(chat_id);
     Json(
         state
             .product_hooks

@@ -10,7 +10,7 @@ use rua_acp::permissions::{
     AcpPermissionRelay, AcpPermissionRelayError, AcpPermissionRequest, AcpPermissionSnapshot,
 };
 use rua_config::types::acp::{default_builtin_runners, AcpAgentConfig, ToolParseMode};
-use rua_core::{ChatAddress, ChatScopeStore};
+use rua_core::{ChatAddress, ChatStore};
 use rua_security::approval_authority::ApprovalReuseMatcher;
 
 use crate::services::chat_metadata_store::{AcpBindingMetadata, ChatMetadataRecord};
@@ -410,15 +410,6 @@ impl_chat_address_accessors!(
     ConversationAuthoritySupersedeDeviceCommand,
     ConversationAuthoritySupersedeDeviceResponse,
 );
-
-impl ConversationAuthorityRedirect {
-    pub fn agent_id(&self) -> &str {
-        self.address
-            .agent_id()
-            .expect("Agent authority redirect requires Agent Scope")
-            .as_str()
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalDeviceCommand {
@@ -948,6 +939,9 @@ pub struct RemoteConversationInputAck {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatMediaPrepareCommand {
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     #[serde(default)]
     pub sha256: Option<String>,
     #[serde(default)]
@@ -1638,7 +1632,7 @@ impl DeviceCommandHandler {
                 detail: "target Device has no Rua Root".into(),
             };
         };
-        let scope = rua_core::ChatScopeStore::resolve(rua_root, command.route_address.clone());
+        let scope = rua_core::ChatStore::resolve(rua_root, command.route_address.clone());
         let placement = match crate::services::conversation_authority_target::load_optional_chat_authority_placement(
             scope.root(),
             command.route_address.chat_id().as_str(),
@@ -1789,6 +1783,7 @@ impl DeviceCommandHandler {
             || command.operation_id.trim().is_empty()
             || command.source_device_id.trim().is_empty()
             || command.byte_size == 0
+            || uuid::Uuid::parse_str(command.address.chat_id().as_str()).is_err()
             || uuid::Uuid::parse_str(&command.media_id).is_err()
         {
             return DeviceCommandResponse::Rejected {
@@ -1802,8 +1797,7 @@ impl DeviceCommandHandler {
                 detail: "target Device has no Rua Root".to_string(),
             };
         };
-        let scope =
-            rua_core::chat_store::ChatScopeStore::resolve(rua_root, command.address.clone());
+        let scope = rua_core::chat_store::ChatStore::resolve(rua_root, command.address.clone());
         let placement = match crate::services::conversation_authority_target::load_optional_chat_authority_placement(
             scope.root(),
             command.address.chat_id().as_str(),
@@ -1812,32 +1806,34 @@ impl DeviceCommandHandler {
         {
             Ok(Some(placement)) => Some(placement),
             Ok(None) if command.first_submission => {
-                if uuid::Uuid::parse_str(command.address.chat_id().as_str()).is_err() {
-                    return DeviceCommandResponse::Rejected { reason: "invalid_chat_media_prepare".into(), detail: "Chat id must be a UUID".into() };
-                }
+                let reject = |reason: &str, detail: String| DeviceCommandResponse::Rejected {
+                    reason: reason.to_string(),
+                    detail,
+                };
                 let store = rua_session::WorkspaceSessionStore::new(scope.root());
                 match store.load_chat_header(command.address.chat_id().as_str()).await {
-                    Ok(None) => {},
-                    _ => return DeviceCommandResponse::Rejected { reason: "chat_not_ready".into(), detail: "Chat storage is not a new submission target".into() },
+                    Ok(None) => {}
+                    Ok(Some(_)) => return reject("chat_not_ready", "Chat already exists".into()),
+                    Err(error) => return reject("chat_not_ready", error.to_string()),
                 }
-                if let Some(project_id) = command.address.project_id() {
-                    let Some(catalog) = self.project_catalog.as_ref() else { return DeviceCommandResponse::Rejected { reason: "project_runtime_unavailable".into(), detail: "Project catalog unavailable".into() }; };
-                    let project = match catalog.get(project_id) {
+                if let Some(project_id) = command.project_id.as_deref() {
+                    let Some(catalog) = self.project_catalog.as_ref() else {
+                        return reject("project_runtime_unavailable", "Project catalog unavailable".into());
+                    };
+                    let project = match catalog.get(&rua_core::ProjectId::new(project_id)) {
                         Ok(Some(project)) => project,
-                        Ok(None) => return DeviceCommandResponse::Rejected { reason: "project_not_found".into(), detail: "Project not found".into() },
-                        Err(error) => return DeviceCommandResponse::Rejected { reason: "project_store_failed".into(), detail: error.to_string() },
+                        Ok(None) => return reject("project_not_found", "Project not found".into()),
+                        Err(error) => return reject("project_store_failed", error.to_string()),
                     };
                     if project.resource_device_id != self.local_device_id || project.lifecycle != rua_project::ProjectLifecycle::Active {
-                        return DeviceCommandResponse::Rejected { reason: "project_authority_fixed".into(), detail: "Project media target must be its active resource Device".into() };
+                        return reject("project_authority_fixed", "Project media target must be its active resource Device".into());
                     }
-                } else if let Some(agent_id) = command.address.agent_id() {
-                    let manager = crate::services::agent_manager::AgentManager::new(rua_root.to_path_buf());
-                    match manager.get_agent(agent_id.as_str()).await {
-                        Ok(Some(agent)) if std::path::Path::new(&agent.workspace_dir) == scope.root() => {},
-                        Ok(Some(_)) => return DeviceCommandResponse::Rejected { reason: "agent_scope_mismatch".into(), detail: "Agent media scope differs from its registered workspace".into() },
-                        Ok(None) => return DeviceCommandResponse::Rejected { reason: "agent_unavailable".into(), detail: "Agent is not registered".into() },
-                        Err(error) => return DeviceCommandResponse::Rejected { reason: "agent_unavailable".into(), detail: error.to_string() },
-                    }
+                }
+                let manager = crate::services::agent_manager::AgentManager::new(rua_root.to_path_buf());
+                match manager.get_agent(&command.agent_id).await {
+                    Ok(Some(_)) => {}
+                    Ok(None) => return reject("agent_unavailable", "Agent is not registered".into()),
+                    Err(error) => return reject("agent_unavailable", error.to_string()),
                 }
                 None
             }
@@ -1860,9 +1856,23 @@ impl DeviceCommandHandler {
                 ),
             };
         }
+        let media_dir = scope.root().join("media");
         if let Some(expected) = command.sha256.as_deref() {
-            let path = scope.root().join("media").join(&command.media_id);
+            let path = media_dir.join(&command.media_id);
             if path.exists() {
+                if let Err(detail) =
+                    crate::services::first_chat_submission::validate_staged_media_address(
+                        &media_dir,
+                        &command.media_id,
+                        &command.address,
+                    )
+                    .await
+                {
+                    return DeviceCommandResponse::Rejected {
+                        reason: "media_conflict".into(),
+                        detail,
+                    };
+                }
                 match crate::services::remote_conversation_input::media_fingerprint(&path).await {
                     Ok((size, digest)) if size == command.byte_size && digest == expected => {
                         return DeviceCommandResponse::ChatMediaPrepared {
@@ -1897,7 +1907,7 @@ impl DeviceCommandHandler {
                     operation_id: command.operation_id.clone(),
                     source_device_id: command.source_device_id,
                     target_device_id: command.target_device_id,
-                    media_dir: scope.root().join("media"),
+                    media_dir: media_dir.clone(),
                     media_id: command.media_id.clone(),
                     byte_size: command.byte_size,
                     mime_type: command.mime_type,
@@ -1911,11 +1921,21 @@ impl DeviceCommandHandler {
                 detail: "Chat Media transfer operation already exists".to_string(),
             };
         }
+        if let Err(detail) = crate::services::first_chat_submission::validate_staged_media_address(
+            &media_dir,
+            &command.media_id,
+            &command.address,
+        )
+        .await
+        {
+            registry.abort(&command.operation_id);
+            return DeviceCommandResponse::Rejected {
+                reason: "media_conflict".into(),
+                detail,
+            };
+        }
         if command.first_submission {
-            let marker = scope
-                .root()
-                .join("media")
-                .join(format!(".staged-{}.json", command.media_id));
+            let marker = media_dir.join(format!(".staged-{}.json", command.media_id));
             if let Err(error) = rua_config::atomic_write_json(
                 &marker,
                 &serde_json::json!({"address":command.address}),
@@ -1944,6 +1964,85 @@ impl DeviceCommandHandler {
                 reason: "invalid_project_command".to_string(),
                 detail: error.to_string(),
             };
+        }
+        let task_chat = match &command.action {
+            ProjectDeviceAction::ListTasks {
+                project_id,
+                chat_id,
+                ..
+            }
+            | ProjectDeviceAction::GetTask {
+                project_id,
+                chat_id,
+                ..
+            }
+            | ProjectDeviceAction::SendTaskInput {
+                project_id,
+                chat_id,
+                ..
+            }
+            | ProjectDeviceAction::WatchTask {
+                project_id,
+                chat_id,
+                ..
+            }
+            | ProjectDeviceAction::UnwatchTask {
+                project_id,
+                chat_id,
+                ..
+            }
+            | ProjectDeviceAction::CancelTask {
+                project_id,
+                chat_id,
+                ..
+            }
+            | ProjectDeviceAction::RetryTask {
+                project_id,
+                chat_id,
+                ..
+            }
+            | ProjectDeviceAction::GetTaskResult {
+                project_id,
+                chat_id,
+                ..
+            } => Some((project_id, chat_id)),
+            _ => None,
+        };
+        if let Some((project, chat)) = task_chat {
+            let Some(root) = self.data_dir.as_deref() else {
+                return DeviceCommandResponse::Rejected {
+                    reason: "chat_unavailable".into(),
+                    detail: "Chat storage is unavailable".into(),
+                };
+            };
+            match crate::services::chat_context::load_chat_context(root, chat).await {
+                Ok(Some(context)) if context.project_id.as_deref() == Some(project.as_str()) => {
+                    if let ProjectDeviceAction::RetryTask {
+                        authorization_agent_id,
+                        ..
+                    } = &command.action
+                    {
+                        if *authorization_agent_id != context.agent_id {
+                            return DeviceCommandResponse::Rejected {
+                                reason: "agent_selection_changed".into(),
+                                detail: "The Chat selected a different Agent".into(),
+                            };
+                        }
+                    }
+                }
+                Ok(_) => {
+                    return DeviceCommandResponse::Rejected {
+                        reason: "chat_not_found".into(),
+                        detail: "Chat does not belong to this Project".into(),
+                    }
+                }
+                Err(error) => {
+                    return DeviceCommandResponse::Rejected {
+                        reason: "chat_unavailable".into(),
+                        detail: error.to_string(),
+                    }
+                }
+            }
         }
         match command.action {
             action @ (ProjectDeviceAction::BrowseDirectory { .. }
@@ -2374,7 +2473,7 @@ impl DeviceCommandHandler {
                 }
             }
             ProjectDeviceAction::ListTasks {
-                project_id,
+                project_id: _,
                 chat_id,
                 filter,
             } => {
@@ -2384,7 +2483,7 @@ impl DeviceCommandHandler {
                         detail: "Task Runtime is unavailable".to_string(),
                     };
                 };
-                let owner = project_task_owner(project_id, chat_id);
+                let owner = rua_task::TaskOwner::new(chat_id);
                 match runtime.list(&owner, filter).await {
                     Ok(tasks) => DeviceCommandResponse::Project {
                         response: ProjectDeviceResponse::TaskList {
@@ -2395,7 +2494,7 @@ impl DeviceCommandHandler {
                 }
             }
             ProjectDeviceAction::GetTask {
-                project_id,
+                project_id: _,
                 chat_id,
                 task_id,
             } => {
@@ -2405,7 +2504,7 @@ impl DeviceCommandHandler {
                         detail: "Task Runtime is unavailable".to_string(),
                     };
                 };
-                let owner = project_task_owner(project_id, chat_id);
+                let owner = rua_task::TaskOwner::new(chat_id);
                 match runtime.get(&owner, &task_id).await {
                     Ok(task) => DeviceCommandResponse::Project {
                         response: ProjectDeviceResponse::Task {
@@ -2416,7 +2515,7 @@ impl DeviceCommandHandler {
                 }
             }
             ProjectDeviceAction::SendTaskInput {
-                project_id,
+                project_id: _,
                 chat_id,
                 task_id,
                 submission,
@@ -2427,7 +2526,7 @@ impl DeviceCommandHandler {
                         detail: "Task Runtime is unavailable".to_string(),
                     };
                 };
-                let owner = project_task_owner(project_id, chat_id);
+                let owner = rua_task::TaskOwner::new(chat_id);
                 match runtime.send_input(&owner, &task_id, submission).await {
                     Ok(acceptance) => DeviceCommandResponse::Project {
                         response: ProjectDeviceResponse::TaskInput { acceptance },
@@ -2436,7 +2535,7 @@ impl DeviceCommandHandler {
                 }
             }
             ProjectDeviceAction::WatchTask {
-                project_id,
+                project_id: _,
                 chat_id,
                 task_id,
             } => {
@@ -2446,7 +2545,7 @@ impl DeviceCommandHandler {
                         detail: "Task Runtime is unavailable".to_string(),
                     };
                 };
-                let owner = project_task_owner(project_id, chat_id);
+                let owner = rua_task::TaskOwner::new(chat_id);
                 match runtime.watch(&owner, &task_id).await {
                     Ok(status) => DeviceCommandResponse::Project {
                         response: ProjectDeviceResponse::TaskWatch { status },
@@ -2455,7 +2554,7 @@ impl DeviceCommandHandler {
                 }
             }
             ProjectDeviceAction::UnwatchTask {
-                project_id,
+                project_id: _,
                 chat_id,
                 task_id,
             } => {
@@ -2465,7 +2564,7 @@ impl DeviceCommandHandler {
                         detail: "Task Runtime is unavailable".to_string(),
                     };
                 };
-                let owner = project_task_owner(project_id, chat_id);
+                let owner = rua_task::TaskOwner::new(chat_id);
                 match runtime.unwatch(&owner, &task_id).await {
                     Ok(status) => DeviceCommandResponse::Project {
                         response: ProjectDeviceResponse::TaskWatch { status },
@@ -2474,7 +2573,7 @@ impl DeviceCommandHandler {
                 }
             }
             ProjectDeviceAction::CancelTask {
-                project_id,
+                project_id: _,
                 chat_id,
                 task_id,
             } => {
@@ -2484,7 +2583,7 @@ impl DeviceCommandHandler {
                         detail: "Task Runtime is unavailable".to_string(),
                     };
                 };
-                let owner = project_task_owner(project_id, chat_id);
+                let owner = rua_task::TaskOwner::new(chat_id);
                 match runtime.cancel(&owner, &task_id).await {
                     Ok(task) => DeviceCommandResponse::Project {
                         response: ProjectDeviceResponse::Task {
@@ -2521,7 +2620,7 @@ impl DeviceCommandHandler {
                         }
                     }
                 };
-                let owner = project_task_owner(project_id, chat_id);
+                let owner = rua_task::TaskOwner::new(chat_id);
                 let mut authorization =
                     match rua_task::TaskAttemptAuthorization::new(authorization_agent_id) {
                         Ok(authorization) => authorization,
@@ -2533,7 +2632,7 @@ impl DeviceCommandHandler {
                         }
                     };
                 if let Some(root) = self.data_dir.as_deref() {
-                    let scope = rua_core::ChatScopeStore::resolve(root, owner.chat_address.clone());
+                    let scope = rua_core::ChatStore::resolve(root, owner.chat_address.clone());
                     match rua_session::WorkspaceSessionStore::new(scope.root())
                         .load_chat_header(owner.chat_id())
                         .await
@@ -2565,7 +2664,7 @@ impl DeviceCommandHandler {
                 }
             }
             ProjectDeviceAction::GetTaskResult {
-                project_id,
+                project_id: _,
                 chat_id,
                 task_id,
             } => {
@@ -2575,7 +2674,7 @@ impl DeviceCommandHandler {
                         detail: "Task Runtime is unavailable".to_string(),
                     };
                 };
-                let owner = project_task_owner(project_id, chat_id);
+                let owner = rua_task::TaskOwner::new(chat_id);
                 match runtime.read_full_result(&owner, &task_id).await {
                     Ok(bytes) => match serde_json::from_slice(&bytes) {
                         Ok(result) => DeviceCommandResponse::Project {
@@ -2671,7 +2770,7 @@ impl DeviceCommandHandler {
             }
             SyncTransferDeviceAction::StartChatGapSend {
                 operation_id,
-                agent_id,
+                agent_id: _,
                 chat_id,
                 expected_authority_epoch,
                 required_manifest,
@@ -2685,8 +2784,11 @@ impl DeviceCommandHandler {
                         detail: "source Device has no workspace data root".to_string(),
                     };
                 };
-                let workspace_dir = data_dir.join("workspaces").join(&agent_id);
-                let address = ChatAddress::agent(&agent_id, &chat_id);
+                let workspace_dir = rua_core::RuaRoot::new(data_dir)
+                    .chat_workspace()
+                    .as_path()
+                    .to_path_buf();
+                let address = ChatAddress::new(&chat_id);
                 let actual_manifest =
                     match load_conversation_manifest(&workspace_dir, &address).await {
                         Ok(Some(manifest)) => manifest,
@@ -2973,7 +3075,7 @@ impl DeviceCommandHandler {
                 };
             }
         };
-        let workspace_dir = runtime.workspace_dir();
+        let workspace_dir = runtime.chat_workspace_dir();
         let placement =
             match crate::services::conversation_authority_target::load_chat_authority_placement_target(
                 &workspace_dir,
@@ -3524,7 +3626,7 @@ impl DeviceCommandHandler {
                 detail: "target has no workspace data root".to_string(),
             };
         };
-        let scope_store = ChatScopeStore::resolve(data_dir, command.address.clone());
+        let scope_store = ChatStore::resolve(data_dir, command.address.clone());
         if command.required_manifest.is_none() {
             let watermarks = match crate::services::durable_publication_watermark::DurablePublicationWatermarkStore::new(data_dir.join("sync")) {
                 Ok(watermarks) => watermarks,
@@ -3587,12 +3689,6 @@ impl DeviceCommandHandler {
         &self,
         command: ConversationAuthorityAdoptDeviceCommand,
     ) -> DeviceCommandResponse {
-        if command.address.project_id().is_some() {
-            return DeviceCommandResponse::Rejected {
-                reason: "project_authority_fixed".to_string(),
-                detail: "Project Chat authority is fixed to its resource Device".to_string(),
-            };
-        }
         if let Err(error) = command.validate_for_target(&self.local_device_id) {
             return DeviceCommandResponse::Rejected {
                 reason: "invalid_authority_adopt_command".to_string(),
@@ -3605,6 +3701,21 @@ impl DeviceCommandHandler {
                 detail: "target has no workspace data root".to_string(),
             };
         };
+        match crate::services::chat_context::load_chat_context(data_dir, command.chat_id()).await {
+            Ok(Some(context)) if context.project_id.is_some() => {
+                return DeviceCommandResponse::Rejected {
+                    reason: "project_authority_fixed".into(),
+                    detail: "Project Chat authority is fixed to its resource Device".into(),
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return DeviceCommandResponse::Rejected {
+                    reason: "chat_unavailable".into(),
+                    detail: error.to_string(),
+                }
+            }
+        }
         if command
             .required_manifest
             .latest_turn_status
@@ -3627,7 +3738,7 @@ impl DeviceCommandHandler {
                 };
             }
         };
-        let scope_store = ChatScopeStore::resolve(data_dir, command.address.clone());
+        let scope_store = ChatStore::resolve(data_dir, command.address.clone());
         let workspace_dir = scope_store.root();
         if let Ok(current) =
             crate::services::conversation_authority_target::load_chat_authority_placement_target(
@@ -3690,6 +3801,17 @@ impl DeviceCommandHandler {
                 }
             }
         };
+        if source_chat
+            .meta
+            .get("project_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+        {
+            return DeviceCommandResponse::Rejected {
+                reason: "project_authority_fixed".into(),
+                detail: "Project Chat authority is fixed to its resource Device".into(),
+            };
+        }
         let current = match crate::services::conversation_authority_placement::parse_conversation_authority_placement(
             &source_chat.meta,
         ) {
@@ -3818,12 +3940,6 @@ impl DeviceCommandHandler {
         &self,
         command: ConversationAuthoritySupersedeDeviceCommand,
     ) -> DeviceCommandResponse {
-        if command.address.project_id().is_some() {
-            return DeviceCommandResponse::Rejected {
-                reason: "project_authority_fixed".to_string(),
-                detail: "Project Chat authority is fixed to its resource Device".to_string(),
-            };
-        }
         if let Err(error) = command.validate_for_target(&self.local_device_id) {
             return DeviceCommandResponse::Rejected {
                 reason: "invalid_authority_supersede_command".to_string(),
@@ -3836,7 +3952,22 @@ impl DeviceCommandHandler {
                 detail: "target has no workspace data root".to_string(),
             };
         };
-        let scope_store = ChatScopeStore::resolve(data_dir, command.address.clone());
+        match crate::services::chat_context::load_chat_context(data_dir, command.chat_id()).await {
+            Ok(Some(context)) if context.project_id.is_some() => {
+                return DeviceCommandResponse::Rejected {
+                    reason: "project_authority_fixed".into(),
+                    detail: "Project Chat authority is fixed to its resource Device".into(),
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return DeviceCommandResponse::Rejected {
+                    reason: "chat_unavailable".into(),
+                    detail: error.to_string(),
+                }
+            }
+        }
+        let scope_store = ChatStore::resolve(data_dir, command.address.clone());
         let workspace_dir = scope_store.root();
         let current =
             match crate::services::conversation_authority_target::load_chat_authority_placement_target(
@@ -3912,10 +4043,7 @@ impl DeviceCommandHandler {
         address: &ChatAddress,
         requested_epoch: ConversationAuthorityEpoch,
     ) -> Option<ConversationAuthorityRedirect> {
-        if address.project_id().is_some() {
-            return None;
-        }
-        let scope_store = ChatScopeStore::resolve(self.data_dir.as_ref()?, address.clone());
+        let scope_store = ChatStore::resolve(self.data_dir.as_ref()?, address.clone());
         let placement =
             crate::services::conversation_authority_target::load_chat_authority_placement_target(
                 scope_store.root(),
@@ -3980,7 +4108,7 @@ impl DeviceCommandHandler {
             }
         };
         match crate::services::conversation_authority_target::load_chat_authority_placement_target(
-            &runtime.workspace_dir(),
+            &runtime.chat_workspace_dir(),
             chat_id.as_str(),
         )
         .await
@@ -4199,7 +4327,7 @@ impl DeviceCommandHandler {
                 };
                 DeviceCommandResponse::AcpChat {
                     response: AcpChatDeviceResponse::PermissionSnapshot {
-                        snapshot: relay.snapshot(&command.agent_id, chat_id.as_str()).await,
+                        snapshot: relay.snapshot(chat_id.as_str()).await,
                     },
                 }
             }
@@ -4233,7 +4361,7 @@ impl DeviceCommandHandler {
                     }
                 }
                 match relay
-                    .decide(&command.agent_id, chat_id.as_str(), &request_id, &option_id)
+                    .decide(chat_id.as_str(), &request_id, &option_id)
                     .await
                 {
                     Ok(request) => DeviceCommandResponse::AcpChat {
@@ -4659,11 +4787,8 @@ impl ConversationControlDeviceCommand {
         validate_id(&self.command_id)?;
         validate_id(&self.source_device_id)?;
         validate_id(&self.target_device_id)?;
-        let project_discovery = self.address.project_id().is_some()
-            && matches!(self.action, ConversationControlDeviceAction::Discover);
-        if (!project_discovery && self.agent_id.trim().is_empty())
-            || self.chat_id().trim().is_empty()
-        {
+        let discovery = matches!(self.action, ConversationControlDeviceAction::Discover);
+        if (!discovery && self.agent_id.trim().is_empty()) || self.chat_id().trim().is_empty() {
             return Err(DeviceCommandBusError::InvalidId(format!(
                 "{}:{}",
                 self.agent_id,
@@ -4957,8 +5082,7 @@ impl SyncTransferDeviceCommand {
                 validate_id(operation_id)?;
                 if agent_id.trim().is_empty()
                     || chat_id.trim().is_empty()
-                    || required_manifest.address
-                        != ChatAddress::agent(agent_id.as_str(), chat_id.as_str())
+                    || required_manifest.address != ChatAddress::new(chat_id.as_str())
                 {
                     return Err(DeviceCommandBusError::InvalidId(format!(
                         "{agent_id}:{chat_id}"
@@ -5117,10 +5241,6 @@ impl ProjectDeviceCommand {
         }
         Ok(())
     }
-}
-
-fn project_task_owner(project_id: rua_core::ProjectId, chat_id: String) -> rua_task::TaskOwner {
-    rua_task::TaskOwner::from_address(rua_core::ChatAddress::project(project_id, chat_id))
 }
 
 fn project_task_error_response(error: rua_task::TaskError) -> DeviceCommandResponse {
@@ -5347,7 +5467,7 @@ pub fn spawn_conversation_authority_supersession(
     let command = ConversationAuthoritySupersedeDeviceCommand {
         command_id: format!("authority-supersede-{}", uuid::Uuid::new_v4()),
         agent_id: agent_id.to_string(),
-        address: ChatAddress::agent(agent_id, chat_id),
+        address: ChatAddress::new(chat_id),
         source_device_id: replacement.device_id.clone(),
         target_device_id: previous_authority_device_id.to_string(),
         previous_authority_epoch,

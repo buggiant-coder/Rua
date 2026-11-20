@@ -1,3 +1,4 @@
+import { addressFromChatPath } from "@/pages/Chat/conversationAddress";
 import { rememberConversationModel } from "../conversationLifecycle";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
@@ -204,10 +205,8 @@ export default function ModelSelector({
     const prev = prevPathRef.current;
     const curr = location.pathname;
     prevPathRef.current = curr;
-    const isChatPath = (path: string) =>
-      /^\/agents\/[^/]+\/chats\/[^/]+$/.test(path) ||
-      /^\/projects\/[^/]+\/chats\/[^/]+$/.test(path);
-    const comingToChat = isChatPath(curr) && !isChatPath(prev);
+    const comingToChat =
+      addressFromChatPath(curr) && !addressFromChatPath(prev);
     if (comingToChat) {
       fetchData();
     }

@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rua_core::{ChatAddress, ChatScopeStore, ProjectId};
+use rua_core::{ChatAddress, ChatStore, ProjectId};
 use rua_project::ProjectLifecycle;
 use thiserror::Error;
 
@@ -208,8 +208,8 @@ async fn resolve_target(
     }
     let chat_id = crate::services::console_chat::resolve_chat_id(chat_id)
         .map_err(ProjectControlError::InvalidChatId)?;
-    let address = ChatAddress::project(project_id, &chat_id);
-    let scope_root = ChatScopeStore::resolve(&state.rua_root, address.clone())
+    let address = ChatAddress::new(&chat_id);
+    let scope_root = ChatStore::resolve(&state.rua_root, address.clone())
         .root()
         .to_path_buf();
     let source_device_id = current_sync_device_id(&state.sync_device)

@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useConversationActivityWake } from "../useConversationActivityWake";
 
+vi.mock("@/api/consoleTransport", () => ({
+  consoleFetch: (path: string, options: RequestInit) => fetch(path, options),
+}));
 vi.mock("@/api/config", () => ({
   getApiUrl: (path: string) => `/api${path}`,
 }));
@@ -55,10 +58,7 @@ describe("useConversationActivityWake", () => {
       .mockResolvedValueOnce(second.response);
     vi.stubGlobal("fetch", fetchMock);
     const { result, unmount } = renderHook(() =>
-      useConversationActivityWake(
-        { scope: "agent", agentId: "agent-1" },
-        "chat-1",
-      ),
+      useConversationActivityWake("chat-1"),
     );
     try {
       await act(async () => {
@@ -114,17 +114,15 @@ describe("useConversationActivityWake", () => {
       .mockResolvedValueOnce(current.response);
     vi.stubGlobal("fetch", fetchMock);
     const { result, rerender, unmount } = renderHook(
-      ({ agentId }) =>
-        useConversationActivityWake({ scope: "agent", agentId }, "same-chat"),
-      { initialProps: { agentId: "old-agent" } },
+      ({ chatId }) => useConversationActivityWake(chatId),
+      { initialProps: { chatId: "old-chat" } },
     );
     try {
-      rerender({ agentId: "new-agent" });
+      rerender({ chatId: "new-chat" });
       await act(async () => {
         old.send({
           type: "chat_live_wake",
-          agent_id: "old-agent",
-          chat_id: "same-chat",
+          address: { chat_id: "old-chat" },
         });
         resolveOld(old.response);
         await vi.advanceTimersByTimeAsync(0);
@@ -134,14 +132,10 @@ describe("useConversationActivityWake", () => {
       await act(async () => {
         current.send({
           type: "chat_live_wake",
-          agent_id: "new-agent",
-          chat_id: "same-chat",
+          address: { chat_id: "new-chat" },
         });
       });
-      expect(result.current?.address.scope).toEqual({
-        kind: "agent",
-        agent_id: "new-agent",
-      });
+      expect(result.current?.address).toEqual({ chat_id: "new-chat" });
       await act(async () => {
         current.close();
         await vi.advanceTimersByTimeAsync(0);
@@ -161,19 +155,15 @@ describe("useConversationActivityWake", () => {
     const fetchMock = vi.fn(async () => activity.response);
     vi.stubGlobal("fetch", fetchMock);
     const { result, unmount } = renderHook(() =>
-      useConversationActivityWake(
-        { scope: "project", projectId: "project-1" },
-        "chat-1",
-      ),
+      useConversationActivityWake("chat-1"),
     );
 
     try {
       await waitFor(() =>
         expect(fetchMock).toHaveBeenCalledWith(
-          "/api/projects/project-1/chats/chat-1/console/activity",
+          "/chats/chat-1/console/activity",
           expect.objectContaining({
-            method: "GET",
-            headers: { Authorization: "Bearer test-token" },
+            signal: expect.any(AbortSignal),
           }),
         ),
       );
@@ -182,14 +172,6 @@ describe("useConversationActivityWake", () => {
         activity.send({
           type: "chat_live_wake",
           address: {
-            scope: { kind: "agent", agent_id: "project-1" },
-            chat_id: "chat-1",
-          },
-        });
-        activity.send({
-          type: "chat_live_wake",
-          address: {
-            scope: { kind: "project", project_id: "project-1" },
             chat_id: "chat-2",
           },
         });
@@ -202,7 +184,6 @@ describe("useConversationActivityWake", () => {
           type: "chat_live_wake",
           version: 2,
           address: {
-            scope: { kind: "project", project_id: "project-1" },
             chat_id: "chat-1",
           },
           stream_id: "delivery-1",
@@ -217,7 +198,6 @@ describe("useConversationActivityWake", () => {
           type: "chat_live_wake",
           version: 2,
           address: {
-            scope: { kind: "project", project_id: "project-1" },
             chat_id: "chat-1",
           },
           chat_id: "chat-1",
@@ -243,10 +223,7 @@ describe("useConversationActivityWake", () => {
       .mockResolvedValueOnce(second.response);
     vi.stubGlobal("fetch", fetchMock);
     const { result, unmount } = renderHook(() =>
-      useConversationActivityWake(
-        { scope: "project", projectId: "project-1" },
-        "chat-1",
-      ),
+      useConversationActivityWake("chat-1"),
     );
 
     try {
@@ -270,7 +247,7 @@ describe("useConversationActivityWake", () => {
       act(() => document.dispatchEvent(new Event("visibilitychange")));
       await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
       expect(fetchMock.mock.calls[1]?.[0]).toBe(
-        "/api/projects/project-1/chats/chat-1/console/activity",
+        "/chats/chat-1/console/activity",
       );
       await waitFor(() =>
         expect(result.current).toMatchObject({

@@ -303,7 +303,7 @@ async fn device_delivery_user_turn_carries_matching_metadata() {
 
 fn remote_request() -> RemoteConversationInputRequest {
     RemoteConversationInputRequest {
-        address: rua_core::ChatAddress::agent("default".to_string(), CHAT_ID.to_string()),
+        address: rua_core::ChatAddress::new(CHAT_ID.to_string()),
         agent_id: "default".to_string(),
         source_device_id: "source-device".to_string(),
         target_device_id: TARGET_DEVICE.to_string(),

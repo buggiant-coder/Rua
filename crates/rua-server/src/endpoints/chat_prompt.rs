@@ -1,16 +1,14 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use rua_workspace::WorkspaceRuntime;
 use serde::{Deserialize, Serialize};
 
 use crate::errors::ApiError;
-use crate::extractors::AgentExtractorContext;
+use crate::extractors::ChatPath;
 use crate::state::AppState;
 use crate::sync_publication::{publish_sync_fact, SyncPublicationFact};
 
@@ -50,226 +48,64 @@ pub struct ReorderBody {
     pub file_ids: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ChatQuery {
-    chat_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RemoveFileBody {
-    file_id: String,
-}
-
-pub fn root_router() -> Router<AppState> {
+pub fn router() -> Router<AppState> {
     Router::new()
         .route(
-            "/chats/prompt-state",
-            get(get_prompt_state_root).put(put_prompt_state_root),
+            "/chats/{chatId}/prompt-state",
+            get(get_prompt_state).put(put_prompt_state),
         )
-        .route("/chats/prompt-files/add", post(add_file_root))
-        .route("/chats/prompt-files/remove", post(remove_file_root))
-        .route("/chats/prompt-files/reset", post(reset_files_root))
-        .route("/chats/prompt-files/reorder", post(reorder_files_root))
+        .route("/chats/{chatId}/prompt-files", post(add_file))
+        .route(
+            "/chats/{chatId}/prompt-files/{fileId}",
+            axum::routing::delete(remove_file),
+        )
+        .route("/chats/{chatId}/prompt-files/reset", post(reset_files))
+        .route("/chats/{chatId}/prompt-files/reorder", put(reorder_files))
 }
 
-pub fn agent_scoped_router() -> Router<AppState> {
-    Router::new()
-        .route(
-            "/agents/{agentId}/chats/{id}/prompt-state",
-            get(get_prompt_state_agent).put(put_prompt_state_agent),
-        )
-        .route(
-            "/agents/{agentId}/chats/{id}/prompt-files",
-            post(add_file_agent),
-        )
-        .route(
-            "/agents/{agentId}/chats/{id}/prompt-files/{fileId}",
-            axum::routing::delete(remove_file_agent),
-        )
-        .route(
-            "/agents/{agentId}/chats/{id}/prompt-files/reset",
-            post(reset_files_agent),
-        )
-        .route(
-            "/agents/{agentId}/chats/{id}/prompt-files/reorder",
-            put(reorder_files_agent),
-        )
-}
-
-async fn get_prompt_state_root(
-    AgentExtractorContext { runtime, .. }: AgentExtractorContext,
-    Query(params): Query<ChatQuery>,
-) -> Response {
-    get_prompt_state_core(&runtime.workspace_dir(), &params.chat_id).await
-}
-
-async fn put_prompt_state_root(
+async fn get_prompt_state(
     State(state): State<AppState>,
-    AgentExtractorContext {
-        runtime, agent_id, ..
-    }: AgentExtractorContext,
-    Query(params): Query<ChatQuery>,
+    ChatPath((_agent_id, chat_id)): ChatPath<(String, String)>,
+) -> Response {
+    get_prompt_state_core(state.chat_workspace().as_path(), &chat_id).await
+}
+
+async fn put_prompt_state(
+    State(state): State<AppState>,
+    ChatPath((_agent_id, chat_id)): ChatPath<(String, String)>,
     Json(body): Json<PromptStateDto>,
 ) -> Response {
-    put_prompt_state_core(
-        &state,
-        &runtime.workspace_dir(),
-        &agent_id,
-        &params.chat_id,
-        body,
-    )
-    .await
+    put_prompt_state_core(&state, state.chat_workspace().as_path(), &chat_id, body).await
 }
 
-async fn add_file_root(
+async fn add_file(
     State(state): State<AppState>,
-    AgentExtractorContext {
-        runtime, agent_id, ..
-    }: AgentExtractorContext,
-    Query(params): Query<ChatQuery>,
+    ChatPath((_agent_id, chat_id)): ChatPath<(String, String)>,
     Json(body): Json<AddFileBody>,
 ) -> Response {
-    add_file_core(
-        &state,
-        &runtime.workspace_dir(),
-        &agent_id,
-        &params.chat_id,
-        body,
-    )
-    .await
+    add_file_core(&state, state.chat_workspace().as_path(), &chat_id, body).await
 }
 
-async fn remove_file_root(
+async fn remove_file(
     State(state): State<AppState>,
-    AgentExtractorContext {
-        runtime, agent_id, ..
-    }: AgentExtractorContext,
-    Query(params): Query<ChatQuery>,
-    Json(body): Json<RemoveFileBody>,
+    ChatPath((_agent_id, chat_id, file_id)): ChatPath<(String, String, String)>,
 ) -> Response {
-    remove_file_core(
-        &state,
-        &runtime.workspace_dir(),
-        &agent_id,
-        &params.chat_id,
-        &body.file_id,
-    )
-    .await
+    remove_file_core(&state, state.chat_workspace().as_path(), &chat_id, &file_id).await
 }
 
-async fn reset_files_root(
+async fn reset_files(
     State(state): State<AppState>,
-    AgentExtractorContext {
-        runtime, agent_id, ..
-    }: AgentExtractorContext,
-    Query(params): Query<ChatQuery>,
+    ChatPath((_agent_id, chat_id)): ChatPath<(String, String)>,
 ) -> Response {
-    reset_files_core(&state, &runtime.workspace_dir(), &agent_id, &params.chat_id).await
+    reset_files_core(&state, state.chat_workspace().as_path(), &chat_id).await
 }
 
-async fn reorder_files_root(
+async fn reorder_files(
     State(state): State<AppState>,
-    AgentExtractorContext {
-        runtime, agent_id, ..
-    }: AgentExtractorContext,
-    Query(params): Query<ChatQuery>,
+    ChatPath((_agent_id, chat_id)): ChatPath<(String, String)>,
     Json(body): Json<ReorderBody>,
 ) -> Response {
-    reorder_files_core(
-        &state,
-        &runtime.workspace_dir(),
-        &agent_id,
-        &params.chat_id,
-        body,
-    )
-    .await
-}
-
-async fn get_prompt_state_agent(
-    State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
-) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
-    get_prompt_state_core(&runtime.workspace_dir(), &chat_id).await
-}
-
-async fn put_prompt_state_agent(
-    State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
-    Json(body): Json<PromptStateDto>,
-) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
-    put_prompt_state_core(&state, &runtime.workspace_dir(), &agent_id, &chat_id, body).await
-}
-
-async fn add_file_agent(
-    State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
-    Json(body): Json<AddFileBody>,
-) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
-    add_file_core(&state, &runtime.workspace_dir(), &agent_id, &chat_id, body).await
-}
-
-async fn remove_file_agent(
-    State(state): State<AppState>,
-    AxumPath((agent_id, chat_id, file_id)): AxumPath<(String, String, String)>,
-) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
-    remove_file_core(
-        &state,
-        &runtime.workspace_dir(),
-        &agent_id,
-        &chat_id,
-        &file_id,
-    )
-    .await
-}
-
-async fn reset_files_agent(
-    State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
-) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
-    reset_files_core(&state, &runtime.workspace_dir(), &agent_id, &chat_id).await
-}
-
-async fn reorder_files_agent(
-    State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
-    Json(body): Json<ReorderBody>,
-) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
-    reorder_files_core(&state, &runtime.workspace_dir(), &agent_id, &chat_id, body).await
-}
-
-async fn runtime_for_agent(
-    state: &AppState,
-    agent_id: &str,
-) -> Result<Arc<WorkspaceRuntime>, ApiError> {
-    state
-        .registry
-        .get_or_create(agent_id)
-        .await
-        .map_err(|e| ApiError::Unavailable(format!("workspace for '{agent_id}' unavailable: {e}")))
+    reorder_files_core(&state, state.chat_workspace().as_path(), &chat_id, body).await
 }
 
 fn prompt_state_dir(workspace_dir: &Path) -> PathBuf {
@@ -319,17 +155,12 @@ async fn get_prompt_state_core(ws_dir: &Path, chat_id: &str) -> Response {
     }
 }
 
-async fn publish_prompt_state_sync_fact(
-    state: &AppState,
-    ws_dir: &Path,
-    agent_id: &str,
-    chat_id: &str,
-) {
+async fn publish_prompt_state_sync_fact(state: &AppState, ws_dir: &Path, chat_id: &str) {
     let _ = publish_sync_fact(
         state,
         SyncPublicationFact::StableConversationState {
             scope_root: ws_dir.to_path_buf(),
-            address: rua_core::ChatAddress::agent(agent_id, chat_id),
+            address: rua_core::ChatAddress::new(chat_id),
         },
     )
     .await;
@@ -338,14 +169,13 @@ async fn publish_prompt_state_sync_fact(
 async fn put_prompt_state_core(
     state: &AppState,
     ws_dir: &Path,
-    agent_id: &str,
     chat_id: &str,
     body: PromptStateDto,
 ) -> Response {
     if let Err(e) = write_prompt_state(ws_dir, chat_id, &body).await {
         return e.into_response();
     }
-    publish_prompt_state_sync_fact(state, ws_dir, agent_id, chat_id).await;
+    publish_prompt_state_sync_fact(state, ws_dir, chat_id).await;
 
     (StatusCode::OK, Json(body)).into_response()
 }
@@ -353,7 +183,6 @@ async fn put_prompt_state_core(
 async fn add_file_core(
     state: &AppState,
     ws_dir: &Path,
-    agent_id: &str,
     chat_id: &str,
     body: AddFileBody,
 ) -> Response {
@@ -375,7 +204,7 @@ async fn add_file_core(
     if let Err(e) = write_prompt_state(ws_dir, chat_id, &ps).await {
         return e.into_response();
     }
-    publish_prompt_state_sync_fact(state, ws_dir, agent_id, chat_id).await;
+    publish_prompt_state_sync_fact(state, ws_dir, chat_id).await;
 
     (StatusCode::OK, Json(file)).into_response()
 }
@@ -383,7 +212,6 @@ async fn add_file_core(
 async fn remove_file_core(
     state: &AppState,
     ws_dir: &Path,
-    agent_id: &str,
     chat_id: &str,
     file_id: &str,
 ) -> Response {
@@ -402,17 +230,12 @@ async fn remove_file_core(
     if let Err(e) = write_prompt_state(ws_dir, chat_id, &ps).await {
         return e.into_response();
     }
-    publish_prompt_state_sync_fact(state, ws_dir, agent_id, chat_id).await;
+    publish_prompt_state_sync_fact(state, ws_dir, chat_id).await;
 
     (StatusCode::OK, Json(serde_json::json!({"deleted": true}))).into_response()
 }
 
-async fn reset_files_core(
-    state: &AppState,
-    ws_dir: &Path,
-    agent_id: &str,
-    chat_id: &str,
-) -> Response {
+async fn reset_files_core(state: &AppState, ws_dir: &Path, chat_id: &str) -> Response {
     let mut ps = match read_prompt_state(ws_dir, chat_id).await {
         Ok(ps) => ps,
         Err(e) => return e.into_response(),
@@ -423,7 +246,7 @@ async fn reset_files_core(
     if let Err(e) = write_prompt_state(ws_dir, chat_id, &ps).await {
         return e.into_response();
     }
-    publish_prompt_state_sync_fact(state, ws_dir, agent_id, chat_id).await;
+    publish_prompt_state_sync_fact(state, ws_dir, chat_id).await;
 
     (StatusCode::OK, Json(ps)).into_response()
 }
@@ -431,7 +254,6 @@ async fn reset_files_core(
 async fn reorder_files_core(
     state: &AppState,
     ws_dir: &Path,
-    agent_id: &str,
     chat_id: &str,
     body: ReorderBody,
 ) -> Response {
@@ -457,7 +279,7 @@ async fn reorder_files_core(
     if let Err(e) = write_prompt_state(ws_dir, chat_id, &ps).await {
         return e.into_response();
     }
-    publish_prompt_state_sync_fact(state, ws_dir, agent_id, chat_id).await;
+    publish_prompt_state_sync_fact(state, ws_dir, chat_id).await;
 
     (StatusCode::OK, Json(ps)).into_response()
 }

@@ -441,7 +441,6 @@ pub struct ActiveStreamBroadcastHub {
     entries: tokio::sync::RwLock<HashMap<String, ActiveStreamBroadcastEntry>>,
     owner_watchers:
         tokio::sync::RwLock<HashMap<ActiveStreamOwner, Vec<ActiveStreamBroadcastFrameTx>>>,
-    agent_watchers: tokio::sync::RwLock<HashMap<String, Vec<ActiveStreamBroadcastFrameTx>>>,
     global_watchers: tokio::sync::RwLock<Vec<ActiveStreamBroadcastFrameTx>>,
     activity_generation: String,
     conversation_timelines: tokio::sync::RwLock<
@@ -558,7 +557,6 @@ impl Default for ActiveStreamBroadcastHub {
             navigation_activity: std::sync::RwLock::new(None),
             entries: tokio::sync::RwLock::new(HashMap::new()),
             owner_watchers: tokio::sync::RwLock::new(HashMap::new()),
-            agent_watchers: tokio::sync::RwLock::new(HashMap::new()),
             global_watchers: tokio::sync::RwLock::new(Vec::new()),
             activity_generation: uuid::Uuid::new_v4().to_string(),
             conversation_timelines: tokio::sync::RwLock::new(HashMap::new()),
@@ -747,40 +745,6 @@ impl ActiveStreamBroadcastHub {
             .write()
             .await
             .entry(owner.clone())
-            .or_default()
-            .push(tx);
-        ActiveStreamBroadcastSubscription {
-            replay,
-            rx: Some(rx),
-        }
-    }
-
-    pub async fn subscribe_agent(&self, agent_id: &str) -> ActiveStreamBroadcastSubscription {
-        let replay = {
-            let entries = self.entries.read().await;
-            entries
-                .iter()
-                .filter_map(|(stream_id, entry)| {
-                    let owner = entry.owner.as_ref()?;
-                    let address = owner.as_chat_address()?;
-                    if entry.completed || address.agent_id().map(|id| id.as_str()) != Some(agent_id)
-                    {
-                        return None;
-                    }
-                    Some(ActiveStreamBroadcastFrame::Started {
-                        device_delivery_id: stream_id.clone(),
-                        owner: owner.clone(),
-                        authority_epoch: entry.authority_epoch,
-                        seq: 0,
-                    })
-                })
-                .collect()
-        };
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        self.agent_watchers
-            .write()
-            .await
-            .entry(agent_id.to_string())
             .or_default()
             .push(tx);
         ActiveStreamBroadcastSubscription {
@@ -1167,14 +1131,6 @@ impl ActiveStreamBroadcastHub {
         if let Some(watchers) = self.owner_watchers.write().await.get_mut(owner) {
             watchers.retain(|tx| tx.send(frame.clone()).is_ok());
         }
-        if let Some(address) = owner.as_chat_address() {
-            if let Some(agent_id) = address.agent_id() {
-                if let Some(watchers) = self.agent_watchers.write().await.get_mut(agent_id.as_str())
-                {
-                    watchers.retain(|tx| tx.send(frame.clone()).is_ok());
-                }
-            }
-        }
         self.global_watchers
             .write()
             .await
@@ -1362,7 +1318,7 @@ impl ActiveStreamBroadcastDeviceSessionHandler {
             )
             .await?;
         if placement.device_id != initial_state.local_device_id {
-            if address.agent_id().is_some()
+            if project_agent_state.is_none()
                 && request
                     .authority_epoch
                     .is_some_and(|expected_epoch| placement.authority_epoch > expected_epoch)
@@ -1384,7 +1340,7 @@ impl ActiveStreamBroadcastDeviceSessionHandler {
         }
         if let Some(expected_epoch) = request.authority_epoch {
             if placement.authority_epoch != expected_epoch {
-                if address.agent_id().is_some() && placement.authority_epoch > expected_epoch {
+                if project_agent_state.is_none() && placement.authority_epoch > expected_epoch {
                     return Ok(Some(ActiveStreamBroadcastFrame::AuthorityRedirect {
                         device_delivery_id: format!("authority-redirect:{address}"),
                         address: address.clone(),
@@ -1400,7 +1356,7 @@ impl ActiveStreamBroadcastDeviceSessionHandler {
                     "Conversation Live Activity targets a stale authority Epoch".to_string()
                 );
             }
-        } else if address.agent_id().is_some() {
+        } else if project_agent_state.is_none() {
             return Err(
                 "initial Agent Conversation Control View requires Authority Epoch".to_string(),
             );
@@ -1431,21 +1387,12 @@ impl ActiveStreamBroadcastDeviceSessionHandler {
         }
         let mut control = initial_state.authority.control_view(address, &meta).await;
         control.project_chat_agent_state = project_agent_state;
-        let payload = match address.agent_id() {
-            Some(agent_id) => serde_json::json!({
-                "type": "conversation_control",
-                "agent_id": agent_id,
-                "chat_id": chat_id,
-                "reason": "viewer_attached",
-                "control": control,
-            }),
-            None => serde_json::json!({
-                "type": "conversation_control",
-                "address": address,
-                "reason": "viewer_attached",
-                "control": control,
-            }),
-        };
+        let payload = serde_json::json!({
+            "type": "conversation_control",
+            "address": address,
+            "reason": "viewer_attached",
+            "control": control,
+        });
         let payload = self.hub.conversation_activity_snapshot(payload.to_string());
         Ok(Some(ActiveStreamBroadcastFrame::Event {
             device_delivery_id: format!("control:{address}"),

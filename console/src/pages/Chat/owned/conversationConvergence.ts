@@ -3,7 +3,6 @@ import type {
   ConversationControlView,
   Message,
 } from "@/api/types";
-import type { ConversationApiTarget } from "@/api/modules/conversation";
 import {
   deviceDeliveryIdFromMessage,
   submissionIdFromMessage,
@@ -25,7 +24,6 @@ import {
 
 function streamEventMatchesConversation(
   event: ConversationStreamEvent,
-  target: ConversationApiTarget,
   chatId: string,
 ): boolean {
   if (!("raw" in event) || !event.raw || typeof event.raw !== "object") {
@@ -35,31 +33,10 @@ function streamEventMatchesConversation(
   const address = raw.address;
   if (address && typeof address === "object" && !Array.isArray(address)) {
     const addressRecord = address as Record<string, unknown>;
-    if (addressRecord.chat_id !== chatId) return false;
-    const scope = addressRecord.scope;
-    if (!scope || typeof scope !== "object" || Array.isArray(scope)) {
-      return false;
-    }
-    const scopeRecord = scope as Record<string, unknown>;
-    if (target.scope === "project") {
-      return (
-        scopeRecord.kind === "project" &&
-        scopeRecord.project_id === target.projectId
-      );
-    }
-    return (
-      scopeRecord.kind === "agent" && scopeRecord.agent_id === target.agentId
-    );
+    return addressRecord.chat_id === chatId;
   }
-  if (event.kind === "history_watermark_reached") {
-    if (event.chatId && event.chatId !== chatId) return false;
-    if (
-      target.scope === "agent" &&
-      event.agentId &&
-      event.agentId !== target.agentId
-    ) {
-      return false;
-    }
+  if (event.kind === "history_watermark_reached" && event.chatId) {
+    return event.chatId === chatId;
   }
   if (event.kind === "history_refresh_required" && event.chatId) {
     return event.chatId === chatId;
@@ -288,11 +265,10 @@ export class ConversationConvergence {
   }
 
   openActivity(
-    target: ConversationApiTarget,
     chatId: string,
     cursor: ConversationActivityCursor | null,
   ): ConversationActivity {
-    return new ConversationActivity(target, chatId, cursor);
+    return new ConversationActivity(chatId, cursor);
   }
 }
 
@@ -307,16 +283,10 @@ class ConversationActivity {
     update: ActivityUpdate;
   } | null = null;
 
-  private readonly target: ConversationApiTarget;
   private readonly chatId: string;
   cursor: ConversationActivityCursor | null;
 
-  constructor(
-    target: ConversationApiTarget,
-    chatId: string,
-    cursor: ConversationActivityCursor | null,
-  ) {
-    this.target = target;
+  constructor(chatId: string, cursor: ConversationActivityCursor | null) {
     this.chatId = chatId;
     this.cursor = cursor;
   }
@@ -348,8 +318,7 @@ class ConversationActivity {
     }
     const update = this.pending?.update ?? emptyUpdate();
     for (const frame of replay ? event.events : [event]) {
-      if (!streamEventMatchesConversation(frame, this.target, this.chatId))
-        continue;
+      if (!streamEventMatchesConversation(frame, this.chatId)) continue;
       const activity = advanceConversationActivityCursor(
         this.pending ? this.pending.cursor : this.cursor,
         frame,

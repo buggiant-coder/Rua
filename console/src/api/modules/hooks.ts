@@ -89,7 +89,7 @@ export interface HookRunView {
 }
 
 export interface HookContributionView {
-  chat_address: { scope: { kind: string }; chat_id: string };
+  chat_address: { chat_id: string };
   turn_id: string;
   tool_call_id: string;
   event: string;
@@ -175,21 +175,19 @@ export const hooksApi = {
       method: "PUT",
       body: JSON.stringify({ definition_id: definitionId, enabled }),
     }),
-  getChatConfiguration: (agentId: string, chatId: string) =>
+  getChatConfiguration: (chatId: string) =>
     request<ChatHookConfiguration>(
-      `${agentHooksPath(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/configuration`,
+      `/chats/${encodeURIComponent(chatId)}/hooks/configuration`,
     ),
   listRuns: (agentId: string, chatId?: string) => {
     const query = chatId ? `?chat_id=${encodeURIComponent(chatId)}` : "";
     return request<HookRunView[]>(`${agentHooksPath(agentId)}/runs${query}`);
   },
-  listContributions: (agentId: string, chatId: string, turnId: string) =>
+  listContributions: (chatId: string, turnId: string) =>
     request<HookContributionView[]>(
-      `${agentHooksPath(agentId)}/contributions?chat_id=${encodeURIComponent(
+      `/chats/${encodeURIComponent(
         chatId,
-      )}&turn_id=${encodeURIComponent(turnId)}`,
+      )}/hooks/contributions?turn_id=${encodeURIComponent(turnId)}`,
     ),
   preview: (
     agentId: string,

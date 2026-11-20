@@ -509,7 +509,7 @@ impl AgentManager {
             message: format!("Failed to create workspace dir: {e}"),
         })?;
 
-        for subdir in &["sessions", "skills", "prompts"] {
+        for subdir in &["skills", "prompts"] {
             std::fs::create_dir_all(ws_dir.join(subdir)).map_err(|e| RuaError::Io {
                 message: format!("Failed to create {subdir} dir: {e}"),
             })?;

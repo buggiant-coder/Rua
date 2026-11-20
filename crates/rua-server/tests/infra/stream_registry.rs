@@ -5,11 +5,7 @@ use rua_core::{runtime::RunControl, ChatAddress};
 use rua_server::{ActiveStreamRegistry, Priority, StreamKey};
 
 fn key(chat_id: &str) -> StreamKey {
-    StreamKey::new(
-        "console",
-        ChatAddress::agent("default", chat_id),
-        Priority::Normal,
-    )
+    StreamKey::new("console", ChatAddress::new(chat_id), Priority::Normal)
 }
 
 #[tokio::test]
@@ -95,7 +91,7 @@ async fn active_turn_binding_is_execution_metadata_not_queue_state() {
         registry
             .set_active_turn_id(
                 "console",
-                &ChatAddress::agent("default", "chat-1"),
+                &ChatAddress::new("chat-1"),
                 Priority::Normal,
                 "turn-1"
             )
@@ -103,7 +99,7 @@ async fn active_turn_binding_is_execution_metadata_not_queue_state() {
     );
     assert_eq!(
         registry
-            .active_turn_id_for_chat("console", &ChatAddress::agent("default", "chat-1"))
+            .active_turn_id_for_chat("console", &ChatAddress::new("chat-1"))
             .await
             .as_deref(),
         Some("turn-1")
@@ -138,16 +134,16 @@ async fn stale_execution_cleanup_removes_inactive_entries() {
     assert_eq!(registry.cleanup_stale(Duration::from_millis(1)).await, 1);
     assert!(
         !registry
-            .is_active_for_chat("console", &ChatAddress::agent("default", "chat-1"))
+            .is_active_for_chat("console", &ChatAddress::new("chat-1"))
             .await
     );
 }
 
 #[tokio::test]
-async fn equal_chat_ids_in_agent_and_project_scopes_isolate_streams_and_stop() {
+async fn distinct_chat_ids_isolate_streams_and_stop() {
     let registry = ActiveStreamRegistry::new();
-    let agent_address = ChatAddress::agent("same-owner", "shared-chat");
-    let project_address = ChatAddress::project("same-owner", "shared-chat");
+    let agent_address = ChatAddress::new("shared-chat");
+    let project_address = ChatAddress::new("other-chat");
     let agent_key = StreamKey::new("console", agent_address.clone(), Priority::Normal);
     let project_key = StreamKey::new("console", project_address.clone(), Priority::Normal);
     let (_agent_producer, agent_cancel) = registry.register_active_keyed(&agent_key).await;
@@ -169,7 +165,7 @@ async fn equal_chat_ids_in_agent_and_project_scopes_isolate_streams_and_stop() {
         tokio::time::timeout(Duration::from_millis(50), project_rx.recv())
             .await
             .is_err(),
-        "Agent replay must not reach the equal-UUID Project stream"
+        "Agent replay must not reach the other Project stream"
     );
 
     assert_eq!(

@@ -435,6 +435,10 @@ async fn remote_conversation_history_sync_from_context(
 }
 
 impl AppState {
+    pub fn chat_workspace(&self) -> rua_core::WorkspaceRoot {
+        rua_core::RuaRoot::new(&self.rua_root).chat_workspace()
+    }
+
     pub fn load(
         config: AppConfig,
         data_dir: PathBuf,
@@ -867,7 +871,6 @@ impl AppState {
                 Arc::clone(&streams),
                 Arc::clone(&task_runtime),
                 workspace_root.clone(),
-                Some(Arc::clone(&project_catalog)),
             ),
         );
         default_registry.install_work_authority(work_authority);
@@ -925,7 +928,7 @@ impl AppState {
                     );
 
                     let cancel_adapter = Arc::new(
-                        StreamCancelAdapter::new(Arc::clone(&streams_f), agent_id)
+                        StreamCancelAdapter::new(Arc::clone(&streams_f))
                             .with_acp(Arc::clone(&acp_chat_manager), Arc::clone(&acp_service)),
                     );
                     let approval_adapter = Arc::new(
@@ -1049,7 +1052,7 @@ impl AppState {
         crate::services::chat_activity_wake::spawn_chat_placement_convergence(
             Arc::clone(&chat_activity_wake_hub),
             Arc::clone(&conversation_authority),
-            Arc::clone(&workspace_registry),
+            data_dir.join("chats"),
         );
         crate::services::chat_activity_wake::spawn_chat_activity_gossip_publisher(
             Arc::clone(&active_stream_broadcast_hub),
@@ -1239,7 +1242,6 @@ impl AppState {
                 data_dir.clone(),
             )
             .with_conversation_authority(Arc::clone(&conversation_authority))
-            .with_project_catalog(Arc::clone(&project_catalog))
             .with_history_sync(remote_history_sync_tx.clone())
             .with_chat_activity_wake_hub(Arc::clone(&chat_activity_wake_hub))
             .with_acp_chat_registry(Arc::clone(&acp_chat_registry))
@@ -1434,8 +1436,7 @@ impl AppState {
                 block_on_with_optional_handle(runtime_handle, async move {
                     use crate::control_adapters::*;
 
-                    let cancel_adapter =
-                        StreamCancelAdapter::new(Arc::clone(&streams_for_ctrl), &agent_id_for_ctrl);
+                    let cancel_adapter = StreamCancelAdapter::new(Arc::clone(&streams_for_ctrl));
                     let cancel_adapter: Arc<StreamCancelAdapter> = Arc::new(cancel_adapter);
                     let approval_adapter: Arc<ApprovalAdapter> = Arc::new(
                         ApprovalAdapter::new(Arc::clone(&approval_for_ctrl), &agent_id_for_ctrl)

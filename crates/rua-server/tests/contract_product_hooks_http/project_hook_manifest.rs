@@ -59,8 +59,9 @@ async fn reserved_manifest_registers_inactive_project_definition() {
         .unwrap();
     let configuration = hooks
         .resolve_complete_chat_configuration(
-            &ChatAddress::project("project-a", "chat-a"),
+            &ChatAddress::new("chat-a"),
             ChatConfigurationMaterialization {
+                project_id: Some("project-a".into()),
                 selected_agent_id: "agent-a".to_string(),
                 running_config: Default::default(),
                 security_config: Default::default(),
@@ -223,9 +224,9 @@ async fn executable_change_creates_disabled_revision_without_mutating_chat_snaps
             }],
         )
         .await;
-    let address = ChatAddress::project("project-a", "chat-a");
+    let address = ChatAddress::new("chat-a");
     let captured = hooks
-        .resolve_chat_configuration(&address, "agent-a")
+        .resolve_chat_configuration(&address, "agent-a", Some("project-a"))
         .await
         .unwrap();
     hooks

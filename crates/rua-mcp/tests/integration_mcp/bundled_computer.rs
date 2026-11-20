@@ -36,7 +36,7 @@ fn context(agent: &str) -> McpCallContext {
             ("device_id".into(), json!("fixture-device")),
             (
                 "security_chat_address".into(),
-                serde_json::to_value(ChatAddress::agent(agent, "chat")).unwrap(),
+                serde_json::to_value(ChatAddress::new("chat")).unwrap(),
             ),
             (MODEL_SUPPORTS_IMAGE_METADATA_KEY.into(), json!(true)),
             (
@@ -656,7 +656,7 @@ async fn sequence_approval_covers_visible_steps_and_leaf_deny_is_not_hidden() {
     assert!(input_calls(temp.path()).is_empty());
     let pending = security
         .approval_authority()
-        .snapshot_at(&ChatAddress::agent("a", "chat"))
+        .snapshot_at(&ChatAddress::new("chat"))
         .await
         .pending;
     assert_eq!(pending.len(), 1);

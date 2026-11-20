@@ -2,8 +2,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::product_hook_execution::HandlerResourceScope;
 use async_trait::async_trait;
-use rua_core::{ChatAddress, ChatScope};
+use rua_core::ChatAddress;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
@@ -161,7 +162,7 @@ impl CandidateCompletionInvoker for HandlerExecutorCandidateCompletionInvoker {
         let (owner_namespace, _) = definition_id
             .rsplit_once('/')
             .ok_or_else(|| "invalid Definition identity".to_string())?;
-        let scope = scope_for_owner(owner_namespace, &completion.address)?;
+        let scope = HandlerResourceScope::for_owner(owner_namespace, &completion.address)?;
         let resource_id = format!("{}:{}", scope.kind(), scope.owner_id());
         let working_directory = requirement
             .working_directory
@@ -415,17 +416,4 @@ fn hook_source(hook: &crate::services::scope_composition::ResolvedHookBinding) -
                 .map(str::to_string)
         })
         .unwrap_or_else(|| "unknown".to_string())
-}
-
-fn scope_for_owner(owner_namespace: &str, address: &ChatAddress) -> Result<ChatScope, String> {
-    if let Some(agent_id) = owner_namespace.strip_prefix("agent:") {
-        return Ok(ChatScope::agent(agent_id));
-    }
-    if let Some(project_id) = owner_namespace.strip_prefix("project:") {
-        return Ok(ChatScope::project(project_id));
-    }
-    if owner_namespace.starts_with("plugin:") {
-        return Ok(address.scope().clone());
-    }
-    Err(format!("unsupported Handler owner: {owner_namespace}"))
 }

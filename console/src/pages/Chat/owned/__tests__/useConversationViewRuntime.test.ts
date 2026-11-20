@@ -28,16 +28,10 @@ import {
 const chatApiMock = vi.hoisted(() => ({
   getChat: vi.fn(),
   submitPath: vi.fn(
-    (chatId: string, agentId: string) =>
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/console/submit`,
+    (chatId: string) => `/chats/${encodeURIComponent(chatId)}/console/submit`,
   ),
   livePath: vi.fn(
-    (chatId: string, agentId: string) =>
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/console/live`,
+    (chatId: string) => `/chats/${encodeURIComponent(chatId)}/console/live`,
   ),
   stopChat: vi.fn(),
   selectVariant: vi.fn(),
@@ -57,30 +51,6 @@ const consoleApiMock = vi.hoisted(() => ({
 const acpApiMock = vi.hoisted(() => ({
   getPermissionSnapshot: vi.fn(),
   decidePermission: vi.fn(),
-}));
-
-const projectChatsApiMock = vi.hoisted(() => ({
-  getChat: vi.fn(),
-  livePath: vi.fn(
-    (projectId: string, chatId: string) =>
-      `/projects/${projectId}/chats/${chatId}/console/live`,
-  ),
-  submitPath: vi.fn(
-    (projectId: string, chatId: string) =>
-      `/projects/${projectId}/chats/${chatId}/console/submit`,
-  ),
-  stopChat: vi.fn(),
-  persistAcpHistoryPreview: vi.fn(),
-  deleteQueuedInput: vi.fn(),
-  editQueuedInput: vi.fn(),
-  sendNowQueuedInput: vi.fn(),
-  getApprovalSnapshot: vi.fn(),
-  decideApproval: vi.fn(),
-  getAcpPermissionSnapshot: vi.fn(),
-  decideAcpPermission: vi.fn(),
-  selectVariant: vi.fn(),
-  rollback: vi.fn(),
-  branch: vi.fn(),
 }));
 
 const providerApiMock = vi.hoisted(() => ({
@@ -125,20 +95,24 @@ vi.mock("@/api/modules/chat", () => ({
   },
 }));
 
-vi.mock("@/api/modules/console", () => ({
-  consoleApi: consoleApiMock,
-}));
+vi.mock("@/api/modules/conversation", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@/api/modules/conversation")
+  >();
+  return {
+    ...actual,
+    conversationApi: {
+      ...actual.conversationApi,
+      getApprovalSnapshot: (...args: unknown[]) =>
+        consoleApiMock.getApprovalSnapshot(...args),
+      decideApproval: (...args: unknown[]) =>
+        consoleApiMock.decideApproval(...args),
+    },
+  };
+});
 
 vi.mock("@/api/modules/acp", () => ({
   acpApi: acpApiMock,
-}));
-
-vi.mock("@/api/modules/projectChats", () => ({
-  projectChatsApi: {
-    ...projectChatsApiMock,
-    getChat: async (...args: unknown[]) =>
-      canonicalHistoryFixture(await projectChatsApiMock.getChat(...args)),
-  },
 }));
 
 vi.mock("@/api/modules/provider", () => ({
@@ -149,6 +123,10 @@ vi.mock("@/api/authHeaders", () => ({
   buildAuthHeaders: () => ({ Authorization: "Bearer test-token" }),
 }));
 
+vi.mock("@/api/consoleTransport", () => ({
+  consoleFetch: (path: string, options: RequestInit) =>
+    fetch(`/api${path}`, options),
+}));
 vi.mock("@/api/config", () => ({
   getApiUrl: (path: string) => `/api${path}`,
 }));
@@ -601,59 +579,6 @@ describe("useConversationViewRuntime", () => {
       id: "approval-1",
       status: "approved",
     });
-    projectChatsApiMock.getChat.mockImplementation(
-      async (_projectId: string, chatId: string) =>
-        chatApiMock.getChat(chatId, "agent-a"),
-    );
-    projectChatsApiMock.stopChat.mockResolvedValue({ stopped: true });
-    projectChatsApiMock.persistAcpHistoryPreview.mockResolvedValue({
-      turn_id: "acp-history-preview-1",
-      message_id: "acp-history-preview-message-1",
-      created: true,
-    });
-    projectChatsApiMock.deleteQueuedInput.mockImplementation(
-      async (_projectId: string, chatId: string, inputId: string) =>
-        chatApiMock.deleteQueuedInput(chatId, inputId, "agent-a"),
-    );
-    projectChatsApiMock.editQueuedInput.mockImplementation(
-      async (
-        _projectId: string,
-        chatId: string,
-        inputId: string,
-        message: string,
-      ) => chatApiMock.editQueuedInput(chatId, inputId, message, "agent-a"),
-    );
-    projectChatsApiMock.sendNowQueuedInput.mockImplementation(
-      async (
-        _projectId: string,
-        chatId: string,
-        inputId: string,
-        body: unknown,
-      ) => chatApiMock.sendNowQueuedInput(chatId, inputId, body, "agent-a"),
-    );
-    projectChatsApiMock.getApprovalSnapshot.mockResolvedValue({
-      pending: [],
-      resolved: [],
-    });
-    projectChatsApiMock.getAcpPermissionSnapshot.mockResolvedValue({
-      pending: [],
-    });
-    projectChatsApiMock.decideApproval.mockResolvedValue({
-      id: "approval-1",
-      status: "approved",
-    });
-    projectChatsApiMock.decideAcpPermission.mockResolvedValue({});
-    projectChatsApiMock.selectVariant.mockResolvedValue({
-      turn_id: "turn-1",
-      selected_variant_id: "variant-2",
-    });
-    projectChatsApiMock.rollback.mockResolvedValue({
-      chat: { id: "chat-project-1" },
-      cancelled_tasks: 0,
-    });
-    projectChatsApiMock.branch.mockResolvedValue({
-      chat: { id: "branch-project-chat" },
-    });
     ownedApiMock.getPendingSelectedVariant.mockReturnValue(null);
     vi.stubGlobal("fetch", routeFetch());
     Object.defineProperty(globalThis, "crypto", {
@@ -676,7 +601,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-b",
         currentDeviceId: "device-a",
       }),
@@ -720,7 +646,8 @@ describe("useConversationViewRuntime", () => {
 
     renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(liveSignal).toBeDefined());
@@ -820,7 +747,8 @@ describe("useConversationViewRuntime", () => {
   it("does not submit when there is no owned conversation id", async () => {
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: undefined },
+        address: { chatId: "" },
+        executionAgentId: "agent-a",
       }),
     );
 
@@ -838,27 +766,18 @@ describe("useConversationViewRuntime", () => {
         "remote ACP control failed: Device removed-device is not paired",
       );
       acpApiMock.getPermissionSnapshot.mockRejectedValue(error);
-      projectChatsApiMock.getAcpPermissionSnapshot.mockRejectedValue(error);
       const { result } = renderHook(() =>
         useConversationViewRuntime({
-          address:
-            scope === "agent"
-              ? { scope, agentId: "agent-a", chatId: "chat-1" }
-              : { scope, projectId: "project-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          projectId: scope === "project" ? "project-a" : undefined,
+          executionAgentId: "agent-a",
         }),
       );
       await waitFor(() => expect(result.current.history).not.toBeNull());
       await waitFor(() =>
-        expect(
-          scope === "agent"
-            ? consoleApiMock.getApprovalSnapshot
-            : projectChatsApiMock.getApprovalSnapshot,
-        ).toHaveBeenCalled(),
+        expect(consoleApiMock.getApprovalSnapshot).toHaveBeenCalled(),
       );
       expect(acpApiMock.getPermissionSnapshot).not.toHaveBeenCalled();
-      expect(
-        projectChatsApiMock.getAcpPermissionSnapshot,
-      ).not.toHaveBeenCalled();
       expect(result.current.error).toBeNull();
     },
   );
@@ -869,7 +788,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         activeAcpRunner: "codex",
       }),
     );
@@ -891,7 +811,8 @@ describe("useConversationViewRuntime", () => {
     const { result, rerender } = renderHook(
       ({ runner }: { runner: string | null }) =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
           activeAcpRunner: runner,
         }),
       { initialProps: { runner: null } },
@@ -918,7 +839,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
 
@@ -951,7 +873,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result, unmount } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() =>
@@ -1013,7 +936,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result, unmount } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() =>
@@ -1158,7 +1082,8 @@ describe("useConversationViewRuntime", () => {
       vi.stubGlobal("fetch", routeFetchWithLiveStreams(live.response));
       const { result, unmount } = renderHook(() =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
           currentDeviceId: "device-a",
         }),
       );
@@ -1278,7 +1203,8 @@ describe("useConversationViewRuntime", () => {
       vi.stubGlobal("fetch", routeFetchWithLiveStreams(live.response));
       const { result, unmount } = renderHook(() =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
           currentDeviceId: "device-a",
         }),
       );
@@ -1318,7 +1244,8 @@ describe("useConversationViewRuntime", () => {
     chatApiMock.getChat.mockResolvedValueOnce({ status: "idle", messages: [] });
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -1360,21 +1287,21 @@ describe("useConversationViewRuntime", () => {
       },
     });
     const { result, rerender, unmount } = renderHook(
-      ({ recoverySequence, wakeAgentId }) =>
+      ({ recoverySequence, wakeChatId }) =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
           activityWake: {
             type: "activity_reconnected",
             sequence: recoverySequence,
             recoverySequence,
-            chat_id: "chat-1",
+            chat_id: wakeChatId,
             address: {
-              scope: { kind: "agent", agent_id: wakeAgentId },
-              chat_id: "chat-1",
+              chat_id: wakeChatId,
             },
           },
         }),
-      { initialProps: { recoverySequence: 0, wakeAgentId: "agent-a" } },
+      { initialProps: { recoverySequence: 0, wakeChatId: "chat-1" } },
     );
     await waitFor(() => expect(isTurnActive(result)).toBe(true));
     const reads = chatApiMock.getChat.mock.calls.length;
@@ -1388,11 +1315,11 @@ describe("useConversationViewRuntime", () => {
       },
     });
     await act(async () => {
-      rerender({ recoverySequence: 1, wakeAgentId: "another-agent" });
+      rerender({ recoverySequence: 1, wakeChatId: "other-chat" });
     });
     expect(chatApiMock.getChat).toHaveBeenCalledTimes(reads);
     expect(isTurnActive(result)).toBe(true);
-    rerender({ recoverySequence: 1, wakeAgentId: "agent-a" });
+    rerender({ recoverySequence: 1, wakeChatId: "chat-1" });
     await waitFor(() =>
       expect(chatApiMock.getChat.mock.calls.length).toBeGreaterThan(reads),
     );
@@ -1405,7 +1332,8 @@ describe("useConversationViewRuntime", () => {
     chatApiMock.getChat.mockResolvedValueOnce({ status: "idle", messages: [] });
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -1440,7 +1368,8 @@ describe("useConversationViewRuntime", () => {
     saveDraftConversationAcp("agent-a", "lazy-chat", selection);
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "lazy-chat" },
+        address: { chatId: "lazy-chat" },
+        executionAgentId: "agent-a",
         activityWake: 0,
         unmaterialized: true,
       }),
@@ -1474,7 +1403,7 @@ describe("useConversationViewRuntime", () => {
       value: { randomUUID: () => `unknown-${identity++}` },
       configurable: true,
     });
-    const key = "agent-a:unknown-chat";
+    const key = "chat:unknown-chat";
     clearSubmitted(key);
     vi.stubGlobal(
       "fetch",
@@ -1482,7 +1411,8 @@ describe("useConversationViewRuntime", () => {
     );
     const first = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "unknown-chat" },
+        address: { chatId: "unknown-chat" },
+        executionAgentId: "agent-a",
         activityWake: 0,
         unmaterialized: true,
       }),
@@ -1499,7 +1429,8 @@ describe("useConversationViewRuntime", () => {
     first.unmount();
     const restored = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "unknown-chat" },
+        address: { chatId: "unknown-chat" },
+        executionAgentId: "agent-a",
         activityWake: 0,
         unmaterialized: true,
       }),
@@ -1532,15 +1463,9 @@ describe("useConversationViewRuntime", () => {
   it.each(["agent", "project"] as const)(
     "retains an explicit unconfirmed %s input until history confirms its original identity",
     async (scope) => {
-      const address =
-        scope === "agent"
-          ? { scope, agentId: "agent-a", chatId: "unconfirmed-chat" }
-          : { scope, projectId: "project-1", chatId: "unconfirmed-chat" };
-      const key = `${
-        scope === "agent" ? "agent-a" : "project:project-1"
-      }:unconfirmed-chat`;
-      const getHistory =
-        scope === "agent" ? chatApiMock.getChat : projectChatsApiMock.getChat;
+      const address = { chatId: "unconfirmed-chat" };
+      const key = "chat:unconfirmed-chat";
+      const getHistory = chatApiMock.getChat;
       getHistory.mockResolvedValue({ status: "idle", messages: [] });
       vi.stubGlobal(
         "fetch",
@@ -1565,9 +1490,10 @@ describe("useConversationViewRuntime", () => {
       );
       const options = {
         address,
+        projectId: scope === "project" ? "project-1" : undefined,
         unmaterialized: true,
         authorityPlacementDeviceId: "device-remote",
-        projectExecutionAgentId: "agent-a",
+        executionAgentId: "agent-a",
       };
       const first = renderHook(() => useConversationViewRuntime(options));
       act(() => first.result.current.applyCommittedModel(configuredModel));
@@ -1612,7 +1538,7 @@ describe("useConversationViewRuntime", () => {
   );
 
   it("confirms a restored submission from read-only Chat history and clears only its record", async () => {
-    const key = "agent-a:confirmed-chat";
+    const key = "chat:confirmed-chat";
     saveSubmitted(key, {
       submissionId: "submission-confirmed",
       text: "accepted input",
@@ -1633,11 +1559,8 @@ describe("useConversationViewRuntime", () => {
     });
     const view = renderHook(() =>
       useConversationViewRuntime({
-        address: {
-          scope: "agent",
-          agentId: "agent-a",
-          chatId: "confirmed-chat",
-        },
+        address: { chatId: "confirmed-chat" },
+        executionAgentId: "agent-a",
         activityWake: 0,
         unmaterialized: true,
       }),
@@ -1657,14 +1580,14 @@ describe("useConversationViewRuntime", () => {
       status: "idle";
       messages: never[];
     }>();
-    projectChatsApiMock.getChat.mockReturnValue(materializedHistory.promise);
+    chatApiMock.getChat.mockReturnValue(materializedHistory.promise);
     vi.stubGlobal(
       "fetch",
       routeFetch((url) => {
-        if (url.includes("/projects/project-1/chats/chat-1/console/submit")) {
+        if (url.includes("/chats/chat-1/console/submit")) {
           return submitAcceptedResponse();
         }
-        if (url.includes("/projects/project-1/chats/chat-1/console/live")) {
+        if (url.includes("/chats/chat-1/console/live")) {
           return new Response(null, { status: 200 });
         }
         return undefined;
@@ -1674,16 +1597,10 @@ describe("useConversationViewRuntime", () => {
     const { result, rerender, unmount } = renderHook(
       ({ unmaterialized }: { unmaterialized: boolean }) =>
         useConversationViewRuntime({
-          address: {
-            scope: "project",
-            projectId: {
-              scope: "project",
-              projectId: "project-1",
-            }.projectId,
-            chatId: "chat-1",
-          },
+          address: { chatId: "chat-1" },
+          projectId: "project-1",
           activityWake: 0,
-          projectExecutionAgentId: "agent-a",
+          executionAgentId: "agent-a",
           unmaterialized: unmaterialized,
         }),
       { initialProps: { unmaterialized: true } },
@@ -1693,10 +1610,10 @@ describe("useConversationViewRuntime", () => {
       act(() => {
         result.current.applyCommittedModel(configuredModel);
       });
-      expect(projectChatsApiMock.getChat).not.toHaveBeenCalled();
+      expect(chatApiMock.getChat).not.toHaveBeenCalled();
       expect(
         (fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) =>
-          String(url).includes("/projects/project-1/chats/chat-1/console/live"),
+          String(url).includes("/chats/chat-1/console/live"),
         ),
       ).toHaveLength(0);
       await act(async () => {
@@ -1708,13 +1625,11 @@ describe("useConversationViewRuntime", () => {
       );
       expect(result.current.queuedSubmissions).toHaveLength(0);
       const submitCall = (fetch as ReturnType<typeof vi.fn>).mock.calls.find(
-        ([url]) =>
-          String(url).includes(
-            "/projects/project-1/chats/chat-1/console/submit",
-          ),
+        ([url]) => String(url).includes("/chats/chat-1/console/submit"),
       );
       expect(JSON.parse(String(submitCall?.[1]?.body || "{}"))).toMatchObject({
         agent_id: "agent-a",
+        project_id: "project-1",
         model: configuredModel,
       });
       expect(
@@ -1723,11 +1638,9 @@ describe("useConversationViewRuntime", () => {
       rerender({ unmaterialized: false });
 
       await waitFor(() =>
-        expect(projectChatsApiMock.getChat).toHaveBeenCalledWith(
-          "project-1",
-          "chat-1",
-          { turnLimit: 20 },
-        ),
+        expect(chatApiMock.getChat).toHaveBeenCalledWith("chat-1", {
+          turnLimit: 20,
+        }),
       );
       expect(JSON.stringify(result.current.projection.items)).not.toContain(
         "keep this visible",
@@ -1753,11 +1666,12 @@ describe("useConversationViewRuntime", () => {
     });
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(chatApiMock.getChat).toHaveBeenCalledWith("chat-1", "agent-a", {
+    expect(chatApiMock.getChat).toHaveBeenCalledWith("chat-1", {
       turnLimit: 20,
     });
 
@@ -1775,7 +1689,7 @@ describe("useConversationViewRuntime", () => {
     });
 
     expect(fetch).toHaveBeenCalledWith(
-      "/api/agents/agent-a/chats/chat-1/console/submit",
+      "/api/chats/chat-1/console/submit",
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({
@@ -1810,14 +1724,15 @@ describe("useConversationViewRuntime", () => {
       },
     ]);
     expect(ownedApiMock.clearPendingSelectedVariant).toHaveBeenCalledWith(
-      "agent-a:chat-1",
+      "chat:chat-1",
     );
   });
 
   it("rejects pending attachments from different Authority epochs before submit", async () => {
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -1861,16 +1776,10 @@ describe("useConversationViewRuntime", () => {
     vi.stubGlobal(
       "fetch",
       routeFetch((url) => {
-        if (
-          url.includes(
-            "/projects/project-1/chats/chat-project-1/console/submit",
-          )
-        ) {
+        if (url.includes("/chats/chat-project-1/console/submit")) {
           return submitAcceptedResponse();
         }
-        if (
-          url.includes("/projects/project-1/chats/chat-project-1/console/live")
-        ) {
+        if (url.includes("/chats/chat-project-1/console/live")) {
           return sseResponse([
             { object: "response", status: "completed", output: [] },
           ]);
@@ -1878,25 +1787,16 @@ describe("useConversationViewRuntime", () => {
         return undefined;
       }),
     );
-    const target = {
-      scope: "project" as const,
-      projectId: "project-1",
-    };
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: target
-          ? {
-              scope: "project",
-              projectId: target.projectId,
-              chatId: "chat-project-1",
-            }
-          : { scope: "agent", agentId: "agent-a", chatId: "chat-project-1" },
+        address: { chatId: "chat-project-1" },
+        projectId: "project-1",
         authorityPlacementDeviceId: "device-resource",
         currentDeviceId: "device-controller",
         activeAcpRunner: null,
         acpHistoryPreview: null,
         activityWake: 0,
-        projectExecutionAgentId: "agent-a",
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -1914,17 +1814,14 @@ describe("useConversationViewRuntime", () => {
     });
 
     const submitCall = (fetch as ReturnType<typeof vi.fn>).mock.calls.find(
-      ([url]) =>
-        String(url).includes(
-          "/projects/project-1/chats/chat-project-1/console/submit",
-        ),
+      ([url]) => String(url).includes("/chats/chat-project-1/console/submit"),
     );
     if (!submitCall) throw new Error("missing Project submit call");
     const body = JSON.parse(submitCall[1].body);
     expect(body).toMatchObject({
       chat_id: "chat-project-1",
-      agent_id: "agent-a",
     });
+    expect(body).not.toHaveProperty("agent_id");
     expect(body.input[0].content).toEqual([
       { type: "text", text: "inspect image" },
       {
@@ -1948,7 +1845,8 @@ describe("useConversationViewRuntime", () => {
     try {
       const { result } = renderHook(() =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
         }),
       );
       await waitFor(() => expect(result.current.loading).toBe(false));
@@ -1998,7 +1896,8 @@ describe("useConversationViewRuntime", () => {
     try {
       const { result } = renderHook(() =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
         }),
       );
       await waitFor(() => expect(result.current.loading).toBe(false));
@@ -2034,7 +1933,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -2078,7 +1978,8 @@ describe("useConversationViewRuntime", () => {
     const { result, rerender } = renderHook(
       ({ chatId }) =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: chatId },
+          address: { chatId: chatId },
+          executionAgentId: "agent-a",
         }),
       { initialProps: { chatId: "chat-1" } },
     );
@@ -2127,7 +2028,8 @@ describe("useConversationViewRuntime", () => {
     chatApiMock.getChat.mockResolvedValueOnce(page(21, 40));
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -2135,7 +2037,7 @@ describe("useConversationViewRuntime", () => {
     await act(async () => {
       await result.current.locateTurn("t5");
     });
-    expect(chatApiMock.getChat).toHaveBeenLastCalledWith("chat-1", "agent-a", {
+    expect(chatApiMock.getChat).toHaveBeenLastCalledWith("chat-1", {
       aroundTurnId: "t5",
       turnLimit: 20,
     });
@@ -2184,7 +2086,8 @@ describe("useConversationViewRuntime", () => {
     chatApiMock.getChat.mockResolvedValueOnce(page(21, 40));
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -2235,7 +2138,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -2244,23 +2148,13 @@ describe("useConversationViewRuntime", () => {
       await result.current.loadOlder();
     });
 
-    expect(chatApiMock.getChat).toHaveBeenNthCalledWith(
-      1,
-      "chat-1",
-      "agent-a",
-      {
-        turnLimit: 20,
-      },
-    );
-    expect(chatApiMock.getChat).toHaveBeenNthCalledWith(
-      2,
-      "chat-1",
-      "agent-a",
-      {
-        turnLimit: 20,
-        beforeTurnOrdinal: 3,
-      },
-    );
+    expect(chatApiMock.getChat).toHaveBeenNthCalledWith(1, "chat-1", {
+      turnLimit: 20,
+    });
+    expect(chatApiMock.getChat).toHaveBeenNthCalledWith(2, "chat-1", {
+      turnLimit: 20,
+      beforeTurnOrdinal: 3,
+    });
     expect(
       result.current.history?.messages.map((message) => message.id),
     ).toEqual([
@@ -2289,7 +2183,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result, unmount } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -2305,7 +2200,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result: remount } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
 
@@ -2319,23 +2215,23 @@ describe("useConversationViewRuntime", () => {
 
   it("keeps the latest eight cached conversations when older entries are replaced", () => {
     for (let index = 0; index < 8; index += 1) {
-      primeChatViewCache("agent-a", `cached-${index}`, {
+      primeChatViewCache("chat", `cached-${index}`, {
         title: `Chat ${index}`,
         messages: [],
       });
     }
-    primeChatViewCache("agent-a", "cached-0", {
+    primeChatViewCache("chat", "cached-0", {
       title: "Updated chat",
       messages: [],
     });
-    primeChatViewCache("agent-a", "cached-8", {
+    primeChatViewCache("chat", "cached-8", {
       title: "Newest chat",
       messages: [],
     });
 
-    expect(readChatViewTitleCache("agent-a", "cached-0")).toBe("Updated chat");
-    expect(readChatViewTitleCache("agent-a", "cached-1")).toBeNull();
-    expect(readChatViewTitleCache("agent-a", "cached-8")).toBe("Newest chat");
+    expect(readChatViewTitleCache("chat", "cached-0")).toBe("Updated chat");
+    expect(readChatViewTitleCache("chat", "cached-1")).toBeNull();
+    expect(readChatViewTitleCache("chat", "cached-8")).toBe("Newest chat");
   });
 
   it.each([
@@ -2400,16 +2296,16 @@ describe("useConversationViewRuntime", () => {
         // payload to exercise large budgets without allocating 192 MiB in tests.
         const payload = "x".repeat(1024 * 1024);
         for (const id of ["first", "second"]) {
-          primeChatViewCache("agent-a", id, {
+          primeChatViewCache("chat", id, {
             title: id,
             messages: [],
             meta: { payloads: Array(48).fill(payload) },
           });
         }
-        expect(readChatViewTitleCache("agent-a", "first")).toBe(
+        expect(readChatViewTitleCache("chat", "first")).toBe(
           desktop ? "first" : null,
         );
-        expect(readChatViewTitleCache("agent-a", "second")).toBe("second");
+        expect(readChatViewTitleCache("chat", "second")).toBe("second");
         expect(cacheHostMock.isMobile).toHaveBeenCalledTimes(1);
       } finally {
         vi.stubGlobal("navigator", originalNavigator);
@@ -2422,20 +2318,18 @@ describe("useConversationViewRuntime", () => {
     // Rounded MiB weights from the rua-rust Project's latest eight snapshots.
     const sizes = [61, 2, 5, 3, 3, 10, 19, 17];
     for (const [index, size] of sizes.entries()) {
-      primeChatViewCache("project:rua-rust", `chat-${index}`, {
+      primeChatViewCache("chat", `chat-${index}`, {
         title: `Chat ${index}`,
         messages: [],
         meta: { payloads: Array(size).fill(payload) },
       });
-      writeChatViewScrollCache("project:rua-rust", `chat-${index}`, 640, false);
+      writeChatViewScrollCache("chat", `chat-${index}`, 640, false);
     }
     for (const index of sizes.keys()) {
-      expect(readChatViewTitleCache("project:rua-rust", `chat-${index}`)).toBe(
+      expect(readChatViewTitleCache("chat", `chat-${index}`)).toBe(
         `Chat ${index}`,
       );
-      expect(
-        readChatViewScrollCache("project:rua-rust", `chat-${index}`),
-      ).toEqual({
+      expect(readChatViewScrollCache("chat", `chat-${index}`)).toEqual({
         scrollTop: 640,
         followLatest: false,
       });
@@ -2450,7 +2344,7 @@ describe("useConversationViewRuntime", () => {
       cacheHostMock.isDesktopShell.mockReturnValue(desktop);
       const payload = "x".repeat(1024 * 1024);
       const cacheHistory = (id: string, chunks = desktop ? 40 : 20) =>
-        primeChatViewCache("agent-a", id, {
+        primeChatViewCache("chat", id, {
           title: id,
           messages: [],
           meta: { payloads: Array(chunks).fill(payload) },
@@ -2498,7 +2392,7 @@ describe("useConversationViewRuntime", () => {
 
       function readChatViewCacheTitles() {
         return ["first", "second", "third", "fourth", "fifth"].map((id) =>
-          readChatViewTitleCache("agent-a", id),
+          readChatViewTitleCache("chat", id),
         );
       }
     },
@@ -2507,7 +2401,7 @@ describe("useConversationViewRuntime", () => {
   it("counts growing live output while preserving an unfinished conversation", async () => {
     const stream = controlledSseResponse();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    primeChatViewCache("agent-a", "cached-chat", {
+    primeChatViewCache("chat", "cached-chat", {
       title: "Other cached chat",
       messages: [],
     });
@@ -2526,7 +2420,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result, unmount } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     try {
@@ -2534,7 +2429,7 @@ describe("useConversationViewRuntime", () => {
       await act(async () => {
         await result.current.submit("Continue");
       });
-      expect(readChatViewTitleCache("agent-a", "cached-chat")).toBe(
+      expect(readChatViewTitleCache("chat", "cached-chat")).toBe(
         "Other cached chat",
       );
       await act(async () => {
@@ -2545,9 +2440,9 @@ describe("useConversationViewRuntime", () => {
         });
       });
       await waitFor(() =>
-        expect(readChatViewTitleCache("agent-a", "cached-chat")).toBeNull(),
+        expect(readChatViewTitleCache("chat", "cached-chat")).toBeNull(),
       );
-      expect(readChatViewTitleCache("agent-a", "chat-1")).toBe("Active chat");
+      expect(readChatViewTitleCache("chat", "chat-1")).toBe("Active chat");
       expect(warn).toHaveBeenCalledWith(
         "conversation_view_runtime_capacity_unavailable",
         expect.objectContaining({
@@ -2566,7 +2461,7 @@ describe("useConversationViewRuntime", () => {
     const stream = controlledSseResponse();
     const cachedPayload = vi.fn(() => "cached tool output".repeat(1_000));
     const activePayload = vi.fn(() => "earlier tool output".repeat(1_000));
-    primeChatViewCache("agent-a", "cached-chat", {
+    primeChatViewCache("chat", "cached-chat", {
       title: "Other cached chat",
       messages: [],
       meta: {
@@ -2598,7 +2493,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result, unmount } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     try {
@@ -2634,13 +2530,13 @@ describe("useConversationViewRuntime", () => {
         });
       }
 
-      writeChatViewScrollCache("agent-a", "chat-1", 480, false);
-      writeChatViewScrollCache("agent-a", "chat-1", 960, false);
-      expect(readChatViewScrollCache("agent-a", "chat-1")).toEqual({
+      writeChatViewScrollCache("chat", "chat-1", 480, false);
+      writeChatViewScrollCache("chat", "chat-1", 960, false);
+      expect(readChatViewScrollCache("chat", "chat-1")).toEqual({
         scrollTop: 960,
         followLatest: false,
       });
-      expect(readChatViewTitleCache("agent-a", "cached-chat")).toBe(
+      expect(readChatViewTitleCache("chat", "cached-chat")).toBe(
         "Other cached chat",
       );
       expect(cachedPayload).not.toHaveBeenCalled();
@@ -2711,7 +2607,8 @@ describe("useConversationViewRuntime", () => {
 
     const first = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(isTurnActive(first.result)).toBe(true));
@@ -2723,7 +2620,8 @@ describe("useConversationViewRuntime", () => {
     );
     const remount = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
 
@@ -2753,7 +2651,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result, unmount } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -2783,7 +2682,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result: remount } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
 
@@ -2851,7 +2751,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -2910,7 +2811,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -2979,7 +2881,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -3054,7 +2957,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -3105,7 +3009,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -3211,7 +3116,8 @@ describe("useConversationViewRuntime", () => {
     });
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -3273,7 +3179,8 @@ describe("useConversationViewRuntime", () => {
     });
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -3335,7 +3242,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -3396,7 +3304,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -3447,7 +3356,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -3491,11 +3401,11 @@ describe("useConversationViewRuntime", () => {
     const rendered = JSON.stringify(result.current.projection.items);
     expect(rendered).not.toContain("submit reader output");
     expect(fetch).toHaveBeenCalledWith(
-      "/api/agents/agent-a/chats/chat-1/console/submit",
+      "/api/chats/chat-1/console/submit",
       expect.objectContaining({ method: "POST" }),
     );
     expect(fetch).toHaveBeenCalledWith(
-      "/api/agents/agent-a/chats/chat-1/console/live",
+      "/api/chats/chat-1/console/live",
       expect.objectContaining({ method: "POST" }),
     );
     expect(
@@ -3521,7 +3431,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -3644,7 +3555,8 @@ describe("useConversationViewRuntime", () => {
     try {
       const { result } = renderHook(() =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
         }),
       );
       await waitFor(() => expect(result.current.loading).toBe(false));
@@ -3712,7 +3624,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: null,
         currentDeviceId: null,
         activeAcpRunner: "codex",
@@ -3771,7 +3684,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -3835,7 +3749,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -4009,7 +3924,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -4049,7 +3965,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: null,
         currentDeviceId: null,
         activeAcpRunner: "codex",
@@ -4172,7 +4089,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
         currentDeviceId: null,
         activeAcpRunner: "codex",
@@ -4246,12 +4164,8 @@ describe("useConversationViewRuntime", () => {
         !String(url).includes("/console/live"),
     );
     expect(chatCalls).toHaveLength(2);
-    expect(chatCalls[0][0]).toBe(
-      "/api/agents/agent-a/chats/chat-1/console/submit",
-    );
-    expect(chatCalls[1][0]).toBe(
-      "/api/agents/agent-a/chats/chat-1/console/submit",
-    );
+    expect(chatCalls[0][0]).toBe("/api/chats/chat-1/console/submit");
+    expect(chatCalls[1][0]).toBe("/api/chats/chat-1/console/submit");
     expect(chatApiMock.sendNowQueuedInput).toHaveBeenCalledWith(
       "chat-1",
       "input-second",
@@ -4279,7 +4193,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -4411,7 +4326,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -4506,7 +4422,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -4592,7 +4509,8 @@ describe("useConversationViewRuntime", () => {
     );
     const firstView = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-b",
         currentDeviceId: "device-a",
       }),
@@ -4601,7 +4519,7 @@ describe("useConversationViewRuntime", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
-        "/api/agents/agent-a/chats/chat-1/console/live",
+        "/api/chats/chat-1/console/live",
         expect.objectContaining({ method: "POST" }),
       ),
     );
@@ -4665,7 +4583,8 @@ describe("useConversationViewRuntime", () => {
 
     const restoredView = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-b",
         currentDeviceId: "device-a",
       }),
@@ -4719,7 +4638,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -4915,7 +4835,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -4998,7 +4919,8 @@ describe("useConversationViewRuntime", () => {
     const { result, rerender } = renderHook(
       ({ target }: { target: string | null }) =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
           authorityPlacementDeviceId: target,
         }),
       { initialProps: { target: null } },
@@ -5062,7 +4984,6 @@ describe("useConversationViewRuntime", () => {
               id: "task-1",
               status: "running",
               chat: {
-                scope: { kind: "agent", agent_id: "agent-a" },
                 chat_id: "chat-1",
               },
             },
@@ -5072,7 +4993,8 @@ describe("useConversationViewRuntime", () => {
     });
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() =>
@@ -5101,7 +5023,8 @@ describe("useConversationViewRuntime", () => {
     });
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -5137,7 +5060,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -5237,7 +5161,8 @@ describe("useConversationViewRuntime", () => {
       }
       const { result } = renderHook(() =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
         }),
       );
       await waitFor(() => expect(result.current.loading).toBe(false));
@@ -5304,7 +5229,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -5383,12 +5309,12 @@ describe("useConversationViewRuntime", () => {
     vi.stubGlobal(
       "fetch",
       routeFetch((url) =>
-        url.includes("/projects/project-1/chats/chat-1/console/live")
+        url.includes("/chats/chat-1/console/live")
           ? stream.response
           : undefined,
       ),
     );
-    projectChatsApiMock.getChat.mockResolvedValue({
+    chatApiMock.getChat.mockResolvedValue({
       status: "running",
       active_turn: {
         turn_id: "turn-project-stop",
@@ -5416,26 +5342,21 @@ describe("useConversationViewRuntime", () => {
       messages: [],
       model: configuredModel,
     });
-    projectChatsApiMock.stopChat.mockResolvedValueOnce({
+    chatApiMock.stopChat.mockResolvedValueOnce({
       stopped: true,
       mode: "remote_control",
       control: "remote_stop",
     });
-    const target = {
-      scope: "project" as const,
-      projectId: "project-1",
-    };
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: target
-          ? { scope: "project", projectId: target.projectId, chatId: "chat-1" }
-          : { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        projectId: "project-1",
         authorityPlacementDeviceId: "device-resource",
         currentDeviceId: "device-controller",
         activeAcpRunner: null,
         acpHistoryPreview: null,
         activityWake: 0,
-        projectExecutionAgentId: "agent-a",
+        executionAgentId: "agent-a",
       }),
     );
 
@@ -5464,13 +5385,13 @@ describe("useConversationViewRuntime", () => {
       await result.current.stop();
     });
 
-    expect(projectChatsApiMock.stopChat).toHaveBeenCalledWith(
-      "project-1",
+    expect(chatApiMock.stopChat).toHaveBeenCalledWith(
       "chat-1",
       {
         turn_id: "turn-project-stop",
         authority_epoch: "0000000000000001000000000000000000000000",
       },
+      "agent-a",
     );
     expect(isTurnActive(result)).toBe(true);
     expect(JSON.stringify(result.current.history?.messages)).not.toContain(
@@ -5537,7 +5458,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -5616,7 +5538,8 @@ describe("useConversationViewRuntime", () => {
 
       const { result } = renderHook(() =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
           authorityPlacementDeviceId: "device-remote",
           currentDeviceId: "device-c",
         }),
@@ -5668,7 +5591,8 @@ describe("useConversationViewRuntime", () => {
     const { result, rerender } = renderHook(
       ({ preview }: { preview: { id: number; text: string } | null }) =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
           activeAcpRunner: "codex",
           acpHistoryPreview: preview,
         }),
@@ -5712,7 +5636,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         activeAcpRunner: "codex",
         acpHistoryPreview: {
           id: 1,
@@ -5784,7 +5709,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -5847,7 +5773,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -5956,7 +5883,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -6047,7 +5975,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -6134,7 +6063,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-local",
       }),
     );
@@ -6238,7 +6168,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -6320,7 +6251,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -6485,7 +6417,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -6599,7 +6532,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -6712,7 +6646,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -6844,7 +6779,8 @@ describe("useConversationViewRuntime", () => {
 
       const { result } = renderHook(() =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
           authorityPlacementDeviceId: "device-remote",
         }),
       );
@@ -6968,7 +6904,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -7024,7 +6961,7 @@ describe("useConversationViewRuntime", () => {
     vi.stubGlobal(
       "fetch",
       routeFetch((url) =>
-        url.includes("/projects/project-1/chats/chat-1/console/live")
+        url.includes("/chats/chat-1/console/live")
           ? liveStream.response
           : undefined,
       ),
@@ -7042,7 +6979,7 @@ describe("useConversationViewRuntime", () => {
       type: "message",
       content: [{ type: "text", text: "partial" }],
     };
-    projectChatsApiMock.getChat
+    chatApiMock.getChat
       .mockResolvedValueOnce({
         status: "running",
         active_turn: {
@@ -7071,18 +7008,16 @@ describe("useConversationViewRuntime", () => {
         messages: [user, partialAssistant],
         model: configuredModel,
       });
-    const target = { scope: "project" as const, projectId: "project-1" };
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: target
-          ? { scope: "project", projectId: target.projectId, chatId: "chat-1" }
-          : { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        projectId: "project-1",
         authorityPlacementDeviceId: "device-a",
         currentDeviceId: "device-a",
         activeAcpRunner: null,
         acpHistoryPreview: null,
         activityWake: 0,
-        projectExecutionAgentId: "agent-a",
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -7219,7 +7154,8 @@ describe("useConversationViewRuntime", () => {
 
       const { result } = renderHook(() =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
           authorityPlacementDeviceId: deviceId,
           currentDeviceId: currentDeviceId,
         }),
@@ -7291,7 +7227,7 @@ describe("useConversationViewRuntime", () => {
 
   it("treats stale remote pending projection as display-only for idle submit", async () => {
     localStorage.setItem(
-      "rua:remote-pending-submissions:agent-a:chat-1",
+      "rua:remote-pending-submissions:chat:chat-1",
       JSON.stringify([
         {
           device_delivery_id: "device-delivery-1",
@@ -7324,7 +7260,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -7356,7 +7293,7 @@ describe("useConversationViewRuntime", () => {
   it.each([true, false])(
     "reconciles an old pending delivery outside the current history page only by identity (matched: %s)",
     async (matched) => {
-      const key = "rua:remote-pending-submissions:agent-a:chat-1";
+      const key = "rua:remote-pending-submissions:chat:chat-1";
       localStorage.setItem(
         key,
         JSON.stringify([
@@ -7375,7 +7312,7 @@ describe("useConversationViewRuntime", () => {
         ]),
       );
       chatApiMock.getChat.mockImplementation(async (...args: unknown[]) => {
-        const options = args[2] as { aroundTurnId?: string } | undefined;
+        const options = args[1] as { aroundTurnId?: string } | undefined;
         return {
           status: "idle",
           messages: options?.aroundTurnId
@@ -7398,13 +7335,14 @@ describe("useConversationViewRuntime", () => {
       });
       const { result } = renderHook(() =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
           authorityPlacementDeviceId: "device-remote",
         }),
       );
       await waitFor(() => expect(result.current.loading).toBe(false));
       await waitFor(() =>
-        expect(chatApiMock.getChat).toHaveBeenCalledWith("chat-1", "agent-a", {
+        expect(chatApiMock.getChat).toHaveBeenCalledWith("chat-1", {
           aroundTurnId: "old-turn",
           turnLimit: 1,
         }),
@@ -7448,7 +7386,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -7490,7 +7429,7 @@ describe("useConversationViewRuntime", () => {
     vi.stubGlobal(
       "fetch",
       routeFetch((url) => {
-        if (!url.includes("/projects/project-1/chats/chat-1/console/submit")) {
+        if (!url.includes("/chats/chat-1/console/submit")) {
           return undefined;
         }
         submitCount += 1;
@@ -7504,27 +7443,21 @@ describe("useConversationViewRuntime", () => {
         throw new Error("transport unavailable");
       }),
     );
-    projectChatsApiMock.getChat.mockResolvedValue({
+    chatApiMock.getChat.mockResolvedValue({
       status: "idle",
       messages: [],
       model: configuredModel,
     });
-    const target = {
-      scope: "project" as const,
-      projectId: "project-1",
-      agentId: "agent-a",
-    };
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: target
-          ? { scope: "project", projectId: target.projectId, chatId: "chat-1" }
-          : { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        projectId: "project-1",
         authorityPlacementDeviceId: "device-resource",
         currentDeviceId: "device-controller",
         activeAcpRunner: null,
         acpHistoryPreview: null,
         activityWake: 0,
-        projectExecutionAgentId: "agent-a",
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -7584,7 +7517,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -7676,7 +7610,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -7763,7 +7698,8 @@ describe("useConversationViewRuntime", () => {
     }));
     const { result, unmount } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "device-remote",
       }),
     );
@@ -7878,7 +7814,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -7962,7 +7899,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -8063,7 +8001,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -8143,7 +8082,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -8188,7 +8128,8 @@ describe("useConversationViewRuntime", () => {
       );
       const { result, unmount } = renderHook(() =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
         }),
       );
       await waitFor(() => expect(result.current.loading).toBe(false));
@@ -8261,7 +8202,8 @@ describe("useConversationViewRuntime", () => {
       unmount();
       const reopened = renderHook(() =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
         }),
       );
       await waitFor(() => expect(reopened.result.current.loading).toBe(false));
@@ -8307,7 +8249,8 @@ describe("useConversationViewRuntime", () => {
     });
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() =>
@@ -8349,23 +8292,15 @@ describe("useConversationViewRuntime", () => {
           return stream.response;
         }),
       );
-      const target =
-        scope === "project"
-          ? { scope, projectId: "project-1", agentId: "agent-a" }
-          : undefined;
+      const projectId = scope === "project" ? "project-1" : undefined;
       const { result, unmount } = renderHook(() =>
         useConversationViewRuntime({
-          address: target
-            ? {
-                scope: "project",
-                projectId: target.projectId,
-                chatId: "chat-1",
-              }
-            : { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          projectId,
           activeAcpRunner: null,
           acpHistoryPreview: null,
           activityWake: 0,
-          projectExecutionAgentId: "agent-a",
+          executionAgentId: "agent-a",
         }),
       );
 
@@ -8416,7 +8351,6 @@ describe("useConversationViewRuntime", () => {
           "partial",
         );
         expect(chatApiMock.stopChat).not.toHaveBeenCalled();
-        expect(projectChatsApiMock.stopChat).not.toHaveBeenCalled();
 
         await act(async () => {
           Object.defineProperty(document, "hidden", {
@@ -8454,7 +8388,8 @@ describe("useConversationViewRuntime", () => {
       });
       const { result } = renderHook(() =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
         }),
       );
       await waitFor(() => expect(result.current.loading).toBe(false));
@@ -8527,7 +8462,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -8600,7 +8536,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result, unmount } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -8634,7 +8571,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result, unmount } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -8650,7 +8588,7 @@ describe("useConversationViewRuntime", () => {
     expect(chatApiMock.stopChat).not.toHaveBeenCalled();
   });
 
-  it("drops old-Agent live output when the explicit address changes", async () => {
+  it("drops live output when the viewer opens a different Chat", async () => {
     const stream = controlledSseResponse();
     let requestSignal: AbortSignal | undefined;
     vi.stubGlobal(
@@ -8661,12 +8599,12 @@ describe("useConversationViewRuntime", () => {
         return stream.response;
       }),
     );
-    chatApiMock.getChat.mockImplementation((_chatId: string, agentId: string) =>
+    chatApiMock.getChat.mockImplementation((chatId: string) =>
       Promise.resolve({
         status: "idle",
         model: configuredModel,
         messages:
-          agentId === "agent-b"
+          chatId === "chat-b"
             ? [
                 {
                   id: "agent-b-user",
@@ -8679,12 +8617,12 @@ describe("useConversationViewRuntime", () => {
     );
 
     const { result, rerender } = renderHook(
-      ({ agentId }) =>
+      ({ chatId }) =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: agentId, chatId: "chat-1" },
+          address: { chatId },
           unmaterialized: false,
         }),
-      { initialProps: { agentId: "agent-a" } },
+      { initialProps: { chatId: "chat-a" } },
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
 
@@ -8710,7 +8648,7 @@ describe("useConversationViewRuntime", () => {
       "agent a live output",
     );
 
-    rerender({ agentId: "agent-b" });
+    rerender({ chatId: "chat-b" });
 
     await waitFor(() =>
       expect(JSON.stringify(result.current.history?.messages || [])).toContain(
@@ -8784,13 +8722,14 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
 
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
-        "/api/agents/agent-a/chats/chat-1/console/live",
+        "/api/chats/chat-1/console/live",
         expect.objectContaining({ method: "POST" }),
       ),
     );
@@ -8852,7 +8791,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result, unmount } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() =>
@@ -8929,12 +8869,13 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
-        "/api/agents/agent-a/chats/chat-1/console/live",
+        "/api/chats/chat-1/console/live",
         expect.objectContaining({ method: "POST" }),
       ),
     );
@@ -9032,7 +8973,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(fetch).toHaveBeenCalled());
@@ -9134,7 +9076,7 @@ describe("useConversationViewRuntime", () => {
   });
 
   it("keeps the current Project live stream attached when the next-Turn Agent changes", async () => {
-    projectChatsApiMock.getChat.mockResolvedValue({
+    chatApiMock.getChat.mockResolvedValue({
       status: "running",
       active_turn: {
         turn_id: "turn-1",
@@ -9159,38 +9101,29 @@ describe("useConversationViewRuntime", () => {
     vi.stubGlobal(
       "fetch",
       routeFetch((url) =>
-        url.includes("/projects/project-1/chats/chat-project-1/console/live")
+        url.includes("/chats/chat-project-1/console/live")
           ? stream.response
           : undefined,
       ),
     );
-    const target = {
-      scope: "project" as const,
-      projectId: "project-1",
-    };
     const { result, rerender } = renderHook(
       ({ executionAgentId }) =>
         useConversationViewRuntime({
-          address: target
-            ? {
-                scope: "project",
-                projectId: target.projectId,
-                chatId: "chat-project-1",
-              }
-            : { scope: "agent", agentId: "agent-a", chatId: "chat-project-1" },
+          address: { chatId: "chat-project-1" },
+          projectId: "project-1",
           authorityPlacementDeviceId: "device-resource",
           currentDeviceId: "device-controller",
           activeAcpRunner: null,
           acpHistoryPreview: null,
           activityWake: 0,
-          projectExecutionAgentId: executionAgentId,
+          executionAgentId: executionAgentId,
         }),
       { initialProps: { executionAgentId: "agent-a" } },
     );
 
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
-        "/api/projects/project-1/chats/chat-project-1/console/live",
+        "/api/chats/chat-project-1/console/live",
         expect.objectContaining({ method: "POST" }),
       ),
     );
@@ -9241,8 +9174,9 @@ describe("useConversationViewRuntime", () => {
     const submitCall = vi
       .mocked(fetch)
       .mock.calls.find(([url]) => String(url).includes("/console/submit"));
-    expect(JSON.parse(String(submitCall?.[1]?.body || "{}"))).toMatchObject({
-      agent_id: "agent-b",
+    const body = JSON.parse(String(submitCall?.[1]?.body || "{}"));
+    expect(body).not.toHaveProperty("agent_id");
+    expect(body).toMatchObject({
       input: [
         {
           role: "user",
@@ -9283,7 +9217,8 @@ describe("useConversationViewRuntime", () => {
     );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
 
@@ -9378,7 +9313,8 @@ describe("useConversationViewRuntime", () => {
       });
       const { result } = renderHook(() =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
         }),
       );
       await waitFor(() =>
@@ -9457,7 +9393,8 @@ describe("useConversationViewRuntime", () => {
       chatApiMock.getChat.mockResolvedValue(page(21, 40, "before"));
       const { result } = renderHook(() =>
         useConversationViewRuntime({
-          address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+          address: { chatId: "chat-1" },
+          executionAgentId: "agent-a",
         }),
       );
       await waitFor(() => expect(result.current.loading).toBe(false));
@@ -9518,7 +9455,8 @@ describe("useConversationViewRuntime", () => {
     chatApiMock.getChat.mockResolvedValue(before);
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -9546,7 +9484,8 @@ describe("useConversationViewRuntime", () => {
   it("delegates variant, rollback, and branch actions", async () => {
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -9578,32 +9517,22 @@ describe("useConversationViewRuntime", () => {
     );
   });
 
-  it("delegates Project variant, rollback, and branch actions to Project scope", async () => {
-    projectChatsApiMock.getChat.mockResolvedValue({
+  it("applies variant, rollback, and branch actions to the Project Chat ID", async () => {
+    chatApiMock.getChat.mockResolvedValue({
       status: "idle",
       messages: [],
       model: configuredModel,
     });
-    const target = {
-      scope: "project" as const,
-      projectId: "project-1",
-      agentId: "agent-a",
-    };
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: target
-          ? {
-              scope: "project",
-              projectId: target.projectId,
-              chatId: "chat-project-1",
-            }
-          : { scope: "agent", agentId: "agent-a", chatId: "chat-project-1" },
+        address: { chatId: "chat-project-1" },
+        projectId: "project-1",
         authorityPlacementDeviceId: "device-resource",
         currentDeviceId: "device-controller",
         activeAcpRunner: null,
         acpHistoryPreview: null,
         activityWake: 0,
-        projectExecutionAgentId: "agent-a",
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -9612,31 +9541,29 @@ describe("useConversationViewRuntime", () => {
       await result.current.selectVariant("turn-1", "variant-2");
       await result.current.rollback("turn-2");
     });
-    await expect(result.current.branch("turn-2")).resolves.toBe(
-      "branch-project-chat",
-    );
-    expect(projectChatsApiMock.selectVariant).toHaveBeenCalledWith(
-      "project-1",
+    await expect(result.current.branch("turn-2")).resolves.toBe("branch-chat");
+    expect(chatApiMock.selectVariant).toHaveBeenCalledWith(
       "chat-project-1",
       "turn-1",
       "variant-2",
+      "agent-a",
     );
-    expect(projectChatsApiMock.rollback).toHaveBeenCalledWith(
-      "project-1",
+    expect(chatApiMock.rollback).toHaveBeenCalledWith(
       "chat-project-1",
       { before_turn_id: "turn-2" },
+      "agent-a",
     );
-    expect(projectChatsApiMock.branch).toHaveBeenCalledWith(
-      "project-1",
+    expect(chatApiMock.branch).toHaveBeenCalledWith(
       "chat-project-1",
       { before_turn_id: "turn-2" },
+      "agent-a",
     );
-    expect(projectChatsApiMock.getChat).toHaveBeenCalledTimes(2);
+    expect(chatApiMock.getChat).toHaveBeenCalledTimes(2);
   });
 
   it("submits Project regeneration through the Project Chat route", async () => {
     const stream = controlledSseResponse();
-    projectChatsApiMock.getChat.mockResolvedValue({
+    chatApiMock.getChat.mockResolvedValue({
       status: "idle",
       model: configuredModel,
       messages: [
@@ -9663,26 +9590,16 @@ describe("useConversationViewRuntime", () => {
         return undefined;
       }),
     );
-    const target = {
-      scope: "project" as const,
-      projectId: "project-1",
-      agentId: "agent-a",
-    };
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: target
-          ? {
-              scope: "project",
-              projectId: target.projectId,
-              chatId: "chat-project-1",
-            }
-          : { scope: "agent", agentId: "agent-a", chatId: "chat-project-1" },
+        address: { chatId: "chat-project-1" },
+        projectId: "project-1",
         authorityPlacementDeviceId: "device-resource",
         currentDeviceId: "device-controller",
         activeAcpRunner: null,
         acpHistoryPreview: null,
         activityWake: 0,
-        projectExecutionAgentId: "agent-a",
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -9693,15 +9610,16 @@ describe("useConversationViewRuntime", () => {
     });
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
-        "/api/projects/project-1/chats/chat-project-1/console/submit",
+        "/api/chats/chat-project-1/console/submit",
         expect.objectContaining({ method: "POST" }),
       ),
     );
     const submitCall = vi
       .mocked(fetch)
       .mock.calls.find(([url]) => String(url).includes("/console/submit"));
-    expect(JSON.parse(String(submitCall?.[1]?.body))).toMatchObject({
-      agent_id: "agent-a",
+    const body = JSON.parse(String(submitCall?.[1]?.body));
+    expect(body).not.toHaveProperty("agent_id");
+    expect(body).toMatchObject({
       regenerate_turn_id: "turn-1",
     });
 
@@ -9718,7 +9636,7 @@ describe("useConversationViewRuntime", () => {
 
   it("applies Project variant and rollback mutations from Live without history Sync", async () => {
     const stream = controlledSseResponse();
-    projectChatsApiMock.getChat.mockResolvedValue(
+    chatApiMock.getChat.mockResolvedValue(
       regenerationHistory(
         [
           {
@@ -9739,35 +9657,25 @@ describe("useConversationViewRuntime", () => {
     vi.stubGlobal(
       "fetch",
       routeFetch((url) =>
-        url.includes("/projects/project-1/chats/chat-project-1/console/live")
+        url.includes("/chats/chat-project-1/console/live")
           ? stream.response
           : undefined,
       ),
     );
-    const target = {
-      scope: "project" as const,
-      projectId: "project-1",
-      agentId: "agent-a",
-    };
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: target
-          ? {
-              scope: "project",
-              projectId: target.projectId,
-              chatId: "chat-project-1",
-            }
-          : { scope: "agent", agentId: "agent-a", chatId: "chat-project-1" },
+        address: { chatId: "chat-project-1" },
+        projectId: "project-1",
         authorityPlacementDeviceId: "device-resource",
         currentDeviceId: "device-controller",
         activeAcpRunner: null,
         acpHistoryPreview: null,
         activityWake: 0,
-        projectExecutionAgentId: "agent-a",
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(projectChatsApiMock.getChat).toHaveBeenCalledTimes(1);
+    expect(chatApiMock.getChat).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       stream.send({
@@ -9787,7 +9695,7 @@ describe("useConversationViewRuntime", () => {
       expect(JSON.stringify(assistant.output)).toContain("selected remotely");
     });
 
-    projectChatsApiMock.getChat.mockResolvedValue({
+    chatApiMock.getChat.mockResolvedValue({
       ...result.current.authoritativeHistory,
       messages: result.current.authoritativeHistory!.messages.filter(
         (message) => message.turn_id !== "turn-2",
@@ -9808,7 +9716,7 @@ describe("useConversationViewRuntime", () => {
       expect(rendered).not.toContain("later answer");
       expect(rendered).not.toContain("later");
     });
-    expect(projectChatsApiMock.getChat).toHaveBeenCalledTimes(2);
+    expect(chatApiMock.getChat).toHaveBeenCalledTimes(2);
 
     stream.close();
   });
@@ -9847,7 +9755,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -9930,7 +9839,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -10041,7 +9951,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -10093,10 +10004,11 @@ describe("useConversationViewRuntime", () => {
     stream.close();
   });
 
-  it("submits approval decisions to the selected agent approval control route", async () => {
+  it("submits approval decisions to the Chat approval control route", async () => {
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -10106,7 +10018,8 @@ describe("useConversationViewRuntime", () => {
     });
 
     expect(consoleApiMock.decideApproval).toHaveBeenCalledWith(
-      "agent-a",
+      { agentId: "agent-a" },
+      "chat-1",
       "approval-1",
       {
         decision: "run_once",
@@ -10114,7 +10027,7 @@ describe("useConversationViewRuntime", () => {
       },
     );
     expect(fetch).not.toHaveBeenCalledWith(
-      "/api/agents/agent-a/chats/chat-1/console/submit",
+      "/api/chats/chat-1/console/submit",
       expect.anything(),
     );
   });
@@ -10127,7 +10040,8 @@ describe("useConversationViewRuntime", () => {
     };
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -10140,7 +10054,8 @@ describe("useConversationViewRuntime", () => {
     });
 
     expect(consoleApiMock.decideApproval).toHaveBeenCalledWith(
-      "agent-a",
+      { agentId: "agent-a" },
+      "chat-1",
       "approval-1",
       {
         decision: "allow_chat",
@@ -10150,7 +10065,7 @@ describe("useConversationViewRuntime", () => {
     );
   });
 
-  it("routes Project Stop and queue controls without touching Agent control routes", async () => {
+  it("routes Project Stop and queue controls by Chat ID", async () => {
     const control = {
       revision: 1,
       authority_device_id: "device-resource",
@@ -10192,46 +10107,36 @@ describe("useConversationViewRuntime", () => {
         exit_acp: false,
       },
     };
-    projectChatsApiMock.getChat.mockResolvedValue({
+    chatApiMock.getChat.mockResolvedValue({
       status: "idle",
       messages: [],
       model: configuredModel,
       control,
     });
-    projectChatsApiMock.sendNowQueuedInput.mockResolvedValue({
+    chatApiMock.sendNowQueuedInput.mockResolvedValue({
       input_id: "input-project-1",
       applied: true,
       control,
     });
-    projectChatsApiMock.editQueuedInput.mockResolvedValue({
+    chatApiMock.editQueuedInput.mockResolvedValue({
       entry: control.queue.entries[0],
       control,
     });
-    projectChatsApiMock.deleteQueuedInput.mockResolvedValue({
+    chatApiMock.deleteQueuedInput.mockResolvedValue({
       deleted_input_id: "input-project-1",
       control: { ...control, queue: { paused: false, entries: [] } },
     });
-    const target = {
-      scope: "project" as const,
-      projectId: "project-1",
-      agentId: "agent-a",
-    };
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: target
-          ? {
-              scope: "project",
-              projectId: target.projectId,
-              chatId: "chat-project-1",
-            }
-          : { scope: "agent", agentId: "agent-a", chatId: "chat-project-1" },
+        address: { chatId: "chat-project-1" },
+        projectId: "project-1",
         authorityPlacementDeviceId: "device-resource",
         currentDeviceId: "device-controller",
         activeAcpRunner: null,
         acpHistoryPreview: null,
         activityWake: 0,
-        projectExecutionAgentId: "agent-a",
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -10256,36 +10161,32 @@ describe("useConversationViewRuntime", () => {
       await result.current.stop();
     });
 
-    expect(projectChatsApiMock.sendNowQueuedInput).toHaveBeenCalledWith(
-      "project-1",
+    expect(chatApiMock.sendNowQueuedInput).toHaveBeenCalledWith(
       "chat-project-1",
       "input-project-1",
       expect.objectContaining({ authority_epoch: "epoch-project-1" }),
+      "agent-a",
     );
-    expect(projectChatsApiMock.editQueuedInput).toHaveBeenCalledWith(
-      "project-1",
+    expect(chatApiMock.editQueuedInput).toHaveBeenCalledWith(
       "chat-project-1",
       "input-project-1",
       "edited project input",
+      "agent-a",
     );
-    expect(projectChatsApiMock.deleteQueuedInput).toHaveBeenCalledWith(
-      "project-1",
+    expect(chatApiMock.deleteQueuedInput).toHaveBeenCalledWith(
       "chat-project-1",
       "input-project-1",
+      "agent-a",
     );
-    expect(projectChatsApiMock.stopChat).toHaveBeenCalledWith(
-      "project-1",
+    expect(chatApiMock.stopChat).toHaveBeenCalledWith(
       "chat-project-1",
       { turn_id: "turn-project-queue", authority_epoch: "epoch-project-1" },
+      "agent-a",
     );
-    expect(chatApiMock.sendNowQueuedInput).not.toHaveBeenCalled();
-    expect(chatApiMock.editQueuedInput).not.toHaveBeenCalled();
-    expect(chatApiMock.deleteQueuedInput).not.toHaveBeenCalled();
-    expect(chatApiMock.stopChat).not.toHaveBeenCalled();
   });
 
   it("uses the existing optimistic Chat history when Project approval fails", async () => {
-    projectChatsApiMock.getChat.mockResolvedValue({
+    chatApiMock.getChat.mockResolvedValue({
       status: "idle",
       model: configuredModel,
       messages: [
@@ -10304,7 +10205,7 @@ describe("useConversationViewRuntime", () => {
         },
       ],
     });
-    projectChatsApiMock.getApprovalSnapshot.mockResolvedValue({
+    consoleApiMock.getApprovalSnapshot.mockResolvedValue({
       pending: [
         {
           id: "approval-project-1",
@@ -10321,29 +10222,19 @@ describe("useConversationViewRuntime", () => {
       ],
       resolved: [],
     });
-    projectChatsApiMock.decideApproval.mockRejectedValue(
+    consoleApiMock.decideApproval.mockRejectedValue(
       new Error("resource Device offline"),
     );
-    const target = {
-      scope: "project" as const,
-      projectId: "project-1",
-      agentId: "agent-a",
-    };
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: target
-          ? {
-              scope: "project",
-              projectId: target.projectId,
-              chatId: "chat-project-1",
-            }
-          : { scope: "agent", agentId: "agent-a", chatId: "chat-project-1" },
+        address: { chatId: "chat-project-1" },
+        projectId: "project-1",
         authorityPlacementDeviceId: "device-resource",
         currentDeviceId: "device-controller",
         activeAcpRunner: null,
         acpHistoryPreview: null,
         activityWake: 0,
-        projectExecutionAgentId: "agent-a",
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() =>
@@ -10354,8 +10245,8 @@ describe("useConversationViewRuntime", () => {
       await result.current.approveTool("approval-project-1", true);
     });
 
-    expect(projectChatsApiMock.decideApproval).toHaveBeenCalledWith(
-      "project-1",
+    expect(consoleApiMock.decideApproval).toHaveBeenCalledWith(
+      { agentId: "agent-a", projectId: "project-1" },
       "chat-project-1",
       "approval-project-1",
       { decision: "run_once", decided_by: "webui" },
@@ -10375,7 +10266,7 @@ describe("useConversationViewRuntime", () => {
     const liveSignals: AbortSignal[] = [];
     let liveIndex = 0;
     const fetchMock = routeFetch((url, init) => {
-      if (url !== "/api/projects/project-1/chats/chat-project-1/console/live") {
+      if (url !== "/api/chats/chat-project-1/console/live") {
         return undefined;
       }
       if (init?.signal) liveSignals.push(init.signal);
@@ -10384,26 +10275,16 @@ describe("useConversationViewRuntime", () => {
       return response;
     });
     vi.stubGlobal("fetch", fetchMock);
-    const target = {
-      scope: "project" as const,
-      projectId: "project-1",
-      agentId: "agent-a",
-    };
     const { unmount } = renderHook(() =>
       useConversationViewRuntime({
-        address: target
-          ? {
-              scope: "project",
-              projectId: target.projectId,
-              chatId: "chat-project-1",
-            }
-          : { scope: "agent", agentId: "agent-a", chatId: "chat-project-1" },
+        address: { chatId: "chat-project-1" },
+        projectId: "project-1",
         authorityPlacementDeviceId: "device-resource",
         currentDeviceId: "device-controller",
         activeAcpRunner: null,
         acpHistoryPreview: null,
         activityWake: 0,
-        projectExecutionAgentId: "agent-a",
+        executionAgentId: "agent-a",
       }),
     );
 
@@ -10433,17 +10314,12 @@ describe("useConversationViewRuntime", () => {
         second.close();
         await Promise.resolve();
       });
-      const historyReadsBeforeWake =
-        projectChatsApiMock.getChat.mock.calls.length;
+      const historyReadsBeforeWake = chatApiMock.getChat.mock.calls.length;
       await waitFor(() => expect(liveIndex).toBe(3), { timeout: 2_500 });
-      expect(projectChatsApiMock.getChat).toHaveBeenCalledTimes(
-        historyReadsBeforeWake,
-      );
+      expect(chatApiMock.getChat).toHaveBeenCalledTimes(historyReadsBeforeWake);
 
       const projectLiveCalls = fetchMock.mock.calls.filter(
-        ([url]) =>
-          String(url) ===
-          "/api/projects/project-1/chats/chat-project-1/console/live",
+        ([url]) => String(url) === "/api/chats/chat-project-1/console/live",
       );
       expect(projectLiveCalls).toHaveLength(3);
       expect(
@@ -10464,7 +10340,7 @@ describe("useConversationViewRuntime", () => {
     const liveRequestBodies: Array<Record<string, unknown>> = [];
     let liveIndex = 0;
     const fetchMock = routeFetch((url, init) => {
-      if (url !== "/api/projects/project-1/chats/chat-project-1/console/live") {
+      if (url !== "/api/chats/chat-project-1/console/live") {
         return undefined;
       }
       liveRequestBodies.push(JSON.parse(String(init?.body)));
@@ -10473,26 +10349,16 @@ describe("useConversationViewRuntime", () => {
       return response;
     });
     vi.stubGlobal("fetch", fetchMock);
-    const target = {
-      scope: "project" as const,
-      projectId: "project-1",
-      agentId: "agent-a",
-    };
     const { result, unmount } = renderHook(() =>
       useConversationViewRuntime({
-        address: target
-          ? {
-              scope: "project",
-              projectId: target.projectId,
-              chatId: "chat-project-1",
-            }
-          : { scope: "agent", agentId: "agent-a", chatId: "chat-project-1" },
+        address: { chatId: "chat-project-1" },
+        projectId: "project-1",
         authorityPlacementDeviceId: "device-resource",
         currentDeviceId: "device-controller",
         activeAcpRunner: null,
         acpHistoryPreview: null,
         activityWake: 0,
-        projectExecutionAgentId: "agent-a",
+        executionAgentId: "agent-a",
       }),
     );
     const activity = (sequence: number) => ({
@@ -10590,7 +10456,7 @@ describe("useConversationViewRuntime", () => {
       },
       content: [{ type: "text", text: "project prompt" }],
     };
-    projectChatsApiMock.getChat
+    chatApiMock.getChat
       .mockResolvedValueOnce({
         status: "running",
         active_turn: {
@@ -10641,38 +10507,26 @@ describe("useConversationViewRuntime", () => {
         ],
       });
     const fetchMock = routeFetch((url) =>
-      url.includes("/projects/project-1/") && url.endsWith("/console/live")
+      url.includes("/chats/") && url.endsWith("/console/live")
         ? stream.response
         : undefined,
     );
     vi.stubGlobal("fetch", fetchMock);
-    const target = {
-      scope: "project" as const,
-      projectId: "project-1",
-      agentId: "agent-a",
-    };
     const { result, unmount } = renderHook(() =>
       useConversationViewRuntime({
-        address: target
-          ? {
-              scope: "project",
-              projectId: target.projectId,
-              chatId: "chat-project-1",
-            }
-          : { scope: "agent", agentId: "agent-a", chatId: "chat-project-1" },
+        address: { chatId: "chat-project-1" },
+        projectId: "project-1",
         authorityPlacementDeviceId: "device-resource",
         currentDeviceId: "device-controller",
         activeAcpRunner: null,
         acpHistoryPreview: null,
         activityWake: 0,
-        projectExecutionAgentId: "agent-a",
+        executionAgentId: "agent-a",
       }),
     );
 
     try {
-      await waitFor(() =>
-        expect(projectChatsApiMock.getChat).toHaveBeenCalledTimes(1),
-      );
+      await waitFor(() => expect(chatApiMock.getChat).toHaveBeenCalledTimes(1));
       await act(async () => {
         stream.send({
           type: "stream_replay",
@@ -10708,7 +10562,7 @@ describe("useConversationViewRuntime", () => {
         expect(rendered).toContain("uncovered live output");
         expect(isTurnActive(result)).toBe(true);
       });
-      expect(projectChatsApiMock.getChat).toHaveBeenCalledTimes(1);
+      expect(chatApiMock.getChat).toHaveBeenCalledTimes(1);
       expect(
         fetchMock.mock.calls.some(([url]) =>
           String(url).includes("/sync/cycle/target"),
@@ -10723,7 +10577,6 @@ describe("useConversationViewRuntime", () => {
           durable_sequence: 1,
           manifest_hash: "test-manifest-1",
           address: {
-            scope: { kind: "project", project_id: "project-1" },
             chat_id: "chat-project-1",
           },
         });
@@ -10734,14 +10587,11 @@ describe("useConversationViewRuntime", () => {
           durable_sequence: 1,
           manifest_hash: "test-manifest-1",
           address: {
-            scope: { kind: "project", project_id: "project-1" },
             chat_id: "chat-project-1",
           },
         });
       });
-      await waitFor(() =>
-        expect(projectChatsApiMock.getChat).toHaveBeenCalledTimes(2),
-      );
+      await waitFor(() => expect(chatApiMock.getChat).toHaveBeenCalledTimes(2));
       await waitFor(() => {
         const rendered = JSON.stringify(result.current.projection.items);
         expect(rendered).toContain("canonical project answer");
@@ -10756,7 +10606,7 @@ describe("useConversationViewRuntime", () => {
 
   it("ignores a late history watermark for a different Project Chat", async () => {
     const stream = controlledSseResponse();
-    projectChatsApiMock.getChat.mockResolvedValue({
+    chatApiMock.getChat.mockResolvedValue({
       status: "idle",
       model: configuredModel,
       messages: [
@@ -10768,38 +10618,26 @@ describe("useConversationViewRuntime", () => {
       ],
     });
     const fetchMock = routeFetch((url) =>
-      url.includes("/projects/project-1/") && url.endsWith("/console/live")
+      url.includes("/chats/") && url.endsWith("/console/live")
         ? stream.response
         : undefined,
     );
     vi.stubGlobal("fetch", fetchMock);
-    const target = {
-      scope: "project" as const,
-      projectId: "project-1",
-      agentId: "agent-a",
-    };
     const { unmount } = renderHook(() =>
       useConversationViewRuntime({
-        address: target
-          ? {
-              scope: "project",
-              projectId: target.projectId,
-              chatId: "chat-project-1",
-            }
-          : { scope: "agent", agentId: "agent-a", chatId: "chat-project-1" },
+        address: { chatId: "chat-project-1" },
+        projectId: "project-1",
         authorityPlacementDeviceId: "device-resource",
         currentDeviceId: "device-controller",
         activeAcpRunner: null,
         acpHistoryPreview: null,
         activityWake: 0,
-        projectExecutionAgentId: "agent-a",
+        executionAgentId: "agent-a",
       }),
     );
 
     try {
-      await waitFor(() =>
-        expect(projectChatsApiMock.getChat).toHaveBeenCalledTimes(1),
-      );
+      await waitFor(() => expect(chatApiMock.getChat).toHaveBeenCalledTimes(1));
       await act(async () => {
         stream.send({
           activity_generation: "old-project-generation",
@@ -10809,14 +10647,13 @@ describe("useConversationViewRuntime", () => {
           manifest_hash: "old-project-manifest",
           authority_device_id: "old-project-device",
           address: {
-            scope: { kind: "project", project_id: "project-2" },
             chat_id: "chat-project-old",
           },
         });
         await new Promise((resolve) => setTimeout(resolve, 25));
       });
 
-      expect(projectChatsApiMock.getChat).toHaveBeenCalledTimes(1);
+      expect(chatApiMock.getChat).toHaveBeenCalledTimes(1);
       expect(
         fetchMock.mock.calls.some(([url]) =>
           String(url).includes("/sync/cycle/target"),
@@ -10855,7 +10692,7 @@ describe("useConversationViewRuntime", () => {
         },
       ],
     });
-    projectChatsApiMock.getChat
+    chatApiMock.getChat
       .mockResolvedValueOnce({
         status: "idle",
         model: configuredModel,
@@ -10910,31 +10747,21 @@ describe("useConversationViewRuntime", () => {
         return undefined;
       }),
     );
-    const target = {
-      scope: "project" as const,
-      projectId: "project-1",
-      agentId: "agent-a",
-    };
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: target
-          ? {
-              scope: "project",
-              projectId: target.projectId,
-              chatId: "chat-project-1",
-            }
-          : { scope: "agent", agentId: "agent-a", chatId: "chat-project-1" },
+        address: { chatId: "chat-project-1" },
+        projectId: "project-1",
         authorityPlacementDeviceId: "device-resource",
         currentDeviceId: "device-controller",
         activeAcpRunner: null,
         acpHistoryPreview: null,
         activityWake: 0,
-        projectExecutionAgentId: "agent-a",
+        executionAgentId: "agent-a",
       }),
     );
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
-        "/api/projects/project-1/chats/chat-project-1/console/live",
+        "/api/chats/chat-project-1/console/live",
         expect.objectContaining({ method: "POST" }),
       ),
     );
@@ -10970,17 +10797,13 @@ describe("useConversationViewRuntime", () => {
         durable_sequence: 1,
         manifest_hash: "test-manifest-1",
         address: {
-          scope: {
-            kind: "project",
-            project_id: "project-1",
-          },
           chat_id: "chat-project-1",
         },
         authority_device_id: "device-resource",
       });
     });
     await waitFor(() =>
-      expect(projectChatsApiMock.getChat.mock.calls.length).toBeGreaterThan(1),
+      expect(chatApiMock.getChat.mock.calls.length).toBeGreaterThan(1),
     );
     await waitFor(() =>
       expect(JSON.stringify(result.current.projection.items)).toContain(
@@ -11060,7 +10883,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "desktop",
         currentDeviceId: "tablet",
       }),
@@ -11068,7 +10892,7 @@ describe("useConversationViewRuntime", () => {
 
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
-        "/api/agents/agent-a/chats/chat-1/console/live",
+        "/api/chats/chat-1/console/live",
         expect.objectContaining({ method: "POST" }),
       ),
     );
@@ -11120,7 +10944,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "desktop",
         currentDeviceId: "tablet",
       }),
@@ -11165,7 +10990,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "desktop",
         currentDeviceId: "phone",
       }),
@@ -11182,7 +11008,7 @@ describe("useConversationViewRuntime", () => {
 
   it("keeps remote delivery pending without fabricating authority activity", async () => {
     localStorage.setItem(
-      "rua:remote-pending-submissions:agent-a:chat-1",
+      "rua:remote-pending-submissions:chat:chat-1",
       JSON.stringify([
         {
           device_delivery_id: "device-delivery-1",
@@ -11225,7 +11051,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "desktop",
         currentDeviceId: "phone",
       }),
@@ -11304,7 +11131,8 @@ describe("useConversationViewRuntime", () => {
 
     const { result } = renderHook(() =>
       useConversationViewRuntime({
-        address: { scope: "agent", agentId: "agent-a", chatId: "chat-1" },
+        address: { chatId: "chat-1" },
+        executionAgentId: "agent-a",
         authorityPlacementDeviceId: "desktop",
         currentDeviceId: "tablet",
       }),
@@ -11312,7 +11140,7 @@ describe("useConversationViewRuntime", () => {
 
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
-        "/api/agents/agent-a/chats/chat-1/console/live",
+        "/api/chats/chat-1/console/live",
         expect.objectContaining({ method: "POST" }),
       ),
     );
@@ -11347,35 +11175,34 @@ describe("useConversationViewRuntime", () => {
       stream.close();
     });
   });
-  it.each(["execution-agent", "project-address", "scope"])(
+  it.each(["execution agent", "Chat ID"])(
     "keeps a pending Stop bound to its Chat Address when changing %s",
     async (change) => {
       const stream = controlledSseResponse();
       vi.stubGlobal(
         "fetch",
         routeFetch((url) =>
-          url.includes("/projects/project-1/chats/chat-1/console/live")
+          url.includes("/chats/chat-1/console/live")
             ? stream.response
             : undefined,
         ),
       );
       let resolveStop!: (value: { stopped: boolean; detail: string }) => void;
-      projectChatsApiMock.stopChat.mockImplementationOnce(
+      chatApiMock.stopChat.mockImplementationOnce(
         () =>
           new Promise((resolve) => {
             resolveStop = resolve;
           }),
       );
       const address: import("../../conversationAddress").ConversationAddress = {
-        scope: "project",
-        projectId: "project-1",
         chatId: "chat-1",
       };
       const { result, rerender, unmount } = renderHook(
         ({ address, executionAgentId }) =>
           useConversationViewRuntime({
             address,
-            projectExecutionAgentId: executionAgentId,
+            projectId: "project-1",
+            executionAgentId,
           }),
         { initialProps: { address, executionAgentId: "agent-a" } },
       );
@@ -11389,13 +11216,9 @@ describe("useConversationViewRuntime", () => {
       act(() => {
         pendingStop = result.current.stop();
       });
-      expect(projectChatsApiMock.stopChat).toHaveBeenCalledOnce();
+      expect(chatApiMock.stopChat).toHaveBeenCalledOnce();
       const nextAddress: import("../../conversationAddress").ConversationAddress =
-        change === "project-address"
-          ? { scope: "project", projectId: "project-2", chatId: "chat-1" }
-          : change === "scope"
-          ? { scope: "agent", agentId: "agent-a", chatId: "chat-1" }
-          : { ...address };
+        change === "Chat ID" ? { chatId: "chat-2" } : { ...address };
       rerender({ address: nextAddress, executionAgentId: "agent-b" });
       await act(async () => {
         resolveStop({
@@ -11404,13 +11227,9 @@ describe("useConversationViewRuntime", () => {
         });
         await pendingStop;
       });
-      if (change === "execution-agent") {
+      if (change === "execution agent") {
         expect(result.current.error).toBe("Stop response for original Chat");
-        expect(result.current.identity).toBe(identity);
-        expect(result.current.identity.mediaScope).toEqual({
-          kind: "project",
-          projectId: "project-1",
-        });
+        expect(result.current.identity.viewKey).toBe(identity.viewKey);
         expect(stream.cancel).not.toHaveBeenCalled();
       } else {
         expect(result.current.error).not.toBe(

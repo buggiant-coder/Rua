@@ -353,7 +353,7 @@ async fn parallel_transferable_tools_use_independent_waits_and_preserve_result_o
 
     let completed = runtime
         .await_terminal(
-            &rua_task::TaskOwner::new(&owner_agent_id, &session_id),
+            &rua_task::TaskOwner::new(&session_id),
             &task_id,
             Duration::from_secs(2),
         )

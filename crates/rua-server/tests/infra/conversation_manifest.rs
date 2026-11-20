@@ -19,7 +19,7 @@ use tempfile::TempDir;
 const CHAT_ID: &str = "00000000-0000-0000-0000-000000009962";
 
 fn address() -> rua_core::ChatAddress {
-    rua_core::ChatAddress::agent("default", CHAT_ID)
+    rua_core::ChatAddress::new(CHAT_ID)
 }
 
 #[test]
@@ -36,8 +36,7 @@ fn manifest_serialization_carries_typed_address_and_preserves_unknown_fields() {
         extra: Default::default(),
     };
     let mut value = serde_json::to_value(manifest).expect("serialize manifest");
-    assert_eq!(value["address"]["scope"]["kind"], "agent");
-    assert_eq!(value["address"]["scope"]["agent_id"], "default");
+    assert!(value["address"].get("scope").is_none());
     assert_eq!(value["address"]["chat_id"], CHAT_ID);
     value["future_manifest_field"] = serde_json::json!({"enabled": true});
     let decoded: ConversationManifest =
@@ -49,40 +48,21 @@ fn manifest_serialization_carries_typed_address_and_preserves_unknown_fields() {
 }
 
 #[test]
-fn agent_initial_manifest_hash_preserves_pre_cutover_value() {
+fn initial_manifest_hash_uses_only_the_chat_id_and_history_boundary() {
     use sha2::{Digest, Sha256};
-
-    #[derive(serde::Serialize)]
-    struct LegacyManifest<'a> {
-        agent_id: &'a str,
-        chat_id: &'a str,
-        latest_turn: u64,
-        latest_sequence: u64,
-        turn_count: u64,
-        message_count: u64,
-    }
-    let legacy = LegacyManifest {
-        agent_id: "default",
-        chat_id: CHAT_ID,
-        latest_turn: 0,
-        latest_sequence: 0,
-        turn_count: 0,
-        message_count: 0,
-    };
+    let initial = serde_json::json!({"chat_id": CHAT_ID,"latest_turn": 0,"latest_sequence": 0,"turn_count": 0,"message_count": 0});
     let expected = format!(
         "sha256:{}",
-        hex::encode(Sha256::digest(
-            serde_json::to_vec(&legacy).expect("legacy manifest")
-        ))
+        hex::encode(Sha256::digest(serde_json::to_vec(&initial).unwrap()))
     );
     assert_eq!(
-        initial_conversation_manifest_hash(&address()).expect("typed manifest hash"),
+        initial_conversation_manifest_hash(&address()).unwrap(),
         expected
     );
 }
 
 #[test]
-fn manifest_comparison_distinguishes_equal_chat_ids_across_scopes() {
+fn manifest_comparison_distinguishes_different_chat_ids() {
     let agent = ConversationManifest {
         address: address(),
         latest_turn: 0,
@@ -95,7 +75,7 @@ fn manifest_comparison_distinguishes_equal_chat_ids_across_scopes() {
         extra: Default::default(),
     };
     let mut project = agent.clone();
-    project.address = rua_core::ChatAddress::project("project-a", CHAT_ID);
+    project.address = rua_core::ChatAddress::new("00000000-0000-0000-0000-000000009963");
     let comparison = agent.compare(&project);
     assert!(!comparison.matches);
     assert_eq!(
@@ -244,7 +224,7 @@ async fn manifest_ignores_message_content_and_media_reference_changes() {
 #[tokio::test]
 async fn history_readiness_rejects_target_ahead_of_source() {
     let data_dir = TempDir::new().expect("data");
-    let workspace_dir = data_dir.path().join("workspaces/default");
+    let workspace_dir = data_dir.path().join("chats");
     seed_chat(&workspace_dir, false).await;
     let address = address();
     let mut source_requirement = build_conversation_history_requirement(&workspace_dir, &address)
@@ -266,7 +246,7 @@ async fn history_readiness_rejects_target_ahead_of_source() {
 #[tokio::test]
 async fn history_readiness_rejects_different_message_boundary() {
     let data_dir = TempDir::new().expect("data");
-    let workspace_dir = data_dir.path().join("workspaces/default");
+    let workspace_dir = data_dir.path().join("chats");
     seed_chat(&workspace_dir, false).await;
     let address = address();
     let mut source_requirement = build_conversation_history_requirement(&workspace_dir, &address)
@@ -288,7 +268,7 @@ async fn history_readiness_rejects_different_message_boundary() {
 #[tokio::test]
 async fn history_readiness_rejects_missing_messages_at_same_watermark() {
     let data_dir = TempDir::new().expect("data");
-    let workspace_dir = data_dir.path().join("workspaces/default");
+    let workspace_dir = data_dir.path().join("chats");
     seed_chat(&workspace_dir, false).await;
     let address = address();
     let mut source_requirement = build_conversation_history_requirement(&workspace_dir, &address)
@@ -317,8 +297,7 @@ async fn history_watermark_readiness_identifies_exact_published_manifest() {
             .expect("readiness payload");
 
     assert_eq!(payload["type"], "history_watermark_reached");
-    assert_eq!(payload["agent_id"], "default");
-    assert_eq!(payload["chat_id"], CHAT_ID);
+    assert_eq!(payload["address"]["chat_id"], CHAT_ID);
     assert_eq!(payload["authority_device_id"], "authority-device");
     assert_eq!(payload["durable_sequence"], manifest.latest_sequence);
     assert_eq!(payload["manifest_hash"], manifest.hash().unwrap());
@@ -328,7 +307,7 @@ async fn history_watermark_readiness_identifies_exact_published_manifest() {
 async fn project_history_watermark_readiness_preserves_full_chat_address() {
     let workspace = TempDir::new().expect("workspace");
     seed_chat(workspace.path(), false).await;
-    let project_address = rua_core::ChatAddress::project("project-a", CHAT_ID);
+    let project_address = rua_core::ChatAddress::new(CHAT_ID);
     let manifest = load_conversation_manifest(workspace.path(), &address())
         .await
         .expect("load agent fixture manifest")
@@ -367,7 +346,7 @@ fn live_gap_requests_refresh_without_claiming_history_readiness() {
 #[tokio::test]
 async fn history_readiness_ignores_header_display_metadata_changes() {
     let data_dir = TempDir::new().expect("data");
-    let workspace_dir = data_dir.path().join("workspaces/default");
+    let workspace_dir = data_dir.path().join("chats");
     seed_chat(&workspace_dir, false).await;
     let address = address();
     let source_requirement = build_conversation_history_requirement(&workspace_dir, &address)
@@ -399,9 +378,9 @@ async fn history_readiness_ignores_header_display_metadata_changes() {
 #[tokio::test]
 async fn history_readiness_resolves_project_scope_independently_from_execution_agent() {
     let data_dir = TempDir::new().expect("data");
-    let project_root = data_dir.path().join("projects/project-a");
+    let project_root = data_dir.path().join("chats");
     seed_chat_with_agent(&project_root, "execution-agent").await;
-    let address = rua_core::ChatAddress::project("project-a", CHAT_ID);
+    let address = rua_core::ChatAddress::new(CHAT_ID);
     let requirement = build_conversation_history_requirement(&project_root, &address)
         .await
         .expect("project history requirement");
@@ -415,7 +394,7 @@ async fn history_readiness_resolves_project_scope_independently_from_execution_a
 #[tokio::test]
 async fn history_readiness_reports_sync_unavailable_without_changing_local_prefix() {
     let data_dir = TempDir::new().expect("data");
-    let workspace_dir = data_dir.path().join("workspaces/default");
+    let workspace_dir = data_dir.path().join("chats");
     seed_chat(&workspace_dir, false).await;
     let address = address();
     let before = load_conversation_manifest(&workspace_dir, &address)

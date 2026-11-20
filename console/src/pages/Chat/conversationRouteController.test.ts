@@ -24,8 +24,8 @@ describe.each(["agent-1", "project:project-1"])(
       expect(loadHistory).not.toHaveBeenCalled();
     });
 
-    it("keeps an empty remote history lazy", async () => {
-      const history = { messages: [], meta: {} };
+    it("recognizes the persisted header of an empty Chat", async () => {
+      const history = { agent_id: "saved-agent", messages: [], meta: {} };
 
       await expect(
         resolveConversationRoute({
@@ -33,7 +33,7 @@ describe.each(["agent-1", "project:project-1"])(
           conversationId: "chat-remote",
           loadHistory: async () => history,
         }),
-      ).resolves.toEqual({ history, unmaterialized: true });
+      ).resolves.toEqual({ history, unmaterialized: false });
     });
 
     it("recognizes authoritative history as materialized", async () => {

@@ -485,7 +485,7 @@ fn collaboration_result_projects_as_stable_tool_protocol_without_user_message() 
             payload: RuntimeNotePayload::CollaborationResult(CollaborationResultRuntimeNote {
                 request_id: "request-1".to_string(),
                 result_id: "result-1".to_string(),
-                target: rua_core::ChatAddress::agent("reviewer", "child"),
+                target: rua_core::ChatAddress::new("child"),
                 status: "completed".to_string(),
                 output: format!("review complete{}", "中文结果".repeat(4000)),
                 partial: false,

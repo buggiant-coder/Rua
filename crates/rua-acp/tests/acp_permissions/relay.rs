@@ -147,7 +147,7 @@ async fn relay_preserves_options_and_returns_exact_reject_selection() {
     );
 
     relay
-        .decide("agent-1", "chat-1", &pending.id, "decline")
+        .decide("chat-1", &pending.id, "decline")
         .await
         .expect("exact reject option should be selectable");
     let selected = resolution.await.expect("relay resolution");
@@ -173,11 +173,11 @@ async fn unknown_option_does_not_consume_pending_request() {
         .await;
 
     let error = relay
-        .decide("agent-1", "chat-1", &pending.id, "not-an-option")
+        .decide("chat-1", &pending.id, "not-an-option")
         .await
         .expect_err("unknown option must be rejected");
     assert!(error.to_string().contains("not-an-option"));
-    assert_eq!(relay.snapshot("agent-1", "chat-1").await.pending.len(), 1);
+    assert_eq!(relay.snapshot("chat-1").await.pending.len(), 1);
 }
 
 #[tokio::test]
@@ -192,7 +192,7 @@ async fn cancellation_resolves_waiter_without_selecting_an_option() {
         resolution.await.expect("relay resolution"),
         PermissionRelayResolution::Cancelled
     );
-    assert!(relay.snapshot("agent-1", "chat-1").await.pending.is_empty());
+    assert!(relay.snapshot("chat-1").await.pending.is_empty());
 }
 
 #[tokio::test]
@@ -221,7 +221,7 @@ async fn cancelling_one_session_scope_leaves_other_chat_work_in_place() {
         first_resolution.await.expect("first relay resolution"),
         PermissionRelayResolution::Cancelled
     );
-    let snapshot = relay.snapshot("agent-1", "chat-1").await;
+    let snapshot = relay.snapshot("chat-1").await;
     assert_eq!(
         snapshot
             .pending
@@ -234,16 +234,16 @@ async fn cancelling_one_session_scope_leaves_other_chat_work_in_place() {
 }
 
 #[tokio::test]
-async fn same_chat_uuid_in_agent_and_project_scopes_never_shares_permission_requests() {
+async fn different_chats_never_share_permission_requests() {
     let relay = AcpPermissionRelay::new();
     let chat_id = "shared-chat-id";
-    let agent_address = rua_core::ChatAddress::agent("default", chat_id);
-    let project_address = rua_core::ChatAddress::project("project", chat_id);
+    let agent_address = rua_core::ChatAddress::new(chat_id);
+    let project_address = rua_core::ChatAddress::new("other-chat");
     let mut agent_context = context();
     agent_context.chat_id = chat_id.into();
     agent_context.chat_address = Some(agent_address.clone());
     let mut project_context = context();
-    project_context.chat_id = chat_id.into();
+    project_context.chat_id = project_address.chat_id().to_string();
     project_context.chat_address = Some(project_address.clone());
     let (agent_request, _agent_resolution) = relay
         .create_request(agent_context, &sparse_request(), None)

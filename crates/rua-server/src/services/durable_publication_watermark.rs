@@ -35,7 +35,6 @@ impl DurablePublicationWatermarkStore {
     pub fn new(sync_dir: impl AsRef<Path>) -> Result<Self> {
         let sync_dir = sync_dir.as_ref();
         let root = sync_dir.join(WATERMARK_DIR);
-        migrate_legacy_watermarks(sync_dir, &root)?;
         Ok(Self {
             root,
             transaction: Arc::new(Mutex::new(())),
@@ -43,14 +42,8 @@ impl DurablePublicationWatermarkStore {
     }
 
     pub fn path_for(&self, address: &ChatAddress) -> Result<PathBuf> {
-        let scope = checked_path_segment(address.scope().kind(), "Chat scope")?;
-        let owner = checked_path_segment(address.scope().owner_id(), "Chat owner")?;
         let chat_id = checked_path_segment(address.chat_id().as_str(), "Chat id")?;
-        Ok(self
-            .root
-            .join(scope)
-            .join(owner)
-            .join(format!("{chat_id}.json")))
+        Ok(self.root.join(format!("{chat_id}.json")))
     }
 
     pub async fn load(&self, address: &ChatAddress) -> Result<Option<DurablePublicationWatermark>> {
@@ -149,37 +142,6 @@ impl DurablePublicationWatermarkStore {
             })??;
         Ok(())
     }
-}
-
-fn migrate_legacy_watermarks(sync_dir: &Path, root: &Path) -> Result<()> {
-    let data_root = sync_dir.parent().ok_or_else(|| RuaError::Validation {
-        message: format!(
-            "sync directory has no parent for Durable Publication Watermark migration: {}",
-            sync_dir.display()
-        ),
-    })?;
-    let legacy_root = data_root.join(WATERMARK_DIR);
-    let legacy_exists = legacy_root.try_exists()?;
-    let root_exists = root.try_exists()?;
-    if legacy_exists && root_exists {
-        return Err(RuaError::Conflict {
-            resource: "durable publication watermark storage".to_string(),
-            detail: format!(
-                "both legacy {} and current {} directories exist; refusing to merge",
-                legacy_root.display(),
-                root.display()
-            ),
-        });
-    }
-    if !legacy_exists {
-        return Ok(());
-    }
-
-    fs::create_dir_all(sync_dir)?;
-    fs::rename(&legacy_root, root)?;
-    sync_parent(data_root)?;
-    sync_parent(sync_dir)?;
-    Ok(())
 }
 
 fn checked_path_segment<'a>(value: &'a str, label: &str) -> Result<&'a str> {

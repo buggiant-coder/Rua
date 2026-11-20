@@ -2,7 +2,7 @@ use rua_core::chat::ChatAddress;
 use rua_server::services::chat_deletion::ChatDeleteIntentStore;
 
 fn address() -> ChatAddress {
-    ChatAddress::agent("default", "chat-a")
+    ChatAddress::new("chat-a")
 }
 
 #[test]

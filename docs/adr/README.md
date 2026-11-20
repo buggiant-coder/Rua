@@ -1,11 +1,11 @@
 # Architecture decision records
 
-This directory is the public index of the 58 architecture records. The
+This directory is the public index of the 59 architecture records. The
 records are grouped by domain for discovery; their numbers are stable
 identifiers, not a required reading order.
 
-The set contains 50 accepted decisions, seven proposed
-decisions (ADR 0007, 0021, 0029, 0036, 0041, 0046, and 0051),
+The set contains 50 accepted decisions, eight proposed
+decisions (ADR 0007, 0021, 0029, 0036, 0041, 0046, 0051, and 0059),
 and one withdrawn record (ADR 0055).
 
 Accepted records are normative decisions even when their implementation section
@@ -62,6 +62,7 @@ stable identifiers, and existing identifiers are not reassigned.
 | [0028 - Complete Chat configuration snapshots and inherited authorization](0028-chat-running-config-and-turn-stable-snapshot.md) | Accepted | Defines complete configuration epochs, source-to-collaboration inheritance, and coherent admission while preserving active Turn snapshots. |
 | [0029 - Two-layer Product Hooks](0029-two-layer-product-hooks.md) | Proposed | Proposes bounded Active Turn and canonical Operation Hook layers without delegating authority or security decisions. |
 | [0030 - Chat Media ownership and authority-routed transfer](0030-chat-media-ownership-and-authority-routed-transfer.md) | Accepted | Stores media under the scope workspace and routes foreground transfer to the Conversation Authority using location-independent references. |
+| [0059 - Unified Chat, Project organization, and cross-device resources](0059-unified-chat-and-device-resources.md) | Proposed | Records confirmed product decisions for independent Chat identity, fixed optional Project membership, selectable Agent/execution position, cross-device resources, and creation-only collaboration position inheritance; technical design and implementation remain pending. |
 
 ## Tasks, ACP, terminal, and CLI
 

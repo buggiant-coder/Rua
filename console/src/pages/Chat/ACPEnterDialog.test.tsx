@@ -73,6 +73,11 @@ describe("ACPEnterDialog first-input selection", () => {
       }),
     );
     expect(api.enterAcp).not.toHaveBeenCalled();
+    expect(api.listAcpRunners).toHaveBeenCalledWith(
+      { agentId: "default" },
+      "draft",
+      undefined,
+    );
     expect(entered).not.toHaveBeenCalled();
   });
 
@@ -92,6 +97,7 @@ describe("ACPEnterDialog first-input selection", () => {
     fireEvent.click(button);
     await waitFor(() => expect(api.enterAcp).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(entered).toHaveBeenCalled());
+    expect(api.listAcpRunners).toHaveBeenCalledWith({}, "existing", undefined);
   });
 
   it("keeps a draft resume choice local without entering a Session", async () => {

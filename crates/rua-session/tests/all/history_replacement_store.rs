@@ -188,7 +188,7 @@ async fn ready_history_replacement_is_durable_and_only_changes_model_projection(
         "The agent inspected src/lib.rs and learned that the repository uses a layered runtime.";
     let record = store
         .publish_ready_history_replacement(
-            &rua_core::ChatAddress::agent("agent-1", "chat-1"),
+            &rua_core::ChatAddress::new("chat-1"),
             HistoryReplacementReadyDraft {
                 record_id: block.record_id.clone(),
                 source: block.source.clone(),
@@ -203,10 +203,7 @@ async fn ready_history_replacement_is_durable_and_only_changes_model_projection(
         )
         .await
         .unwrap();
-    assert_eq!(
-        record.chat_address,
-        rua_core::ChatAddress::agent("agent-1", "chat-1")
-    );
+    assert_eq!(record.chat_address, rua_core::ChatAddress::new("chat-1"));
     assert!(record.checksum.starts_with("sha256:"));
     assert_eq!(
         store
@@ -267,7 +264,7 @@ async fn ready_history_replacement_is_durable_and_only_changes_model_projection(
         .unwrap();
     assert!(!projection_text(&rebuilt.tail_messages).contains(raw_marker));
     let records = store
-        .list_history_replacement_records_for_address(&ChatAddress::agent("agent-1", "chat-1"))
+        .list_history_replacement_records_for_address(&ChatAddress::new("chat-1"))
         .await
         .unwrap();
     assert_eq!(records.len(), 1);
@@ -282,7 +279,7 @@ async fn ready_history_replacement_is_durable_and_only_changes_model_projection(
     )
     .unwrap();
     let records = store
-        .list_history_replacement_records_for_address(&ChatAddress::agent("agent-1", "chat-1"))
+        .list_history_replacement_records_for_address(&ChatAddress::new("chat-1"))
         .await
         .unwrap();
     assert_eq!(
@@ -354,7 +351,7 @@ async fn project_history_replacement_loads_with_its_canonical_address() {
     let dir = tempfile::tempdir().unwrap();
     let store = WorkspaceSessionStore::new(dir.path());
     let chat_id = "project-chat";
-    let chat_address = rua_core::ChatAddress::project("project-1", chat_id);
+    let chat_address = rua_core::ChatAddress::new(chat_id);
     store.save_chat_header(&header(chat_id)).await.unwrap();
     append_trace_turn(
         &store,
@@ -523,7 +520,7 @@ async fn superseded_history_replacement_versions_are_ignored_by_manifest_scan() 
         .remove(0);
     let record = store
         .publish_ready_history_replacement(
-            &ChatAddress::agent("agent-1", "chat-superseded"),
+            &ChatAddress::new("chat-superseded"),
             HistoryReplacementReadyDraft {
                 record_id: block.record_id,
                 source: block.source,
@@ -786,7 +783,7 @@ async fn completed_tool_messages_do_not_close_active_block_before_visible_text()
     let closed_block = closed.into_iter().next().unwrap();
     store
         .publish_ready_history_replacement(
-            &rua_core::ChatAddress::agent("agent-1", "chat-active-boundary"),
+            &rua_core::ChatAddress::new("chat-active-boundary"),
             HistoryReplacementReadyDraft {
                 record_id: closed_block.record_id.clone(),
                 source: closed_block.source,
@@ -918,7 +915,7 @@ async fn projection_replaces_two_blocks_that_share_one_message_id_by_part_anchor
     for (index, block) in blocks.iter().enumerate() {
         store
             .publish_ready_history_replacement(
-                &rua_core::ChatAddress::agent("agent-1", "chat-shared-message"),
+                &rua_core::ChatAddress::new("chat-shared-message"),
                 HistoryReplacementReadyDraft {
                     record_id: block.record_id.clone(),
                     source: block.source.clone(),
@@ -1007,7 +1004,7 @@ async fn rejected_record_deduplicates_same_model_and_allows_new_model_transition
 
     let rejected = store
         .publish_rejected_history_replacement(
-            &rua_core::ChatAddress::agent("agent-1", "chat-rejected"),
+            &rua_core::ChatAddress::new("chat-rejected"),
             HistoryReplacementRejectedDraft {
                 record_id: block.record_id.clone(),
                 source: block.source.clone(),
@@ -1033,7 +1030,7 @@ async fn rejected_record_deduplicates_same_model_and_allows_new_model_transition
 
     let duplicate = store
         .publish_rejected_history_replacement(
-            &rua_core::ChatAddress::agent("agent-1", "chat-rejected"),
+            &rua_core::ChatAddress::new("chat-rejected"),
             HistoryReplacementRejectedDraft {
                 record_id: block.record_id.clone(),
                 source: block.source.clone(),
@@ -1083,7 +1080,7 @@ async fn rejected_record_deduplicates_same_model_and_allows_new_model_transition
     std::fs::write(&record_path, serde_json::to_vec_pretty(&duplicate).unwrap()).unwrap();
     assert!(store
         .publish_ready_history_replacement(
-            &rua_core::ChatAddress::agent("agent-1", "chat-rejected"),
+            &rua_core::ChatAddress::new("chat-rejected"),
             HistoryReplacementReadyDraft {
                 record_id: block.record_id.clone(),
                 source: block.source.clone(),
@@ -1098,7 +1095,7 @@ async fn rejected_record_deduplicates_same_model_and_allows_new_model_transition
 
     let ready = store
         .publish_ready_history_replacement(
-            &rua_core::ChatAddress::agent("agent-1", "chat-rejected"),
+            &rua_core::ChatAddress::new("chat-rejected"),
             HistoryReplacementReadyDraft {
                 record_id: block.record_id.clone(),
                 source: block.source,
@@ -1194,7 +1191,7 @@ async fn variant_selection_and_rollback_reuse_records_until_source_is_permanentl
         .remove(0);
     store
         .publish_ready_history_replacement(
-            &rua_core::ChatAddress::agent("agent-1", chat_id),
+            &rua_core::ChatAddress::new(chat_id),
             HistoryReplacementReadyDraft {
                 record_id: old_block.record_id.clone(),
                 source: old_block.source.clone(),
@@ -1261,7 +1258,7 @@ async fn variant_selection_and_rollback_reuse_records_until_source_is_permanentl
         .remove(0);
     store
         .publish_ready_history_replacement(
-            &rua_core::ChatAddress::agent("agent-1", chat_id),
+            &rua_core::ChatAddress::new(chat_id),
             HistoryReplacementReadyDraft {
                 record_id: new_block.record_id.clone(),
                 source: new_block.source.clone(),
@@ -1431,7 +1428,7 @@ async fn branch_rebases_compatible_ready_record_to_target_sequences_and_lineage(
     assert_eq!(source_block.source.tool_references[0].result_sequence, 4);
     store
         .publish_ready_history_replacement(
-            &rua_core::ChatAddress::agent("agent-1", source_chat_id),
+            &rua_core::ChatAddress::new(source_chat_id),
             HistoryReplacementReadyDraft {
                 record_id: source_block.record_id.clone(),
                 source: source_block.source,
@@ -1478,8 +1475,8 @@ async fn branch_rebases_compatible_ready_record_to_target_sequences_and_lineage(
     assert_eq!(
         store
             .inherit_compatible_history_replacements(
-                &rua_core::ChatAddress::agent("agent-1", source_chat_id),
-                &rua_core::ChatAddress::agent("agent-1", target_chat_id),
+                &rua_core::ChatAddress::new(source_chat_id),
+                &rua_core::ChatAddress::new(target_chat_id),
             )
             .await
             .unwrap(),
@@ -1530,7 +1527,7 @@ async fn projection_exclusions_only_disable_history_replacements_covering_exclud
         .remove(0);
     store
         .publish_ready_history_replacement(
-            &ChatAddress::agent("agent-1", chat_id),
+            &ChatAddress::new(chat_id),
             HistoryReplacementReadyDraft {
                 record_id: block.record_id,
                 source: block.source,

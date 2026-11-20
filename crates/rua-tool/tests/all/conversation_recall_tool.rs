@@ -57,17 +57,12 @@ async fn append_turn(store: &WorkspaceSessionStore, chat_id: &str, text: &str) {
 }
 
 fn ctx(workspace_dir: &std::path::Path, session_id: &str) -> ToolContext {
-    let mut metadata = std::collections::HashMap::new();
-    metadata.insert(
-        "rua_workspace_dir".to_string(),
-        json!(workspace_dir.display().to_string()),
-    );
     ToolContext {
         agent_id: "agent-1".into(),
         session_id: session_id.into(),
-        working_dir: workspace_dir.to_path_buf(),
+        working_dir: workspace_dir.join("execution-directory"),
+        conversation_store_dir: Some(workspace_dir.to_path_buf()),
         tool_result_store_dir: Some(workspace_dir.join("tool_call_logs")),
-        metadata,
         ..Default::default()
     }
 }

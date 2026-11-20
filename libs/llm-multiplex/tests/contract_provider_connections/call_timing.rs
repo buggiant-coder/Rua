@@ -29,7 +29,7 @@ impl Capture {
         let id = uuid::Uuid::new_v4().to_string();
         let base = std::env::temp_dir().join(format!("rua-call-timing-{id}"));
         let root = base.join("capture");
-        let address = ChatAddress::project(format!("project-{id}"), format!("chat-{id}"));
+        let address = ChatAddress::new(format!("chat-{id}"));
         if enabled {
             debug_capture::register_capture(
                 address.clone(),

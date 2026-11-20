@@ -24,7 +24,7 @@ fn build_state() -> (AppState, TempDir) {
 
 fn build_app(state: AppState) -> Router {
     Router::new()
-        .merge(endpoints::console::agent_scoped_router())
+        .merge(endpoints::console::router())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             agent_context_middleware,

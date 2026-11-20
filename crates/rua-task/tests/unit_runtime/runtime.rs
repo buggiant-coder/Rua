@@ -133,7 +133,7 @@ async fn terminal_attempt_remains_outstanding_until_notification_tail_exits() {
         TaskRuntime::open_with_sink(TaskRuntimeConfig::new(dir.path()), sink.clone()).unwrap(),
     );
     runtime.register_runner(Arc::new(FailingRunner));
-    let owner = TaskOwner::new("agent-a", "tail");
+    let owner = TaskOwner::new("tail");
     let id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -217,7 +217,7 @@ fn graph_spec(owner: TaskOwner, instruction: &str, depends_on: Vec<String>) -> T
 
 #[test]
 fn task_spec_loads_legacy_timeout_without_reemitting_it() {
-    let mut legacy = serde_json::to_value(spec(TaskOwner::new("agent-a", "chat-a"))).unwrap();
+    let mut legacy = serde_json::to_value(spec(TaskOwner::new("chat-a"))).unwrap();
     legacy
         .as_object_mut()
         .unwrap()
@@ -233,7 +233,7 @@ fn task_spec_loads_legacy_timeout_without_reemitting_it() {
 async fn new_conversation_task_runners_are_rejected_without_creating_records() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     for runner in [
         TaskRunnerSpec::RuaAgent {
             agent_id: "research".to_string(),
@@ -273,7 +273,7 @@ async fn create_persists_before_dispatch_and_completes_once() {
     );
     let runner = Arc::new(BlockingRunner::new());
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
 
     let task_id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
@@ -328,7 +328,7 @@ async fn owner_scope_is_enforced_for_get_and_list() {
     let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
     let runner = Arc::new(BlockingRunner::new());
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -338,24 +338,19 @@ async fn owner_scope_is_enforced_for_get_and_list() {
         .unwrap();
 
     assert!(runtime
-        .get(&TaskOwner::new("agent-a", "chat-b"), &task_id)
+        .get(&TaskOwner::new("chat-b"), &task_id)
         .await
         .is_err());
     assert!(runtime
-        .list(
-            &TaskOwner::new("agent-b", "chat-a"),
-            TaskListFilter::default()
-        )
+        .list(&TaskOwner::new("chat-b"), TaskListFilter::default())
         .await
         .unwrap()
         .is_empty());
-    let project_owner = TaskOwner::from_address(ChatAddress::project("agent-a", "chat-a"));
-    assert!(runtime.get(&project_owner, &task_id).await.is_err());
-    assert!(runtime
-        .list(&project_owner, TaskListFilter::default())
-        .await
-        .unwrap()
-        .is_empty());
+    let same_chat = TaskOwner::from_address(ChatAddress::new("chat-a"));
+    assert_eq!(
+        runtime.get(&same_chat, &task_id).await.unwrap().task_id,
+        task_id
+    );
     assert_eq!(
         runtime
             .list(&owner, TaskListFilter::default())
@@ -393,7 +388,7 @@ async fn runner_failure_persists_common_failed_result() {
         .unwrap(),
     );
     runtime.register_runner(Arc::new(FailingRunner));
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -431,7 +426,7 @@ async fn task_result_output_is_bounded_and_full_text_remains_recallable() {
     config.limits.max_result_output_chars = 96;
     let runtime = Arc::new(TaskRuntime::open(config).unwrap());
     runtime.register_runner(Arc::new(LongOutputRunner));
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -456,7 +451,7 @@ async fn await_timeout_detaches_without_cancelling_task() {
     let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
     let runner = Arc::new(BlockingRunner::new());
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -556,10 +551,7 @@ async fn shutdown_interrupts_tasks_across_all_chat_owners() {
         observed_cancel: AtomicUsize::new(0),
     });
     runtime.register_runner(runner.clone());
-    let owners = [
-        TaskOwner::new("agent-a", "chat-a"),
-        TaskOwner::new("agent-b", "chat-b"),
-    ];
+    let owners = [TaskOwner::new("chat-a"), TaskOwner::new("chat-b")];
     let mut task_ids = Vec::new();
     for owner in &owners {
         task_ids.push(
@@ -634,26 +626,17 @@ async fn paused_agent_admission_rejects_new_tasks_without_affecting_other_agents
     runtime.pause_agent_admission("agent-a").await;
     assert!(matches!(
         runtime
-            .create(
-                spec(TaskOwner::new("agent-a", "chat-a")),
-                authorization("agent-a")
-            )
+            .create(spec(TaskOwner::new("chat-a")), authorization("agent-a"))
             .await,
         Err(TaskError::ResourceUnavailable(_))
     ));
     assert!(runtime
-        .create(
-            spec(TaskOwner::new("agent-b", "chat-b")),
-            authorization("agent-b")
-        )
+        .create(spec(TaskOwner::new("chat-b")), authorization("agent-b"))
         .await
         .is_ok());
     runtime.resume_agent_admission("agent-a").await;
     assert!(runtime
-        .create(
-            spec(TaskOwner::new("agent-a", "chat-a")),
-            authorization("agent-a")
-        )
+        .create(spec(TaskOwner::new("chat-a")), authorization("agent-a"))
         .await
         .is_ok());
     runtime.shutdown().await.unwrap();
@@ -668,7 +651,7 @@ async fn shutdown_interrupts_waiting_dependencies_without_dispatching_them() {
         observed_cancel: AtomicUsize::new(0),
     });
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let upstream = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -745,7 +728,7 @@ async fn cancellation_reaches_runner_and_wins_terminal_race() {
         observed_cancel: std::sync::atomic::AtomicBool::new(false),
     });
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -777,7 +760,7 @@ async fn natural_completion_ready_before_cancel_remains_completed() {
         returning: Notify::new(),
     });
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -803,7 +786,7 @@ async fn cancellation_force_drops_uncooperative_runner_after_grace() {
         dropped: dropped.clone(),
     });
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -835,7 +818,7 @@ async fn concurrent_cancellation_produces_one_terminal_transition() {
         observed_cancel: std::sync::atomic::AtomicBool::new(false),
     });
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -872,7 +855,7 @@ async fn active_task_limit_is_checked_transactionally() {
     let runtime = Arc::new(TaskRuntime::open(config).unwrap());
     let runner = Arc::new(BlockingRunner::new());
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let first = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -910,7 +893,7 @@ async fn activity_subscription_reports_scoped_lifecycle_events() {
     let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
     let runner = Arc::new(BlockingRunner::new());
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let mut activity = runtime.subscribe_activity();
     let task_id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
@@ -959,7 +942,7 @@ async fn activity_snapshot_keeps_all_active_tasks_beyond_recent_list_limit() {
         started: Notify::new(),
         dropped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     }));
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
 
     for _ in 0..105 {
         runtime
@@ -985,7 +968,7 @@ async fn rollback_cancellation_only_targets_tasks_at_or_after_branch_point() {
         observed_cancel: std::sync::atomic::AtomicBool::new(false),
     });
     runtime.register_runner(runner);
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
 
     let before = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
@@ -1105,7 +1088,7 @@ async fn retry_preserves_attempt_history_and_immutable_specification() {
         authorization_agents: Mutex::new(Vec::new()),
     });
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::from_address(rua_core::ChatAddress::project("project-a", "chat-a"));
+    let owner = TaskOwner::from_address(rua_core::ChatAddress::new("chat-a"));
     let original_spec = spec(owner.clone());
     let task_id = runtime
         .create(
@@ -1227,7 +1210,7 @@ async fn startup_reconciliation_interrupts_without_replaying() {
     let first_runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
     let runner = Arc::new(BlockingRunner::new());
     first_runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = first_runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -1298,7 +1281,7 @@ async fn attempt_history_limit_rejects_additional_retry() {
     config.limits.max_attempt_history = 1;
     let runtime = Arc::new(TaskRuntime::open(config).unwrap());
     runtime.register_runner(Arc::new(FailingRunner));
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -1457,7 +1440,7 @@ async fn dependency_scope_count_and_depth_are_bounded() {
     config.limits.max_dependency_depth = 1;
     let runtime = Arc::new(TaskRuntime::open(config).unwrap());
     runtime.register_runner(Arc::new(GraphRunner::default()));
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
 
     let root_a = runtime
         .create(
@@ -1482,19 +1465,18 @@ async fn dependency_scope_count_and_depth_are_bounded() {
         .await
         .unwrap();
 
-    for other_owner in [
-        TaskOwner::new("agent-a", "chat-b"),
-        TaskOwner::new("agent-b", "chat-a"),
-    ] {
-        let error = runtime
-            .create(
-                graph_spec(other_owner, "cross-scope", vec![root_a.clone()]),
-                authorization("agent-a"),
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(error, rua_task::TaskError::NotFound(_)));
-    }
+    let error = runtime
+        .create(
+            graph_spec(
+                TaskOwner::new("chat-b"),
+                "another-chat",
+                vec![root_a.clone()],
+            ),
+            authorization("agent-a"),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, rua_task::TaskError::NotFound(_)));
 
     let error = runtime
         .create(
@@ -1536,7 +1518,7 @@ async fn fan_in_fan_out_wait_without_permits_and_inject_bounded_results_once() {
     let runtime = Arc::new(TaskRuntime::open(config).unwrap());
     let runner = Arc::new(GraphRunner::default());
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
 
     let upstream_a = runtime
         .create(
@@ -1641,7 +1623,7 @@ async fn retry_reactivates_blocked_dependents_and_second_failure_blocks_again() 
     let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
     let runner = Arc::new(GraphRunner::default());
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
 
     let recovery_upstream = runtime
         .create(
@@ -1749,7 +1731,7 @@ async fn cancelled_and_interrupted_dependencies_are_reported_as_blockers() {
     let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
     let runner = Arc::new(GraphRunner::default());
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
 
     let cancelled_upstream = runtime
         .create(
@@ -1853,7 +1835,7 @@ async fn adopted_execution_preserves_origin_and_completes_once_without_redispatc
         calls: AtomicUsize::new(0),
     });
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = uuid::Uuid::new_v4().to_string();
     let executions = Arc::new(AtomicUsize::new(0));
     let executions_for_future = executions.clone();
@@ -1917,7 +1899,7 @@ async fn adopted_task_cancellation_reaches_original_execution_handle() {
         calls: AtomicUsize::new(0),
     });
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = uuid::Uuid::new_v4().to_string();
     let execution_cancel = tokio_util::sync::CancellationToken::new();
     let execution_cancel_for_future = execution_cancel.clone();
@@ -1968,7 +1950,7 @@ async fn authority_snapshot_is_per_attempt_and_stale_completion_is_suppressed() 
     );
     let runner = Arc::new(BlockingRunner::new());
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
 
     let task_id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
@@ -2062,7 +2044,7 @@ async fn non_authority_rejection_happens_before_task_persistence() {
         .unwrap(),
     );
     runtime.register_runner(Arc::new(BlockingRunner::new()));
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
 
     let error = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
@@ -2084,7 +2066,7 @@ async fn full_result_is_unavailable_when_the_source_device_is_not_local() {
     let runtime = Arc::new(TaskRuntime::open(config).unwrap());
     let runner = Arc::new(BlockingRunner::new());
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -2151,7 +2133,7 @@ async fn pending_terminal_delivery_survives_reopen_and_sink_success_does_not_ack
     );
     let runner = Arc::new(BlockingRunner::new());
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -2238,8 +2220,8 @@ async fn pending_terminal_deliveries_are_owner_scoped_and_ack_is_idempotent() {
     let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
     let runner = Arc::new(FailingRunner);
     runtime.register_runner(runner);
-    let owner_a = TaskOwner::new("agent-a", "chat-a");
-    let owner_b = TaskOwner::new("agent-b", "chat-b");
+    let owner_a = TaskOwner::new("chat-a");
+    let owner_b = TaskOwner::new("chat-b");
     let task_a = runtime
         .create(spec(owner_a.clone()), authorization("agent-a"))
         .await
@@ -2315,7 +2297,7 @@ async fn retry_keeps_outstanding_delivery_for_the_previous_attempt() {
         authorization_agents: Mutex::new(Vec::new()),
     });
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -2390,8 +2372,8 @@ async fn owner_removal_clears_outstanding_terminal_deliveries() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
     runtime.register_runner(Arc::new(FailingRunner));
-    let owner = TaskOwner::new("agent-a", "chat-a");
-    let other = TaskOwner::new("agent-b", "chat-b");
+    let owner = TaskOwner::new("chat-a");
+    let other = TaskOwner::new("chat-b");
     let task_id = runtime
         .create(spec(owner.clone()), authorization("agent-a"))
         .await
@@ -2425,7 +2407,7 @@ async fn reconcile_cancellation_and_shutdown_queue_pending_terminal_deliveries()
     let first = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
     let blocking = Arc::new(BlockingRunner::new());
     first.register_runner(blocking.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let interrupted_on_restart = first
         .create(spec(owner.clone()), authorization("agent-a"))
         .await

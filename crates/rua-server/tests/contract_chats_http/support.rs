@@ -26,11 +26,9 @@ pub fn build_app() -> TestApp {
     let api = Router::new()
         .merge(agents::router())
         .merge(approvals::router())
-        .merge(chats::root_router())
-        .merge(chats::agent_scoped_router())
+        .merge(chats::router())
         .merge(gap_fixes::agent_config_router())
         .merge(chat_search::root_router())
-        .merge(chat_search::agent_scoped_router())
         .merge(acp_chat::router())
         .merge(tasks::router())
         .merge(sync::router());
@@ -121,45 +119,35 @@ pub async fn delete_agent(app: &Router, id: &str) {
     );
 }
 
-pub async fn seed_materialized_chat(
-    test: &TestApp,
-    uri: &str,
-    agent_id: Option<&str>,
-    name: &str,
-) -> Value {
+pub async fn seed_materialized_chat(test: &TestApp, agent_id: &str, name: &str) -> Value {
     let resp = request(
         &test.app,
         Method::POST,
-        uri,
+        "/api/chats",
         Some(json!({
+            "agent_id": agent_id,
             "name": name,
             "user_id": format!("user-{name}"),
             "channel": "console",
             "meta": {}
         })),
-        agent_id,
+        None,
     )
     .await;
     assert_eq!(resp.status(), axum::http::StatusCode::OK);
     let mut draft = read_json(resp).await;
     let id = draft["id"].as_str().unwrap();
-    let agent_id = agent_id
-        .or_else(|| {
-            uri.strip_prefix("/api/agents/")
-                .and_then(|tail| tail.split('/').next())
-        })
-        .unwrap_or("default");
     let runtime = test.state.registry.get_or_create(agent_id).await.unwrap();
     let device =
         rua_server::services::device_context::current_sync_device_id(&test.state.sync_device)
             .unwrap();
-    let address = rua_core::ChatAddress::agent(agent_id, id);
+    let address = rua_core::ChatAddress::new(id);
     let placement = rua_server::services::conversation_authority_placement::ConversationAuthorityPlacement {
         device_id: device.clone(), authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::next_for_device(&device, None),
         base_manifest_hash: rua_server::services::conversation_manifest::initial_conversation_manifest_hash(&address).unwrap(),
     };
     rua_server::services::console_chat::materialize_targeted_chat(
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         agent_id,
         id,
         name,
@@ -167,7 +155,7 @@ pub async fn seed_materialized_chat(
     )
     .await
     .unwrap();
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let mut header = store.load_chat_header(id).await.unwrap().unwrap();
     let agent = test
         .state
@@ -183,12 +171,12 @@ pub async fn seed_materialized_chat(
         .transpose()
         .unwrap()
         .unwrap_or_default();
-    let mut index = rua_session::chat_index::get(&runtime.workspace_dir(), id)
+    let mut index = rua_session::chat_index::get(&runtime.chat_workspace_dir(), id)
         .await
         .unwrap()
         .unwrap();
     index.user_id = format!("user-{name}");
-    rua_session::chat_index::upsert(&runtime.workspace_dir(), index)
+    rua_session::chat_index::upsert(&runtime.chat_workspace_dir(), index)
         .await
         .unwrap();
     let configs: serde_json::Map<String, Value> = agent
@@ -214,6 +202,7 @@ pub async fn seed_materialized_chat(
         .resolve_complete_chat_configuration(
             &address,
             rua_server::services::product_hooks::ChatConfigurationMaterialization {
+                project_id: None,
                 selected_agent_id: agent_id.into(),
                 running_config: rua_config::ChatRunningConfig::from_agent_defaults(&running),
                 security_config: test.state.security.config_store().load(agent_id).unwrap(),

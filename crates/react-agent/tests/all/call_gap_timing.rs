@@ -21,7 +21,7 @@ struct Capture {
 impl Capture {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let address = ChatAddress::project("timing-project", uuid::Uuid::new_v4().to_string());
+        let address = ChatAddress::new(uuid::Uuid::new_v4().to_string());
         debug_capture::register_capture(
             address.clone(),
             ActiveCapture {

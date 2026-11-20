@@ -5,21 +5,31 @@ use serde_json::Value;
 use super::support;
 
 const AGENT_ID: &str = "agent-debug";
-const CHAT_ID: &str = "chat-debug";
+const CHAT_ID: &str = "00000000-0000-4000-8000-000000000909";
 
-fn materialize_chat(test: &support::TestApp) -> (rua_core::ChatAddress, std::path::PathBuf) {
-    let address = rua_core::ChatAddress::agent(AGENT_ID, CHAT_ID);
-    let scope = rua_core::ChatScopeStore::resolve(&test.state.rua_root, address.clone());
-    let header_path =
-        rua_session::WorkspaceSessionStore::new(scope.root()).chat_header_path(CHAT_ID);
-    std::fs::create_dir_all(header_path.parent().expect("chat directory"))
-        .expect("create chat directory");
-    std::fs::write(&header_path, b"{}").expect("materialize chat header");
+async fn materialize_chat(test: &support::TestApp) -> (rua_core::ChatAddress, std::path::PathBuf) {
+    let address = rua_core::ChatAddress::new(CHAT_ID);
+    let scope = rua_core::ChatStore::resolve(&test.state.rua_root, address.clone());
+    rua_session::WorkspaceSessionStore::new(scope.root())
+        .save_chat_header(&rua_session::ChatSessionHeader::new(
+            rua_session::ChatMetadata {
+                chat_id: CHAT_ID.into(),
+                agent_id: AGENT_ID.into(),
+                title: "Capture".into(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+                last_activity_at: chrono::Utc::now().to_rfc3339(),
+                pinned: false,
+                archived: false,
+                preview: None,
+            },
+        ))
+        .await
+        .unwrap();
     (address, scope.root().to_path_buf())
 }
 
 fn capture_uri(chat_id: &str) -> String {
-    format!("/agents/{AGENT_ID}/chats/{chat_id}/llm-debug-capture")
+    format!("/chats/{chat_id}/llm-debug-capture")
 }
 
 async fn request_json(app: &axum::Router, method: Method, uri: &str) -> (StatusCode, Value) {
@@ -38,7 +48,7 @@ async fn request_json(app: &axum::Router, method: Method, uri: &str) -> (StatusC
 #[tokio::test]
 async fn agent_chat_capture_can_start_query_and_stop() {
     let test = support::build_app();
-    let (address, scope_root) = materialize_chat(&test);
+    let (address, scope_root) = materialize_chat(&test).await;
     let uri = capture_uri(CHAT_ID);
 
     let (status, inactive) = request_json(&test.app, Method::GET, &uri).await;
@@ -60,9 +70,10 @@ async fn agent_chat_capture_can_start_query_and_stop() {
     .expect("capture manifest JSON");
     assert_eq!(manifest["schema_version"], 1);
     assert_eq!(manifest["capture_id"], capture_id);
-    assert_eq!(manifest["chat_address"]["scope"]["kind"], "agent");
-    assert_eq!(manifest["chat_address"]["scope"]["agent_id"], AGENT_ID);
-    assert_eq!(manifest["chat_address"]["chat_id"], CHAT_ID);
+    assert_eq!(
+        manifest["chat_address"],
+        serde_json::json!({"chat_id": CHAT_ID})
+    );
     assert!(manifest["created_at"].as_str().is_some());
     let state_path = scope_root
         .join("sessions")
@@ -77,6 +88,13 @@ async fn agent_chat_capture_can_start_query_and_stop() {
     llm_multiplex::debug_capture::unregister_capture(&address);
     let restored_registry =
         rua_server::services::llm_debug_capture::LlmDebugCaptureRegistry::new(&test.state.rua_root);
+    assert_eq!(
+        llm_multiplex::debug_capture::active_capture(&address)
+            .unwrap()
+            .capture_id,
+        capture_id,
+        "a provider call must see the capture immediately after startup"
+    );
     let restored = restored_registry
         .get(&scope_root, &address)
         .expect("restore capture state")
@@ -88,9 +106,9 @@ async fn agent_chat_capture_can_start_query_and_stop() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(queried, started);
 
-    let other_uri = capture_uri("another-chat");
-    let (_, other) = request_json(&test.app, Method::GET, &other_uri).await;
-    assert_eq!(other, serde_json::json!({ "active": false }));
+    let other_uri = capture_uri("00000000-0000-4000-8000-000000000910");
+    let (status, _) = request_json(&test.app, Method::GET, &other_uri).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 
     let (status, stopped) = request_json(&test.app, Method::DELETE, &uri).await;
     assert_eq!(status, StatusCode::OK);

@@ -194,7 +194,7 @@ fn api_routes(state: &AppState) -> Router<AppState> {
         .merge(endpoints::agents::router())
         .merge(endpoints::projects::router())
         .merge(endpoints::chat_media::router())
-        .merge(endpoints::console::agent_scoped_router())
+        .merge(endpoints::console::router())
         .merge(endpoints::models::router())
         .merge(endpoints::user_inbox::router())
         .merge(endpoints::config_channels::root_router())
@@ -244,13 +244,10 @@ fn api_routes(state: &AppState) -> Router<AppState> {
         .route("/doctor/version", get(doctor_version))
         .route("/doctor/runtime", get(doctor_runtime))
         .merge(endpoints::doctor_fix::router())
-        .merge(endpoints::chats::root_router())
-        .merge(endpoints::chats::agent_scoped_router())
+        .merge(endpoints::chats::router())
         .merge(endpoints::product_hooks::router())
-        .merge(endpoints::chat_prompt::root_router())
-        .merge(endpoints::chat_prompt::agent_scoped_router())
+        .merge(endpoints::chat_prompt::router())
         .merge(endpoints::chat_search::root_router())
-        .merge(endpoints::chat_search::agent_scoped_router())
         .route("/config", get(get_global_config).put(put_global_config))
         .route(
             "/agents/{agentId}/config",
@@ -387,9 +384,7 @@ async fn request_approval(
         .security
         .approval_authority()
         .create_request(ApprovalRequestInput {
-            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::agent(
-                &agent_id, "compat",
-            )),
+            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new("compat")),
             agent_id,
             turn_id: "compat".into(),
             tool_call_id: String::new(),

@@ -268,7 +268,7 @@ async fn active_interjection_adopts_running_tool_into_process_task_runtime() {
 
     let completed = runtime
         .await_terminal(
-            &rua_task::TaskOwner::new("agent-a", &session_id),
+            &rua_task::TaskOwner::new(&session_id),
             &task_id,
             Duration::from_secs(5),
         )
@@ -337,7 +337,7 @@ async fn foreground_wait_expiry_adopts_running_tool_without_redispatch() {
 
     let completed = runtime
         .await_terminal(
-            &rua_task::TaskOwner::new("agent-a", &session_id),
+            &rua_task::TaskOwner::new(&session_id),
             &task_id,
             Duration::from_secs(5),
         )
@@ -465,7 +465,7 @@ async fn shell_foreground_wait_expiry_keeps_the_same_process_running() {
 
     let completed = runtime
         .await_terminal(
-            &rua_task::TaskOwner::new("agent-a", &session_id),
+            &rua_task::TaskOwner::new(&session_id),
             &task_id,
             Duration::from_secs(5),
         )
@@ -494,7 +494,7 @@ async fn completed_agent_turn_does_not_cancel_adopted_shell_execution() {
         Arc::new(ContractToolExecutor::new(shell).with_schema(schema)),
     );
     let session_id = format!("shell-turn-session-{}", uuid::Uuid::new_v4());
-    let owner = rua_task::TaskOwner::new("agent-a", &session_id);
+    let owner = rua_task::TaskOwner::new(&session_id);
     let tool_result_store_dir = data_dir.path().join("tool-results");
     std::fs::create_dir_all(&tool_result_store_dir).unwrap();
     let tool_ctx = rua_core::tool::ToolContext {
@@ -575,7 +575,7 @@ async fn adopted_shell_task_keeps_the_original_stdin_surface() {
         }),
     );
     let session_id = format!("shell-stdin-session-{}", uuid::Uuid::new_v4());
-    let owner = rua_task::TaskOwner::new("agent-a", &session_id);
+    let owner = rua_task::TaskOwner::new(&session_id);
     let tool_result_store_dir = data_dir.path().join("tool-results");
     std::fs::create_dir_all(&tool_result_store_dir).unwrap();
     let tool_ctx = rua_core::tool::ToolContext {

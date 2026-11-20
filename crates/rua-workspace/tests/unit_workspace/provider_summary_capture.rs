@@ -123,7 +123,7 @@ async fn provider_summary_is_captured_from_model_call_identity() {
         .join("debug")
         .join("llm-captures")
         .join(capture_id);
-    let address = rua_core::ChatAddress::agent("agent-1", "chat-1");
+    let address = rua_core::ChatAddress::new("chat-1");
     llm_multiplex::debug_capture::register_capture(
         address.clone(),
         llm_multiplex::debug_capture::ActiveCapture {

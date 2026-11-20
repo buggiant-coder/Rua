@@ -23,6 +23,16 @@ pub async fn agent_context_middleware(
     mut req: Request<Body>,
     next: Next,
 ) -> Response {
+    // Chat handlers resolve the executor from the saved header or first-input body.
+    // An Agent list filter must never activate a workspace.
+    let path = req.uri().path();
+    let api_path = path
+        .strip_prefix("/api/")
+        .unwrap_or(path.trim_start_matches('/'));
+    if api_path.split('/').next() == Some("chats") {
+        return next.run(req).await;
+    }
+
     let explicit = extract_explicit_id(&req);
     let session_id = extract_session_id(&req);
     let channel = extract_channel(&req);

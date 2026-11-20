@@ -411,7 +411,7 @@ async fn checkpoint_planner_keeps_split_assistant_response_with_its_tool_round()
         )
         .await
         .unwrap();
-    let address = rua_core::ChatAddress::agent("agent-1", chat_id);
+    let address = rua_core::ChatAddress::new(chat_id);
     let mut running = rua_config::AgentsRunningConfig::default();
     running.tool_result_compact.projection_truncation_enabled = false;
     let projection = store
@@ -720,7 +720,7 @@ async fn publish_checkpoint(
 ) -> (String, rua_session::ExecutionTraceBlock) {
     publish_checkpoint_for_address(
         workspace,
-        rua_core::ChatAddress::agent("agent-1", chat_id),
+        rua_core::ChatAddress::new(chat_id),
         history_replacement_enabled,
         configure,
     )
@@ -909,7 +909,7 @@ async fn descendant_checkpoint_summary_includes_the_previous_retained_message() 
         .unwrap();
 
     let captured = Arc::new(Mutex::new(None));
-    let chat_address = rua_core::ChatAddress::agent("agent-1", "chat-retained-chain");
+    let chat_address = rua_core::ChatAddress::new("chat-retained-chain");
     let running_config = Arc::new(rua_config::AgentsRunningConfig::default());
     let frontier = ProjectionFoldFrontier {
         turn_id: "turn-2".to_string(),
@@ -945,7 +945,7 @@ async fn descendant_checkpoint_summary_includes_the_previous_retained_message() 
         replication_hook: None,
         model_call_identity: Some(
             rua_agent::model_call_context::ModelCallIdentityContext::from_chat_address(
-                &rua_core::ChatAddress::agent("agent-1", "chat-1"),
+                &rua_core::ChatAddress::new("chat-1"),
             ),
         ),
     });
@@ -971,7 +971,7 @@ async fn project_checkpoint_summary_consumes_ready_history_replacement() {
     let dir = tempfile::tempdir().unwrap();
     let (content, _) = publish_checkpoint_for_address(
         dir.path(),
-        rua_core::ChatAddress::project("project-1", "chat-project"),
+        rua_core::ChatAddress::new("chat-project"),
         true,
         |_| {},
     )

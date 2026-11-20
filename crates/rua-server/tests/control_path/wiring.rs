@@ -46,7 +46,7 @@ impl rua_command::SkillsLister for TestSkillsLister {
 #[tokio::test]
 async fn stream_cancel_adapter_delegates_to_active_stream_registry() {
     let registry = Arc::new(ActiveStreamRegistry::new());
-    let adapter = StreamCancelAdapter::new(Arc::clone(&registry), "default");
+    let adapter = StreamCancelAdapter::new(Arc::clone(&registry));
 
     let cancelled = adapter.cancel_session("console", "sess-1").await;
     assert!(!cancelled);
@@ -66,8 +66,8 @@ async fn stream_cancel_adapter_keeps_channel_sessions_out_of_chat_stream_namespa
         .try_acquire("channel-session-1", "request-1", "default", cancel.clone())
         .await
         .expect("acquire runtime session");
-    let adapter = StreamCancelAdapter::new(registry, "default")
-        .with_runtime_sessions(Arc::clone(&runtime_sessions));
+    let adapter =
+        StreamCancelAdapter::new(registry).with_runtime_sessions(Arc::clone(&runtime_sessions));
 
     assert!(
         !rua_command::SessionCanceller::cancel_session(&adapter, "console", "channel-session-1",)
@@ -159,7 +159,7 @@ async fn approval_adapter_reacquires_execution_residency_before_resolving() {
     ));
     let active_turn = conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent("default".to_string(), "chat-1".to_string()),
+            address: rua_core::ChatAddress::new("chat-1".to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: "device-mobile".to_string(),
             authority_epoch: ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -168,7 +168,7 @@ async fn approval_adapter_reacquires_execution_residency_before_resolving() {
         .await;
     conversation_authority
         .transition_active_turn_phase(
-            &rua_core::ChatAddress::agent("default", "chat-1"),
+            &rua_core::ChatAddress::new("chat-1"),
             Some(&active_turn.turn_id),
             ConversationActiveTurnPhase::WaitingApproval,
         )
@@ -180,9 +180,7 @@ async fn approval_adapter_reacquires_execution_residency_before_resolving() {
     let approval = approval_authority
         .create_request(ApprovalRequestInput {
             agent_id: "default".to_string(),
-            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::agent(
-                "default", "chat-1",
-            )),
+            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new("chat-1")),
             turn_id: active_turn.turn_id.clone(),
             tool_call_id: "call-1".to_string(),
             tool_name: "Shell".to_string(),
@@ -200,7 +198,7 @@ async fn approval_adapter_reacquires_execution_residency_before_resolving() {
     assert_eq!(foreground_operations.snapshot().active_count, 1);
     assert_eq!(
         conversation_authority
-            .active_turn(&rua_core::ChatAddress::agent("default", "chat-1"))
+            .active_turn(&rua_core::ChatAddress::new("chat-1"))
             .await
             .expect("active turn")
             .phase,
@@ -237,7 +235,7 @@ async fn approval_adapter_resolves_runtime_session_without_fabricating_chat_addr
         rua_security::AuthorityStatus::Approved
     );
     assert!(approval_authority
-        .snapshot_at(&rua_core::ChatAddress::agent("default", "acp-session-1"))
+        .snapshot_at(&rua_core::ChatAddress::new("acp-session-1"))
         .await
         .pending
         .is_empty());

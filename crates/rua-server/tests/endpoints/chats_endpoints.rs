@@ -29,7 +29,7 @@ fn build_state() -> (AppState, TempDir) {
 
 fn build_app(state: AppState) -> Router {
     Router::new()
-        .merge(endpoints::chats::root_router())
+        .merge(endpoints::chats::router())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             agent_context_middleware,
@@ -118,8 +118,7 @@ fn json_delete(uri: &str) -> Request<Body> {
 
 fn build_app_with_agent_scoped(state: AppState) -> Router {
     Router::new()
-        .merge(endpoints::chats::root_router())
-        .merge(endpoints::chats::agent_scoped_router())
+        .merge(endpoints::chats::router())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             agent_context_middleware,
@@ -295,7 +294,7 @@ async fn list_chats_uses_v4_maintained_sqlite_index() {
     });
     let upsert = ChatIndexSyncAdapter::index_change(
         "op-chat-index-upsert",
-        rua_core::ChatAddress::agent("default", "11111111-1111-4111-8111-111111111111"),
+        rua_core::ChatAddress::new("11111111-1111-4111-8111-111111111111"),
         chat_payload,
         "device-a",
         HlcTimestamp {
@@ -323,8 +322,7 @@ async fn list_chats_uses_v4_maintained_sqlite_index() {
     let delete = SyncChange::new(
         "op-chat-index-delete",
         CHAT_DOMAIN,
-        index_record_id(&rua_core::ChatAddress::agent(
-            "default",
+        index_record_id(&rua_core::ChatAddress::new(
             "11111111-1111-4111-8111-111111111111",
         )),
         CHAT_KIND_INDEX_DELETE,

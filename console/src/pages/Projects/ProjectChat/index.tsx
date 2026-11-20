@@ -8,12 +8,7 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  useLoaderData,
-  useLocation,
-  useNavigate,
-  type LoaderFunctionArgs,
-} from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   FolderPlus,
   ListTodo,
@@ -27,15 +22,11 @@ import {
   Zap,
 } from "lucide-react";
 
-import {
-  agentConversationTarget,
-  conversationApi,
-} from "@/api/modules/conversation";
+import { conversationApi } from "@/api/modules/conversation";
 import {
   projectChatsApi,
   type ProjectResourcePolicyView,
 } from "@/api/modules/projectChats";
-import { projectsApi } from "@/api/modules/projects";
 import type {
   ACPChatStatus,
   ChatHistory,
@@ -62,11 +53,11 @@ import {
 import ModelSelector from "@/pages/Chat/ModelSelector";
 import ChatDeviceChip from "@/pages/Chat/ChatDeviceChip";
 import { saveDraftConversationModel } from "@/pages/Chat/conversationLifecycle";
+import { historyProvesConversationMaterialized } from "@/pages/Chat/conversationRouteController";
 import {
-  historyProvesConversationMaterialized,
-  resolveConversationRoute,
-} from "@/pages/Chat/conversationRouteController";
-import { resolveAgentChatPath } from "@/pages/Chat/conversationAddress";
+  chatPath,
+  resolveAgentChatPath,
+} from "@/pages/Chat/conversationAddress";
 import { registerProjectNavigationAgent } from "@/layouts/conversationNavigationAgent";
 import {
   invalidateConversationNavigation,
@@ -103,7 +94,6 @@ import {
   projectConversationScope,
   projectChatDraftKey,
   projectChatExecutionAgent,
-  projectChatPath,
   projectLastSelectedAgent,
   rememberProjectChat,
   resolveProjectChatPath,
@@ -125,43 +115,6 @@ type ProjectChatInitialData = {
   initialHistory?: ChatHistory | null;
   unmaterialized: boolean;
 };
-
-export async function loader({
-  params,
-}: LoaderFunctionArgs): Promise<ProjectChatInitialData> {
-  const projectId = params.projectId;
-  const chatId = params.chatId;
-  if (!projectId || !chatId) {
-    throw new Response("Project Chat route is incomplete", { status: 400 });
-  }
-  const [project, projects] = await Promise.all([
-    projectsApi.get(projectId),
-    projectsApi.list("active"),
-  ]);
-  const route = await resolveConversationRoute({
-    scope: projectConversationScope(projectId),
-    conversationId: chatId,
-    loadHistory: () =>
-      projectChatsApi.getChat(projectId, chatId, { turnLimit: 1 }),
-  });
-  return {
-    project,
-    projects,
-    chatId,
-    initialHistory: route.history,
-    unmaterialized: route.unmaterialized,
-  };
-}
-
-export function RouteComponent() {
-  const initialData = useLoaderData() as ProjectChatInitialData;
-  return (
-    <ProjectChatPage
-      key={`${initialData.project.project_id}:${initialData.chatId}`}
-      initialData={initialData}
-    />
-  );
-}
 
 export default function ProjectChatPage({
   initialData,
@@ -198,12 +151,7 @@ export default function ProjectChatPage({
     () =>
       subscribeConversationMetadata((address, chat, change) => {
         if (change && !change.fields.includes("name")) return;
-        if (
-          address.scope !== "project" ||
-          address.projectId !== projectId ||
-          address.chatId !== chatId
-        )
-          return;
+        if (address.chatId !== chatId) return;
         setHistory((current) =>
           current ? { ...current, title: chat.name?.trim() || null } : current,
         );
@@ -268,7 +216,9 @@ export default function ProjectChatPage({
   const [executionAgentId, setExecutionAgentId] = useState(() =>
     lazy
       ? projectChatExecutionAgent(projectId, chatId)
-      : initialSelection?.agent_id ?? fallbackAgentId,
+      : initialData.initialHistory?.agent_id ??
+        initialSelection?.agent_id ??
+        fallbackAgentId,
   );
   useLayoutEffect(
     () =>
@@ -291,7 +241,6 @@ export default function ProjectChatPage({
   >([]);
   const projectTarget = useMemo(
     () => ({
-      scope: "project" as const,
       projectId,
     }),
     [projectId],
@@ -303,8 +252,7 @@ export default function ProjectChatPage({
     (device) => device.device_id === initialData.project.resource_device_id,
   );
   const chatActivityWake = useConversationActivityWake(
-    { scope: "project", projectId },
-    chatId,
+    lazy ? undefined : chatId,
   );
   const projectDeviceLabel = useCallback(
     (project: ProjectDescriptor) => {
@@ -396,7 +344,7 @@ export default function ProjectChatPage({
     if (!lazyRef.current) return;
     setProjectLastSelectedAgent(projectId, executionAgentId);
     statefulOperationAccepted();
-    invalidateConversationNavigation({ scope: "project", projectId, chatId });
+    invalidateConversationNavigation({ chatId });
     clearProjectChatDraftState(projectId, chatId);
     setAgentResolved(true);
   }, [chatId, executionAgentId, lazyRef, projectId, statefulOperationAccepted]);
@@ -422,11 +370,7 @@ export default function ProjectChatPage({
         ]);
         if (navigationHistoryKeyRef.current !== navigationKey) {
           navigationHistoryKeyRef.current = navigationKey;
-          invalidateConversationNavigation({
-            scope: "project",
-            projectId,
-            chatId,
-          });
+          invalidateConversationNavigation({ chatId });
         }
       }
       const agentState = projectAgentStateFromHistory(nextHistory);
@@ -548,19 +492,11 @@ export default function ProjectChatPage({
   const handleNewChat = useCallback(() => {
     setDrawer(null);
     const nextChatId = createInheritedProjectChat();
-    navigate(
-      `/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(
-        nextChatId,
-      )}`,
-    );
-  }, [createInheritedProjectChat, navigate, projectId]);
+    navigate(chatPath(nextChatId));
+  }, [createInheritedProjectChat, navigate]);
 
   useLayoutEffect(
-    () =>
-      registerNewConversationAction(
-        { scope: "project", projectId, chatId },
-        handleNewChat,
-      ),
+    () => registerNewConversationAction({ chatId }, handleNewChat),
     [projectId, chatId, handleNewChat],
   );
 
@@ -572,7 +508,7 @@ export default function ProjectChatPage({
         setDrawer(null);
         return;
       }
-      navigate(projectChatPath(projectId, chat.id), {
+      navigate(chatPath(chat.id), {
         replace: mobile,
       });
       setDrawer(null);
@@ -582,14 +518,7 @@ export default function ProjectChatPage({
 
   const handleChatUpdated = useCallback(
     (chat: ChatSpec) => {
-      publishConversationMetadata(
-        {
-          scope: "project",
-          projectId,
-          chatId: chat.id,
-        },
-        chat,
-      );
+      publishConversationMetadata({ chatId: chat.id }, chat);
       if (chat.id !== chatId) return;
       setHistory((current) =>
         current ? { ...current, title: chat.name?.trim() || null } : current,
@@ -600,11 +529,7 @@ export default function ProjectChatPage({
 
   const handleChatDeleted = useCallback(
     (chat: ChatSpec, remainingKnownChats: ChatSpec[]) => {
-      invalidateConversationNavigation({
-        scope: "project",
-        projectId,
-        chatId: chat.id,
-      });
+      invalidateConversationNavigation({ chatId: chat.id });
       discardProjectChatLocalState(projectId, chat.id);
       if (chat.id !== chatId) {
         rememberProjectChat(projectId, chatId);
@@ -617,12 +542,12 @@ export default function ProjectChatPage({
       );
       if (nextChat) {
         rememberProjectChat(projectId, nextChat.id);
-        navigate(projectChatPath(projectId, nextChat.id), { replace: true });
+        navigate(chatPath(nextChat.id), { replace: true });
         return;
       }
 
       const nextChatId = createInheritedProjectChat();
-      navigate(projectChatPath(projectId, nextChatId), { replace: true });
+      navigate(chatPath(nextChatId), { replace: true });
     },
     [chatId, createInheritedProjectChat, navigate, projectId],
   );
@@ -630,12 +555,7 @@ export default function ProjectChatPage({
   useEffect(
     () =>
       subscribeConversationDeleted((address, remaining) => {
-        if (
-          address.scope !== "project" ||
-          address.projectId !== projectId ||
-          address.chatId !== chatId
-        )
-          return false;
+        if (address.chatId !== chatId) return false;
         handleChatDeleted({ id: address.chatId } as ChatSpec, remaining);
         return true;
       }),
@@ -795,10 +715,7 @@ export default function ProjectChatPage({
   ];
 
   return (
-    <div
-      className={`rua-owned-chat-page ${styles.page}`}
-      data-rua-project-chat
-    >
+    <div className={`rua-owned-chat-page ${styles.page}`} data-rua-project-chat>
       <ChatHeader
         actions={[
           {
@@ -910,11 +827,12 @@ export default function ProjectChatPage({
         <div className={styles.conversation}>
           <OwnedConversationSurface
             onOpenTasks={() => setTaskDrawerOpen(true)}
-            key={`project:${projectId}:${chatId}`}
-            address={{ scope: "project", projectId, chatId }}
+            key={chatId}
+            address={{ chatId }}
             unmaterialized={lazy}
             deferInitialAttach={lazy}
-            projectExecutionAgentId={executionAgentId || "default"}
+            projectId={projectId}
+            executionAgentId={executionAgentId || "default"}
             draftKey={projectChatDraftKey(projectId, chatId)}
             authorityPlacementDeviceId={initialData.project.resource_device_id}
             currentDeviceId={currentDeviceId}
@@ -1027,7 +945,6 @@ export default function ProjectChatPage({
         onClose={() => setAcpEnterOpen(false)}
         agentId={executionAgentId || "default"}
         target={projectTarget}
-        discoveryTarget={agentConversationTarget(executionAgentId || "default")}
         chatId={chatId}
         targetDeviceId={initialData.project.resource_device_id}
         defaultCwd={

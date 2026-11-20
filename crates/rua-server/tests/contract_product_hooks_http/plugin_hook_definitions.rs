@@ -39,14 +39,14 @@ fn audit_declaration() -> serde_json::Value {
 #[tokio::test]
 async fn plugin_record_registers_qualified_inactive_definition_without_changing_defaults() {
     let hooks = ProductHookService::new();
-    let agent_address = ChatAddress::agent("agent-a", "chat-a");
-    let project_address = ChatAddress::project("project-a", "chat-b");
+    let agent_address = ChatAddress::new("chat-a");
+    let project_address = ChatAddress::new("chat-b");
     let agent_before = hooks
-        .resolve_chat_configuration(&agent_address, "agent-a")
+        .resolve_chat_configuration(&agent_address, "agent-a", None)
         .await
         .unwrap();
     let project_before = hooks
-        .resolve_chat_configuration(&project_address, "agent-a")
+        .resolve_chat_configuration(&project_address, "agent-a", Some("project-a"))
         .await
         .unwrap();
     let record = plugin_record(true, json!([audit_declaration()]));
@@ -62,11 +62,11 @@ async fn plugin_record_registers_qualified_inactive_definition_without_changing_
     assert!(definitions[0].disabled);
 
     let agent_after = hooks
-        .resolve_chat_configuration(&agent_address, "agent-a")
+        .resolve_chat_configuration(&agent_address, "agent-a", None)
         .await
         .unwrap();
     let project_after = hooks
-        .resolve_chat_configuration(&project_address, "agent-a")
+        .resolve_chat_configuration(&project_address, "agent-a", Some("project-a"))
         .await
         .unwrap();
     assert_eq!(
@@ -98,14 +98,15 @@ async fn plugin_definition_requires_explicit_agent_or_project_activation() {
         .unwrap();
 
     let agent = hooks
-        .resolve_chat_configuration(&ChatAddress::agent("agent-a", "chat-a"), "agent-a")
+        .resolve_chat_configuration(&ChatAddress::new("chat-a"), "agent-a", None)
         .await
         .unwrap();
     assert_eq!(agent.definition_revisions, vec!["plugin:sample/audit@v1"]);
     let project = hooks
         .resolve_chat_configuration(
-            &ChatAddress::project("project-a", "chat-b"),
+            &ChatAddress::new("chat-b"),
             "agent-without-default",
+            Some("project-a"),
         )
         .await
         .unwrap();
@@ -118,9 +119,9 @@ async fn new_chat_adopts_plugin_default_while_existing_chat_requires_update() {
     register_from_record(&hooks, &plugin_record(true, json!([audit_declaration()])))
         .await
         .unwrap();
-    let existing_address = ChatAddress::agent("agent-a", "existing");
+    let existing_address = ChatAddress::new("existing");
     let existing = hooks
-        .resolve_chat_configuration(&existing_address, "agent-a")
+        .resolve_chat_configuration(&existing_address, "agent-a", None)
         .await
         .unwrap();
     hooks
@@ -133,7 +134,7 @@ async fn new_chat_adopts_plugin_default_while_existing_chat_requires_update() {
         .unwrap();
 
     let new_chat = hooks
-        .resolve_chat_configuration(&ChatAddress::agent("agent-a", "new"), "agent-a")
+        .resolve_chat_configuration(&ChatAddress::new("new"), "agent-a", None)
         .await
         .unwrap();
     assert_eq!(
@@ -150,7 +151,7 @@ async fn new_chat_adopts_plugin_default_while_existing_chat_requires_update() {
     );
 
     let updated = hooks
-        .resolve_chat_configuration(&existing_address, "agent-a")
+        .resolve_chat_configuration(&existing_address, "agent-a", None)
         .await
         .unwrap();
     hooks
@@ -176,9 +177,9 @@ async fn plugin_unavailability_preserves_bindings_chat_snapshot_and_frozen_turn(
         .set_agent_activation("agent-a", "plugin:sample/audit", true)
         .await
         .unwrap();
-    let address = ChatAddress::agent("agent-a", "chat-a");
+    let address = ChatAddress::new("chat-a");
     let available = hooks
-        .resolve_chat_configuration(&address, "agent-a")
+        .resolve_chat_configuration(&address, "agent-a", None)
         .await
         .unwrap();
     hooks
@@ -212,7 +213,7 @@ async fn plugin_unavailability_preserves_bindings_chat_snapshot_and_frozen_turn(
     );
 
     let refreshed = hooks
-        .resolve_chat_configuration(&address, "agent-a")
+        .resolve_chat_configuration(&address, "agent-a", None)
         .await
         .unwrap();
     assert_eq!(
@@ -259,7 +260,7 @@ async fn plugin_reregistration_keeps_revisions_immutable_and_existing_selection_
         "v2"
     );
     let selected = hooks
-        .resolve_chat_configuration(&ChatAddress::agent("agent-a", "chat-a"), "agent-a")
+        .resolve_chat_configuration(&ChatAddress::new("chat-a"), "agent-a", None)
         .await
         .unwrap();
     assert_eq!(
@@ -364,11 +365,11 @@ async fn plugin_http_install_and_uninstall_update_definition_availability_only()
         .set_agent_activation("agent-a", "plugin:sample-hook-plugin/audit", true)
         .await
         .unwrap();
-    let address = ChatAddress::agent("agent-a", "chat-a");
+    let address = ChatAddress::new("chat-a");
     let snapshot = test
         .state
         .product_hooks
-        .resolve_chat_configuration(&address, "agent-a")
+        .resolve_chat_configuration(&address, "agent-a", None)
         .await
         .unwrap();
     test.state

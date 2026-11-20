@@ -9,6 +9,7 @@ use super::product_hooks::ChatConfigurationMaterialization;
 
 /// Chat-owned choices supplied by the operation requesting a new candidate.
 pub(crate) struct ChatConfigurationSelection {
+    pub project_id: Option<String>,
     pub model: Option<Value>,
     pub thinking: Option<Value>,
     pub collaboration_mode: Value,
@@ -49,6 +50,7 @@ pub(crate) async fn capture_chat_configuration(
         &assignment.system_prompt_files,
     );
     Ok(ChatConfigurationMaterialization {
+        project_id: selection.project_id,
         selected_agent_id: assignment.agent_id.clone(),
         security_config,
         capability_configuration: Some(capability_configuration),

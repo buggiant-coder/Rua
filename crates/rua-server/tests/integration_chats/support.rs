@@ -27,9 +27,8 @@ pub fn build_app() -> TestApp {
     let state = AppState::from_tempdir(data_dir.clone(), ServerProfile::Test);
     let api = Router::new()
         .merge(agents::router())
-        .merge(chats::root_router())
-        .merge(chats::agent_scoped_router())
-        .merge(console::agent_scoped_router());
+        .merge(chats::router())
+        .merge(console::router());
     let app = Router::new()
         .nest("/api", api)
         .layer(axum::middleware::from_fn_with_state(
@@ -125,6 +124,7 @@ pub async fn create_chat(
         uri,
         Some(json!({
             "name": name,
+            "agent_id": agent_id.unwrap_or("default"),
             "user_id": user_id,
             "channel": "console",
             "meta": {}
@@ -136,23 +136,23 @@ pub async fn create_chat(
     read_json(resp).await
 }
 
-pub fn workspace_dir(data_dir: &std::path::Path, agent_id: &str) -> PathBuf {
-    data_dir.join("workspaces").join(agent_id)
+pub fn workspace_dir(data_dir: &std::path::Path, _agent_id: &str) -> PathBuf {
+    data_dir.join("chats")
 }
 
 pub async fn accept_first_input(test: &TestApp, agent_id: &str, chat_id: &str, user_id: &str) {
     let response = request(
         &test.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/console/submit"),
-        Some(json!({"message":"integration first input","user_id":user_id})),
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({"agent_id":agent_id,"message":"integration first input","user_id":user_id})),
         Some(agent_id),
     )
     .await;
     assert_eq!(response.status(), axum::http::StatusCode::OK);
     let body = read_json(response).await;
     assert_eq!(body["accepted"], true, "{body}");
-    let address = rua_core::ChatAddress::agent(agent_id, chat_id);
+    let address = rua_core::ChatAddress::new(chat_id);
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while test
             .state

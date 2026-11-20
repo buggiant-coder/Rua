@@ -123,7 +123,6 @@ impl ConversationAuthorityRouter {
             request.workspace_dir,
             request.address.chat_id().as_str(),
             request.request,
-            request.execution_agent_id,
             request.local_device_id,
             request.acp_chat_registry,
         )
@@ -259,7 +258,7 @@ impl ConversationAuthorityRouter {
 }
 
 pub async fn verify_and_observe_authority_redirect(
-    registry: &Arc<dyn rua_workspace::WorkspaceRegistry>,
+    workspace_dir: &std::path::Path,
     authority: &Arc<crate::services::conversation_authority::ConversationAuthority>,
     device_network: &Arc<crate::services::device_session_access::DeviceNetworkAccess>,
     sync_device: &Arc<std::sync::RwLock<Option<Arc<rua_sync::identity::DeviceIdentity>>>>,
@@ -275,14 +274,17 @@ pub async fn verify_and_observe_authority_redirect(
     }
     let local_device_id = current_sync_device_id(sync_device)
         .ok_or_else(|| "local Device identity is unavailable".to_string())?;
-    let runtime = registry
-        .get_or_create(redirect.agent_id())
+    let header = rua_session::WorkspaceSessionStore::new(workspace_dir)
+        .load_chat_header(redirect.chat_id())
         .await
-        .map_err(|error| error.to_string())?;
-    let workspace_dir = runtime.workspace_dir();
+        .map_err(|error| error.to_string())?
+        .ok_or("Chat header unavailable")?;
+    if header.project_id.is_some() {
+        return Err("Project Chat authority is fixed to its resource Device".into());
+    }
     if redirect.placement.device_id == local_device_id {
         let current =
-            load_chat_authority_placement_target(&workspace_dir, redirect.chat_id()).await?;
+            load_chat_authority_placement_target(workspace_dir, redirect.chat_id()).await?;
         if current.device_id != redirect.placement.device_id
             || current.authority_epoch != redirect.placement.authority_epoch
             || current.base_manifest_hash != redirect.placement.base_manifest_hash
@@ -295,7 +297,7 @@ pub async fn verify_and_observe_authority_redirect(
             &session_manager,
             &ConversationControlDeviceCommand {
                 command_id: format!("authority-redirect-verify-{}", uuid::Uuid::new_v4()),
-                agent_id: redirect.agent_id().to_string(),
+                agent_id: header.agent_id,
                 address: redirect.address.clone(),
                 source_device_id: local_device_id,
                 target_device_id: redirect.placement.device_id.clone(),
@@ -322,7 +324,7 @@ pub async fn verify_and_observe_authority_redirect(
     }
     if let Some(current) =
         crate::services::conversation_authority_target::load_optional_chat_authority_placement(
-            &workspace_dir,
+            workspace_dir,
             redirect.chat_id(),
         )
         .await
@@ -340,7 +342,7 @@ pub async fn verify_and_observe_authority_redirect(
     }
     authority
         .apply_confirmed_authority_placement(
-            &workspace_dir,
+            workspace_dir,
             &redirect.address,
             redirect.placement.clone(),
         )

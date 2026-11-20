@@ -125,15 +125,7 @@ pub fn task_owner_from_context(ctx: &ToolContext) -> rua_task::TaskOwner {
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
         .map(rua_task::TaskOwner::from_address)
-        .unwrap_or_else(|| {
-            rua_task::TaskOwner::new(
-                ctx.metadata
-                    .get("agent_id")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or(&ctx.agent_id),
-                &ctx.session_id,
-            )
-        })
+        .unwrap_or_else(|| rua_task::TaskOwner::new(&ctx.session_id))
 }
 
 #[derive(Debug, Deserialize)]

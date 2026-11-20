@@ -70,12 +70,8 @@ function redirectTo(to: string): RouteObject["loader"] {
 export const appRoutes: RouteObject[] = [
   { index: true, loader: landingLoader },
   {
-    path: "agents/:agentId/chats/:chatId",
-    lazy: lazyPage(() => import("../pages/Chat")),
-  },
-  {
-    path: "projects/:projectId/chats/:chatId",
-    lazy: lazyDataPage(() => import("../pages/Projects/ProjectChat")),
+    path: "chats/:chatId",
+    lazy: lazyDataPage(() => import("../pages/Chat/route")),
   },
   {
     path: "projects",

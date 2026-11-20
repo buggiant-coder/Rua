@@ -122,9 +122,7 @@ async fn remote_live_stream_holds_residency_until_the_stream_is_dropped() {
             .with_foreground_operations(Arc::clone(&registry));
     let request = ActiveStreamBroadcastSubscribeRequest {
         device_delivery_id: String::new(),
-        owner: Some(ActiveStreamOwner::chat(ChatAddress::agent(
-            "default", "chat-a",
-        ))),
+        owner: Some(ActiveStreamOwner::chat(ChatAddress::new("chat-a"))),
         after_seq_by_stream: BTreeMap::new(),
         activity_generation: None,
         conversation_activity_position: None,

@@ -596,10 +596,7 @@ async fn active_conversation_survives_background_and_approval_resume_cancels_sus
     let active_turn = state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent(
-                "default".to_string(),
-                "chat-background".to_string(),
-            ),
+            address: rua_core::ChatAddress::new("chat-background".to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: "device-mobile".to_string(),
             authority_epoch: ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -619,7 +616,7 @@ async fn active_conversation_survives_background_and_approval_resume_cancels_sus
     state
         .conversation_authority
         .transition_active_turn_phase(
-            &rua_core::ChatAddress::agent("default", "chat-background"),
+            &rua_core::ChatAddress::new("chat-background"),
             Some(&active_turn.turn_id),
             ConversationActiveTurnPhase::WaitingApproval,
         )
@@ -644,7 +641,7 @@ async fn active_conversation_survives_background_and_approval_resume_cancels_sus
     state
         .conversation_authority
         .transition_active_turn_phase(
-            &rua_core::ChatAddress::agent("default", "chat-background"),
+            &rua_core::ChatAddress::new("chat-background"),
             Some(&active_turn.turn_id),
             ConversationActiveTurnPhase::RunningTool,
         )
@@ -657,7 +654,7 @@ async fn active_conversation_survives_background_and_approval_resume_cancels_sus
     state
         .conversation_authority
         .transition_active_turn_phase(
-            &rua_core::ChatAddress::agent("default", "chat-background"),
+            &rua_core::ChatAddress::new("chat-background"),
             Some(&active_turn.turn_id),
             ConversationActiveTurnPhase::WaitingApproval,
         )
@@ -667,7 +664,7 @@ async fn active_conversation_survives_background_and_approval_resume_cancels_sus
     wait_for_endpoint_closed(&endpoint).await;
     state
         .conversation_authority
-        .finish_active_turn(&rua_core::ChatAddress::agent("default", "chat-background"))
+        .finish_active_turn(&rua_core::ChatAddress::new("chat-background"))
         .await;
 }
 

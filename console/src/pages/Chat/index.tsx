@@ -9,7 +9,7 @@ import {
   type SetStateAction,
   type UIEvent,
 } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import ChatHeader from "./ChatHeader";
 import { ChatConfigurationUpdateButton } from "./ChatConfigurationUpdateButton";
@@ -128,7 +128,7 @@ import {
   saveLastChatId,
 } from "./chatNavigation";
 import { useConversationLifecycle } from "./useConversationLifecycle";
-import { agentChatPath, resolveAgentChatPath } from "./conversationAddress";
+import { chatPath, resolveAgentChatPath } from "./conversationAddress";
 import { navigateWithPageTransition } from "../../layouts/pageTransition";
 import {
   cancelPreparedChatTransition,
@@ -872,12 +872,16 @@ export function ChatOptionsModal({
   );
 }
 
-function AgentChatPage({
+export function AgentChatPage({
   agentId,
   chatId,
+  initialHistory = null,
+  unmaterialized,
 }: {
   agentId: string;
   chatId: string;
+  initialHistory?: ChatHistory | null;
+  unmaterialized?: boolean;
 }) {
   const { t } = useTranslation();
   const location = useLocation();
@@ -973,7 +977,11 @@ function AgentChatPage({
   );
   const [currentChatTitle, setCurrentChatTitle] = useState("");
   const [currentChatSnapshot, setCurrentChatSnapshot] =
-    useState<CurrentChatSnapshot | null>(null);
+    useState<CurrentChatSnapshot | null>(
+      initialHistory
+        ? { key: `chat:${chatId}`, history: initialHistory }
+        : null,
+    );
   const [blockPreferences, setBlockPreferences] =
     useState<ChatBlockCollapsePreferences>(() => readChatBlockPreferences());
   const { devices: syncDevices, available: multiDeviceFeaturesAvailable } =
@@ -1004,12 +1012,11 @@ function AgentChatPage({
   const authorityPlacementMutationInFlightRef = useRef(false);
   const effectiveChatId = chatId;
   const activeChatKey =
-    effectiveChatId && selectedAgent
-      ? `${selectedAgent}:${effectiveChatId}`
-      : null;
+    effectiveChatId && selectedAgent ? `chat:${effectiveChatId}` : null;
   const lazy =
-    Boolean(effectiveChatId) &&
-    loadDraftChatId(selectedAgent) === effectiveChatId;
+    unmaterialized ??
+    (Boolean(effectiveChatId) &&
+      loadDraftChatId(selectedAgent) === effectiveChatId);
   const {
     lazy: conversationLazy,
     draftModel: draftChatModel,
@@ -1051,13 +1058,7 @@ function AgentChatPage({
     () =>
       subscribeConversationMetadata((address, chat, change) => {
         if (change && !change.fields.includes("name")) return;
-        if (
-          address.scope !== "agent" ||
-          address.agentId !== selectedAgent ||
-          address.chatId !== effectiveChatId ||
-          !activeChatKey
-        )
-          return;
+        if (address.chatId !== effectiveChatId || !activeChatKey) return;
         const title = chat.name?.trim() || "";
         const previousRename = renamedChatTitleRef.current;
         renamedChatTitleRef.current = {
@@ -1092,9 +1093,8 @@ function AgentChatPage({
   }, [selectedAgent, setSelectedAgent]);
 
   useEffect(() => {
-    if (!chatId) return;
-    saveLastChatId(selectedAgent, chatId);
-  }, [chatId, selectedAgent]);
+    if (chatId && !conversationLazy) saveLastChatId(selectedAgent, chatId);
+  }, [chatId, selectedAgent, conversationLazy]);
 
   const chatPlacement = useMemo(
     () =>
@@ -1122,13 +1122,13 @@ function AgentChatPage({
     }
     cancelPreparedChatTransition();
     closeSessionList();
-    navigateWithPageTransition(navigate, agentChatPath(selectedAgent, draftId));
+    navigateWithPageTransition(navigate, chatPath(draftId));
   };
 
   useLayoutEffect(() => {
     if (!effectiveChatId) return;
     return registerNewConversationAction(
-      { scope: "agent", agentId: selectedAgent, chatId: effectiveChatId },
+      { chatId: effectiveChatId },
       startNewChat,
     );
   });
@@ -1136,7 +1136,7 @@ function AgentChatPage({
   const titleForActiveChat = useCallback(
     (agentId: string, chatIdForTitle: string | undefined): string => {
       if (!chatIdForTitle) return t("chat.untitled");
-      const chatKey = `${agentId}:${chatIdForTitle}`;
+      const chatKey = `chat:${chatIdForTitle}`;
       return (
         submittedTitleRef.current[chatKey]?.trim() ||
         chatTitleHintRef.current[chatKey]?.trim() ||
@@ -1188,11 +1188,7 @@ function AgentChatPage({
         ]);
         if (navigationHistoryKeyRef.current !== navigationKey) {
           navigationHistoryKeyRef.current = navigationKey;
-          invalidateConversationNavigation({
-            scope: "agent",
-            agentId: selectedAgent,
-            chatId: effectiveChatId,
-          });
+          invalidateConversationNavigation({ chatId: effectiveChatId });
         }
       }
 
@@ -1215,11 +1211,7 @@ function AgentChatPage({
   const handleSubmitAccepted = useCallback(() => {
     if (!effectiveChatId || !conversationLazy) return;
     statefulOperationAccepted();
-    invalidateConversationNavigation({
-      scope: "agent",
-      agentId: selectedAgent,
-      chatId: effectiveChatId,
-    });
+    invalidateConversationNavigation({ chatId: effectiveChatId });
   }, [
     conversationLazy,
     effectiveChatId,
@@ -1262,7 +1254,7 @@ function AgentChatPage({
         detail.chatId === effectiveChatId &&
         detail.title.trim()
       ) {
-        const chatKey = `${detail.agentId}:${detail.chatId}`;
+        const chatKey = `chat:${detail.chatId}`;
         if (chatHasUserMessagesRef.current[chatKey]) {
           return;
         }
@@ -1359,8 +1351,7 @@ function AgentChatPage({
   );
 
   const chatActivityWake = useConversationActivityWake(
-    { scope: "agent", agentId: selectedAgent },
-    effectiveChatId,
+    conversationLazy ? undefined : effectiveChatId,
   );
 
   const isSessionSearchActive =
@@ -1425,11 +1416,11 @@ function AgentChatPage({
       const ready = await prepareChatTransition(selectedAgent, id);
       if (!ready) return;
       if (trimmedTitle) {
-        chatTitleHintRef.current[`${selectedAgent}:${id}`] = trimmedTitle;
+        chatTitleHintRef.current[`chat:${id}`] = trimmedTitle;
         setCurrentChatTitle(trimmedTitle);
       }
       closeSessionList();
-      navigateWithPageTransition(navigate, agentChatPath(selectedAgent, id));
+      navigateWithPageTransition(navigate, chatPath(id));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     }
@@ -1475,11 +1466,7 @@ function AgentChatPage({
         selectedAgent,
       );
       const persistedName = updated.name?.trim() || "";
-      invalidateConversationNavigation({
-        scope: "agent",
-        agentId: selectedAgent,
-        chatId: chat.id,
-      });
+      invalidateConversationNavigation({ chatId: chat.id });
       setSessions((items) =>
         items.map((item) =>
           item.id === updated.id && item.name === trimmed
@@ -1527,11 +1514,7 @@ function AgentChatPage({
         },
         selectedAgent,
       );
-      invalidateConversationNavigation({
-        scope: "agent",
-        agentId: selectedAgent,
-        chatId: chat.id,
-      });
+      invalidateConversationNavigation({ chatId: chat.id });
       setSessions((items) =>
         items.map((item) =>
           item.id === updated.id &&
@@ -1576,11 +1559,7 @@ function AgentChatPage({
         { tag: optimisticTag },
         selectedAgent,
       );
-      invalidateConversationNavigation({
-        scope: "agent",
-        agentId: selectedAgent,
-        chatId: chat.id,
-      });
+      invalidateConversationNavigation({ chatId: chat.id });
       const leavesCurrentFilter =
         !sessionsArchived &&
         conversationView === "user" &&
@@ -1619,10 +1598,7 @@ function AgentChatPage({
         { archived: !chat.archived },
         selectedAgent,
       );
-      publishConversationMetadata(
-        { scope: "agent", agentId: selectedAgent, chatId: chat.id },
-        updated,
-      );
+      publishConversationMetadata({ chatId: chat.id }, updated);
       setSessionsRevision((revision) => revision + 1);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
@@ -1639,7 +1615,7 @@ function AgentChatPage({
     async (deletedChatId: string, remainingKnownChats: ChatSpec[]) => {
       forgetChatId(selectedAgent, deletedChatId);
       clearDraftChatId(selectedAgent, deletedChatId);
-      drafts.clear(`${selectedAgent}:${deletedChatId}`);
+      drafts.clear(`chat:${deletedChatId}`);
       setSessions((items) => items.filter((item) => item.id !== deletedChatId));
       setSessionsTotal((total) => Math.max(0, total - 1));
       if (deletedChatId !== effectiveChatId) return;
@@ -1649,11 +1625,9 @@ function AgentChatPage({
         )?.id ?? resolveChatEntry(selectedAgent);
       const ready = await prepareChatTransition(selectedAgent, targetChatId);
       if (ready) {
-        navigateWithPageTransition(
-          navigate,
-          agentChatPath(selectedAgent, targetChatId),
-          { replace: true },
-        );
+        navigateWithPageTransition(navigate, chatPath(targetChatId), {
+          replace: true,
+        });
       }
     },
     [effectiveChatId, navigate, selectedAgent],
@@ -1662,12 +1636,7 @@ function AgentChatPage({
   useEffect(
     () =>
       subscribeConversationDeleted((address, remaining) => {
-        if (
-          address.scope !== "agent" ||
-          address.agentId !== selectedAgent ||
-          address.chatId !== effectiveChatId
-        )
-          return false;
+        if (address.chatId !== effectiveChatId) return false;
         void handleChatDeleted(address.chatId, remaining).catch(
           (error: unknown) => {
             toast.error(error instanceof Error ? error.message : String(error));
@@ -1690,11 +1659,7 @@ function AgentChatPage({
     if (!ok) return;
     try {
       await chatApi.deleteChat(chat.id, selectedAgent);
-      invalidateConversationNavigation({
-        scope: "agent",
-        agentId: selectedAgent,
-        chatId: chat.id,
-      });
+      invalidateConversationNavigation({ chatId: chat.id });
       await handleChatDeleted(chat.id, sessions);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
@@ -2115,18 +2080,11 @@ function AgentChatPage({
         >
           <OwnedConversationSurface
             onOpenTasks={() => setTaskDrawerOpen(true)}
-            key={
-              effectiveChatId
-                ? `${selectedAgent}:${effectiveChatId}`
-                : selectedAgent
-            }
-            address={{
-              scope: "agent",
-              agentId: selectedAgent,
-              chatId: effectiveChatId,
-            }}
+            key={effectiveChatId ? `chat:${effectiveChatId}` : selectedAgent}
+            address={{ chatId: effectiveChatId }}
+            executionAgentId={selectedAgent}
             unmaterialized={conversationLazy}
-            deferInitialAttach={lazy}
+            deferInitialAttach={conversationLazy}
             onSubmitAccepted={handleSubmitAccepted}
             onHistoryChange={handleConversationHistoryChange}
             authorityPlacementDeviceId={authorityPlacementDeviceId}
@@ -2401,16 +2359,4 @@ function AgentChatPage({
   );
 }
 
-export default function ChatPage() {
-  const { agentId = "default", chatId = "" } = useParams<{
-    agentId: string;
-    chatId: string;
-  }>();
-  return (
-    <AgentChatPage
-      key={`agent:${agentId}:${chatId}`}
-      agentId={agentId}
-      chatId={chatId}
-    />
-  );
-}
+export default AgentChatPage;

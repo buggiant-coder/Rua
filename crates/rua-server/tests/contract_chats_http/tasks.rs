@@ -88,10 +88,7 @@ async fn workspace_shutdown_cancels_only_the_authorized_agent_tasks_in_a_project
         rua_task::TaskRuntime::open(rua_task::TaskRuntimeConfig::new(temp.path())).unwrap(),
     );
     runtime.register_runner(Arc::new(ShutdownOwnershipRunner));
-    let owner = TaskOwner::from_address(rua_core::ChatAddress::project(
-        "project-task-only",
-        "chat-task-only",
-    ));
+    let owner = TaskOwner::from_address(rua_core::ChatAddress::new("chat-task-only"));
     let make_spec = || TaskSpec {
         owner: owner.clone(),
         instruction: "wait for cancellation".to_string(),
@@ -122,7 +119,6 @@ async fn workspace_shutdown_cancels_only_the_authorized_agent_tasks_in_a_project
         app.state.streams.clone(),
         runtime.clone(),
         rua_workspace::RuaRoot::new(temp.path()),
-        None,
     );
     authority.begin_shutdown("agent-a").await.unwrap();
     let before = authority.outstanding_work("agent-a").await.unwrap();
@@ -197,15 +193,9 @@ impl TaskRunner for HttpTaskInputRunner {
 async fn task_input_http_routes_by_chat_and_preserves_submission_identity() {
     let test = build_app();
     create_agent(&test.app, "task-input-agent", "Task Input Agent").await;
-    let chat = seed_materialized_chat(
-        &test,
-        "/api/agents/task-input-agent/chats",
-        Some("task-input-agent"),
-        "task-input-chat",
-    )
-    .await;
+    let chat = seed_materialized_chat(&test, "task-input-agent", "task-input-chat").await;
     let chat_id = chat["id"].as_str().unwrap().to_string();
-    let owner = TaskOwner::new("task-input-agent", &chat_id);
+    let owner = TaskOwner::new(&chat_id);
     let runner = Arc::new(HttpTaskInputRunner {
         sink: Arc::new(HttpTaskInputSink {
             inputs: Mutex::new(Vec::new()),
@@ -240,7 +230,7 @@ async fn task_input_http_routes_by_chat_and_preserves_submission_identity() {
     let detail = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/task-input-agent/chats/{chat_id}/tasks/{task_id}"),
+        &format!("/api/chats/{chat_id}/tasks/{task_id}"),
         None,
         Some("task-input-agent"),
     )
@@ -248,7 +238,7 @@ async fn task_input_http_routes_by_chat_and_preserves_submission_identity() {
     assert_eq!(detail.status(), StatusCode::OK);
     assert_eq!(read_json(detail).await["input_capability"], "stdin");
 
-    let input_uri = format!("/api/agents/task-input-agent/chats/{chat_id}/tasks/{task_id}/input");
+    let input_uri = format!("/api/chats/{chat_id}/tasks/{task_id}/input");
     let body = serde_json::json!({
         "submission_id": "http-submission-a",
         "input": {"type": "text", "text": "exact"}
@@ -292,10 +282,12 @@ async fn task_input_http_routes_by_chat_and_preserves_submission_identity() {
     .await;
     assert_eq!(conflict.status(), StatusCode::CONFLICT);
 
+    let other_chat = seed_materialized_chat(&test, "task-input-agent", "another input chat").await;
+    let other_chat_id = other_chat["id"].as_str().unwrap();
     let wrong_chat = request(
         &test.app,
         Method::POST,
-        &format!("/api/agents/task-input-agent/chats/another-chat/tasks/{task_id}/input"),
+        &format!("/api/chats/{other_chat_id}/tasks/{task_id}/input"),
         Some(serde_json::json!({
             "submission_id": "wrong-chat",
             "input": {"type": "text", "text": "no"}
@@ -329,13 +321,7 @@ async fn watched_shell_output_starts_runtime_only_notification_turn() {
     let test = build_app();
     create_agent(&test.app, "task-watch-agent", "Task Watch Agent").await;
     enable_agent_tool(&test.state, "task-watch-agent", "bash").await;
-    let chat = seed_materialized_chat(
-        &test,
-        "/api/agents/task-watch-agent/chats",
-        Some("task-watch-agent"),
-        "task-watch-chat",
-    )
-    .await;
+    let chat = seed_materialized_chat(&test, "task-watch-agent", "task-watch-chat").await;
     let chat_id = chat["id"].as_str().unwrap().to_string();
     let workspace = test
         .state
@@ -344,7 +330,7 @@ async fn watched_shell_output_starts_runtime_only_notification_turn() {
         .await
         .expect("task watch workspace runtime")
         .workspace_dir();
-    let tool_result_store_dir = WorkspaceSessionStore::new(&workspace)
+    let tool_result_store_dir = WorkspaceSessionStore::new(test.state.chat_workspace().as_path())
         .chat_dir(&chat_id)
         .join("tool-results");
     std::fs::create_dir_all(&tool_result_store_dir).unwrap();
@@ -354,8 +340,9 @@ async fn watched_shell_output_starts_runtime_only_notification_turn() {
             std::fs::remove_file(path).unwrap();
         }
     }
-    let owner = TaskOwner::new("task-watch-agent", &chat_id);
-    let configuration_epoch = chat_configuration_epoch(&workspace, &chat_id).await;
+    let owner = TaskOwner::new(&chat_id);
+    let configuration_epoch =
+        chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id).await;
     let created = TaskCreateTool
         .call(
             serde_json::json!({
@@ -396,7 +383,7 @@ async fn watched_shell_output_starts_runtime_only_notification_turn() {
     let watch = request(
         &test.app,
         Method::POST,
-        &format!("/api/agents/task-watch-agent/chats/{chat_id}/tasks/{task_id}/watch"),
+        &format!("/api/chats/{chat_id}/tasks/{task_id}/watch"),
         None,
         Some("task-watch-agent"),
     )
@@ -406,7 +393,7 @@ async fn watched_shell_output_starts_runtime_only_notification_turn() {
     assert_eq!(watch_body["active"], true);
     std::fs::write(workspace.join("watch-release"), "").unwrap();
 
-    let store = WorkspaceSessionStore::new(&workspace);
+    let store = WorkspaceSessionStore::new(test.state.chat_workspace().as_path());
     let notifications = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let messages = store
@@ -554,19 +541,16 @@ async fn scoped_task_http_reads_real_tool_task_and_hides_cross_chat_access() {
     let mut config = rua_config::load_config(&config_path, &test.state.rua_root).unwrap();
     config.user_timezone = Some("Pacific/Honolulu".to_string());
     rua_config::save_config(&config, &config_path).unwrap();
-    let chat = seed_materialized_chat(
-        &test,
-        "/api/agents/task-agent/chats",
-        Some("task-agent"),
-        "task-chat",
-    )
-    .await;
+    let chat = seed_materialized_chat(&test, "task-agent", "task-chat").await;
     let chat_id = chat["id"].as_str().expect("chat id").to_string();
-    let owner = TaskOwner::new("task-agent", &chat_id);
+    let owner = TaskOwner::new(&chat_id);
+    let other_chat = seed_materialized_chat(&test, "task-agent", "another-chat").await;
+    let other_chat_id = other_chat["id"].as_str().unwrap();
     let workspace_dir = test.state.rua_root.join("workspaces").join("task-agent");
-    let session_store = WorkspaceSessionStore::new(&workspace_dir);
+    let session_store = WorkspaceSessionStore::new(test.state.rua_root.join("chats"));
     seed_runtime_note_turn(&session_store, &chat_id, "turn-task-http").await;
-    let configuration_epoch = chat_configuration_epoch(&workspace_dir, &chat_id).await;
+    let configuration_epoch =
+        chat_configuration_epoch(&test.state.rua_root.join("chats"), &chat_id).await;
 
     let created = TaskCreateTool
         .call(
@@ -651,7 +635,7 @@ async fn scoped_task_http_reads_real_tool_task_and_hides_cross_chat_access() {
     assert_eq!(note.runner_name, "time_now");
     assert_eq!(note.attempt_no, 1);
     assert!(note.output.contains("completed"));
-    let reopened = WorkspaceSessionStore::new(test.state.rua_root.join("workspaces/task-agent"));
+    let reopened = WorkspaceSessionStore::new(test.state.chat_workspace().as_path());
     let replayed = wait_for_task_runtime_notes(&reopened, &chat_id, &task_id, 1).await;
     assert_eq!(
         replayed.len(),
@@ -662,7 +646,7 @@ async fn scoped_task_http_reads_real_tool_task_and_hides_cross_chat_access() {
     let list = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/task-agent/chats/{chat_id}/tasks"),
+        &format!("/api/chats/{chat_id}/tasks"),
         None,
         Some("task-agent"),
     )
@@ -675,7 +659,7 @@ async fn scoped_task_http_reads_real_tool_task_and_hides_cross_chat_access() {
     let get = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/task-agent/chats/{chat_id}/tasks/{task_id}"),
+        &format!("/api/chats/{chat_id}/tasks/{task_id}"),
         None,
         Some("task-agent"),
     )
@@ -691,7 +675,7 @@ async fn scoped_task_http_reads_real_tool_task_and_hides_cross_chat_access() {
     let result = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/task-agent/chats/{chat_id}/tasks/{task_id}/result"),
+        &format!("/api/chats/{chat_id}/tasks/{task_id}/result"),
         None,
         Some("task-agent"),
     )
@@ -705,7 +689,7 @@ async fn scoped_task_http_reads_real_tool_task_and_hides_cross_chat_access() {
     let unavailable = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/task-agent/chats/{chat_id}/tasks/{task_id}/result"),
+        &format!("/api/chats/{chat_id}/tasks/{task_id}/result"),
         None,
         Some("task-agent"),
     )
@@ -719,7 +703,7 @@ async fn scoped_task_http_reads_real_tool_task_and_hides_cross_chat_access() {
     let cross_chat = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/task-agent/chats/another-chat/tasks/{task_id}"),
+        &format!("/api/chats/{other_chat_id}/tasks/{task_id}"),
         None,
         Some("task-agent"),
     )
@@ -737,12 +721,7 @@ impl TaskRunner for ScopedResultRunner {
     }
 
     async fn run(&self, request: TaskRunRequest) -> Result<TaskRunOutput, TaskRunnerError> {
-        let scope = format!(
-            "{}:{}:{}",
-            request.spec.owner.agent_id().unwrap_or("project"),
-            request.spec.owner.chat_id(),
-            request.task_id
-        );
+        let scope = format!("{}:{}", request.spec.owner.chat_id(), request.task_id);
         Ok(TaskRunOutput {
             outcome: rua_task::TaskRunOutcome::Completed,
             output: format!(
@@ -781,13 +760,7 @@ async fn process_task_runtime_isolates_two_agents_and_multiple_chats() {
     for agent_id in ["scope-agent-a", "scope-agent-b"] {
         create_agent(&test.app, agent_id, agent_id).await;
         for chat_name in ["chat-one", "chat-two"] {
-            let chat = seed_materialized_chat(
-                &test,
-                &format!("/api/agents/{agent_id}/chats"),
-                Some(agent_id),
-                chat_name,
-            )
-            .await;
+            let chat = seed_materialized_chat(&test, agent_id, chat_name).await;
             scopes.push((
                 agent_id.to_string(),
                 chat["id"].as_str().unwrap().to_string(),
@@ -826,9 +799,8 @@ async fn process_task_runtime_isolates_two_agents_and_multiple_chats() {
             created["task_id"].as_str().unwrap().to_string(),
         ));
     }
-    for (agent_id, chat_id, task_id) in &tasks {
-        let completed =
-            wait_for_terminal(&test.state, &TaskOwner::new(agent_id, chat_id), task_id).await;
+    for (_, chat_id, task_id) in &tasks {
+        let completed = wait_for_terminal(&test.state, &TaskOwner::new(chat_id), task_id).await;
         assert_eq!(completed.state, TaskState::Completed);
     }
 
@@ -836,7 +808,7 @@ async fn process_task_runtime_isolates_two_agents_and_multiple_chats() {
         let list = request(
             &test.app,
             Method::GET,
-            &format!("/api/agents/{agent_id}/chats/{chat_id}/tasks"),
+            &format!("/api/chats/{chat_id}/tasks"),
             None,
             Some(agent_id),
         )
@@ -849,7 +821,7 @@ async fn process_task_runtime_isolates_two_agents_and_multiple_chats() {
         let detail = request(
             &test.app,
             Method::GET,
-            &format!("/api/agents/{agent_id}/chats/{chat_id}/tasks/{task_id}"),
+            &format!("/api/chats/{chat_id}/tasks/{task_id}"),
             None,
             Some(agent_id),
         )
@@ -858,13 +830,13 @@ async fn process_task_runtime_isolates_two_agents_and_multiple_chats() {
         let detail = read_json(detail).await;
         assert_eq!(
             detail["result"]["artifacts"][0]["metadata"]["scope"],
-            format!("{agent_id}:{chat_id}:{task_id}")
+            format!("{chat_id}:{task_id}")
         );
 
         let result = request(
             &test.app,
             Method::GET,
-            &format!("/api/agents/{agent_id}/chats/{chat_id}/tasks/{task_id}/result"),
+            &format!("/api/chats/{chat_id}/tasks/{task_id}/result"),
             None,
             Some(agent_id),
         )
@@ -872,13 +844,13 @@ async fn process_task_runtime_isolates_two_agents_and_multiple_chats() {
         assert_eq!(result.status(), StatusCode::OK);
         assert_eq!(
             read_json(result).await["scope"],
-            format!("{agent_id}:{chat_id}:{task_id}")
+            format!("{chat_id}:{task_id}")
         );
 
         let activity = request(
             &test.app,
             Method::GET,
-            &format!("/api/agents/{agent_id}/chats/{chat_id}/tasks/activity"),
+            &format!("/api/chats/{chat_id}/tasks/activity"),
             None,
             Some(agent_id),
         )
@@ -909,7 +881,7 @@ async fn process_task_runtime_isolates_two_agents_and_multiple_chats() {
         let response = request(
             &test.app,
             method,
-            &format!("/api/agents/{other_agent}/chats/{other_chat}/tasks/{task_id}{suffix}"),
+            &format!("/api/chats/{other_chat}/tasks/{task_id}{suffix}"),
             None,
             Some(other_agent),
         )
@@ -945,21 +917,16 @@ async fn tool_task_preserves_real_name_and_arguments_for_tool_guard() {
     )
     .await;
     assert_eq!(rule.status(), StatusCode::CREATED);
-    let chat = seed_materialized_chat(
-        &test,
-        "/api/agents/task-guard-agent/chats",
-        Some("task-guard-agent"),
-        "task-guard-chat",
-    )
-    .await;
+    let chat = seed_materialized_chat(&test, "task-guard-agent", "task-guard-chat").await;
     let chat_id = chat["id"].as_str().expect("chat id").to_string();
-    let owner = TaskOwner::new("task-guard-agent", &chat_id);
+    let owner = TaskOwner::new(&chat_id);
     let workspace_dir = test
         .state
         .rua_root
         .join("workspaces")
         .join("task-guard-agent");
-    let configuration_epoch = chat_configuration_epoch(&workspace_dir, &chat_id).await;
+    let configuration_epoch =
+        chat_configuration_epoch(&test.state.rua_root.join("chats"), &chat_id).await;
     let created = TaskCreateTool
         .call(
             serde_json::json!({
@@ -1029,25 +996,14 @@ async fn task_creation_is_rejected_when_the_local_device_is_not_chat_authority()
         "Remote Authority Agent",
     )
     .await;
-    let chat = seed_materialized_chat(
-        &test,
-        "/api/agents/remote-authority-agent/chats",
-        Some("remote-authority-agent"),
-        "remote-authority-chat",
-    )
-    .await;
+    let chat =
+        seed_materialized_chat(&test, "remote-authority-agent", "remote-authority-chat").await;
     let chat_id = chat["id"].as_str().unwrap().to_string();
-    let workspace_dir = test
-        .state
-        .registry
-        .get_or_create("remote-authority-agent")
-        .await
-        .unwrap()
-        .workspace_dir();
+    let workspace_dir = test.state.chat_workspace().as_path().to_owned();
     rua_server::services::chat_metadata_store::update_authority_placement(
         Some(&test.state),
         &workspace_dir,
-        &rua_core::ChatAddress::agent("remote-authority-agent", &chat_id),
+        &rua_core::ChatAddress::new(&chat_id),
         rua_server::services::conversation_authority_placement::ConversationAuthorityPlacement {
             device_id: "remote-device".to_string(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(2, 0, [0; 8]),
@@ -1084,7 +1040,7 @@ async fn task_creation_is_rejected_when_the_local_device_is_not_chat_authority()
         .state
         .task_runtime
         .list(
-            &TaskOwner::new("remote-authority-agent", chat_id),
+            &TaskOwner::new(chat_id),
             rua_task::TaskListFilter::default(),
         )
         .await
@@ -1096,21 +1052,9 @@ async fn task_creation_is_rejected_when_the_local_device_is_not_chat_authority()
 async fn remote_task_runtime_note_remains_readable_without_local_task_details() {
     let test = build_app();
     create_agent(&test.app, "remote-note-agent", "Remote Note Agent").await;
-    let chat = seed_materialized_chat(
-        &test,
-        "/api/agents/remote-note-agent/chats",
-        Some("remote-note-agent"),
-        "remote-note-chat",
-    )
-    .await;
+    let chat = seed_materialized_chat(&test, "remote-note-agent", "remote-note-chat").await;
     let chat_id = chat["id"].as_str().unwrap().to_string();
-    let workspace_dir = test
-        .state
-        .registry
-        .get_or_create("remote-note-agent")
-        .await
-        .unwrap()
-        .workspace_dir();
+    let workspace_dir = test.state.chat_workspace().as_path().to_owned();
     let task_id = "remote-task-1";
     let store = WorkspaceSessionStore::new(&workspace_dir);
     store
@@ -1216,7 +1160,7 @@ async fn remote_task_runtime_note_remains_readable_without_local_task_details() 
     let details = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/remote-note-agent/chats/{chat_id}/tasks/{task_id}"),
+        &format!("/api/chats/{chat_id}/tasks/{task_id}"),
         None,
         Some("remote-note-agent"),
     )
@@ -1229,22 +1173,10 @@ async fn remote_task_runtime_note_remains_readable_without_local_task_details() 
 async fn authority_transfer_interrupts_tasks_and_commits_the_runtime_note_before_handoff() {
     let test = build_app();
     create_agent(&test.app, "transfer-task-agent", "Transfer Task Agent").await;
-    let chat = seed_materialized_chat(
-        &test,
-        "/api/agents/transfer-task-agent/chats",
-        Some("transfer-task-agent"),
-        "transfer-task-chat",
-    )
-    .await;
+    let chat = seed_materialized_chat(&test, "transfer-task-agent", "transfer-task-chat").await;
     let chat_id = chat["id"].as_str().unwrap().to_string();
-    let owner = TaskOwner::new("transfer-task-agent", &chat_id);
-    let workspace_dir = test
-        .state
-        .registry
-        .get_or_create("transfer-task-agent")
-        .await
-        .unwrap()
-        .workspace_dir();
+    let owner = TaskOwner::new(&chat_id);
+    let workspace_dir = test.state.chat_workspace().as_path().to_owned();
     let store = WorkspaceSessionStore::new(&workspace_dir);
     seed_runtime_note_turn(&store, &chat_id, "turn-transfer-task").await;
     let runner = Arc::new(CancellableRunner {
@@ -1286,7 +1218,7 @@ async fn authority_transfer_interrupts_tasks_and_commits_the_runtime_note_before
         .switch_authority(
             Some(&test.state),
             &workspace_dir,
-            &rua_core::ChatAddress::agent("transfer-task-agent", &chat_id),
+            &rua_core::ChatAddress::new(&chat_id),
             rua_server::services::conversation_authority_placement::ConversationAuthorityPlacement {
                 device_id: "next-authority-device".to_string(),
                 authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(2, 0, [0; 8]),
@@ -1315,13 +1247,7 @@ async fn authority_transfer_interrupts_tasks_and_commits_the_runtime_note_before
 async fn task_activity_reconnects_with_snapshot_and_chat_delete_removes_tasks() {
     let test = build_app();
     create_agent(&test.app, "task-lifecycle-agent", "Task Lifecycle Agent").await;
-    let chat = seed_materialized_chat(
-        &test,
-        "/api/agents/task-lifecycle-agent/chats",
-        Some("task-lifecycle-agent"),
-        "task-lifecycle-chat",
-    )
-    .await;
+    let chat = seed_materialized_chat(&test, "task-lifecycle-agent", "task-lifecycle-chat").await;
     let chat_id = chat["id"].as_str().expect("chat id").to_string();
     let runner = Arc::new(CancellableRunner {
         started: tokio::sync::Notify::new(),
@@ -1357,7 +1283,7 @@ async fn task_activity_reconnects_with_snapshot_and_chat_delete_removes_tasks() 
     let activity = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/task-lifecycle-agent/chats/{chat_id}/tasks/activity"),
+        &format!("/api/chats/{chat_id}/tasks/activity"),
         None,
         Some("task-lifecycle-agent"),
     )
@@ -1376,7 +1302,7 @@ async fn task_activity_reconnects_with_snapshot_and_chat_delete_removes_tasks() 
     assert!(!test
         .state
         .task_runtime
-        .get(&TaskOwner::new("task-lifecycle-agent", &chat_id), &task_id)
+        .get(&TaskOwner::new(&chat_id), &task_id)
         .await
         .unwrap()
         .state
@@ -1385,7 +1311,7 @@ async fn task_activity_reconnects_with_snapshot_and_chat_delete_removes_tasks() 
     let cancel = request(
         &test.app,
         Method::POST,
-        &format!("/api/agents/task-lifecycle-agent/chats/{chat_id}/tasks/{task_id}/cancel"),
+        &format!("/api/chats/{chat_id}/tasks/{task_id}/cancel"),
         None,
         Some("task-lifecycle-agent"),
     )
@@ -1395,7 +1321,7 @@ async fn task_activity_reconnects_with_snapshot_and_chat_delete_removes_tasks() 
     let reconnected = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/task-lifecycle-agent/chats/{chat_id}/tasks/activity"),
+        &format!("/api/chats/{chat_id}/tasks/activity"),
         None,
         Some("task-lifecycle-agent"),
     )
@@ -1442,7 +1368,7 @@ async fn task_activity_reconnects_with_snapshot_and_chat_delete_removes_tasks() 
     let delete = request(
         &test.app,
         Method::DELETE,
-        &format!("/api/agents/task-lifecycle-agent/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         Some("task-lifecycle-agent"),
     )
@@ -1452,7 +1378,7 @@ async fn task_activity_reconnects_with_snapshot_and_chat_delete_removes_tasks() 
     let missing = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/task-lifecycle-agent/chats/{chat_id}/tasks/{second_id}"),
+        &format!("/api/chats/{chat_id}/tasks/{second_id}"),
         None,
         Some("task-lifecycle-agent"),
     )
@@ -1489,21 +1415,10 @@ impl TaskRunner for FailThenSucceedTaskRunner {
 async fn task_retry_http_preserves_attempt_history_under_same_id() {
     let test = build_app();
     create_agent(&test.app, "task-retry-agent", "Task Retry Agent").await;
-    let chat = seed_materialized_chat(
-        &test,
-        "/api/agents/task-retry-agent/chats",
-        Some("task-retry-agent"),
-        "task-retry-chat",
-    )
-    .await;
+    let chat = seed_materialized_chat(&test, "task-retry-agent", "task-retry-chat").await;
     let chat_id = chat["id"].as_str().unwrap().to_string();
-    let owner = TaskOwner::new("task-retry-agent", &chat_id);
-    let session_store = WorkspaceSessionStore::new(
-        test.state
-            .rua_root
-            .join("workspaces")
-            .join("task-retry-agent"),
-    );
+    let owner = TaskOwner::new(&chat_id);
+    let session_store = WorkspaceSessionStore::new(test.state.rua_root.join("chats"));
     seed_runtime_note_turn(&session_store, &chat_id, "turn-task-retry").await;
     test.state
         .task_runtime
@@ -1545,7 +1460,7 @@ async fn task_retry_http_preserves_attempt_history_under_same_id() {
     let retry = request(
         &test.app,
         Method::POST,
-        &format!("/api/agents/task-retry-agent/chats/{chat_id}/tasks/{task_id}/retry"),
+        &format!("/api/chats/{chat_id}/tasks/{task_id}/retry"),
         None,
         Some("task-retry-agent"),
     )
@@ -1581,15 +1496,9 @@ async fn task_retry_http_preserves_attempt_history_under_same_id() {
 async fn task_http_exposes_derived_blocked_dependency_state() {
     let test = build_app();
     create_agent(&test.app, "task-graph-agent", "Task Graph Agent").await;
-    let chat = seed_materialized_chat(
-        &test,
-        "/api/agents/task-graph-agent/chats",
-        Some("task-graph-agent"),
-        "task-graph-chat",
-    )
-    .await;
+    let chat = seed_materialized_chat(&test, "task-graph-agent", "task-graph-chat").await;
     let chat_id = chat["id"].as_str().unwrap().to_string();
-    let owner = TaskOwner::new("task-graph-agent", &chat_id);
+    let owner = TaskOwner::new(&chat_id);
     test.state
         .task_runtime
         .register_runner(Arc::new(FailThenSucceedTaskRunner {
@@ -1648,7 +1557,7 @@ async fn task_http_exposes_derived_blocked_dependency_state() {
     let get = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/task-graph-agent/chats/{chat_id}/tasks/{downstream_id}"),
+        &format!("/api/chats/{chat_id}/tasks/{downstream_id}"),
         None,
         Some("task-graph-agent"),
     )
@@ -1663,7 +1572,7 @@ async fn task_http_exposes_derived_blocked_dependency_state() {
     let list = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/task-graph-agent/chats/{chat_id}/tasks?state=blocked"),
+        &format!("/api/chats/{chat_id}/tasks?state=blocked"),
         None,
         Some("task-graph-agent"),
     )

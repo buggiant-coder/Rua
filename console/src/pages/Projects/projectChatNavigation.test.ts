@@ -1,3 +1,4 @@
+import { chatPath } from "../Chat/conversationAddress";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as drafts from "../Chat/drafts";
 import {
@@ -14,7 +15,6 @@ import {
   projectLastSelectedAgent,
   projectChatDraftKey,
   projectChatExecutionAgent,
-  projectChatPath,
   materializeProjectChat,
   rememberProjectChat,
   resolveProjectChatPath,
@@ -198,7 +198,7 @@ describe("projectChatNavigation", () => {
     rememberProjectChat("project-1", "chat-1");
 
     await expect(resolveProjectChatPath("project-1")).resolves.toBe(
-      "/projects/project-1/chats/chat-1",
+      "/chats/chat-1",
     );
     expect(projectChatsApiMock.getChat).not.toHaveBeenCalled();
   });
@@ -207,14 +207,12 @@ describe("projectChatNavigation", () => {
     rememberProjectChat("project-1", "chat-unmaterialized");
 
     await expect(resolveProjectChatPath("project-1")).resolves.toBe(
-      "/projects/project-1/chats/chat-unmaterialized",
+      "/chats/chat-unmaterialized",
     );
     expect(projectChatsApiMock.getChat).not.toHaveBeenCalled();
   });
 
   it("encodes canonical Project and Chat ids", () => {
-    expect(projectChatPath("project/one", "chat/one")).toBe(
-      "/projects/project%2Fone/chats/chat%2Fone",
-    );
+    expect(chatPath("chat/one")).toBe("/chats/chat%2Fone");
   });
 });

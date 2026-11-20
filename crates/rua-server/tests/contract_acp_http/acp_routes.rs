@@ -31,9 +31,9 @@ async fn first_input_acp_start_failure_keeps_accepted_chat_and_failed_turn() {
     let submitted = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/default/chats/{chat_id}/console/submit"),
+        &format!("/api/chats/{chat_id}/console/submit"),
         Some(json!({
-            "chat_id": chat_id, "message": "accepted ACP input", "initial_acp": {"runner": runner}
+            "chat_id": chat_id, "agent_id": "default", "message": "accepted ACP input", "initial_acp": {"runner": runner}
         })),
         Some("default"),
     )
@@ -42,7 +42,7 @@ async fn first_input_acp_start_failure_keeps_accepted_chat_and_failed_turn() {
     let submitted = read_json(submitted).await;
     assert_eq!(submitted["accepted"], true, "{submitted}");
     let runtime = app.state.registry.get("default").await.unwrap();
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let turn = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             if let Some(turn) = store
@@ -84,15 +84,15 @@ async fn rejected_http_first_input_does_not_materialize_chat() {
     let response = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/default/chats/{chat_id}/console/submit"),
-        Some(json!({"message": "rejected first input"})),
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({"agent_id": "default", "message": "rejected first input"})),
         Some("default"),
     )
     .await;
     let body = read_json(response).await;
     assert_eq!(body["accepted"], false, "{body}");
     let runtime = app.state.registry.get("default").await.unwrap();
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     assert!(store.load_chat_header(chat_id).await.unwrap().is_none());
 }
 
@@ -106,7 +106,7 @@ async fn first_input_starts_selected_acp_only_after_acceptance() {
     })), Some("default")).await;
     assert_eq!(created.status(), StatusCode::CREATED);
     let runtime = app.state.registry.get("default").await.unwrap();
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     for (chat_id, resume) in [
         ("00000000-0000-4000-8000-000000000902", None),
         (
@@ -115,8 +115,8 @@ async fn first_input_starts_selected_acp_only_after_acceptance() {
         ),
     ] {
         assert!(store.load_chat_header(chat_id).await.unwrap().is_none());
-        let submitted = request(&app.app, Method::POST, &format!("/api/agents/default/chats/{chat_id}/console/submit"), Some(json!({
-        "chat_id": chat_id, "message": "selected ACP first input", "initial_acp": {"runner": runner, "resume_session_id": resume}
+        let submitted = request(&app.app, Method::POST, &format!("/api/chats/{chat_id}/console/submit"), Some(json!({
+        "chat_id": chat_id, "agent_id": "default", "message": "selected ACP first input", "initial_acp": {"runner": runner, "resume_session_id": resume}
     })), Some("default")).await;
         assert_eq!(submitted.status(), StatusCode::OK);
         assert_eq!(read_json(submitted).await["accepted"], true);
@@ -153,7 +153,7 @@ async fn first_input_starts_selected_acp_only_after_acceptance() {
         let exited = request(
             &app.app,
             Method::POST,
-            &format!("/api/agents/default/chats/{chat_id}/acp/exit"),
+            &format!("/api/chats/{chat_id}/acp/exit"),
             None,
             Some("default"),
         )
@@ -178,9 +178,9 @@ async fn stop_during_first_acp_startup_closes_session_and_commits_interrupted_tu
     let submitted = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/default/chats/{chat_id}/console/submit"),
+        &format!("/api/chats/{chat_id}/console/submit"),
         Some(json!({
-            "message": "stop startup", "initial_acp": {"runner": runner}
+            "agent_id": "default", "message": "stop startup", "initial_acp": {"runner": runner}
         })),
         Some("default"),
     )
@@ -199,7 +199,7 @@ async fn stop_during_first_acp_startup_closes_session_and_commits_interrupted_tu
             .request_local_stop("default", chat_id)
             .await
     );
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let turn = store
         .read_turn_range(chat_id, 1, 1)
         .await
@@ -221,7 +221,7 @@ fn runner_keys(body: &serde_json::Value) -> Vec<String> {
 
 async fn wait_for_history_containing(
     app: &axum::Router,
-    agent_id: &str,
+    _agent_id: &str,
     chat_id: &str,
     needle: &str,
 ) -> serde_json::Value {
@@ -229,7 +229,7 @@ async fn wait_for_history_containing(
         let history = request(
             app,
             Method::GET,
-            &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+            &format!("/api/chats/{chat_id}"),
             None,
             Some("default"),
         )
@@ -251,7 +251,7 @@ async fn wait_for_no_active_turn(app: &super::support::TestApp, agent_id: &str, 
         if app
             .state
             .conversation_authority
-            .active_turn(&rua_core::ChatAddress::agent(agent_id, chat_id))
+            .active_turn(&rua_core::ChatAddress::new(chat_id))
             .await
             .is_none()
         {
@@ -263,7 +263,7 @@ async fn wait_for_no_active_turn(app: &super::support::TestApp, agent_id: &str, 
 }
 
 async fn seed_chat_authority(app: &super::support::TestApp, agent_id: &str, chat_id: &str) {
-    let workspace_dir = app.state.rua_root.join("workspaces").join(agent_id);
+    let workspace_dir = app.state.rua_root.join("chats");
     let device_id = app
         .state
         .sync_device
@@ -319,13 +319,14 @@ async fn seed_chat_authority(app: &super::support::TestApp, agent_id: &str, chat
                 "sha256:1111111111111111111111111111111111111111111111111111111111111111",
         }),
     );
-    rua_chat::apply_agent_scope_defaults(&mut header, agent_id);
+    rua_chat::apply_chat_defaults(&mut header);
     let configuration = app
         .state
         .product_hooks
         .resolve_complete_chat_configuration(
-            &rua_core::ChatAddress::agent(agent_id, chat_id),
+            &rua_core::ChatAddress::new(chat_id),
             rua_server::services::product_hooks::ChatConfigurationMaterialization {
+                project_id: None,
                 selected_agent_id: agent_id.into(),
                 running_config: Default::default(),
                 security_config: Default::default(),
@@ -356,10 +357,10 @@ async fn seed_chat_authority(app: &super::support::TestApp, agent_id: &str, chat
 async fn ordinary_remote_chat_has_no_acp_permissions_without_contacting_its_device() {
     let app = build_app();
     app.state.wait_platform_initialization().await.unwrap();
-    let chat_id = "ordinary-unpaired-device";
+    let chat_id = "00000000-0000-4000-8000-000000000911";
     seed_chat_authority(&app, "default", chat_id).await;
     let runtime = app.state.registry.get_or_create("default").await.unwrap();
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let mut header = store.load_chat_header(chat_id).await.unwrap().unwrap();
     header.extra.get_mut("authority_placement").unwrap()["device_id"] = json!("51e8e7811446d40d");
     store.save_chat_header(&header).await.unwrap();
@@ -373,7 +374,7 @@ async fn ordinary_remote_chat_has_no_acp_permissions_without_contacting_its_devi
         let response = request(
             &app.app,
             Method::GET,
-            &format!("/api/agents/default/chats/{chat_id}/acp/permissions"),
+            &format!("/api/chats/{chat_id}/acp/permissions"),
             None,
             Some("default"),
         )
@@ -446,7 +447,7 @@ async fn chat_scoped_acp_runners_use_chat_lifecycle_route() {
     let app = build_app();
     let agent_id = "chat_acp_runner_agent";
     let runner_key = "chat_scoped_runner";
-    let chat_id = "chat-scoped-runner-discovery";
+    let chat_id = "00000000-0000-4000-8000-000000000912";
     create_agent(&app.app, agent_id, "Chat ACP runner agent").await;
     seed_chat_authority(&app, agent_id, chat_id).await;
     app.state
@@ -468,7 +469,7 @@ async fn chat_scoped_acp_runners_use_chat_lifecycle_route() {
     let resp = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/acp/runners"),
+        &format!("/api/chats/{chat_id}/acp/runners?agent_id={agent_id}"),
         None,
         Some("default"),
     )
@@ -703,7 +704,7 @@ async fn chat_acp_uses_existing_authority_and_exit_preserves_it() {
     let app = build_app();
     let agent_id = "acp_binding_agent";
     let runner_key = "contract_chat_acp_binding_runner";
-    let chat_id = "contract-chat-acp-binding";
+    let chat_id = "00000000-0000-4000-8000-000000000913";
     create_agent(&app.app, agent_id, "ACP binding agent").await;
     seed_chat_authority(&app, agent_id, chat_id).await;
 
@@ -729,7 +730,7 @@ async fn chat_acp_uses_existing_authority_and_exit_preserves_it() {
     let enter = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/acp/enter"),
+        &format!("/api/chats/{chat_id}/acp/enter"),
         Some(json!({
             "runner": runner_key,
             "cwd": "/tmp"
@@ -752,7 +753,7 @@ async fn chat_acp_uses_existing_authority_and_exit_preserves_it() {
     let history = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         Some("default"),
     )
@@ -782,7 +783,7 @@ async fn chat_acp_uses_existing_authority_and_exit_preserves_it() {
     let duplicate = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/acp/enter"),
+        &format!("/api/chats/{chat_id}/acp/enter"),
         Some(json!({
             "runner": runner_key,
             "cwd": "/tmp"
@@ -795,7 +796,7 @@ async fn chat_acp_uses_existing_authority_and_exit_preserves_it() {
     let exit = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/acp/exit"),
+        &format!("/api/chats/{chat_id}/acp/exit"),
         None,
         Some("default"),
     )
@@ -805,7 +806,7 @@ async fn chat_acp_uses_existing_authority_and_exit_preserves_it() {
     let after = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         Some("default"),
     )
@@ -855,7 +856,7 @@ async fn chat_acp_submit_resumes_persisted_binding_after_workspace_reload() {
     let enter = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/acp/enter"),
+        &format!("/api/chats/{chat_id}/acp/enter"),
         Some(json!({
             "runner": runner_key,
             "cwd": "/tmp"
@@ -870,6 +871,20 @@ async fn chat_acp_submit_resumes_persisted_binding_after_workspace_reload() {
         .expect("runner session id")
         .to_string();
 
+    let first = request(
+        &app.app,
+        Method::POST,
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({"message": "first ACP turn"})),
+        None,
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(read_json(first).await["accepted"], true);
+    let echoed_session = format!("sid={runner_session_id}");
+    wait_for_history_containing(&app.app, agent_id, chat_id, &echoed_session).await;
+    wait_for_no_active_turn(&app, agent_id, chat_id).await;
+
     let reload = request(
         &app.app,
         Method::POST,
@@ -883,7 +898,7 @@ async fn chat_acp_submit_resumes_persisted_binding_after_workspace_reload() {
     let submit = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/console/submit"),
+        &format!("/api/chats/{chat_id}/console/submit"),
         Some(json!({
             "chat_id": chat_id,
             "message": "continue in acp"
@@ -895,13 +910,24 @@ async fn chat_acp_submit_resumes_persisted_binding_after_workspace_reload() {
     let submit_body = read_json(submit).await;
     assert_eq!(submit_body["accepted"], true);
 
-    let history = wait_for_history_containing(
-        &app.app,
-        agent_id,
-        chat_id,
-        &format!("sid={runner_session_id}"),
-    )
-    .await;
+    wait_for_no_active_turn(&app, agent_id, chat_id).await;
+    let history = wait_for_history_containing(&app.app, agent_id, chat_id, "continue in acp").await;
+    let reply_turns: std::collections::BTreeSet<_> = history["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| {
+            message["role"] == "assistant"
+                && message["content"].to_string().contains(&echoed_session)
+        })
+        .map(|message| message["turn_id"].as_str().expect("assistant Turn ID"))
+        .collect();
+    assert_eq!(
+        reply_turns.len(),
+        2,
+        "both ACP replies must come from the persisted runner session: {}",
+        history["messages"]
+    );
     let compact = serde_json::to_string(&history).expect("history json");
     assert!(
         compact.contains(r#""origin":{"kind":"acp""#),
@@ -943,7 +969,7 @@ async fn acp_enter_does_not_materialize_an_unsubmitted_chat() {
     let runners = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/acp/runners"),
+        &format!("/api/chats/{chat_id}/acp/runners?agent_id={agent_id}"),
         None,
         Some("default"),
     )
@@ -955,7 +981,7 @@ async fn acp_enter_does_not_materialize_an_unsubmitted_chat() {
         .get_or_create(agent_id)
         .await
         .expect("runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     assert!(
         rua_server::services::chat_index::get(&workspace_dir, &chat_id)
             .await
@@ -975,7 +1001,7 @@ async fn acp_enter_does_not_materialize_an_unsubmitted_chat() {
     let enter = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/acp/enter"),
+        &format!("/api/chats/{chat_id}/acp/enter"),
         Some(json!({
             "runner": runner_key,
             "cwd": "/tmp"
@@ -1028,7 +1054,7 @@ async fn chat_acp_submit_persists_completed_turn_terminal_fact() {
     let enter = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/acp/enter"),
+        &format!("/api/chats/{chat_id}/acp/enter"),
         Some(json!({
             "runner": runner_key,
             "cwd": "/tmp"
@@ -1041,7 +1067,7 @@ async fn chat_acp_submit_persists_completed_turn_terminal_fact() {
     let submit = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/console/submit"),
+        &format!("/api/chats/{chat_id}/console/submit"),
         Some(json!({
             "chat_id": chat_id,
             "message": "complete in acp"
@@ -1065,7 +1091,7 @@ async fn chat_acp_submit_persists_completed_turn_terminal_fact() {
         .get_or_create(agent_id)
         .await
         .expect("runtime");
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let mut turns = Vec::new();
     for _ in 0..60 {
         turns = store
@@ -1130,7 +1156,7 @@ async fn chat_acp_submit_persists_failed_turn_terminal_fact() {
     let enter = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/acp/enter"),
+        &format!("/api/chats/{chat_id}/acp/enter"),
         Some(json!({
             "runner": runner_key,
             "cwd": "/tmp"
@@ -1143,7 +1169,7 @@ async fn chat_acp_submit_persists_failed_turn_terminal_fact() {
     let submit = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/console/submit"),
+        &format!("/api/chats/{chat_id}/console/submit"),
         Some(json!({
             "chat_id": chat_id,
             "message": "fail in acp"
@@ -1160,7 +1186,7 @@ async fn chat_acp_submit_persists_failed_turn_terminal_fact() {
         .get_or_create(agent_id)
         .await
         .expect("runtime");
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let mut turns = Vec::new();
     for _ in 0..30 {
         turns = store
@@ -1221,7 +1247,7 @@ async fn chat_acp_stop_persists_interrupted_turn_terminal_fact() {
     let enter = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/acp/enter"),
+        &format!("/api/chats/{chat_id}/acp/enter"),
         Some(json!({
             "runner": runner_key,
             "cwd": "/tmp"
@@ -1234,7 +1260,7 @@ async fn chat_acp_stop_persists_interrupted_turn_terminal_fact() {
     let submit = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/console/submit"),
+        &format!("/api/chats/{chat_id}/console/submit"),
         Some(json!({
             "chat_id": chat_id,
             "message": "wait in acp"
@@ -1249,13 +1275,13 @@ async fn chat_acp_stop_persists_interrupted_turn_terminal_fact() {
     let observed = app
         .state
         .conversation_authority
-        .active_turn(&rua_core::ChatAddress::agent(agent_id, chat_id))
+        .active_turn(&rua_core::ChatAddress::new(chat_id))
         .await
         .unwrap();
     let stop = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/console/stop"),
+        &format!("/api/chats/{chat_id}/console/stop"),
         Some(json!({"turn_id": observed.turn_id, "authority_epoch": observed.authority_epoch})),
         Some("default"),
     )
@@ -1265,7 +1291,7 @@ async fn chat_acp_stop_persists_interrupted_turn_terminal_fact() {
     if let Some(snapshot) = app
         .state
         .conversation_authority
-        .active_turn(&rua_core::ChatAddress::agent(agent_id, chat_id))
+        .active_turn(&rua_core::ChatAddress::new(chat_id))
         .await
     {
         assert_eq!(snapshot.phase, ConversationActiveTurnPhase::Stopping);
@@ -1277,7 +1303,7 @@ async fn chat_acp_stop_persists_interrupted_turn_terminal_fact() {
         .get_or_create(agent_id)
         .await
         .expect("runtime");
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let mut turns = Vec::new();
     for _ in 0..100 {
         turns = store
@@ -1338,7 +1364,7 @@ async fn chat_acp_runner_env_reaches_runner_prompt_process() {
     let enter = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/acp/enter"),
+        &format!("/api/chats/{chat_id}/acp/enter"),
         Some(json!({
             "runner": runner_key,
             "cwd": "/tmp"
@@ -1351,7 +1377,7 @@ async fn chat_acp_runner_env_reaches_runner_prompt_process() {
     let submit = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/console/submit"),
+        &format!("/api/chats/{chat_id}/console/submit"),
         Some(json!({
             "chat_id": chat_id,
             "message": "echo runner env"
@@ -1714,11 +1740,11 @@ async fn qwenpaw_config_acp_routes_are_not_rust_public_contract() {
 async fn acp_permission_relay_routes_are_chat_scoped_and_validate_option_ids() {
     let app = build_app();
     let agent_id = "acp_permission_agent";
-    let chat_id = "acp-permission-chat";
+    let chat_id = "00000000-0000-4000-8000-000000000914";
     create_agent(&app.app, agent_id, "ACP permission agent").await;
     seed_chat_authority(&app, agent_id, chat_id).await;
     let runtime = app.state.registry.get_or_create(agent_id).await.unwrap();
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let mut header = store.load_chat_header(chat_id).await.unwrap().unwrap();
     header
         .extra
@@ -1728,7 +1754,7 @@ async fn acp_permission_relay_routes_are_chat_scoped_and_validate_option_ids() {
         .state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent(agent_id.to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             driver: ConversationDriverKind::Acp,
             authority_device_id: "device-local".to_string(),
             authority_epoch: ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -1738,7 +1764,7 @@ async fn acp_permission_relay_routes_are_chat_scoped_and_validate_option_ids() {
     app.state
         .conversation_authority
         .transition_active_turn_phase(
-            &rua_core::ChatAddress::agent(agent_id, chat_id),
+            &rua_core::ChatAddress::new(chat_id),
             Some(&active_turn.turn_id),
             ConversationActiveTurnPhase::WaitingApproval,
         )
@@ -1748,7 +1774,7 @@ async fn acp_permission_relay_routes_are_chat_scoped_and_validate_option_ids() {
     let snapshot = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/acp/permissions"),
+        &format!("/api/chats/{chat_id}/acp/permissions"),
         None,
         Some("default"),
     )
@@ -1784,10 +1810,7 @@ async fn acp_permission_relay_routes_are_chat_scoped_and_validate_option_ids() {
     let decided = request(
         &app.app,
         Method::POST,
-        &format!(
-            "/api/agents/{agent_id}/chats/{chat_id}/acp/permissions/{}/decide",
-            pending.id
-        ),
+        &format!("/api/chats/{chat_id}/acp/permissions/{}/decide", pending.id),
         Some(json!({"option_id": "allow_once"})),
         Some("default"),
     )
@@ -1796,7 +1819,7 @@ async fn acp_permission_relay_routes_are_chat_scoped_and_validate_option_ids() {
     assert_eq!(
         app.state
             .conversation_authority
-            .active_turn(&rua_core::ChatAddress::agent(agent_id, chat_id))
+            .active_turn(&rua_core::ChatAddress::new(chat_id))
             .await
             .expect("ACP active turn")
             .phase,
@@ -1806,7 +1829,7 @@ async fn acp_permission_relay_routes_are_chat_scoped_and_validate_option_ids() {
     let empty_option = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/acp/permissions/missing/decide"),
+        &format!("/api/chats/{chat_id}/acp/permissions/missing/decide"),
         Some(json!({"option_id": ""})),
         Some("default"),
     )
@@ -1816,7 +1839,7 @@ async fn acp_permission_relay_routes_are_chat_scoped_and_validate_option_ids() {
     let missing = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/acp/permissions/missing/decide"),
+        &format!("/api/chats/{chat_id}/acp/permissions/missing/decide"),
         Some(json!({"option_id": "allow_once"})),
         Some("default"),
     )
@@ -1863,7 +1886,7 @@ async fn acp_runtime_bridge_reuses_the_resident_agent_runtime() {
             conversation_store_dir: None,
             working_dir: None,
         },
-        workspace_dir: app.state.rua_root.join("workspaces").join(agent_id),
+        workspace_dir: app.state.rua_root.join("chats"),
         mcp_config: None,
     };
     let response = request(

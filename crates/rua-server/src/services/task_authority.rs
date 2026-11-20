@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rua_core::ChatScopeStore;
+use rua_core::ChatStore;
 use rua_task::{
     TaskAttemptAuthorization, TaskAuthorityError, TaskAuthorityResolver, TaskDeviceContext,
     TaskOwner,
@@ -55,7 +55,7 @@ impl ServerTaskAuthorityResolver {
         crate::services::conversation_authority_placement::ConversationAuthorityPlacement,
         TaskAuthorityError,
     > {
-        let scope_store = ChatScopeStore::resolve(&self.data_dir, owner.chat_address.clone());
+        let scope_store = ChatStore::resolve(&self.data_dir, owner.chat_address.clone());
         crate::services::conversation_authority_target::load_optional_chat_authority_placement(
             scope_store.root(),
             owner.chat_id(),
@@ -101,7 +101,7 @@ impl TaskAuthorityResolver for ServerTaskAuthorityResolver {
         owner: &TaskOwner,
         authorization: &TaskAttemptAuthorization,
     ) -> Result<TaskDeviceContext, TaskAuthorityError> {
-        let scope = ChatScopeStore::resolve(&self.data_dir, owner.chat_address.clone());
+        let scope = ChatStore::resolve(&self.data_dir, owner.chat_address.clone());
         let header = rua_session::WorkspaceSessionStore::new(scope.root())
             .load_chat_header(owner.chat_id())
             .await

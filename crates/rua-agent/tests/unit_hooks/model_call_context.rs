@@ -6,7 +6,7 @@ use serde_json::json;
 
 #[test]
 fn model_call_identity_is_a_chat_address_snapshot() {
-    let address = ChatAddress::project("project-1", "chat-1");
+    let address = ChatAddress::new("chat-1");
     let mut metadata = HashMap::from([(
         rua_agent::hooks::SECURITY_CHAT_ADDRESS_METADATA_KEY.to_string(),
         serde_json::to_value(&address).unwrap(),

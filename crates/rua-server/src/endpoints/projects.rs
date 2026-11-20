@@ -1,26 +1,20 @@
-use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
-use futures::StreamExt;
-use rua_channel::core::console::{AttachmentInfo, ConsoleChatRequest};
-use rua_core::{ChatAddress, ChatScopeStore, ProjectId};
+use rua_core::{ChatAddress, ProjectId};
 use rua_project::{ProjectDescriptor, ProjectLifecycle};
 use serde::{Deserialize, Serialize};
 
 use crate::endpoints::dto;
 use crate::errors::ApiError;
-use crate::services::conversation_authority_placement::ConversationAuthorityEpoch;
 use crate::services::device_command_bus::{
-    AcpChatDeviceAction, AcpChatDeviceResponse, ConversationApprovalDecision,
     ConversationControlDeviceAction, ConversationControlDeviceResponse, DeviceCommandDeliveryError,
     ProjectDeviceResponse, ProjectResourceOperation,
 };
 use crate::services::project_control::{
-    resolve_optional_project_control_target, resolve_project_control_target, ProjectControlError,
-    ProjectControlTarget,
+    resolve_project_control_target, ProjectControlError, ProjectControlTarget,
 };
 use crate::services::projects::{
     ProjectCreateResolution, ProjectPlacementError, ProjectPlacementService,
@@ -80,117 +74,13 @@ pub fn router() -> Router<AppState> {
             "/projects/{projectId}/chats/search",
             get(search_project_chats),
         )
+        .route("/chats/{chatId}", patch(update_project_chat))
         .route(
-            "/projects/{projectId}/chats/{chatId}/console/chat",
-            post(project_chat_cli),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}",
-            get(get_project_chat)
-                .put(update_project_chat_control)
-                .patch(update_project_chat)
-                .delete(delete_project_chat),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/metadata",
-            get(get_project_chat_metadata),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/configuration",
-            get(preview_project_chat_configuration).put(apply_project_chat_configuration),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/running-config",
-            get(get_project_chat_running_config).put(put_project_chat_running_config),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/rollback",
-            post(rollback_project_chat),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/projection-exclusions",
-            get(get_project_projection_exclusions).put(put_project_projection_exclusions),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/branch",
-            post(branch_project_chat),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/console/submit",
-            post(submit_project_chat),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/llm-debug-capture",
-            get(project_llm_debug_capture_status)
-                .post(project_llm_debug_capture_start)
-                .delete(project_llm_debug_capture_stop),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/console/live",
-            post(project_chat_live),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/console/activity",
-            get(project_chat_activity),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/console/stop",
-            post(stop_project_chat),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/resource-policy",
+            "/chats/{chatId}/resource-policy",
             get(get_project_resource_policy),
         )
         .route(
-            "/projects/{projectId}/chats/{chatId}/acp-history-preview",
-            post(persist_project_acp_history_preview),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/queue/{inputId}",
-            patch(edit_project_queued_input).delete(delete_project_queued_input),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/queue/{inputId}/send-now",
-            post(send_now_project_queued_input),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/approvals/snapshot",
-            get(get_project_approval_snapshot),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/approvals/{approvalId}/decide",
-            post(decide_project_approval),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/acp/runners",
-            get(list_project_acp_runners),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/acp/sessions",
-            get(list_project_acp_sessions),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/acp/enter",
-            post(enter_project_acp),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/acp/exit",
-            post(exit_project_acp),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/acp/status",
-            get(project_acp_status),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/acp/permissions",
-            get(project_acp_permission_snapshot),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/acp/permissions/{requestId}/decide",
-            post(decide_project_acp_permission),
-        )
-        .route(
-            "/projects/{projectId}/chats/{chatId}/agent-selection",
+            "/chats/{chatId}/agent-selection",
             patch(switch_project_chat_agent),
         )
 }
@@ -304,117 +194,6 @@ struct ProjectLifecycleConfirmRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct ProjectChatSubmitRequest {
-    agent_id: String,
-    #[serde(flatten)]
-    chat: serde_json::Map<String, serde_json::Value>,
-}
-
-struct PreparedProjectChatSubmit {
-    project_id: ProjectId,
-    chat_id: String,
-    requested_agent_id: String,
-    request: ConsoleChatRequest,
-}
-
-#[derive(Serialize)]
-struct ProjectLlmDebugCaptureStatus {
-    active: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    capture_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    path: Option<std::path::PathBuf>,
-}
-
-impl ProjectLlmDebugCaptureStatus {
-    fn inactive() -> Self {
-        Self {
-            active: false,
-            capture_id: None,
-            path: None,
-        }
-    }
-
-    fn active(info: crate::services::llm_debug_capture::LlmDebugCaptureInfo) -> Self {
-        Self {
-            active: true,
-            capture_id: Some(info.capture_id),
-            path: Some(info.path),
-        }
-    }
-}
-
-fn project_capture_address(project_id: String, chat_id: String) -> ChatAddress {
-    ChatAddress::project(ProjectId::new(project_id), chat_id)
-}
-
-async fn project_llm_debug_capture_status(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-) -> Json<ProjectLlmDebugCaptureStatus> {
-    let address = project_capture_address(project_id, chat_id);
-    let scope_root = ChatScopeStore::resolve(&state.rua_root, address.clone());
-    Json(
-        state
-            .llm_debug_captures
-            .get(scope_root.root(), &address)
-            .ok()
-            .flatten()
-            .map(ProjectLlmDebugCaptureStatus::active)
-            .unwrap_or_else(ProjectLlmDebugCaptureStatus::inactive),
-    )
-}
-
-async fn project_llm_debug_capture_start(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-) -> Json<ProjectLlmDebugCaptureStatus> {
-    let address = project_capture_address(project_id, chat_id);
-    let scope_root = ChatScopeStore::resolve(&state.rua_root, address.clone());
-    let status = match state.llm_debug_captures.start(scope_root.root(), address) {
-        Ok(info) => ProjectLlmDebugCaptureStatus::active(info),
-        Err(error) => {
-            tracing::warn!(%error, "failed to start local LLM debug capture");
-            ProjectLlmDebugCaptureStatus::inactive()
-        }
-    };
-    Json(status)
-}
-
-async fn project_llm_debug_capture_stop(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-) -> Json<ProjectLlmDebugCaptureStatus> {
-    let address = project_capture_address(project_id, chat_id);
-    let scope_root = ChatScopeStore::resolve(&state.rua_root, address.clone());
-    if let Err(error) = state.llm_debug_captures.stop(scope_root.root(), &address) {
-        tracing::warn!(%error, "failed to stop local LLM debug capture");
-    }
-    Json(ProjectLlmDebugCaptureStatus::inactive())
-}
-
-#[derive(Debug, Deserialize)]
-struct ProjectChatLiveRequest {
-    viewer_id: String,
-    #[serde(default)]
-    agent_id: Option<String>,
-    #[serde(default)]
-    activity_generation: Option<String>,
-    #[serde(default)]
-    next_activity_sequence: Option<u64>,
-}
-
-impl ProjectChatLiveRequest {
-    fn activity_position(&self) -> Option<rua_core::ConversationActivityPosition> {
-        Some(rua_core::ConversationActivityPosition::new(
-            self.activity_generation.as_deref()?.trim(),
-            self.next_activity_sequence?,
-        ))
-        .filter(|position| !position.activity_generation.is_empty())
-    }
-}
-
-#[derive(Debug, Deserialize)]
 struct ProjectChatAgentSwitchRequest {
     expected_agent_id: String,
     agent_id: String,
@@ -461,157 +240,9 @@ const fn default_project_chat_search_limit() -> usize {
 }
 
 #[derive(Debug, Deserialize)]
-struct ProjectChatDeleteQuery {
+pub(crate) struct ProjectChatDeleteQuery {
     #[serde(default)]
     force: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProjectChatControlUpdate {
-    #[serde(default)]
-    model: Option<serde_json::Value>,
-    #[serde(default)]
-    turn_id: Option<String>,
-    #[serde(default)]
-    selected_variant_id: Option<String>,
-}
-
-async fn preview_project_chat_configuration(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-) -> Response {
-    project_chat_configuration(
-        &state,
-        &project_id,
-        &chat_id,
-        ConversationControlDeviceAction::ViewConfiguration,
-    )
-    .await
-}
-
-async fn apply_project_chat_configuration(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-    Json(body): Json<crate::endpoints::chats::ChatConfigurationApply>,
-) -> Response {
-    project_chat_configuration(
-        &state,
-        &project_id,
-        &chat_id,
-        ConversationControlDeviceAction::UpdateConfiguration {
-            expected_epoch: body.expected_epoch,
-            candidate_epoch: body.candidate_epoch,
-        },
-    )
-    .await
-}
-
-async fn project_chat_configuration(
-    state: &AppState,
-    project_id: &str,
-    chat_id: &str,
-    action: ConversationControlDeviceAction,
-) -> Response {
-    let context = match project_control_context(state, project_id, chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_control(state, &context, action).await {
-        Ok(ConversationControlDeviceResponse::Configuration { configuration }) => {
-            Json(configuration).into_response()
-        }
-        Ok(_) => ApiError::Internal("unexpected Project configuration response".to_string())
-            .into_response(),
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn get_project_chat_running_config(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-) -> Response {
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_control(
-        &state,
-        &context,
-        ConversationControlDeviceAction::ViewRunningConfig,
-    )
-    .await
-    {
-        Ok(ConversationControlDeviceResponse::RunningConfig { running }) => {
-            Json(running).into_response()
-        }
-        Ok(_) => ApiError::Internal("unexpected Project Chat running-config response".to_string())
-            .into_response(),
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn put_project_chat_running_config(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-    Json(running): Json<serde_json::Value>,
-) -> Response {
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_control(
-        &state,
-        &context,
-        ConversationControlDeviceAction::UpdateRunningConfig { running },
-    )
-    .await
-    {
-        Ok(ConversationControlDeviceResponse::RunningConfigUpdated { running, .. }) => {
-            Json(running).into_response()
-        }
-        Ok(_) => {
-            ApiError::Internal("unexpected Project Chat running-config update response".to_string())
-                .into_response()
-        }
-        Err(error) => error.into_response(),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct ProjectChatBranchRequest {
-    before_turn_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProjectQueueEditRequest {
-    message: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProjectQueueSendNowRequest {
-    command_id: String,
-    authority_epoch: ConversationAuthorityEpoch,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProjectAcpSessionsQuery {
-    runner: String,
-    #[serde(default)]
-    cwd: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProjectAcpEnterRequest {
-    runner: String,
-    #[serde(default)]
-    cwd: Option<String>,
-    #[serde(default)]
-    resume_session_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProjectAcpPermissionDecision {
-    option_id: String,
 }
 
 async fn list_projects(
@@ -631,18 +262,21 @@ async fn list_projects(
         Ok(projects) => projects,
         Err(error) => return ApiError::Internal(error.to_string()).into_response(),
     };
+    let workspace = state.chat_workspace();
+    let has_index = workspace.as_path().join("chat-index.sqlite").is_file();
     let mut entries = Vec::with_capacity(projects.len());
     for project in projects {
-        let scope = ChatScopeStore::resolve(
-            &state.rua_root,
-            ChatAddress::project(
-                project.project_id.clone(),
-                "00000000-0000-4000-8000-000000000000",
-            ),
-        );
-        let last_activity_at = match rua_session::chat_index::latest_activity(scope.root()).await {
-            Ok(activity) => activity,
-            Err(error) => return ApiError::Internal(error).into_response(),
+        let filter = rua_session::chat_index::ChatIndexFilter {
+            project_id: Some(project.project_id.to_string()),
+            ..Default::default()
+        };
+        let last_activity_at = if has_index {
+            match crate::services::chat_index::list(workspace.as_path(), filter, 0, 1).await {
+                Ok(page) => page.entries.first().map(|entry| entry.updated_at),
+                Err(error) => return ApiError::Internal(error).into_response(),
+            }
+        } else {
+            None
         };
         entries.push(ProjectListEntry {
             project,
@@ -1139,17 +773,15 @@ async fn list_project_chats(
         }
         Err(error) => return ApiError::Internal(error.to_string()).into_response(),
     }
-    let scope_root = ChatScopeStore::resolve(
-        &state.rua_root,
-        ChatAddress::project(project_id.clone(), "00000000-0000-4000-8000-000000000000"),
-    )
-    .root()
-    .to_path_buf();
-    let address = ChatAddress::project(project_id.clone(), "00000000-0000-4000-8000-000000000000");
-    let page = match rua_chat::ChatService::for_resolved_scope(&scope_root, address.clone())
-        .list(
-            &address,
-            rua_chat::ChatListQuery {
+    let scope_root = rua_core::RuaRoot::new(&state.rua_root)
+        .chat_workspace()
+        .as_path()
+        .to_path_buf();
+    let page =
+        match rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(&scope_root))
+            .list(rua_chat::ChatListQuery {
+                project_id: Some(project_id.to_string()),
+                agent_id: None,
                 user_id: None,
                 channel: None,
                 search: query.search,
@@ -1163,13 +795,12 @@ async fn list_project_chats(
                 offset: query.offset.unwrap_or(0),
                 limit: query.limit.unwrap_or(50).clamp(1, 200),
                 archived: Some(query.archived.unwrap_or(false)),
-            },
-        )
-        .await
-    {
-        Ok(page) => page,
-        Err(error) => return ApiError::Internal(error.to_string()).into_response(),
-    };
+            })
+            .await
+        {
+            Ok(page) => page,
+            Err(error) => return ApiError::Internal(error.to_string()).into_response(),
+        };
     let mut chats = page
         .entries
         .into_iter()
@@ -1186,7 +817,7 @@ async fn list_project_chats(
     for chat in &mut chats {
         chat.status = state
             .conversation_authority
-            .active_turn(&ChatAddress::project(project_id.clone(), &chat.id))
+            .active_turn(&ChatAddress::new(&chat.id))
             .await
             .as_ref()
             .map(|turn| turn.status_hint().to_string())
@@ -1214,27 +845,24 @@ async fn search_project_chats(
         }
         Err(error) => return ApiError::Internal(error.to_string()).into_response(),
     }
-    let scope_root = ChatScopeStore::resolve(
-        &state.rua_root,
-        ChatAddress::project(project_id.clone(), "00000000-0000-4000-8000-000000000000"),
-    )
-    .root()
-    .to_path_buf();
-    let address = ChatAddress::project(project_id, "00000000-0000-4000-8000-000000000000");
-    let saved = match rua_chat::ChatService::for_resolved_scope(&scope_root, address.clone())
-        .search(
-            &address,
-            rua_chat::ChatSearchQuery {
+    let scope_root = rua_core::RuaRoot::new(&state.rua_root)
+        .chat_workspace()
+        .as_path()
+        .to_path_buf();
+    let saved =
+        match rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(&scope_root))
+            .search(rua_chat::ChatSearchQuery {
+                project_id: Some(project_id.to_string()),
+                agent_id: None,
                 query: query.q,
                 offset: query.offset,
                 limit: query.limit.clamp(1, 100),
-            },
-        )
-        .await
-    {
-        Ok(result) => result,
-        Err(error) => return ApiError::Internal(error.to_string()).into_response(),
-    };
+            })
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => return ApiError::Internal(error.to_string()).into_response(),
+        };
     let results = saved
         .results
         .into_iter()
@@ -1267,9 +895,20 @@ async fn search_project_chats(
 
 async fn update_project_chat(
     State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
+    Path(chat_id): Path<String>,
     Json(mut update): Json<crate::services::project_chat::ProjectChatUpdate>,
 ) -> Response {
+    let project_id =
+        match crate::services::chat_context::load_chat_context(&state.rua_root, &chat_id).await {
+            Ok(Some(context)) => match context.project_id {
+                Some(id) => id,
+                None => return ApiError::BadRequest("Chat has no Project".into()).into_response(),
+            },
+            Ok(None) => {
+                return ApiError::NotFound(format!("Chat not found: {chat_id}")).into_response()
+            }
+            Err(error) => return error.into_response(),
+        };
     let project_id = ProjectId::new(project_id);
     let project = match state.project_catalog.get(&project_id) {
         Ok(Some(project)) => project,
@@ -1401,17 +1040,15 @@ async fn delete_archived_project_chats(
         return ApiError::Conflict("source Device identity is unavailable".to_string())
             .into_response();
     };
-    let scope_root = ChatScopeStore::resolve(
-        &state.rua_root,
-        ChatAddress::project(project_id.clone(), "00000000-0000-4000-8000-000000000000"),
-    )
-    .root()
-    .to_path_buf();
-    let address = ChatAddress::project(project_id.clone(), "00000000-0000-4000-8000-000000000000");
-    let page = match rua_chat::ChatService::for_resolved_scope(&scope_root, address.clone())
-        .list(
-            &address,
-            rua_chat::ChatListQuery {
+    let scope_root = rua_core::RuaRoot::new(&state.rua_root)
+        .chat_workspace()
+        .as_path()
+        .to_path_buf();
+    let page =
+        match rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(&scope_root))
+            .list(rua_chat::ChatListQuery {
+                project_id: Some(project_id.to_string()),
+                agent_id: None,
                 user_id: None,
                 channel: None,
                 search: query.filter.search,
@@ -1425,13 +1062,12 @@ async fn delete_archived_project_chats(
                 offset: 0,
                 limit: i64::MAX as u64,
                 archived: Some(true),
-            },
-        )
-        .await
-    {
-        Ok(page) => page,
-        Err(error) => return ApiError::Internal(error.to_string()).into_response(),
-    };
+            })
+            .await
+        {
+            Ok(page) => page,
+            Err(error) => return ApiError::Internal(error.to_string()).into_response(),
+        };
     let mut deleted = Vec::new();
     let mut skipped = Vec::new();
     for entry in page.entries {
@@ -1476,7 +1112,7 @@ async fn delete_archived_project_chats(
     Json(DeleteArchivedProjectChatsResponse { deleted, skipped }).into_response()
 }
 
-async fn delete_project_chat(
+pub(crate) async fn delete_project_chat(
     State(state): State<AppState>,
     Path((project_id, chat_id)): Path<(String, String)>,
     Query(query): Query<ProjectChatDeleteQuery>,
@@ -1632,16 +1268,6 @@ async fn project_control_context(
         .map_err(project_target_error)
 }
 
-async fn project_control_context_if_materialized(
-    state: &AppState,
-    project_id: &str,
-    chat_id: &str,
-) -> Result<Option<ProjectControlTarget>, ApiError> {
-    resolve_optional_project_control_target(state, project_id, chat_id)
-        .await
-        .map_err(project_target_error)
-}
-
 async fn dispatch_project_control(
     state: &AppState,
     context: &ProjectControlTarget,
@@ -1651,22 +1277,6 @@ async fn dispatch_project_control(
         .dispatch_control(state, action)
         .await
         .map_err(project_target_error)
-}
-
-async fn dispatch_project_acp(
-    state: &AppState,
-    context: &ProjectControlTarget,
-    action: AcpChatDeviceAction,
-) -> Result<AcpChatDeviceResponse, ApiError> {
-    context
-        .dispatch_acp(state, action)
-        .await
-        .map_err(|error| match error {
-            ProjectControlError::Rejected { reason, detail } => {
-                project_acp_error(DeviceCommandDeliveryError::Rejected { reason, detail })
-            }
-            other => project_target_error(other),
-        })
 }
 
 fn project_target_error(error: ProjectControlError) -> ApiError {
@@ -1711,203 +1321,21 @@ fn project_control_error(error: DeviceCommandDeliveryError) -> ApiError {
     }
 }
 
-fn project_acp_error(error: DeviceCommandDeliveryError) -> ApiError {
-    if error.is_session_version_incompatible() {
-        return ApiError::UpgradeRequired(error.to_string());
-    }
-    match error {
-        DeviceCommandDeliveryError::Rejected { reason, detail } => {
-            if reason.contains("not_found") {
-                ApiError::NotFound(detail)
-            } else if reason.contains("disabled")
-                || reason.contains("invalid")
-                || reason.contains("wrong")
-                || reason.contains("unknown_option")
-            {
-                ApiError::BadRequest(detail)
-            } else if reason.contains("unavailable") && !reason.contains("project_resource") {
-                ApiError::Unavailable(detail)
-            } else {
-                ApiError::Conflict(detail)
-            }
-        }
-        DeviceCommandDeliveryError::AuthorityRedirect(_) => {
-            ApiError::Conflict("Project Chat authority is fixed to its resource Device".to_string())
-        }
-        other => ApiError::Unavailable(other.to_string()),
-    }
-}
-
-async fn update_project_chat_control(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-    Json(body): Json<ProjectChatControlUpdate>,
-) -> Response {
-    match (body.model, body.turn_id, body.selected_variant_id) {
-        (Some(model), None, None) => {
-            apply_project_chat_model_update(&state, &project_id, &chat_id, model).await
-        }
-        (None, Some(turn_id), Some(selected_variant_id)) => {
-            let context = match project_control_context(&state, &project_id, &chat_id).await {
-                Ok(context) => context,
-                Err(error) => return error.into_response(),
-            };
-            match dispatch_project_control(
-                &state,
-                &context,
-                ConversationControlDeviceAction::SelectVariant {
-                    turn_id: turn_id.clone(),
-                    selected_variant_id: selected_variant_id.clone(),
-                },
-            )
-            .await
-            {
-                Ok(ConversationControlDeviceResponse::VariantSelected { .. }) => {
-                    Json(serde_json::json!({
-                        "turn_id": turn_id,
-                        "selected_variant_id": selected_variant_id,
-                    }))
-                    .into_response()
-                }
-                Ok(_) => ApiError::Internal(
-                    "unexpected Project Chat variant selection response".to_string(),
-                )
-                .into_response(),
-                Err(error) => error.into_response(),
-            }
-        }
-        _ => ApiError::BadRequest(
-            "Project Chat control requires either model or turn_id with selected_variant_id"
-                .to_string(),
-        )
-        .into_response(),
-    }
-}
-
-async fn rollback_project_chat(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-    Json(body): Json<ProjectChatBranchRequest>,
-) -> Response {
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_control(
-        &state,
-        &context,
-        ConversationControlDeviceAction::RollbackBeforeTurn {
-            before_turn_id: body.before_turn_id,
-        },
-    )
-    .await
-    {
-        Ok(ConversationControlDeviceResponse::RolledBack {
-            chat,
-            cancelled_tasks,
-        }) => Json(serde_json::json!({
-            "chat": chat,
-            "cancelled_tasks": cancelled_tasks,
-        }))
-        .into_response(),
-        Ok(_) => ApiError::Internal("unexpected Project Chat rollback response".to_string())
-            .into_response(),
-        Err(error) => error.into_response(),
-    }
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-struct ProjectProjectionExclusionsDto {
-    #[serde(default)]
-    message_ids: Vec<String>,
-}
-
-async fn get_project_projection_exclusions(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-) -> Response {
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_control(
-        &state,
-        &context,
-        ConversationControlDeviceAction::ViewProjectionExclusions,
-    )
-    .await
-    {
-        Ok(ConversationControlDeviceResponse::ProjectionExclusions { message_ids }) => {
-            Json(ProjectProjectionExclusionsDto { message_ids }).into_response()
-        }
-        Ok(_) => {
-            ApiError::Internal("unexpected Project Chat projection exclusions response".to_string())
-                .into_response()
-        }
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn put_project_projection_exclusions(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-    Json(body): Json<ProjectProjectionExclusionsDto>,
-) -> Response {
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_control(
-        &state,
-        &context,
-        ConversationControlDeviceAction::UpdateProjectionExclusions {
-            message_ids: body.message_ids,
-        },
-    )
-    .await
-    {
-        Ok(ConversationControlDeviceResponse::ProjectionExclusionsUpdated { message_ids }) => {
-            Json(ProjectProjectionExclusionsDto { message_ids }).into_response()
-        }
-        Ok(_) => ApiError::Internal(
-            "unexpected Project Chat projection exclusions update response".to_string(),
-        )
-        .into_response(),
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn branch_project_chat(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-    Json(body): Json<ProjectChatBranchRequest>,
-) -> Response {
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_control(
-        &state,
-        &context,
-        ConversationControlDeviceAction::BranchBeforeTurn {
-            before_turn_id: body.before_turn_id,
-        },
-    )
-    .await
-    {
-        Ok(ConversationControlDeviceResponse::Branched { chat }) => {
-            Json(serde_json::json!({ "chat": chat })).into_response()
-        }
-        Ok(_) => ApiError::Internal("unexpected Project Chat branch response".to_string())
-            .into_response(),
-        Err(error) => error.into_response(),
-    }
-}
-
 async fn get_project_resource_policy(
     State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
+    Path(chat_id): Path<String>,
 ) -> Response {
+    let project_id =
+        match crate::services::chat_context::load_chat_context(&state.rua_root, &chat_id).await {
+            Ok(Some(context)) => match context.project_id {
+                Some(id) => id,
+                None => return ApiError::BadRequest("Chat has no Project".into()).into_response(),
+            },
+            Ok(None) => {
+                return ApiError::NotFound(format!("Chat not found: {chat_id}")).into_response()
+            }
+            Err(error) => return error.into_response(),
+        };
     let context = match project_control_context(&state, &project_id, &chat_id).await {
         Ok(context) => context,
         Err(error) => return error.into_response(),
@@ -1974,648 +1402,22 @@ async fn apply_project_chat_model_update(
     Json(chat).into_response()
 }
 
-async fn persist_project_acp_history_preview(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-    Json(body): Json<crate::endpoints::chats::AcpHistoryPreviewBody>,
-) -> Response {
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    crate::endpoints::chats::persist_acp_history_preview_core(
-        context.address(),
-        context.agent_id(),
-        context.scope_root(),
-        context.address().chat_id().as_str(),
-        body,
-        &state,
-    )
-    .await
-}
-
-async fn edit_project_queued_input(
-    State(state): State<AppState>,
-    Path((project_id, chat_id, input_id)): Path<(String, String, String)>,
-    Json(body): Json<ProjectQueueEditRequest>,
-) -> Response {
-    if body.message.trim().is_empty() {
-        return ApiError::BadRequest("message cannot be empty".to_string()).into_response();
-    }
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_control(
-        &state,
-        &context,
-        ConversationControlDeviceAction::EditQueuedInput {
-            input_id,
-            message: body.message,
-        },
-    )
-    .await
-    {
-        Ok(ConversationControlDeviceResponse::Edited { entry, control }) => {
-            Json(serde_json::json!({ "entry": entry, "control": control })).into_response()
-        }
-        Ok(_) => {
-            ApiError::Internal("unexpected Project queue edit response".to_string()).into_response()
-        }
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn delete_project_queued_input(
-    State(state): State<AppState>,
-    Path((project_id, chat_id, input_id)): Path<(String, String, String)>,
-) -> Response {
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_control(
-        &state,
-        &context,
-        ConversationControlDeviceAction::DeleteQueuedInput { input_id },
-    )
-    .await
-    {
-        Ok(ConversationControlDeviceResponse::Deleted {
-            deleted_input_id,
-            control,
-        }) => Json(serde_json::json!({
-            "deleted_input_id": deleted_input_id,
-            "control": control,
-        }))
-        .into_response(),
-        Ok(_) => ApiError::Internal("unexpected Project queue delete response".to_string())
-            .into_response(),
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn send_now_project_queued_input(
-    State(state): State<AppState>,
-    Path((project_id, chat_id, input_id)): Path<(String, String, String)>,
-    Json(body): Json<ProjectQueueSendNowRequest>,
-) -> Response {
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    if body.authority_epoch != context.authority_epoch() {
-        return ApiError::Conflict("stale conversation authority Epoch".to_string())
-            .into_response();
-    }
-    match dispatch_project_control(
-        &state,
-        &context,
-        ConversationControlDeviceAction::SendNow {
-            input_id,
-            control_command_id: body.command_id,
-        },
-    )
-    .await
-    {
-        Ok(ConversationControlDeviceResponse::SendNow {
-            input_id,
-            applied,
-            control,
-        }) => Json(serde_json::json!({
-            "input_id": input_id,
-            "applied": applied,
-            "control": control,
-        }))
-        .into_response(),
-        Ok(_) => {
-            ApiError::Internal("unexpected Project Send Now response".to_string()).into_response()
-        }
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn stop_project_chat(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-    Json(body): Json<super::dto::StopChatRequest>,
-) -> Response {
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_control(&state, &context, body.into_action()).await {
-        Ok(ConversationControlDeviceResponse::StopRequested { applied }) => {
-            super::console::precise_stop_response(applied)
-        }
-        Ok(_) => ApiError::Internal("unexpected stop response".into()).into_response(),
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn get_project_approval_snapshot(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-) -> Response {
-    let context = match project_control_context_if_materialized(&state, &project_id, &chat_id).await
-    {
-        Ok(Some(context)) => context,
-        Ok(None) => {
-            return Json(rua_security::ApprovalSnapshot {
-                pending: Vec::new(),
-                resolved: Vec::new(),
-            })
-            .into_response();
-        }
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_control(
-        &state,
-        &context,
-        ConversationControlDeviceAction::ApprovalSnapshot,
-    )
-    .await
-    {
-        Ok(ConversationControlDeviceResponse::ApprovalSnapshot { snapshot }) => {
-            Json(snapshot).into_response()
-        }
-        Ok(_) => ApiError::Internal("unexpected Project approval snapshot response".to_string())
-            .into_response(),
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn decide_project_approval(
-    State(state): State<AppState>,
-    Path((project_id, chat_id, approval_id)): Path<(String, String, String)>,
-    Json(decision): Json<ConversationApprovalDecision>,
-) -> Response {
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_control(
-        &state,
-        &context,
-        ConversationControlDeviceAction::DecideApproval {
-            approval_id,
-            decision,
-        },
-    )
-    .await
-    {
-        Ok(ConversationControlDeviceResponse::ApprovalDecided { request }) => {
-            Json(request).into_response()
-        }
-        Ok(_) => ApiError::Internal("unexpected Project approval decision response".to_string())
-            .into_response(),
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn list_project_acp_runners(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-) -> Response {
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_acp(&state, &context, AcpChatDeviceAction::ListRunners).await {
-        Ok(AcpChatDeviceResponse::Runners { runners }) => Json(runners).into_response(),
-        Ok(_) => ApiError::Internal("unexpected Project ACP runners response".to_string())
-            .into_response(),
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn list_project_acp_sessions(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-    Query(query): Query<ProjectAcpSessionsQuery>,
-) -> Response {
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_acp(
-        &state,
-        &context,
-        AcpChatDeviceAction::ListSessions {
-            runner: query.runner,
-            cwd: query.cwd,
-        },
-    )
-    .await
-    {
-        Ok(AcpChatDeviceResponse::Sessions { sessions }) => Json(sessions).into_response(),
-        Ok(_) => ApiError::Internal("unexpected Project ACP sessions response".to_string())
-            .into_response(),
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn enter_project_acp(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-    Json(body): Json<ProjectAcpEnterRequest>,
-) -> Response {
-    if body.runner.trim().is_empty() {
-        return ApiError::BadRequest("runner is required".to_string()).into_response();
-    }
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_acp(
-        &state,
-        &context,
-        AcpChatDeviceAction::Enter {
-            runner: body.runner,
-            cwd: body.cwd,
-            resume_session_id: body.resume_session_id,
-        },
-    )
-    .await
-    {
-        Ok(AcpChatDeviceResponse::Entered {
-            ok,
-            message,
-            status,
-            history_preview,
-        }) => Json(serde_json::json!({
-            "ok": ok,
-            "message": message,
-            "status": status,
-            "history_preview": history_preview,
-        }))
-        .into_response(),
-        Ok(_) => {
-            ApiError::Internal("unexpected Project ACP enter response".to_string()).into_response()
-        }
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn exit_project_acp(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-) -> Response {
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_acp(&state, &context, AcpChatDeviceAction::Exit).await {
-        Ok(AcpChatDeviceResponse::Exited { ok, message }) => {
-            Json(serde_json::json!({ "ok": ok, "message": message })).into_response()
-        }
-        Ok(_) => {
-            ApiError::Internal("unexpected Project ACP exit response".to_string()).into_response()
-        }
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn project_acp_status(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-) -> Response {
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_acp(&state, &context, AcpChatDeviceAction::Status).await {
-        Ok(AcpChatDeviceResponse::Status { status }) => Json(status).into_response(),
-        Ok(_) => {
-            ApiError::Internal("unexpected Project ACP status response".to_string()).into_response()
-        }
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn project_acp_permission_snapshot(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-) -> Response {
-    let context = match project_control_context_if_materialized(&state, &project_id, &chat_id).await
-    {
-        Ok(Some(context)) => context,
-        Ok(None) => {
-            return Json(rua_acp::permissions::AcpPermissionSnapshot::default()).into_response();
-        }
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_acp(&state, &context, AcpChatDeviceAction::PermissionSnapshot).await {
-        Ok(AcpChatDeviceResponse::PermissionSnapshot { snapshot }) => {
-            Json(snapshot).into_response()
-        }
-        Ok(_) => {
-            ApiError::Internal("unexpected Project ACP permission snapshot response".to_string())
-                .into_response()
-        }
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn decide_project_acp_permission(
-    State(state): State<AppState>,
-    Path((project_id, chat_id, request_id)): Path<(String, String, String)>,
-    Json(body): Json<ProjectAcpPermissionDecision>,
-) -> Response {
-    if body.option_id.trim().is_empty() {
-        return ApiError::BadRequest("option_id is required".to_string()).into_response();
-    }
-    let context = match project_control_context(&state, &project_id, &chat_id).await {
-        Ok(context) => context,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_project_acp(
-        &state,
-        &context,
-        AcpChatDeviceAction::DecidePermission {
-            request_id,
-            option_id: body.option_id,
-        },
-    )
-    .await
-    {
-        Ok(AcpChatDeviceResponse::PermissionDecided { request }) => Json(request).into_response(),
-        Ok(_) => {
-            ApiError::Internal("unexpected Project ACP permission decision response".to_string())
-                .into_response()
-        }
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn get_project_chat_metadata(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-) -> Response {
-    let project_id = ProjectId::new(project_id);
-    match state.project_catalog.get(&project_id) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return ApiError::NotFound(format!("Project not found: {project_id}")).into_response();
-        }
-        Err(error) => return ApiError::Internal(error.to_string()).into_response(),
-    }
-    let scope =
-        ChatScopeStore::resolve(&state.rua_root, ChatAddress::project(project_id, &chat_id));
-    crate::endpoints::chats::get_chat_metadata_core(scope.root(), &chat_id).await
-}
-
-async fn get_project_chat(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-    Query(params): Query<crate::endpoints::chats::ChatHistoryParams>,
-) -> Response {
-    let project_id = ProjectId::new(project_id);
-    match state.project_catalog.get(&project_id) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return ApiError::NotFound(format!("Project not found: {project_id}")).into_response();
-        }
-        Err(error) => return ApiError::Internal(error.to_string()).into_response(),
-    }
-    if let Err(error) = crate::services::console_chat::resolve_chat_id(&chat_id) {
-        return ApiError::BadRequest(error).into_response();
-    }
-    if let Some(owner) = find_project_chat_owner(&state, &chat_id).await {
-        if owner != project_id {
-            return ApiError::NotFound(format!(
-                "Project Chat {chat_id} belongs to Project {owner}"
-            ))
-            .into_response();
-        }
-    }
-    let address = ChatAddress::project(project_id, &chat_id);
-    let scope_root = ChatScopeStore::resolve(&state.rua_root, address.clone())
-        .root()
-        .to_path_buf();
-    crate::endpoints::chats::get_chat_core(&state, &address, &scope_root, &chat_id, params).await
-}
-
-async fn project_chat_cli(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-    Json(body): Json<ProjectChatSubmitRequest>,
-) -> Response {
-    let prepared = match prepare_project_chat_submit(&state, project_id, chat_id, body).await {
-        Ok(prepared) => prepared,
-        Err(response) => return response,
-    };
-    let address = ChatAddress::project(prepared.project_id, &prepared.chat_id);
-    crate::endpoints::chat_cli::submit_single_turn(
-        &state,
-        address,
-        &prepared.requested_agent_id,
-        prepared.request,
-    )
-    .await
-}
-
-async fn submit_project_chat(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-    Json(body): Json<ProjectChatSubmitRequest>,
-) -> Response {
-    let prepared = match prepare_project_chat_submit(&state, project_id, chat_id, body).await {
-        Ok(prepared) => prepared,
-        Err(response) => return response,
-    };
-    let outcome = state
-        .conversation_input_intake
-        .submit_project_delivery(
-            &prepared.project_id,
-            &prepared.requested_agent_id,
-            prepared.request,
-        )
-        .await;
-    project_submit_response(outcome)
-}
-
-async fn prepare_project_chat_submit(
-    state: &AppState,
-    project_id: String,
-    chat_id: String,
-    body: ProjectChatSubmitRequest,
-) -> Result<PreparedProjectChatSubmit, Response> {
-    let ProjectChatSubmitRequest { agent_id, chat } = body;
-    let mut chat = match serde_json::from_value::<dto::ChatRequest>(serde_json::Value::Object(chat))
-    {
-        Ok(chat) => chat,
-        Err(error) => {
-            return Err(ApiError::BadRequest(format!(
-                "invalid Project Chat submit request: {error}"
-            ))
-            .into_response());
-        }
-    };
-    let model_id = chat.prepare_model_for_console();
-
-    let project_id = ProjectId::new(project_id);
-    let project = match state.project_catalog.get(&project_id) {
-        Ok(Some(project)) => project,
-        Ok(None) => {
-            return Err(
-                ApiError::NotFound(format!("Project not found: {project_id}")).into_response(),
-            );
-        }
-        Err(error) => return Err(ApiError::Internal(error.to_string()).into_response()),
-    };
-    if project.lifecycle != ProjectLifecycle::Active {
-        return Err(
-            ApiError::Conflict("Archived Project cannot accept new work".to_string())
-                .into_response(),
-        );
-    }
-    let chat_id = match crate::services::console_chat::resolve_chat_id(&chat_id) {
-        Ok(chat_id) => chat_id,
-        Err(error) => return Err(ApiError::BadRequest(error).into_response()),
-    };
-    if let Some(body_chat_id) = chat.effective_chat_id() {
-        if body_chat_id != chat_id {
-            return Err(ApiError::BadRequest(
-                "Project Chat path and request body identify different Chats".to_string(),
-            )
-            .into_response());
-        }
-    }
-    if agent_id.trim().is_empty() {
-        return Err(ApiError::BadRequest("agent_id is required".to_string()).into_response());
-    }
-    if !chat.has_user_content() {
-        return Err(ApiError::BadRequest("message is required".to_string()).into_response());
-    }
-    if let Some(owner) = find_project_chat_owner(state, &chat_id).await {
-        if owner != project_id {
-            return Err(ApiError::Conflict(format!(
-                "Project Chat {chat_id} belongs to Project {owner}"
-            ))
-            .into_response());
-        }
-    }
-
-    chat.chat_id = Some(chat_id.clone());
-    let request = ConsoleChatRequest {
-        message: chat.effective_message(),
-        chat_id: chat.effective_chat_id(),
-        model: model_id,
-        is_reconnect: false,
-        attachments: chat
-            .attachments
-            .iter()
-            .map(|attachment| AttachmentInfo {
-                url: attachment.url.clone(),
-                name: attachment.name.clone(),
-                mime_type: attachment.mime_type.clone(),
-                stored_name: attachment.stored_name.clone(),
-                size: attachment.size,
-            })
-            .collect(),
-        input: chat.input,
-        messages: chat.messages,
-        extra: chat.extra,
-        channel_kind: Some(rua_channel::core::renderer::ChannelKind::Chat),
-    };
-    Ok(PreparedProjectChatSubmit {
-        project_id,
-        chat_id,
-        requested_agent_id: agent_id.trim().to_string(),
-        request,
-    })
-}
-
-async fn project_chat_live(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-    Json(body): Json<ProjectChatLiveRequest>,
-) -> Response {
-    if body.viewer_id.trim().is_empty() {
-        return ApiError::BadRequest("viewer_id is required".to_string()).into_response();
-    }
-    let project_id = ProjectId::new(project_id);
-    match state.project_catalog.get(&project_id) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return ApiError::NotFound(format!("Project not found: {project_id}")).into_response();
-        }
-        Err(error) => return ApiError::Internal(error.to_string()).into_response(),
-    }
-    let chat_id = match crate::services::console_chat::resolve_chat_id(&chat_id) {
-        Ok(chat_id) => chat_id,
-        Err(error) => return ApiError::BadRequest(error).into_response(),
-    };
-    let address = ChatAddress::project(project_id, &chat_id);
-    let scope_root = ChatScopeStore::resolve(&state.rua_root, address.clone())
-        .root()
-        .to_path_buf();
-    let execution_agent_id = match rua_session::WorkspaceSessionStore::new(&scope_root)
-        .load_chat_header(&chat_id)
-        .await
-    {
-        Ok(Some(header)) => match crate::services::project_chat::selection_from_header(&header) {
-            Ok(selection) => selection.agent_id,
-            Err(error) => return ApiError::Internal(error).into_response(),
-        },
-        Ok(None) => match body.agent_id.as_deref().map(str::trim) {
-            Some(agent_id) if !agent_id.is_empty() => agent_id.to_string(),
-            _ => {
-                return ApiError::BadRequest(
-                    "agent_id is required while Project Chat history is unavailable".to_string(),
-                )
-                .into_response();
-            }
-        },
-        Err(error) => return ApiError::Internal(error.to_string()).into_response(),
-    };
-    let stream = state
-        .console_facade
-        .connect_scoped_chat_activity(
-            address,
-            &execution_agent_id,
-            body.viewer_id.trim(),
-            body.activity_position(),
-        )
-        .await;
-    crate::endpoints::console::conversation_live_sse_response(stream)
-}
-
-async fn project_chat_activity(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-) -> Response {
-    let project_id = ProjectId::new(project_id);
-    match state.project_catalog.get(&project_id) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return ApiError::NotFound(format!("Project not found: {project_id}")).into_response();
-        }
-        Err(error) => return ApiError::Internal(error.to_string()).into_response(),
-    }
-    let chat_id = match crate::services::console_chat::resolve_chat_id(&chat_id) {
-        Ok(chat_id) => chat_id,
-        Err(error) => return ApiError::BadRequest(error).into_response(),
-    };
-    let stream = crate::endpoints::console::scoped_chat_activity_stream(
-        state,
-        ChatAddress::project(project_id, chat_id),
-    )
-    .map(|result| result.map(|data| format!("{data}\n")));
-    Response::builder()
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::CACHE_CONTROL, "no-cache")
-        .header(header::CONNECTION, "keep-alive")
-        .body(Body::from_stream(stream))
-        .unwrap()
-}
-
 async fn switch_project_chat_agent(
     State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
+    Path(chat_id): Path<String>,
     Json(body): Json<ProjectChatAgentSwitchRequest>,
 ) -> Response {
+    let project_id =
+        match crate::services::chat_context::load_chat_context(&state.rua_root, &chat_id).await {
+            Ok(Some(context)) => match context.project_id {
+                Some(id) => id,
+                None => return ApiError::BadRequest("Chat has no Project".into()).into_response(),
+            },
+            Ok(None) => {
+                return ApiError::NotFound(format!("Chat not found: {chat_id}")).into_response()
+            }
+            Err(error) => return error.into_response(),
+        };
     if body.expected_agent_id.trim().is_empty() || body.agent_id.trim().is_empty() {
         return ApiError::BadRequest(
             "expected_agent_id and agent_id must not be empty".to_string(),
@@ -2700,103 +1502,6 @@ async fn switch_project_chat_agent(
         Ok(state) => Json(state).into_response(),
         Err(error) => ApiError::Conflict(error).into_response(),
     }
-}
-
-fn project_submit_response(
-    outcome: crate::services::conversation_input_intake::ConversationInputDeliveryOutcome,
-) -> Response {
-    use crate::services::conversation_input_intake::ConversationInputDeliveryOutcome;
-    match outcome {
-        ConversationInputDeliveryOutcome::Delivered {
-            chat_id,
-            transport,
-            accepted,
-            queued_to_active_authority,
-            input_id,
-            submission_id,
-            detail,
-            device_delivery_id,
-            target_device_id,
-            device_delivery_sequence,
-            accepted_at,
-            control,
-        } => Json(serde_json::json!({
-            "accepted": accepted,
-            "mode": if queued_to_active_authority { "queued" } else { "started" },
-            "materialized": true,
-            "chat_id": chat_id,
-            "input_id": input_id,
-            "submission_id": submission_id,
-            "detail": detail,
-            "device_delivery_id": device_delivery_id,
-            "target_device_id": target_device_id,
-            "device_delivery_sequence": device_delivery_sequence,
-            "accepted_at": accepted_at,
-            "control": control,
-            "transport": format!("{transport:?}"),
-        }))
-        .into_response(),
-        ConversationInputDeliveryOutcome::Unconfirmed {
-            chat_id,
-            detail,
-            submission_id,
-            device_delivery_id,
-            target_device_id,
-            device_delivery_sequence,
-        } => Json(serde_json::json!({
-            "accepted": false,
-            "mode": "unconfirmed",
-            "chat_id": chat_id,
-            "input_id": null,
-            "submission_id": submission_id,
-            "detail": detail,
-            "device_delivery_id": device_delivery_id,
-            "target_device_id": target_device_id,
-            "device_delivery_sequence": device_delivery_sequence,
-            "accepted_at": null,
-            "failure_kind": "delivery_unknown",
-            "control": null,
-        }))
-        .into_response(),
-        ConversationInputDeliveryOutcome::Rejected {
-            detail,
-            target_device_id,
-            failure_kind,
-        } => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "accepted": false,
-                "mode": "rejected",
-                "materialized": false,
-                "detail": detail,
-                "target_device_id": target_device_id,
-                "failure_kind": failure_kind,
-            })),
-        )
-            .into_response(),
-    }
-}
-
-async fn find_project_chat_owner(state: &AppState, chat_id: &str) -> Option<ProjectId> {
-    let projects = state.project_catalog.list().ok()?;
-    for project in projects {
-        let address = ChatAddress::project(project.project_id.clone(), chat_id);
-        let scope_root = ChatScopeStore::resolve(&state.rua_root, address)
-            .root()
-            .to_path_buf();
-        if !scope_root.join("chat-index.sqlite").is_file() {
-            continue;
-        }
-        if crate::services::chat_index::get(&scope_root, chat_id)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-        {
-            return Some(project.project_id);
-        }
-    }
-    None
 }
 
 fn placement_error(error: ProjectPlacementError) -> Response {

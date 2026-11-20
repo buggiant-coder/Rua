@@ -591,7 +591,7 @@ async fn create_agent_initializes_rust_runtime_workspace_layout() {
 
     let workspace = app.data_dir.join("workspaces").join(agent_id);
     assert!(workspace.join("agent.json").is_file());
-    assert!(workspace.join("sessions").is_dir());
+    assert!(!workspace.join("sessions").exists());
     assert!(workspace.join("skills").is_dir());
     assert!(workspace.join("prompts").is_dir());
     let workspace_entries: Vec<String> = std::fs::read_dir(&workspace)

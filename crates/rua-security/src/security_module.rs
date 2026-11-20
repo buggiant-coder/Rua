@@ -6,7 +6,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use rua_config::dirs::Paths;
 use rua_config::types::security::SecurityConfig;
-use rua_core::{ChatAddress, ChatScopeStore, ProjectId};
+use rua_core::{ChatAddress, ChatStore};
 
 use crate::approval_authority::{
     AgentScopeRuleStore, ApprovalAuthority, ApprovalModePreset, ApprovalRequestInput,
@@ -604,7 +604,7 @@ struct FileBackedChatScopeRuleStore {
 
 impl FileBackedChatScopeRuleStore {
     fn permission_rules_path(&self, address: &ChatAddress) -> PathBuf {
-        ChatScopeStore::resolve(&self.data_dir, address.clone())
+        ChatStore::resolve(&self.data_dir, address.clone())
             .root()
             .join("sessions")
             .join(safe_path_component(address.chat_id().as_str()))
@@ -619,11 +619,7 @@ impl ChatScopeRuleStore for FileBackedChatScopeRuleStore {
             .into_iter()
             .map(|rule| {
                 rule.into_runtime(
-                    address
-                        .agent_id()
-                        .map(|agent_id| agent_id.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
+                    String::new(),
                     Some(crate::ApprovalOwner::chat(address.clone())),
                     ApprovalReuseScope::Chat,
                 )
@@ -648,28 +644,6 @@ impl ChatScopeRuleStore for FileBackedChatScopeRuleStore {
 
     fn delete_chat_rules(&self, address: &ChatAddress) -> Result<(), String> {
         remove_permission_rules_file(&self.permission_rules_path(address))
-    }
-
-    fn delete_project_rules(&self, project_id: &ProjectId) -> Result<(), String> {
-        let sessions_dir = self
-            .data_dir
-            .join("projects")
-            .join(project_id.as_str())
-            .join("sessions");
-        let entries = match std::fs::read_dir(&sessions_dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error.to_string()),
-        };
-        for entry in entries {
-            let entry = entry.map_err(|error| error.to_string())?;
-            let file_type = entry.file_type().map_err(|error| error.to_string())?;
-            if !file_type.is_dir() || file_type.is_symlink() {
-                continue;
-            }
-            remove_permission_rules_file(&entry.path().join("permission_rules.json"))?;
-        }
-        Ok(())
     }
 }
 

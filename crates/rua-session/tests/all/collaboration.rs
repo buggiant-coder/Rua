@@ -13,8 +13,8 @@ async fn stale_request_write_cannot_erase_outcome_or_change_identity() {
     let store = WorkspaceSessionStore::new(dir.path());
     let request = CollaborationRequest {
         request_id: uuid::Uuid::new_v4().to_string(),
-        source: ChatAddress::agent("a", "source"),
-        target: ChatAddress::agent("b", "target"),
+        source: ChatAddress::new("source"),
+        target: ChatAddress::new("target"),
         origin_turn_id: "turn".into(),
         origin_tool_call_id: "call".into(),
         input_digest: "digest".into(),
@@ -66,8 +66,8 @@ async fn deferred_read_and_automatic_delivery_have_one_persisted_winner() {
     let store = std::sync::Arc::new(WorkspaceSessionStore::new(dir.path()));
     let mut request = CollaborationRequest {
         request_id: uuid::Uuid::new_v4().to_string(),
-        source: ChatAddress::agent("a", "source"),
-        target: ChatAddress::agent("b", "target"),
+        source: ChatAddress::new("source"),
+        target: ChatAddress::new("target"),
         origin_turn_id: "turn".into(),
         origin_tool_call_id: "call".into(),
         input_digest: "digest".into(),
@@ -149,8 +149,8 @@ async fn delivery_claim_has_one_persisted_winner_and_cannot_regress() {
     let store = std::sync::Arc::new(WorkspaceSessionStore::new(dir.path()));
     let request = CollaborationRequest {
         request_id: uuid::Uuid::new_v4().to_string(),
-        source: ChatAddress::agent("a", "source"),
-        target: ChatAddress::agent("b", "target"),
+        source: ChatAddress::new("source"),
+        target: ChatAddress::new("target"),
         origin_turn_id: "turn".into(),
         origin_tool_call_id: "call".into(),
         input_digest: "digest".into(),
@@ -255,8 +255,8 @@ async fn failed_delivery_retry_preserves_observation_identity() {
     let store = WorkspaceSessionStore::new(dir.path());
     let mut request = CollaborationRequest {
         request_id: uuid::Uuid::new_v4().to_string(),
-        source: ChatAddress::agent("a", "source"),
-        target: ChatAddress::agent("b", "target"),
+        source: ChatAddress::new("source"),
+        target: ChatAddress::new("target"),
         origin_turn_id: "turn".into(),
         origin_tool_call_id: "call".into(),
         input_digest: "digest".into(),

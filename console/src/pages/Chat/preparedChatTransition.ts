@@ -5,7 +5,6 @@ import {
   primeChatViewCache,
 } from "./owned/useConversationViewRuntime";
 import { resolveConversationRoute } from "./conversationRouteController";
-import { saveDraftConversationId } from "./conversationLifecycle";
 
 let preparationGeneration = 0;
 let cancelActivePreparation: (() => void) | null = null;
@@ -35,12 +34,11 @@ export async function prepareChatTransition(
         scope: agentId,
         conversationId: chatId,
         loadHistory: () =>
-          chatApi.getChat(chatId, agentId, {
+          chatApi.getChat(chatId, {
             turnLimit: INITIAL_CHAT_TURN_PAGE_SIZE,
           }),
       });
       history = route.history;
-      if (route.unmaterialized) saveDraftConversationId(agentId, chatId);
     } catch (err) {
       if (generation !== preparationGeneration) return false;
       throw err;

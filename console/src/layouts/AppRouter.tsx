@@ -1,3 +1,4 @@
+import { addressFromChatPath } from "@/pages/Chat/conversationAddress";
 import {
   Suspense,
   useEffect,
@@ -32,14 +33,14 @@ export function RouteCommitBoundary({
     rememberChatRoute(location.pathname);
   }, [location.pathname]);
 
-  const routeKey = /^\/agents\/[^/]+\/chats\/[^/]+$/.test(location.pathname)
-    ? "/agents/:agentId/chats/:chatId"
+  const routeKey = addressFromChatPath(location.pathname)
+    ? "/chats/:chatId"
     : location.pathname === "/projects" ||
       location.pathname.startsWith("/projects/")
     ? "/projects"
     : location.pathname;
   const transitionKey =
-    routeKey === "/agents/:agentId/chats/:chatId" || routeKey === "/projects"
+    routeKey === "/chats/:chatId" || routeKey === "/projects"
       ? routeKey
       : `${routeKey}:${selectedAgent}`;
 

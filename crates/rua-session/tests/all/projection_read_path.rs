@@ -1483,7 +1483,7 @@ async fn workspace_store_builds_emergency_bounded_projection_without_scanning_fu
 
     let projection = store
         .build_emergency_context_projection(
-            &ChatAddress::agent("agent-a", "chat-1"),
+            &ChatAddress::new("chat-1"),
             9,
             ContextProjectionRequest {
                 current_user_input: Some("must fit".to_string()),
@@ -1784,7 +1784,7 @@ async fn projection_exclusions_apply_to_emergency_history() {
         .unwrap();
     let projection = store
         .build_emergency_context_projection(
-            &rua_core::ChatAddress::agent("agent-1", chat_id),
+            &rua_core::ChatAddress::new(chat_id),
             9,
             ContextProjectionRequest {
                 current_user_input: None,

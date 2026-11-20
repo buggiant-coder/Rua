@@ -3,7 +3,7 @@ use rua_chat::{
     ChatListUpdate, ChatPolicy, ChatSearchQuery, ChatService, ChatSetting, ResourcePolicy,
     TurnAgentAssignment,
 };
-use rua_core::{ChatAddress, ChatScopeStore};
+use rua_core::{ChatAddress, ChatStore};
 use rua_session::{
     chat_index, ChatMetadata, ChatSessionHeader, NewConversationMessage, NewConversationTurn,
     TurnLifecycle, WorkspaceSessionStore,
@@ -72,10 +72,10 @@ fn header_projection_rejects_invalid_timestamps_and_index_metadata() {
 }
 
 #[tokio::test]
-async fn existing_agent_chat_loads_scope_policy_without_recreating_storage() {
+async fn existing_chat_loads_default_policy_without_recreating_storage() {
     let root = tempfile::tempdir().expect("temporary Rua root");
-    let address = ChatAddress::agent("agent-a", "018f5f61-c461-7a11-b24d-8f52af0f4359");
-    let scope_store = ChatScopeStore::resolve(root.path(), address.clone());
+    let address = ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4359");
+    let scope_store = ChatStore::resolve(root.path(), address.clone());
     let session_store = WorkspaceSessionStore::new(scope_store.root());
     let header = ChatSessionHeader::new(ChatMetadata {
         chat_id: address.chat_id().to_string(),
@@ -107,7 +107,7 @@ async fn existing_agent_chat_loads_scope_policy_without_recreating_storage() {
     assert_eq!(
         chat.policy(),
         &ChatPolicy {
-            agent_assignment: AgentAssignmentPolicy::Fixed,
+            agent_assignment: AgentAssignmentPolicy::Selectable,
             resource: ResourcePolicy::None,
             authority_placement: AuthorityPlacementPolicy::Selectable,
         }
@@ -125,12 +125,12 @@ async fn existing_agent_chat_loads_scope_policy_without_recreating_storage() {
 }
 
 #[tokio::test]
-async fn existing_project_chat_loads_project_scope_policy() {
+async fn existing_project_chat_loads_membership_policy() {
     let root = tempfile::tempdir().expect("temporary Rua root");
-    let address = ChatAddress::project("project-a", "018f5f61-c461-7a11-b24d-8f52af0f435a");
-    let scope_store = ChatScopeStore::resolve(root.path(), address.clone());
+    let address = ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f435a");
+    let scope_store = ChatStore::resolve(root.path(), address.clone());
     let session_store = WorkspaceSessionStore::new(scope_store.root());
-    let header = ChatSessionHeader::new(ChatMetadata {
+    let mut header = ChatSessionHeader::new(ChatMetadata {
         chat_id: address.chat_id().to_string(),
         agent_id: "agent-a".to_string(),
         title: "Existing project chat".to_string(),
@@ -140,6 +140,7 @@ async fn existing_project_chat_loads_project_scope_policy() {
         archived: false,
         preview: None,
     });
+    header.project_id = Some("project-a".into());
     session_store
         .save_chat_header(&header)
         .await
@@ -171,8 +172,8 @@ async fn existing_project_chat_loads_project_scope_policy() {
 #[tokio::test]
 async fn model_update_writes_only_session_file_and_preserves_unknown_fields() {
     let root = tempfile::tempdir().expect("temporary Rua root");
-    let address = ChatAddress::agent("agent-a", "018f5f61-c461-7a11-b24d-8f52af0f4360");
-    let scope_store = ChatScopeStore::resolve(root.path(), address.clone());
+    let address = ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4360");
+    let scope_store = ChatStore::resolve(root.path(), address.clone());
     let session_store = WorkspaceSessionStore::new(scope_store.root());
     let mut header = ChatSessionHeader::new(ChatMetadata {
         chat_id: address.chat_id().to_string(),
@@ -233,11 +234,11 @@ async fn model_selection_uses_current_configuration_for_both_chat_scopes() {
     let root = tempfile::tempdir().unwrap();
     let service = ChatService::new(root.path());
     for address in [
-        ChatAddress::agent("agent-a", "018f5f61-c461-7a11-b24d-8f52af0f4370"),
-        ChatAddress::project("project-a", "018f5f61-c461-7a11-b24d-8f52af0f4371"),
+        ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4370"),
+        ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4371"),
     ] {
         seed_two_turn_chat(root.path(), &address).await;
-        let scope = ChatScopeStore::resolve(root.path(), address.clone());
+        let scope = ChatStore::resolve(root.path(), address.clone());
         let store = WorkspaceSessionStore::new(scope.root());
         let chat_id = address.chat_id().as_str();
         let mut header = store.load_chat_header(chat_id).await.unwrap().unwrap();
@@ -300,9 +301,9 @@ async fn model_selection_uses_current_configuration_for_both_chat_scopes() {
 #[tokio::test]
 async fn model_selection_does_not_resurrect_legacy_fields_when_configuration_has_no_model() {
     let root = tempfile::tempdir().unwrap();
-    let address = ChatAddress::agent("agent-a", "018f5f61-c461-7a11-b24d-8f52af0f4372");
+    let address = ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4372");
     seed_two_turn_chat(root.path(), &address).await;
-    let scope = ChatScopeStore::resolve(root.path(), address.clone());
+    let scope = ChatStore::resolve(root.path(), address.clone());
     let store = WorkspaceSessionStore::new(scope.root());
     let chat_id = address.chat_id().as_str();
     let mut header = store.load_chat_header(chat_id).await.unwrap().unwrap();
@@ -333,8 +334,8 @@ async fn model_selection_does_not_resurrect_legacy_fields_when_configuration_has
 #[tokio::test]
 async fn non_list_settings_accumulate_in_session_file_without_touching_index() {
     let root = tempfile::tempdir().expect("temporary Rua root");
-    let address = ChatAddress::project("project-a", "018f5f61-c461-7a11-b24d-8f52af0f4361");
-    let scope_store = ChatScopeStore::resolve(root.path(), address.clone());
+    let address = ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4361");
+    let scope_store = ChatStore::resolve(root.path(), address.clone());
     let session_store = WorkspaceSessionStore::new(scope_store.root());
     let header = ChatSessionHeader::new(ChatMetadata {
         chat_id: address.chat_id().to_string(),
@@ -358,13 +359,12 @@ async fn non_list_settings_accumulate_in_session_file_without_touching_index() {
     let policy = ChatPolicy {
         agent_assignment: AgentAssignmentPolicy::Selectable,
         resource: ResourcePolicy::ProjectBinding,
-        authority_placement: AuthorityPlacementPolicy::ResourceBound,
+        authority_placement: AuthorityPlacementPolicy::Selectable,
     };
     let thinking = serde_json::json!({"strength": "high"});
     let authority = serde_json::json!({"device_id": "device-a", "authority_epoch": 7});
     let harness = serde_json::json!({"schema_version": 1, "modules": {}});
     for setting in [
-        ChatSetting::SelectedAgent("agent-b".to_string()),
         ChatSetting::Thinking(thinking.clone()),
         ChatSetting::Policy(policy),
         ChatSetting::AuthorityPlacement(authority.clone()),
@@ -381,7 +381,7 @@ async fn non_list_settings_accumulate_in_session_file_without_touching_index() {
         .await
         .expect("load updated Chat")
         .expect("updated Chat");
-    assert_eq!(chat.selected_agent_id(), Some("agent-b"));
+    assert_eq!(chat.selected_agent_id(), Some("agent-a"));
     assert_eq!(chat.thinking(), Some(&thinking));
     assert_eq!(chat.policy(), &policy);
     assert_eq!(chat.authority_placement(), Some(&authority));
@@ -395,49 +395,43 @@ async fn non_list_settings_accumulate_in_session_file_without_touching_index() {
 }
 
 #[tokio::test]
-async fn agent_scoped_chat_rejects_selecting_a_different_agent() {
-    let root = tempfile::tempdir().expect("temporary Rua root");
-    let address = ChatAddress::agent("agent-a", "018f5f61-c461-7a11-b24d-8f52af0f4364");
-    let scope_store = ChatScopeStore::resolve(root.path(), address.clone());
-    let session_store = WorkspaceSessionStore::new(scope_store.root());
-    let mut header = ChatSessionHeader::new(ChatMetadata {
-        chat_id: address.chat_id().to_string(),
-        agent_id: "agent-a".to_string(),
-        title: "Fixed Agent chat".to_string(),
-        created_at: "2026-08-20T00:00:00Z".to_string(),
-        last_activity_at: "2026-08-20T00:00:00Z".to_string(),
-        pinned: false,
-        archived: false,
-        preview: None,
-    });
-    rua_chat::apply_agent_scope_defaults(&mut header, "agent-a");
-    session_store
-        .save_chat_header(&header)
+async fn explicit_fixed_agent_policy_rejects_selecting_a_different_agent() {
+    let root = tempfile::tempdir().unwrap();
+    let address = ChatAddress::new("fixed-agent");
+    seed_two_turn_chat(root.path(), &address).await;
+    let service = ChatService::new(root.path());
+    service
+        .update_setting(
+            &address,
+            ChatSetting::Policy(ChatPolicy {
+                agent_assignment: AgentAssignmentPolicy::Fixed,
+                resource: ResourcePolicy::None,
+                authority_placement: AuthorityPlacementPolicy::Selectable,
+            }),
+        )
         .await
-        .expect("seed Agent-Scoped Session File");
-
-    let error = ChatService::new(root.path())
-        .update_setting(&address, ChatSetting::SelectedAgent("agent-b".to_string()))
+        .unwrap();
+    let error = service
+        .update_setting(&address, ChatSetting::SelectedAgent("agent-b".into()))
         .await
-        .expect_err("fixed Agent selection must reject another Agent");
-
+        .unwrap_err();
     assert!(error.to_string().contains("fixed"));
-    let persisted = session_store
-        .load_chat_header(address.chat_id().as_str())
-        .await
-        .expect("load Session File")
-        .expect("Session File");
     assert_eq!(
-        persisted.extra.get("selected_agent_id"),
-        Some(&serde_json::json!("agent-a"))
+        service
+            .load(&address)
+            .await
+            .unwrap()
+            .unwrap()
+            .selected_agent_id(),
+        Some("agent-a")
     );
 }
 
 #[tokio::test]
-async fn rename_and_pin_commit_session_then_update_scope_index_projection() {
+async fn rename_and_pin_commit_session_then_update_index_projection() {
     let root = tempfile::tempdir().expect("temporary Rua root");
-    let address = ChatAddress::agent("agent-a", "018f5f61-c461-7a11-b24d-8f52af0f4362");
-    let scope_store = ChatScopeStore::resolve(root.path(), address.clone());
+    let address = ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4362");
+    let scope_store = ChatStore::resolve(root.path(), address.clone());
     let session_store = WorkspaceSessionStore::new(scope_store.root());
     let header = ChatSessionHeader::new(ChatMetadata {
         chat_id: address.chat_id().to_string(),
@@ -507,19 +501,22 @@ async fn rename_and_pin_commit_session_then_update_scope_index_projection() {
     assert_eq!(projected.name, "New title");
     assert!(projected.pinned);
     assert_eq!(projected.tag, rua_chat::ChatTag::Yellow);
-    assert_eq!(projected.meta, serde_json::json!({"preserve": true}));
+    assert_eq!(
+        projected.meta,
+        serde_json::json!({"preserve": true, "agent_id": "agent-a", "project_id": null})
+    );
     assert_eq!(projected.pin_order, 11);
 }
 
 #[tokio::test]
-async fn first_input_replaces_placeholder_title_for_every_chat_scope() {
+async fn first_input_replaces_placeholder_title_with_or_without_project() {
     let root = tempfile::tempdir().expect("temporary Rua root");
     let service = ChatService::new(root.path());
-    let agent = ChatAddress::agent("agent-a", "018f5f61-c461-7a11-b24d-8f52af0f4390");
-    let project = ChatAddress::project("project-a", "018f5f61-c461-7a11-b24d-8f52af0f4391");
+    let agent = ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4390");
+    let project = ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4391");
 
     for address in [&agent, &project] {
-        let scope_store = ChatScopeStore::resolve(root.path(), address.clone());
+        let scope_store = ChatStore::resolve(root.path(), address.clone());
         let session_store = WorkspaceSessionStore::new(scope_store.root());
         let mut header = ChatSessionHeader::new(ChatMetadata {
             chat_id: address.chat_id().to_string(),
@@ -531,9 +528,8 @@ async fn first_input_replaces_placeholder_title_for_every_chat_scope() {
             archived: false,
             preview: None,
         });
-        if address.agent_id().is_some() {
-            rua_chat::apply_agent_scope_defaults(&mut header, "agent-a");
-        }
+        header.project_id = (address == &project).then(|| "project-a".to_string());
+        rua_chat::apply_chat_defaults(&mut header);
         session_store
             .save_chat_header(&header)
             .await
@@ -562,8 +558,8 @@ async fn first_input_replaces_placeholder_title_for_every_chat_scope() {
 #[tokio::test]
 async fn failed_projection_leaves_session_committed_and_public_repair_rebuilds_index() {
     let root = tempfile::tempdir().expect("temporary Rua root");
-    let address = ChatAddress::project("project-a", "018f5f61-c461-7a11-b24d-8f52af0f4363");
-    let scope_store = ChatScopeStore::resolve(root.path(), address.clone());
+    let address = ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4363");
+    let scope_store = ChatStore::resolve(root.path(), address.clone());
     let session_store = WorkspaceSessionStore::new(scope_store.root());
     let header = ChatSessionHeader::new(ChatMetadata {
         chat_id: address.chat_id().to_string(),
@@ -622,11 +618,11 @@ async fn failed_projection_leaves_session_committed_and_public_repair_rebuilds_i
 }
 
 #[tokio::test]
-async fn branch_before_has_identical_agent_and_project_scope_behavior() {
+async fn branch_before_has_identical_multiple_chat_behavior() {
     let root = tempfile::tempdir().expect("temporary Rua root");
     let addresses = [
-        ChatAddress::agent("agent-a", "018f5f61-c461-7a11-b24d-8f52af0f4370"),
-        ChatAddress::project("project-a", "018f5f61-c461-7a11-b24d-8f52af0f4371"),
+        ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4370"),
+        ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4371"),
     ];
     let service = ChatService::new(root.path());
 
@@ -638,12 +634,15 @@ async fn branch_before_has_identical_agent_and_project_scope_behavior() {
             .await
             .expect("branch Chat before second Turn");
 
-        assert_eq!(branch.address().scope(), address.scope());
+        assert_eq!(
+            branch.project_id(),
+            service.load(&address).await.unwrap().unwrap().project_id()
+        );
         assert_ne!(branch.address().chat_id(), address.chat_id());
         assert_eq!(branch.title(), "Parity chat (branch)");
         assert!(!branch.pinned());
 
-        let scope_store = ChatScopeStore::resolve(root.path(), branch.address().clone());
+        let scope_store = ChatStore::resolve(root.path(), branch.address().clone());
         let turns = WorkspaceSessionStore::new(scope_store.root())
             .read_turn_range(branch.address().chat_id().as_str(), 1, usize::MAX)
             .await
@@ -658,18 +657,21 @@ async fn branch_before_has_identical_agent_and_project_scope_behavior() {
             .await
             .expect("read branch projection")
             .expect("branch projection");
-        assert_eq!(projected.meta, serde_json::json!({"preserve": true}));
+        assert_eq!(
+            projected.meta,
+            serde_json::json!({"preserve": true, "agent_id": "agent-a", "project_id": null})
+        );
         assert_eq!(projected.pin_order, 0);
         assert_eq!(projected.status, "idle");
     }
 }
 
 #[tokio::test]
-async fn rollback_before_has_identical_agent_and_project_scope_behavior() {
+async fn rollback_before_has_identical_multiple_chat_behavior() {
     let root = tempfile::tempdir().expect("temporary Rua root");
     let addresses = [
-        ChatAddress::agent("agent-a", "018f5f61-c461-7a11-b24d-8f52af0f4372"),
-        ChatAddress::project("project-a", "018f5f61-c461-7a11-b24d-8f52af0f4373"),
+        ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4372"),
+        ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4373"),
     ];
     let service = ChatService::new(root.path());
 
@@ -682,7 +684,7 @@ async fn rollback_before_has_identical_agent_and_project_scope_behavior() {
             .expect("rollback Chat before second Turn");
 
         assert_eq!(rolled_back.address(), &address);
-        let scope_store = ChatScopeStore::resolve(root.path(), address.clone());
+        let scope_store = ChatStore::resolve(root.path(), address.clone());
         let turns = WorkspaceSessionStore::new(scope_store.root())
             .read_turn_range(address.chat_id().as_str(), 1, usize::MAX)
             .await
@@ -705,12 +707,12 @@ async fn rollback_before_has_identical_agent_and_project_scope_behavior() {
 async fn rollback_stopped_user_only_turn_stays_removed_after_reload() {
     let root = tempfile::tempdir().expect("temporary Rua root");
     for address in [
-        ChatAddress::agent("agent-a", "rollback-stopped"),
-        ChatAddress::project("project-a", "rollback-stopped"),
+        ChatAddress::new("rollback-stopped-first"),
+        ChatAddress::new("rollback-stopped-second"),
     ] {
         seed_two_turn_chat(root.path(), &address).await;
         let service = ChatService::new(root.path());
-        let scope = ChatScopeStore::resolve(root.path(), address.clone());
+        let scope = ChatStore::resolve(root.path(), address.clone());
         let store = WorkspaceSessionStore::new(scope.root());
         for keep_previous in [true, false] {
             if !keep_previous {
@@ -765,17 +767,17 @@ async fn rollback_stopped_user_only_turn_stays_removed_after_reload() {
 }
 
 #[tokio::test]
-async fn selected_variant_has_identical_agent_and_project_scope_behavior() {
+async fn selected_variant_has_identical_multiple_chat_behavior() {
     let root = tempfile::tempdir().expect("temporary Rua root");
     let addresses = [
-        ChatAddress::agent("agent-a", "018f5f61-c461-7a11-b24d-8f52af0f4374"),
-        ChatAddress::project("project-a", "018f5f61-c461-7a11-b24d-8f52af0f4375"),
+        ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4374"),
+        ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4375"),
     ];
     let service = ChatService::new(root.path());
 
     for address in addresses {
         seed_two_turn_chat(root.path(), &address).await;
-        let scope_store = ChatScopeStore::resolve(root.path(), address.clone());
+        let scope_store = ChatStore::resolve(root.path(), address.clone());
         let session_store = WorkspaceSessionStore::new(scope_store.root());
         session_store
             .append_messages_to_turn_as_new_variant(
@@ -829,11 +831,11 @@ async fn selected_variant_has_identical_agent_and_project_scope_behavior() {
 }
 
 #[tokio::test]
-async fn history_page_has_identical_agent_and_project_scope_behavior() {
+async fn history_page_has_identical_multiple_chat_behavior() {
     let root = tempfile::tempdir().expect("temporary Rua root");
     let addresses = [
-        ChatAddress::agent("agent-a", "018f5f61-c461-7a11-b24d-8f52af0f4376"),
-        ChatAddress::project("project-a", "018f5f61-c461-7a11-b24d-8f52af0f4377"),
+        ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4376"),
+        ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4377"),
     ];
     let service = ChatService::new(root.path());
 
@@ -867,76 +869,115 @@ async fn history_page_has_identical_agent_and_project_scope_behavior() {
 }
 
 #[tokio::test]
-async fn search_has_identical_agent_and_project_scope_behavior() {
-    let root = tempfile::tempdir().expect("temporary Rua root");
-    let addresses = [
-        ChatAddress::agent("agent-a", "018f5f61-c461-7a11-b24d-8f52af0f4378"),
-        ChatAddress::project("project-a", "018f5f61-c461-7a11-b24d-8f52af0f4379"),
-    ];
+async fn search_filters_current_agent_and_project_before_pagination() {
+    let root = tempfile::tempdir().unwrap();
     let service = ChatService::new(root.path());
-
-    for address in addresses {
-        seed_two_turn_chat(root.path(), &address).await;
-
-        let result = service
-            .search(
-                &address,
-                ChatSearchQuery {
-                    query: "assistant-second".to_string(),
-                    offset: 0,
-                    limit: 10,
-                },
-            )
+    let store = WorkspaceSessionStore::new(service.storage_root());
+    for (id, agent, project) in [
+        ("a", "agent-a", None),
+        ("b", "agent-b", Some("project-a")),
+        ("c", "agent-a", Some("project-b")),
+    ] {
+        seed_two_turn_chat(root.path(), &ChatAddress::new(id)).await;
+        store
+            .update_chat_header(id, |header| {
+                header.agent_id = agent.into();
+                header.metadata.agent_id = agent.into();
+                header.project_id = project.map(str::to_string);
+            })
             .await
-            .expect("search saved Chat History");
-
-        assert_eq!(result.total, 1);
-        assert_eq!(result.results.len(), 1);
-        assert_eq!(result.results[0].chat_id, address.chat_id().as_str());
-        assert_eq!(result.results[0].message.message_id, "assistant-second");
+            .unwrap();
     }
+    let query = |agent: Option<&str>, project: Option<&str>| ChatSearchQuery {
+        agent_id: agent.map(str::to_string),
+        project_id: project.map(str::to_string),
+        query: "assistant-second".into(),
+        offset: 0,
+        limit: 1,
+    };
+    let all = service.search(query(None, None)).await.unwrap();
+    assert_eq!(all.total, 3);
+    assert_eq!(all.results.len(), 1);
+    let project = service
+        .search(query(None, Some("project-a")))
+        .await
+        .unwrap();
+    assert_eq!(project.total, 1);
+    assert_eq!(project.results[0].chat_id, "b");
+    let combined = service
+        .search(query(Some("agent-a"), Some("project-a")))
+        .await
+        .unwrap();
+    assert_eq!(combined.total, 0);
+    assert_eq!(
+        service
+            .search(query(Some("agent-a"), None))
+            .await
+            .unwrap()
+            .total,
+        2
+    );
 }
 
 #[tokio::test]
-async fn list_uses_each_chat_scope_index_projection() {
-    let root = tempfile::tempdir().expect("temporary Rua root");
-    let addresses = [
-        ChatAddress::agent("agent-a", "018f5f61-c461-7a11-b24d-8f52af0f4380"),
-        ChatAddress::project("project-a", "018f5f61-c461-7a11-b24d-8f52af0f4381"),
-    ];
+async fn list_filters_current_agent_and_project_in_one_index() {
+    let root = tempfile::tempdir().unwrap();
     let service = ChatService::new(root.path());
-    for address in &addresses {
-        seed_two_turn_chat(root.path(), address).await;
-    }
-
-    for address in addresses {
-        let page = service
-            .list(
-                &address,
-                ChatListQuery {
-                    user_id: None,
-                    channel: Some("console".to_string()),
-                    search: Some("Parity".to_string()),
-                    offset: 0,
-                    limit: 10,
-                    ..ChatListQuery::default()
-                },
-            )
+    let store = WorkspaceSessionStore::new(service.storage_root());
+    for (id, agent, project) in [
+        ("a", "agent-a", None),
+        ("b", "agent-b", Some("project-a")),
+        ("c", "agent-a", Some("project-b")),
+    ] {
+        let address = ChatAddress::new(id);
+        seed_two_turn_chat(root.path(), &address).await;
+        store
+            .update_chat_header(id, |header| {
+                header.agent_id = agent.into();
+                header.metadata.agent_id = agent.into();
+                header.project_id = project.map(str::to_string);
+                header.metadata.pinned = false;
+            })
             .await
-            .expect("list Scope Chat Index");
-
-        assert_eq!(page.total, 1);
-        assert_eq!(page.entries.len(), 1);
-        assert_eq!(page.entries[0].id, address.chat_id().as_str());
+            .unwrap();
+        service.repair_projection(&address).await.unwrap();
     }
+    let query = |agent: Option<&str>, project: Option<&str>| ChatListQuery {
+        agent_id: agent.map(str::to_string),
+        project_id: project.map(str::to_string),
+        limit: 1,
+        ..ChatListQuery::default()
+    };
+    let all = service.list(query(None, None)).await.unwrap();
+    assert_eq!(all.total, 3);
+    assert_eq!(all.entries.len(), 1);
+    let project = service.list(query(None, Some("project-a"))).await.unwrap();
+    assert_eq!(project.total, 1);
+    assert_eq!(project.entries[0].id, "b");
+    assert_eq!(
+        service
+            .list(query(Some("agent-a"), Some("project-a")))
+            .await
+            .unwrap()
+            .total,
+        0
+    );
+    assert_eq!(
+        service
+            .list(query(Some("agent-a"), None))
+            .await
+            .unwrap()
+            .total,
+        2
+    );
 }
 
 #[tokio::test]
 async fn repair_projection_does_not_rewrite_conversation_history() {
     let root = tempfile::tempdir().expect("temporary Rua root");
-    let address = ChatAddress::project("project-a", "018f5f61-c461-7a11-b24d-8f52af0f4382");
+    let address = ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4382");
     seed_two_turn_chat(root.path(), &address).await;
-    let scope_store = ChatScopeStore::resolve(root.path(), address.clone());
+    let scope_store = ChatStore::resolve(root.path(), address.clone());
     let session_store = WorkspaceSessionStore::new(scope_store.root());
     let header_before = session_store
         .load_chat_header(address.chat_id().as_str())
@@ -984,51 +1025,31 @@ async fn repair_projection_does_not_rewrite_conversation_history() {
 }
 
 #[test]
-fn media_root_is_resolved_by_common_chat_ownership() {
-    let root = tempfile::tempdir().expect("temporary Rua root");
+fn media_root_belongs_to_the_independent_chat_workspace() {
+    let root = tempfile::tempdir().unwrap();
     let service = ChatService::new(root.path());
-    let agent = ChatAddress::agent("agent-a", "018f5f61-c461-7a11-b24d-8f52af0f4383");
-    let project = ChatAddress::project("project-a", "018f5f61-c461-7a11-b24d-8f52af0f4384");
-
-    assert_eq!(
-        service.media_root(&agent).unwrap(),
-        root.path().join("workspaces").join("agent-a").join("media")
-    );
-    assert_eq!(
-        service.media_root(&project).unwrap(),
-        root.path().join("projects").join("project-a").join("media")
-    );
+    assert_eq!(service.media_root(), root.path().join("chats/media"));
+    assert_eq!(service.storage_root(), root.path().join("chats"));
+    assert!(!service.storage_root().exists());
 }
 
 #[tokio::test]
 async fn combined_agent_and_project_lifecycle_uses_one_chat_service() {
     let root = tempfile::tempdir().expect("temporary Rua root");
     let service = ChatService::new(root.path());
-    let agent = ChatAddress::agent("agent-a", "018f5f61-c461-7a11-b24d-8f52af0f4385");
-    let project = ChatAddress::project("project-a", "018f5f61-c461-7a11-b24d-8f52af0f4386");
+    let agent = ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4385");
+    let project = ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4386");
     for address in [&agent, &project] {
         seed_two_turn_chat(root.path(), address).await;
-        let selected_agent = address
-            .agent_id()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "agent-a".to_string());
-        match address.scope() {
-            rua_core::ChatScope::Agent { .. } => {
-                service
-                    .complete_agent_scope_materialization(address)
-                    .await
-                    .unwrap();
-            }
-            rua_core::ChatScope::Project { .. } => {
-                let scope = ChatScopeStore::resolve(root.path(), address.clone());
-                WorkspaceSessionStore::new(scope.root())
-                    .update_chat_header(address.chat_id().as_str(), |header| {
-                        rua_chat::apply_project_scope_defaults(header, &selected_agent);
-                    })
-                    .await
-                    .unwrap();
-            }
-        }
+        let selected_agent = "agent-a";
+        let project_id = (address == &project).then(|| "project-a".to_string());
+        WorkspaceSessionStore::new(service.storage_root())
+            .update_chat_header(address.chat_id().as_str(), |header| {
+                header.project_id = project_id
+            })
+            .await
+            .unwrap();
+        service.complete_materialization(address).await.unwrap();
         service
             .update_setting(
                 address,
@@ -1059,7 +1080,7 @@ async fn combined_agent_and_project_lifecycle_uses_one_chat_service() {
             service.load(address).await.unwrap().unwrap().title(),
             "Unified lifecycle"
         );
-        let scope = ChatScopeStore::resolve(root.path(), address.clone());
+        let scope = ChatStore::resolve(root.path(), address.clone());
         WorkspaceSessionStore::new(scope.root())
             .append_messages_to_turn_as_new_variant(
                 address.chat_id().as_str(),
@@ -1089,7 +1110,10 @@ async fn combined_agent_and_project_lifecycle_uses_one_chat_service() {
             .await
             .unwrap();
         let branch = service.branch_before(address, "turn-second").await.unwrap();
-        assert_eq!(branch.address().scope(), address.scope());
+        assert_eq!(
+            branch.project_id(),
+            service.load(address).await.unwrap().unwrap().project_id()
+        );
         service
             .rollback_before(address, "turn-second")
             .await
@@ -1110,14 +1134,13 @@ async fn combined_agent_and_project_lifecycle_uses_one_chat_service() {
         );
         assert!(
             service
-                .search(
-                    address,
-                    ChatSearchQuery {
-                        query: "unified".to_string(),
-                        offset: 0,
-                        limit: 10,
-                    },
-                )
+                .search(ChatSearchQuery {
+                    agent_id: None,
+                    project_id: None,
+                    query: "unified".to_string(),
+                    offset: 0,
+                    limit: 10,
+                },)
                 .await
                 .unwrap()
                 .total
@@ -1125,13 +1148,10 @@ async fn combined_agent_and_project_lifecycle_uses_one_chat_service() {
         );
         assert!(
             service
-                .list(
-                    address,
-                    ChatListQuery {
-                        limit: 10,
-                        ..ChatListQuery::default()
-                    },
-                )
+                .list(ChatListQuery {
+                    limit: 10,
+                    ..ChatListQuery::default()
+                },)
                 .await
                 .unwrap()
                 .total
@@ -1141,16 +1161,20 @@ async fn combined_agent_and_project_lifecycle_uses_one_chat_service() {
 
     assert_eq!(
         service.load(&agent).await.unwrap().unwrap().policy(),
-        &ChatPolicy::for_scope(agent.scope())
+        &ChatPolicy::for_project(None)
     );
     assert_eq!(
         service.load(&project).await.unwrap().unwrap().policy(),
-        &ChatPolicy::for_scope(project.scope())
+        &ChatPolicy::for_project(Some("project-a"))
     );
-    assert!(service
-        .update_setting(&agent, ChatSetting::SelectedAgent("agent-b".to_string()))
-        .await
-        .is_err());
+    assert_eq!(
+        service
+            .update_setting(&agent, ChatSetting::SelectedAgent("agent-b".into()))
+            .await
+            .unwrap()
+            .selected_agent_id(),
+        Some("agent-b")
+    );
     assert_eq!(
         service
             .update_setting(&project, ChatSetting::SelectedAgent("agent-b".to_string()))
@@ -1159,21 +1183,22 @@ async fn combined_agent_and_project_lifecycle_uses_one_chat_service() {
             .selected_agent_id(),
         Some("agent-b")
     );
-    assert_ne!(
-        service.storage_root(&agent).unwrap(),
-        service.storage_root(&project).unwrap()
-    );
+    assert_eq!(service.storage_root(), root.path().join("chats"));
+    let reloaded = ChatService::new(root.path())
+        .load(&project)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reloaded.project_id(), Some("project-a"));
+    assert_eq!(reloaded.selected_agent_id(), Some("agent-b"));
 }
 
 async fn seed_two_turn_chat(rua_root: &std::path::Path, address: &ChatAddress) {
-    let scope_store = ChatScopeStore::resolve(rua_root, address.clone());
+    let scope_store = ChatStore::resolve(rua_root, address.clone());
     let session_store = WorkspaceSessionStore::new(scope_store.root());
     let header = ChatSessionHeader::new(ChatMetadata {
         chat_id: address.chat_id().to_string(),
-        agent_id: address
-            .agent_id()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "agent-a".to_string()),
+        agent_id: "agent-a".to_string(),
         title: "Parity chat".to_string(),
         created_at: "2026-08-20T00:00:00Z".to_string(),
         last_activity_at: "2026-08-20T00:02:00Z".to_string(),
@@ -1215,10 +1240,7 @@ async fn seed_two_turn_chat(rua_root: &std::path::Path, address: &ChatAddress) {
         user_metadata.insert(
             "turn_agent_assignment".to_string(),
             serde_json::to_value(TurnAgentAssignment {
-                agent_id: address
-                    .agent_id()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| "agent-a".to_string()),
+                agent_id: "agent-a".to_string(),
                 agent_name: "Agent A".to_string(),
                 assigned_at: format!("2026-08-20T00:{minute}:00Z"),
                 system_prompt: Some("Follow the project instructions.".to_string()),
@@ -1273,8 +1295,8 @@ async fn history_locates_a_complete_turn_without_reading_intervening_history() {
     let root = tempfile::tempdir().expect("temporary Rua root");
     let service = ChatService::new(root.path());
     for address in [
-        ChatAddress::agent("agent-a", "018f5f61-c461-7a11-b24d-8f52af0f4376"),
-        ChatAddress::project("project-a", "018f5f61-c461-7a11-b24d-8f52af0f4377"),
+        ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4376"),
+        ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4377"),
     ] {
         seed_two_turn_chat(root.path(), &address).await;
         let page = service

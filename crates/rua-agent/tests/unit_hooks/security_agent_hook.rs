@@ -59,7 +59,7 @@ async fn permission_hook_decisions_are_persisted_as_run_once_approval_facts() {
         ),
     ] {
         let (security, _tmp) = make_test_security();
-        let address = rua_core::ChatAddress::agent("agent-1", "chat-1");
+        let address = rua_core::ChatAddress::new("chat-1");
         let hook = SecurityAgentHook::new(Arc::clone(&security), true)
             .with_agent_id("agent-1")
             .with_session_id("chat-1")
@@ -147,7 +147,7 @@ async fn security_hook_hands_off_ignores_approval_required_list() {
 
     let snapshot = security
         .approval_authority()
-        .snapshot_at(&rua_core::ChatAddress::agent("agent-1", "session-1"))
+        .snapshot_at(&rua_core::ChatAddress::new("session-1"))
         .await;
     assert!(snapshot.pending.is_empty());
 }
@@ -175,7 +175,7 @@ async fn security_hook_uses_typed_project_chat_address_for_approval_ownership() 
     let mut config = SecurityConfig::default();
     config.tool_guard.approval_mode = "ask_first".into();
     security.config_store().save("agent-1", &config).unwrap();
-    let address = rua_core::ChatAddress::project("project-1", "chat-1");
+    let address = rua_core::ChatAddress::new("chat-1");
 
     let hook = SecurityAgentHook::new(Arc::clone(&security), true)
         .with_agent_id("agent-1")
@@ -193,7 +193,7 @@ async fn security_hook_uses_typed_project_chat_address_for_approval_ownership() 
     assert_eq!(project_snapshot.pending[0].agent_id, "agent-1");
     assert!(security
         .approval_authority()
-        .snapshot_at(&rua_core::ChatAddress::agent("agent-1", "chat-1"))
+        .snapshot_at(&rua_core::ChatAddress::new("chat-1"))
         .await
         .pending
         .is_empty());
@@ -239,7 +239,7 @@ async fn legacy_balanced_mode_allows_ordinary_bash_without_authority_request() {
 
     let snapshot = security
         .approval_authority()
-        .snapshot_at(&rua_core::ChatAddress::agent("agent-1", "chat-1"))
+        .snapshot_at(&rua_core::ChatAddress::new("chat-1"))
         .await;
     assert!(snapshot.pending.is_empty());
 }
@@ -247,7 +247,7 @@ async fn legacy_balanced_mode_allows_ordinary_bash_without_authority_request() {
 #[tokio::test]
 async fn wait_for_approval_reuses_structured_request_created_by_security_module() {
     let (security, _tmp) = make_test_security();
-    let address = rua_core::ChatAddress::agent("agent-1", "chat-1");
+    let address = rua_core::ChatAddress::new("chat-1");
     let hook = SecurityAgentHook::new(Arc::clone(&security), true)
         .with_agent_id("agent-1")
         .with_session_id("runtime-session-1")

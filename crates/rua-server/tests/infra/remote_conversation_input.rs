@@ -72,10 +72,10 @@ fn ack_for(request: &RemoteConversationInputRequest) -> RemoteConversationInputA
 #[tokio::test]
 async fn remote_managed_media_requirement_is_derived_only_from_media_ref() {
     let temp = TempDir::new().expect("tempdir");
-    let workspace_dir = temp.path().join("workspaces/default");
+    let workspace_dir = temp.path().join("chats");
     std::fs::create_dir_all(&workspace_dir).expect("workspace");
     let handoff = handoff(temp.path());
-    let address = rua_core::ChatAddress::agent("default", CHAT_ID);
+    let address = rua_core::ChatAddress::new(CHAT_ID);
     let mut console_request = request("look at this");
     console_request.input = Some(vec![serde_json::json!({
         "role": "user",
@@ -104,7 +104,7 @@ async fn remote_managed_media_requirement_is_derived_only_from_media_ref() {
 #[tokio::test]
 async fn first_input_media_requirements_fingerprint_staged_bytes() {
     let tmp = TempDir::new().unwrap();
-    let root = tmp.path().join("workspaces/default");
+    let root = tmp.path().join("chats");
     std::fs::create_dir_all(root.join("media")).unwrap();
     let media_id = "00000000-0000-4000-8000-000000000111";
     std::fs::write(root.join("media").join(media_id), b"abc").unwrap();
@@ -112,7 +112,7 @@ async fn first_input_media_requirements_fingerprint_staged_bytes() {
     request.input = Some(vec![
         serde_json::json!({"role":"user","content":[{"type":"file","media_ref":format!("media/{media_id}")} ]}),
     ]);
-    let address = rua_core::ChatAddress::agent("default", CHAT_ID);
+    let address = rua_core::ChatAddress::new(CHAT_ID);
     let mut params = input_params(&request, &root, &address);
     params.materialize_conversation = true;
     let prepared = handoff(tmp.path())
@@ -135,10 +135,10 @@ async fn first_input_media_requirements_fingerprint_staged_bytes() {
 #[tokio::test]
 async fn build_remote_conversation_input_request_uses_pending_marker_for_next_sequence() {
     let temp = TempDir::new().expect("tempdir");
-    let workspace_dir = temp.path().join("workspaces/default");
+    let workspace_dir = temp.path().join("chats");
     std::fs::create_dir_all(&workspace_dir).expect("workspace");
     let handoff = handoff(temp.path());
-    let address = rua_core::ChatAddress::agent("default", CHAT_ID);
+    let address = rua_core::ChatAddress::new(CHAT_ID);
     let mut first_request = request("first");
     first_request.extra.insert(
         "submission_id".to_string(),
@@ -181,7 +181,7 @@ async fn build_remote_conversation_input_request_uses_pending_marker_for_next_se
 #[tokio::test]
 async fn build_remote_conversation_input_request_does_not_carry_chat_model_slot() {
     let temp = TempDir::new().expect("tempdir");
-    let workspace_dir = temp.path().join("workspaces/default");
+    let workspace_dir = temp.path().join("chats");
     std::fs::create_dir_all(&workspace_dir).expect("workspace");
     let store = WorkspaceSessionStore::new(&workspace_dir);
     let mut header = ChatSessionHeader::new(ChatMetadata {
@@ -205,7 +205,7 @@ async fn build_remote_conversation_input_request_does_not_carry_chat_model_slot(
     store.save_chat_header(&header).await.expect("save header");
 
     let handoff = handoff(temp.path());
-    let address = rua_core::ChatAddress::agent("default", CHAT_ID);
+    let address = rua_core::ChatAddress::new(CHAT_ID);
     let mut console_request = request("hello remote model");
     console_request.extra.insert(
         "chat_model_slot".to_string(),
@@ -232,10 +232,10 @@ async fn build_remote_conversation_input_request_does_not_carry_chat_model_slot(
 #[tokio::test]
 async fn materializing_conversation_carries_initial_chat_model() {
     let temp = TempDir::new().expect("tempdir");
-    let workspace_dir = temp.path().join("projects/project-a");
+    let workspace_dir = temp.path().join("chats");
     std::fs::create_dir_all(&workspace_dir).expect("workspace");
     let handoff = handoff(temp.path());
-    let address = rua_core::ChatAddress::project("project-a", CHAT_ID);
+    let address = rua_core::ChatAddress::new(CHAT_ID);
     let mut console_request = request("hello Project model");
     let model = serde_json::json!({
         "provider_id": "fixture",
@@ -259,10 +259,10 @@ async fn materializing_conversation_carries_initial_chat_model() {
 #[tokio::test]
 async fn pending_marker_round_trips_and_clears() {
     let temp = TempDir::new().expect("tempdir");
-    let workspace_dir = temp.path().join("workspaces/default");
+    let workspace_dir = temp.path().join("chats");
     std::fs::create_dir_all(&workspace_dir).expect("workspace");
     let handoff = handoff(temp.path());
-    let address = rua_core::ChatAddress::agent("default", CHAT_ID);
+    let address = rua_core::ChatAddress::new(CHAT_ID);
     let console_request = request("hello");
     let remote_request = handoff
         .build_remote_conversation_input_request(&input_params(
@@ -301,15 +301,15 @@ async fn pending_marker_round_trips_and_clears() {
 }
 
 #[tokio::test]
-async fn pending_markers_isolate_equal_chat_ids_across_scopes() {
+async fn pending_markers_isolate_distinct_chat_ids() {
     let temp = TempDir::new().expect("tempdir");
-    let agent_root = temp.path().join("workspaces/default");
-    let project_root = temp.path().join("projects/project-a");
+    let agent_root = temp.path().join("chats");
+    let project_root = temp.path().join("chats");
     std::fs::create_dir_all(&agent_root).expect("agent root");
     std::fs::create_dir_all(&project_root).expect("project root");
     let handoff = handoff(temp.path());
-    let agent_address = rua_core::ChatAddress::agent("default", CHAT_ID);
-    let project_address = rua_core::ChatAddress::project("project-a", CHAT_ID);
+    let agent_address = rua_core::ChatAddress::new(CHAT_ID);
+    let project_address = rua_core::ChatAddress::new("00000000-0000-0000-0000-000000001008");
     let agent_request = handoff
         .build_remote_conversation_input_request(&input_params(
             &request("agent"),
@@ -359,10 +359,10 @@ async fn pending_markers_isolate_equal_chat_ids_across_scopes() {
 #[tokio::test]
 async fn finalized_device_delivery_clears_pending_marker() {
     let temp = TempDir::new().expect("tempdir");
-    let workspace_dir = temp.path().join("workspaces/default");
+    let workspace_dir = temp.path().join("chats");
     std::fs::create_dir_all(&workspace_dir).expect("workspace");
     let handoff = handoff(temp.path());
-    let address = rua_core::ChatAddress::agent("default", CHAT_ID);
+    let address = rua_core::ChatAddress::new(CHAT_ID);
     let console_request = request("hello");
     let remote_request = handoff
         .build_remote_conversation_input_request(&input_params(
@@ -392,10 +392,10 @@ async fn finalized_device_delivery_clears_pending_marker() {
 #[tokio::test]
 async fn terminal_seen_device_delivery_keeps_pending_marker_for_sequence_until_synced_turn() {
     let temp = TempDir::new().expect("tempdir");
-    let workspace_dir = temp.path().join("workspaces/default");
+    let workspace_dir = temp.path().join("chats");
     std::fs::create_dir_all(&workspace_dir).expect("workspace");
     let handoff = handoff(temp.path());
-    let address = rua_core::ChatAddress::agent("default", CHAT_ID);
+    let address = rua_core::ChatAddress::new(CHAT_ID);
     let console_request = request("remote conversation inputning");
     let remote_request = handoff
         .build_remote_conversation_input_request(&input_params(
@@ -439,10 +439,10 @@ async fn terminal_seen_device_delivery_keeps_pending_marker_for_sequence_until_s
 #[tokio::test]
 async fn queue_remote_input_does_not_block_on_previous_source_pending_marker() {
     let temp = TempDir::new().expect("tempdir");
-    let workspace_dir = temp.path().join("workspaces/default");
+    let workspace_dir = temp.path().join("chats");
     std::fs::create_dir_all(&workspace_dir).expect("workspace");
     let handoff = handoff(temp.path());
-    let address = rua_core::ChatAddress::agent("default", CHAT_ID);
+    let address = rua_core::ChatAddress::new(CHAT_ID);
     let first_request = request("first");
     let first = handoff
         .build_remote_conversation_input_request(&input_params(

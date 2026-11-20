@@ -45,7 +45,7 @@ impl ChatCompletionNotifier {
         let _ = self.background_work.set(work);
     }
 
-    pub async fn notify(&self, fact: &ConversationTurnTerminalFact) {
+    pub async fn notify(&self, fact: &ConversationTurnTerminalFact, turn_agent_id: Option<&str>) {
         if let Some(service) = self.collaboration.get().and_then(Weak::upgrade) {
             match service.settle_terminal_result(fact).await {
                 Ok(Some(request_id)) => {
@@ -85,18 +85,19 @@ impl ChatCompletionNotifier {
             return;
         }
         let scope_store =
-            rua_core::chat_store::ChatScopeStore::resolve(&self.rua_root, fact.address.clone());
+            rua_core::chat_store::ChatStore::resolve(&self.rua_root, fact.address.clone());
         let header = rua_session::WorkspaceSessionStore::new(scope_store.root())
             .load_chat_header(fact.address.chat_id().as_str())
             .await
             .ok()
             .flatten();
         let chat_title = header.as_ref().map(|header| header.metadata.title.as_str());
-        let agent_id = header
-            .as_ref()
-            .map(|header| header.agent_id.trim())
+        let Some(agent_id) = turn_agent_id
+            .or_else(|| header.as_ref().map(|header| header.agent_id.trim()))
             .filter(|agent_id| !agent_id.is_empty())
-            .unwrap_or_else(|| fact.address.scope.owner_id());
+        else {
+            return;
+        };
         let agent_name = self
             .agent_service
             .get_agent(agent_id)
@@ -147,12 +148,6 @@ pub fn request_for_completed_chat(
     if fact.status != "completed" {
         return None;
     }
-    let owner_id = fact.address.scope.owner_id();
-    let owner_kind = match fact.address.scope.kind() {
-        "agent" => "agents",
-        "project" => "projects",
-        _ => return None,
-    };
     Some(UserNotificationRequest {
         target_device_id: target_device_id.to_string(),
         sender: UserNotificationSender {
@@ -164,7 +159,7 @@ pub fn request_for_completed_chat(
             .unwrap_or_else(|| format!("对话 {}", fact.address.chat_id())),
         body: Some("已完成回复".to_string()),
         rua_uri: Some(format!(
-            "rua://{owner_kind}/{owner_id}/chats/{}?turn={}",
+            "rua://chats/{}?turn={}",
             fact.address.chat_id(),
             fact.turn_id
         )),

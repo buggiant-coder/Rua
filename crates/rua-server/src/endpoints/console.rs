@@ -13,44 +13,39 @@ use std::sync::Arc;
 use rua_channel::core::console::{
     AttachmentInfo, ConsoleChatRequest, ConsoleSubmitKind, ConsoleSubmitOutcome, SseOutputStream,
 };
-use rua_core::{ChatAddress, ChatScopeStore};
+use rua_core::{ChatAddress, ChatStore};
 
 use crate::endpoints::dto;
 use crate::errors::ApiError;
+use crate::extractors::ChatPath;
 use crate::services::active_stream_broadcast::{ActiveStreamBroadcastFrame, ActiveStreamOwner};
 use crate::services::chat_index;
 use crate::services::console_chat::resolve_chat_id;
 use crate::services::conversation_authority::ConversationControlView;
 use crate::state::AppState;
 
-pub fn agent_scoped_router() -> Router<AppState> {
+pub fn router() -> Router<AppState> {
     Router::new()
         .route(
-            "/agents/{agentId}/chats/{chatId}/llm-debug-capture",
+            "/chats/{chatId}/llm-debug-capture",
             get(agent_llm_debug_capture_status)
                 .post(agent_llm_debug_capture_start)
                 .delete(agent_llm_debug_capture_stop),
         )
+        .route("/chats/{chatId}/console/chat", post(agent_console_chat_cli))
         .route(
-            "/agents/{agentId}/chats/{chatId}/console/chat",
-            post(agent_console_chat_cli),
-        )
-        .route(
-            "/agents/{agentId}/chats/{chatId}/console/submit",
+            "/chats/{chatId}/console/submit",
             post(agent_console_chat_submit),
         )
         .route(
-            "/agents/{agentId}/chats/{chatId}/console/live",
+            "/chats/{chatId}/console/live",
             post(agent_console_chat_live),
         )
         .route(
-            "/agents/{agentId}/chats/{chatId}/console/activity",
+            "/chats/{chatId}/console/activity",
             get(agent_console_chat_activity),
         )
-        .route(
-            "/agents/{agentId}/chats/{chatId}/console/stop",
-            post(agent_console_stop),
-        )
+        .route("/chats/{chatId}/console/stop", post(agent_console_stop))
         .route(
             "/agents/{agentId}/console/push-messages",
             get(agent_console_push_messages),
@@ -92,16 +87,12 @@ impl LlmDebugCaptureStatus {
     }
 }
 
-fn agent_chat_address(agent_id: String, chat_id: String) -> ChatAddress {
-    ChatAddress::agent(agent_id, chat_id)
-}
-
 async fn agent_llm_debug_capture_status(
     State(state): State<AppState>,
-    Path((agent_id, chat_id)): Path<(String, String)>,
+    ChatPath((_agent_id, chat_id)): ChatPath<(String, String)>,
 ) -> Json<LlmDebugCaptureStatus> {
-    let address = agent_chat_address(agent_id, chat_id);
-    let scope_root = ChatScopeStore::resolve(&state.rua_root, address.clone());
+    let address = ChatAddress::new(chat_id);
+    let scope_root = ChatStore::resolve(&state.rua_root, address.clone());
     Json(
         state
             .llm_debug_captures
@@ -115,10 +106,10 @@ async fn agent_llm_debug_capture_status(
 
 async fn agent_llm_debug_capture_start(
     State(state): State<AppState>,
-    Path((agent_id, chat_id)): Path<(String, String)>,
+    ChatPath((_agent_id, chat_id)): ChatPath<(String, String)>,
 ) -> Json<LlmDebugCaptureStatus> {
-    let address = agent_chat_address(agent_id, chat_id);
-    let scope_root = ChatScopeStore::resolve(&state.rua_root, address.clone());
+    let address = ChatAddress::new(chat_id);
+    let scope_root = ChatStore::resolve(&state.rua_root, address.clone());
     let status = match state.llm_debug_captures.start(scope_root.root(), address) {
         Ok(info) => LlmDebugCaptureStatus::active(info),
         Err(error) => {
@@ -131,10 +122,10 @@ async fn agent_llm_debug_capture_start(
 
 async fn agent_llm_debug_capture_stop(
     State(state): State<AppState>,
-    Path((agent_id, chat_id)): Path<(String, String)>,
+    ChatPath((_agent_id, chat_id)): ChatPath<(String, String)>,
 ) -> Json<LlmDebugCaptureStatus> {
-    let address = agent_chat_address(agent_id, chat_id);
-    let scope_root = ChatScopeStore::resolve(&state.rua_root, address.clone());
+    let address = ChatAddress::new(chat_id);
+    let scope_root = ChatStore::resolve(&state.rua_root, address.clone());
     if let Err(error) = state.llm_debug_captures.stop(scope_root.root(), &address) {
         tracing::warn!(%error, "failed to stop local LLM debug capture");
     }
@@ -168,7 +159,6 @@ fn is_approve_or_deny(msg: &str) -> Option<bool> {
 
 async fn resolve_pending_ask_user(
     state: &AppState,
-    agent_id: &str,
     chat_id: &str,
     answer: &str,
 ) -> Result<(), ApiError> {
@@ -180,14 +170,12 @@ async fn resolve_pending_ask_user(
         return Ok(());
     }
 
-    let runtime = state
-        .registry
-        .get_or_create(agent_id)
-        .await
-        .map_err(|error| ApiError::Internal(error.to_string()))?;
-    crate::services::console_chat::clear_pending_action_snapshot(&runtime.workspace_dir(), chat_id)
-        .await
-        .map_err(ApiError::from)
+    crate::services::console_chat::clear_pending_action_snapshot(
+        state.chat_workspace().as_path(),
+        chat_id,
+    )
+    .await
+    .map_err(ApiError::from)
 }
 
 #[derive(Debug, Serialize)]
@@ -209,7 +197,6 @@ struct ConsoleSubmitResponse {
 
 async fn console_submit_response(
     state: &AppState,
-    agent_id: &str,
     outcome: ConsoleSubmitOutcome,
 ) -> ConsoleSubmitResponse {
     let control = match outcome
@@ -220,22 +207,18 @@ async fn console_submit_response(
         Some(control) => Some(control),
         None => match outcome.chat_id.as_deref() {
             Some(chat_id) => {
-                let meta = match state.registry.get_or_create(agent_id).await {
-                    Ok(runtime) => match crate::services::conversation_authority_target::load_chat_control_meta(
-                        &runtime.workspace_dir(),
-                        chat_id,
-                    )
-                    .await
-                    {
-                        Ok(Some(meta)) => meta,
-                        Ok(None) | Err(_) => serde_json::json!({}),
-                    },
-                    Err(_) => serde_json::json!({}),
-                };
+                let meta = crate::services::conversation_authority_target::load_chat_control_meta(
+                    state.chat_workspace().as_path(),
+                    chat_id,
+                )
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| serde_json::json!({}));
                 Some(
                     state
                         .conversation_authority
-                        .control_view(&rua_core::ChatAddress::agent(agent_id, chat_id), &meta)
+                        .control_view(&rua_core::ChatAddress::new(chat_id), &meta)
                         .await,
                 )
             }
@@ -265,22 +248,18 @@ async fn console_submit_response(
 
 async fn agent_console_chat_cli(
     State(state): State<AppState>,
-    Path((agent_id, chat_id)): Path<(String, String)>,
-    Json(mut body): Json<dto::ChatRequest>,
+    Path(chat_id): Path<String>,
+    Json(body): Json<dto::ChatRequest>,
 ) -> Response {
-    let chat_id = match bind_agent_chat_request_to_path(&mut body, &chat_id) {
-        Ok(chat_id) => chat_id,
-        Err(error) => return error.into_response(),
-    };
-    let request = match prepare_agent_console_request(&state, &agent_id, body, false).await {
-        Ok(request) => request,
+    let (agent_id, request) = match prepare_chat_submission(&state, &chat_id, body, false).await {
+        Ok(prepared) => prepared,
         Err(error) => return error.into_response(),
     };
 
     state.usage_stats.bump_agent(&agent_id).await;
     crate::endpoints::chat_cli::submit_single_turn(
         &state,
-        ChatAddress::agent(&agent_id, chat_id),
+        ChatAddress::new(chat_id),
         &agent_id,
         request,
     )
@@ -289,20 +268,45 @@ async fn agent_console_chat_cli(
 
 async fn agent_console_chat_submit(
     State(state): State<AppState>,
-    Path((agent_id, chat_id)): Path<(String, String)>,
-    Json(mut body): Json<dto::ChatRequest>,
+    Path(chat_id): Path<String>,
+    Json(body): Json<dto::ChatRequest>,
 ) -> Response {
-    if let Err(error) = bind_agent_chat_request_to_path(&mut body, &chat_id) {
-        return error.into_response();
-    }
-    let request = match prepare_agent_console_request(&state, &agent_id, body, true).await {
-        Ok(request) => request,
+    let (agent_id, request) = match prepare_chat_submission(&state, &chat_id, body, true).await {
+        Ok(prepared) => prepared,
         Err(error) => return error.into_response(),
     };
 
     state.usage_stats.bump_agent(&agent_id).await;
     let outcome = state.console_facade.submit_chat(&agent_id, request).await;
-    Json(console_submit_response(&state, &agent_id, outcome).await).into_response()
+    Json(console_submit_response(&state, outcome).await).into_response()
+}
+
+async fn prepare_chat_submission(
+    state: &AppState,
+    chat_id: &str,
+    mut body: dto::ChatRequest,
+    webui_submit: bool,
+) -> Result<(String, ConsoleChatRequest), ApiError> {
+    bind_agent_chat_request_to_path(&mut body, chat_id)?;
+    let context = crate::services::chat_context::resolve_submission_context(
+        state,
+        chat_id,
+        body.extra
+            .get("agent_id")
+            .and_then(serde_json::Value::as_str),
+        body.extra
+            .get("project_id")
+            .and_then(serde_json::Value::as_str),
+    )
+    .await?;
+    body.extra
+        .insert("agent_id".into(), serde_json::json!(context.agent_id));
+    body.extra
+        .insert("project_id".into(), serde_json::json!(context.project_id));
+    Ok((
+        context.agent_id,
+        prepare_agent_console_request(state, body, webui_submit).await?,
+    ))
 }
 
 fn bind_agent_chat_request_to_path(
@@ -323,7 +327,6 @@ fn bind_agent_chat_request_to_path(
 
 async fn prepare_agent_console_request(
     state: &AppState,
-    agent_id: &str,
     mut body: dto::ChatRequest,
     apply_webui_submit_preparation: bool,
 ) -> Result<ConsoleChatRequest, ApiError> {
@@ -355,13 +358,8 @@ async fn prepare_agent_console_request(
     if let Some(ref chat_id) = chat_id {
         let resolved_chat_id = resolve_chat_id(chat_id).map_err(ApiError::BadRequest)?;
         if apply_webui_submit_preparation {
-            let runtime = state
-                .registry
-                .get_or_create(agent_id)
-                .await
-                .map_err(|err| ApiError::Internal(format!("workspace unavailable: {err}")))?;
             crate::services::conversation_authority_target::validate_chat_submit_materialization(
-                &runtime.workspace_dir(),
+                state.chat_workspace().as_path(),
                 &resolved_chat_id,
                 body.extra
                     .get("expected_authority_epoch")
@@ -369,7 +367,7 @@ async fn prepare_agent_console_request(
             )
             .await
             .map_err(ApiError::Conflict)?;
-            let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+            let store = rua_session::WorkspaceSessionStore::new(state.chat_workspace().as_path());
             if let Some(header) = store
                 .load_chat_header(&resolved_chat_id)
                 .await
@@ -377,7 +375,7 @@ async fn prepare_agent_console_request(
             {
                 let local =
                     crate::services::device_context::current_sync_device_id(&state.sync_device);
-                let placement = crate::services::conversation_authority_target::load_chat_authority_placement_target(&runtime.workspace_dir(), &resolved_chat_id).await.map_err(ApiError::Conflict)?;
+                let placement = crate::services::conversation_authority_target::load_chat_authority_placement_target(state.chat_workspace().as_path(), &resolved_chat_id).await.map_err(ApiError::Conflict)?;
                 if local.as_deref() == Some(placement.device_id.as_str()) {
                     let configuration = header
                         .extra
@@ -393,7 +391,7 @@ async fn prepare_agent_console_request(
                 }
             }
             if !chat_message.trim().is_empty() {
-                resolve_pending_ask_user(state, agent_id, chat_id, &chat_message).await?;
+                resolve_pending_ask_user(state, chat_id, &chat_message).await?;
             }
         }
     }
@@ -427,7 +425,7 @@ async fn prepare_agent_console_request(
 
 async fn agent_console_chat_live(
     State(state): State<AppState>,
-    Path((agent_id, path_chat_id)): Path<(String, String)>,
+    Path(path_chat_id): Path<String>,
     Json(body): Json<dto::ChatLiveRequest>,
 ) -> Response {
     let chat_id = match resolve_chat_id(&path_chat_id) {
@@ -446,6 +444,14 @@ async fn agent_console_chat_live(
         return ApiError::BadRequest("viewer_id is required".to_string()).into_response();
     };
 
+    let agent_id = match state
+        .conversation_input_intake
+        .live_execution_agent(&ChatAddress::new(&chat_id))
+        .await
+    {
+        Ok(agent_id) => agent_id.unwrap_or_default(),
+        Err(error) => return ApiError::Internal(error).into_response(),
+    };
     let stream = state
         .console_facade
         .connect_chat_activity(&agent_id, &chat_id, viewer_id, body.activity_position())
@@ -456,9 +462,9 @@ async fn agent_console_chat_live(
 
 async fn agent_console_chat_activity(
     State(state): State<AppState>,
-    Path((agent_id, _chat_id)): Path<(String, String)>,
+    Path(chat_id): Path<String>,
 ) -> Response {
-    let stream = chat_activity_stream(state, ChatActivityStreamScope::Agent(agent_id))
+    let stream = chat_activity_stream(state, ChatAddress::new(chat_id))
         .map(|r| r.map(|data| format!("{data}\n")));
     Response::builder()
         .header(header::CONTENT_TYPE, "application/json")
@@ -468,47 +474,18 @@ async fn agent_console_chat_activity(
         .unwrap()
 }
 
-pub(crate) fn scoped_chat_activity_stream(
-    state: AppState,
-    address: ChatAddress,
-) -> impl futures::Stream<Item = Result<String, Infallible>> + Send + 'static {
-    chat_activity_stream(state, ChatActivityStreamScope::Address(address))
-}
-
-#[derive(Clone)]
-enum ChatActivityStreamScope {
-    Agent(String),
-    Address(ChatAddress),
-}
-
-impl ChatActivityStreamScope {
-    fn matches(&self, address: &ChatAddress) -> bool {
-        match self {
-            Self::Agent(agent_id) => {
-                address.agent_id().map(|id| id.as_str()) == Some(agent_id.as_str())
-            }
-            Self::Address(expected) => address == expected,
-        }
-    }
-}
-
 fn chat_activity_stream(
     state: AppState,
-    scope: ChatActivityStreamScope,
+    address: ChatAddress,
 ) -> impl futures::Stream<Item = Result<String, Infallible>> + Send + 'static {
     let (out_tx, out_rx) = tokio::sync::mpsc::channel::<Result<String, Infallible>>(64);
 
     {
         let hub = Arc::clone(&state.active_stream_broadcast_hub);
         let out_tx = out_tx.clone();
-        let scope = scope.clone();
+        let address = address.clone();
         tokio::spawn(async move {
-            let mut subscription = match &scope {
-                ChatActivityStreamScope::Agent(agent_id) => hub.subscribe_agent(agent_id).await,
-                ChatActivityStreamScope::Address(address) => {
-                    hub.subscribe_chat(address, &BTreeMap::new()).await
-                }
-            };
+            let mut subscription = hub.subscribe_chat(&address, &BTreeMap::new()).await;
             while let Some(rx) = subscription.rx.as_mut() {
                 let frame = tokio::select! {
                     _ = out_tx.closed() => return,
@@ -529,7 +506,7 @@ fn chat_activity_stream(
     {
         let mut wakes = state.chat_activity_wake_hub.subscribe();
         let out_tx = out_tx.clone();
-        let scope = scope.clone();
+        let address = address.clone();
         tokio::spawn(async move {
             loop {
                 let wake = tokio::select! {
@@ -537,7 +514,7 @@ fn chat_activity_stream(
                     wake = wakes.recv() => wake,
                 };
                 match wake {
-                    Ok(wake) if scope.matches(&wake.address) => {
+                    Ok(wake) if address == wake.address => {
                         let payload = chat_activity_wake_payload(&wake);
                         if out_tx.send(Ok(payload)).await.is_err() {
                             return;
@@ -634,12 +611,6 @@ fn chat_activity_payload_value(
     let object = payload
         .as_object_mut()
         .expect("Chat Live wake payload is an object");
-    if let Some(agent_id) = address.agent_id() {
-        object.insert("agent_id".to_string(), serde_json::json!(agent_id));
-    }
-    if let Some(project_id) = address.project_id() {
-        object.insert("project_id".to_string(), serde_json::json!(project_id));
-    }
     if let Some(version) = version {
         object.insert("version".to_string(), serde_json::json!(version));
     }
@@ -654,10 +625,18 @@ fn chat_activity_payload_value(
 
 async fn agent_console_stop(
     State(state): State<AppState>,
-    Path((agent_id, chat_id)): Path<(String, String)>,
+    Path(chat_id): Path<String>,
     Json(body): Json<dto::StopChatRequest>,
 ) -> Response {
-    let workspace = state.rua_root.join("workspaces").join(&agent_id);
+    let agent_id =
+        match crate::services::chat_context::load_chat_context(&state.rua_root, &chat_id).await {
+            Ok(Some(context)) => context.agent_id,
+            Ok(None) => {
+                return ApiError::NotFound(format!("Chat not found: {chat_id}")).into_response()
+            }
+            Err(error) => return error.into_response(),
+        };
+    let workspace = state.rua_root.join("chats");
     match super::chats::dispatch_agent_chat_control(
         &state,
         &agent_id,
@@ -805,26 +784,16 @@ async fn do_push_messages(state: &AppState, agent_id: &str, session_id: Option<&
         .into_response()
 }
 
-async fn resolve_workspace_dir(state: &AppState, agent_id: &str) -> Option<std::path::PathBuf> {
-    match state.registry.get_or_create(agent_id).await {
-        Ok(runtime) => Some(runtime.workspace_dir()),
-        Err(_) => None,
-    }
-}
-
 async fn do_recent_messages(
     state: &AppState,
     agent_id: &str,
     query: &RecentMessagesQuery,
 ) -> Response {
-    let ws_dir = match resolve_workspace_dir(state, agent_id).await {
-        Some(d) => d,
-        None => return (StatusCode::OK, Json(serde_json::json!([]))).into_response(),
-    };
+    let ws_dir = state.rua_root.join("chats");
 
     let chat_id = match &query.chat_id {
         Some(id) => id.clone(),
-        None => match find_latest_chat_id(&ws_dir).await {
+        None => match find_latest_chat_id(&ws_dir, agent_id).await {
             Some(id) => id,
             None => return (StatusCode::OK, Json(serde_json::json!([]))).into_response(),
         },
@@ -886,12 +855,20 @@ fn message_log_entry_to_recent_message_json(
     })
 }
 
-async fn find_latest_chat_id(ws_dir: &std::path::Path) -> Option<String> {
-    chat_index::list(ws_dir, chat_index::ChatIndexFilter::default(), 0, 1)
-        .await
-        .ok()
-        .and_then(|page| page.entries.into_iter().next())
-        .map(|entry| entry.id)
+async fn find_latest_chat_id(ws_dir: &std::path::Path, agent_id: &str) -> Option<String> {
+    chat_index::list(
+        ws_dir,
+        chat_index::ChatIndexFilter {
+            agent_id: Some(agent_id.to_string()),
+            ..Default::default()
+        },
+        0,
+        1,
+    )
+    .await
+    .ok()
+    .and_then(|page| page.entries.into_iter().next())
+    .map(|entry| entry.id)
 }
 
 fn attachment_info_from_dto(attachment: &dto::AttachmentDto) -> AttachmentInfo {

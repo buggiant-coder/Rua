@@ -1,3 +1,4 @@
+import { addressFromChatPath } from "@/pages/Chat/conversationAddress";
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, MoreHorizontal } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -20,8 +21,6 @@ interface NavigationPanelProps {
   onNavigate: (path: string) => void;
 }
 
-const isConversationPath = (path: string) =>
-  /^\/(agents|projects)\/[^/]+\/chats\/[^/]+$/.test(path);
 const quickKeys = new Set(["terminal", "airdrop-transfer"]);
 const quickItems = NAV_GROUPS.flatMap((group) => group.items).filter((item) =>
   quickKeys.has(item.key),
@@ -70,7 +69,7 @@ export default function NavigationPanel({
   if (lastChatPath.current === null) {
     try {
       const saved = sessionStorage.getItem("rua_navigation_last_chat");
-      if (saved && isConversationPath(saved)) lastChatPath.current = saved;
+      if (saved && addressFromChatPath(saved)) lastChatPath.current = saved;
     } catch {
       // Navigation preferences are optional when storage is unavailable.
     }
@@ -78,7 +77,7 @@ export default function NavigationPanel({
   const previousPath = useRef(location.pathname);
 
   useEffect(() => {
-    if (isConversationPath(location.pathname)) {
+    if (addressFromChatPath(location.pathname)) {
       lastChatPath.current = location.pathname;
       try {
         sessionStorage.setItem("rua_navigation_last_chat", location.pathname);
@@ -154,7 +153,7 @@ export default function NavigationPanel({
               return;
             }
             setMode("chats");
-            if (!isConversationPath(location.pathname)) {
+            if (!addressFromChatPath(location.pathname)) {
               onNavigate(
                 lastChatPath.current ?? resolveAgentChatPath(selectedAgent),
               );

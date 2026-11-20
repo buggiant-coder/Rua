@@ -50,9 +50,9 @@ fn settings(temp: &tempfile::TempDir) -> BundledBrowser {
 
 #[test]
 fn complete_chat_address_and_execution_device_determine_identity() {
-    let a = context("a", ChatAddress::agent("a", "same-short-id"));
-    let b = context("a", ChatAddress::project("project-b", "same-short-id"));
-    let other_agent = context("b", ChatAddress::agent("b", "same-short-id"));
+    let a = context("a", ChatAddress::new("same-short-id"));
+    let b = context("a", ChatAddress::new("different-chat"));
+    let other_agent = context("b", ChatAddress::new("same-short-id"));
     assert_ne!(session_key(&a).unwrap(), session_key(&b).unwrap());
     assert_ne!(session_key(&a).unwrap(), session_key(&other_agent).unwrap());
     let mut next_turn = a.clone();
@@ -64,14 +64,14 @@ fn complete_chat_address_and_execution_device_determine_identity() {
     assert_ne!(session_key(&a).unwrap(), session_key(&next_turn).unwrap());
     next_turn.metadata.remove("security_chat_address");
     assert!(session_key(&next_turn).is_err());
-    assert!(session_key(&context("b", ChatAddress::agent("a", "same-short-id"))).is_err());
+    assert!(session_key(&context("", ChatAddress::new("same-short-id"))).is_err());
 }
 
 #[tokio::test]
 async fn model_cannot_supply_driver_flags_or_session_identity() {
     let temp = tempfile::tempdir().unwrap();
     let client = BundledBrowserClient::new(settings(&temp));
-    let ctx = context("a", ChatAddress::agent("a", "chat"));
+    let ctx = context("a", ChatAddress::new("chat"));
     for args in [
         json!({"session":"victim"}),
         json!({"extraArgs":["--cdp","9222"]}),
@@ -204,7 +204,7 @@ async fn real_system_chromium_through_chat_tool_bridge() {
         session_id: "short-chat".into(),
         ..Default::default()
     };
-    tool_ctx.metadata = context("agent-a", ChatAddress::agent("agent-a", "short-chat"))
+    tool_ctx.metadata = context("agent-a", ChatAddress::new("short-chat"))
         .metadata
         .into_iter()
         .collect();
@@ -284,7 +284,7 @@ async fn real_system_chromium_through_chat_tool_bridge() {
             .contains("submissions=0"),
         "approval must precede every page side effect"
     );
-    let address = ChatAddress::agent("agent-a", "short-chat");
+    let address = ChatAddress::new("short-chat");
     let pending = security
         .approval_authority()
         .snapshot_at(&address)
@@ -386,7 +386,7 @@ fn builtin_registration_does_not_overwrite_a_third_party_name_collision() {
 async fn actions_reject_hidden_controls_and_nonvisual_screenshot_before_launch() {
     let temp = tempfile::tempdir().unwrap();
     let client = BundledBrowserClient::new(settings(&temp));
-    let ctx = context("a", ChatAddress::agent("a", "chat"));
+    let ctx = context("a", ChatAddress::new("chat"));
     for (name, args) in [
         (
             "agent_browser_click",
@@ -450,9 +450,9 @@ async fn real_chat_profiles_survive_restart_and_other_agent_shutdown() {
     let (a, b) = tokio::join!(first.connect(), other.connect());
     a.unwrap();
     b.unwrap();
-    let a = context("a", ChatAddress::agent("a", "same-id"));
-    let b = context("a", ChatAddress::project("project", "same-id"));
-    let c = context("b", ChatAddress::agent("b", "same-id"));
+    let a = context("a", ChatAddress::new("same-id"));
+    let b = context("a", ChatAddress::new("project-chat-id"));
+    let c = context("b", ChatAddress::new("same-id"));
     let (one, two, three) = tokio::join!(
         first.call_tool("agent_browser_open", json!({"url":url}), a.clone()),
         first.call_tool("agent_browser_open", json!({"url":url}), b.clone()),
@@ -613,8 +613,8 @@ async fn real_stop_cancels_pending_click_at_execution_and_preserves_other_owner(
     });
     let first = BundledBrowserClient::new(options.clone());
     let other = BundledBrowserClient::new(options);
-    let a = context("a", ChatAddress::agent("a", "stop"));
-    let b = context("b", ChatAddress::agent("b", "safe"));
+    let a = context("a", ChatAddress::new("stop"));
+    let b = context("b", ChatAddress::new("safe"));
     let (one, two) = tokio::join!(first.connect(), other.connect());
     one.unwrap();
     two.unwrap();
@@ -815,7 +815,7 @@ async fn native_daemon_crash_reaps_owned_browser_and_requires_new_observation() 
         diagnostics: vec![],
     };
     let client = BundledBrowserClient::new(options);
-    let ctx = context("crash", ChatAddress::agent("crash", "native"));
+    let ctx = context("crash", ChatAddress::new("native"));
     let opened = client
         .call_tool(
             "agent_browser_open",

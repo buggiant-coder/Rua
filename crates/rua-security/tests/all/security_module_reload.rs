@@ -83,9 +83,7 @@ async fn invalidate_does_not_affect_active_authority_requests() {
         .approval_authority()
         .create_request(ApprovalRequestInput {
             agent_id: "agent-1".into(),
-            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::agent(
-                "agent-1", "sess-1",
-            )),
+            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new("sess-1")),
             turn_id: "turn-1".into(),
             tool_call_id: "call-1".into(),
             tool_name: "bash".into(),
@@ -101,7 +99,7 @@ async fn invalidate_does_not_affect_active_authority_requests() {
 
     let snapshot = module
         .approval_authority()
-        .snapshot_at(&rua_core::ChatAddress::agent("agent-1", "sess-1"))
+        .snapshot_at(&rua_core::ChatAddress::new("sess-1"))
         .await;
     assert_eq!(snapshot.pending.len(), 1);
     assert_eq!(snapshot.pending[0].id, request.id);
@@ -139,7 +137,7 @@ async fn chat_security_snapshot_isolated_from_mutable_agent_defaults() {
         "read",
         serde_json::json!({"file_path": "/tmp/readme"}),
     )
-    .with_chat_address(rua_core::ChatAddress::agent("same-agent", "chat-one"))
+    .with_chat_address(rua_core::ChatAddress::new("chat-one"))
     .with_security_snapshot(restricted.clone());
     module.config_store().save("same-agent", &allowed).unwrap();
     assert!(matches!(
@@ -156,7 +154,7 @@ async fn chat_security_snapshot_isolated_from_mutable_agent_defaults() {
         "read",
         serde_json::json!({"file_path": "/tmp/readme"}),
     )
-    .with_chat_address(rua_core::ChatAddress::agent("same-agent", "chat-two"))
+    .with_chat_address(rua_core::ChatAddress::new("chat-two"))
     .with_security_snapshot(allowed);
     assert!(matches!(
         module.enforce(&other, &[]).await,
@@ -181,7 +179,7 @@ async fn approved_invocation_recheck_is_scoped_to_exact_call_and_arguments() {
         "read",
         serde_json::json!({"file_path": "/tmp/a"}),
     )
-    .with_chat_address(rua_core::ChatAddress::agent("agent", "chat"))
+    .with_chat_address(rua_core::ChatAddress::new("chat"))
     .with_security_snapshot(Arc::new(config));
     ctx.metadata
         .insert("turn_id".into(), serde_json::json!("turn"));
@@ -211,7 +209,7 @@ async fn approved_invocation_recheck_is_scoped_to_exact_call_and_arguments() {
         module.enforce(&changed, &[]).await,
         SecurityVerdict::RequiresApproval { .. }
     ));
-    let other = ctx.with_chat_address(rua_core::ChatAddress::agent("agent", "other"));
+    let other = ctx.with_chat_address(rua_core::ChatAddress::new("other"));
     assert!(matches!(
         module.enforce(&other, &[]).await,
         SecurityVerdict::RequiresApproval { .. }
@@ -250,11 +248,9 @@ async fn corrupted_chat_rules_fail_closed_before_approval_reuse() {
     let tmp = tempfile::tempdir().unwrap();
     let module = make_module(tmp.path());
     let ctx = ToolCallContext::new("agent", "chat", "read", serde_json::json!({}))
-        .with_chat_address(rua_core::ChatAddress::agent("agent", "chat"))
+        .with_chat_address(rua_core::ChatAddress::new("chat"))
         .with_security_snapshot(Arc::new(SecurityConfig::default()));
-    let path = tmp
-        .path()
-        .join("workspaces/agent/sessions/chat/permission_rules.json");
+    let path = tmp.path().join("chats/sessions/chat/permission_rules.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, "invalid-json").unwrap();
     assert!(matches!(
@@ -288,7 +284,7 @@ async fn snapshot_permission_rules_do_not_follow_agent_rule_updates() {
         .insert("permission_rules".into(), serde_json::json!([rule("deny")]));
     module.config_store().save("agent", &defaults).unwrap();
     let ctx = ToolCallContext::new("agent", "chat", "read", serde_json::json!({}))
-        .with_chat_address(rua_core::ChatAddress::agent("agent", "chat"))
+        .with_chat_address(rua_core::ChatAddress::new("chat"))
         .with_security_snapshot(Arc::new(snapshot));
     assert!(matches!(
         module.enforce(&ctx, &[]).await,

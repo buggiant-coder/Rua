@@ -361,10 +361,8 @@ async fn remote_browse_and_create_execute_on_target_device() {
         other => panic!("unexpected shared-directory response: {other:?}"),
     }
 
-    let task_owner = rua_task::TaskOwner::from_address(rua_core::ChatAddress::project(
-        project.project_id.clone(),
-        "project-task-chat",
-    ));
+    let task_owner =
+        rua_task::TaskOwner::from_address(rua_core::ChatAddress::new("project-task-chat"));
     let task_id = target_task_runtime
         .create(
             rua_task::TaskSpec {
@@ -385,10 +383,7 @@ async fn remote_browse_and_create_execute_on_target_device() {
     tokio::time::timeout(Duration::from_secs(2), async {
         while target_task_runtime
             .get(
-                &rua_task::TaskOwner::from_address(rua_core::ChatAddress::project(
-                    project.project_id.clone(),
-                    "project-task-chat",
-                )),
+                &rua_task::TaskOwner::from_address(rua_core::ChatAddress::new("project-task-chat")),
                 &task_id,
             )
             .await
@@ -462,7 +457,7 @@ async fn remote_browse_and_create_execute_on_target_device() {
     assert_eq!(tasks[0].task_id, task_id);
     assert_eq!(
         tasks[0].spec.owner.chat_address,
-        rua_core::ChatAddress::project(project.project_id.clone(), "project-task-chat")
+        rua_core::ChatAddress::new("project-task-chat")
     );
 
     target.runtime.shutdown().await.unwrap();

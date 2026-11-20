@@ -24,12 +24,9 @@ fn build_state() -> (AppState, TempDir) {
 
 fn build_app(state: AppState) -> Router {
     Router::new()
-        .merge(endpoints::chats::root_router())
-        .merge(endpoints::chats::agent_scoped_router())
-        .merge(endpoints::chat_prompt::root_router())
-        .merge(endpoints::chat_prompt::agent_scoped_router())
+        .merge(endpoints::chats::router())
+        .merge(endpoints::chat_prompt::router())
         .merge(endpoints::chat_search::root_router())
-        .merge(endpoints::chat_search::agent_scoped_router())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             agent_context_middleware,
@@ -71,7 +68,7 @@ fn get(uri: &str) -> Request<Body> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn create_then_list_chat_round_trip_uses_runtime_workspace_dir() {
+async fn create_then_list_uses_shared_chat_workspace() {
     let (state, guard) = build_state();
     let app = build_app(state.clone());
 
@@ -79,26 +76,23 @@ async fn create_then_list_chat_round_trip_uses_runtime_workspace_dir() {
         "/chats",
         serde_json::json!({
             "name": "feat-604 round-trip chat",
+            "agent_id": AGENT_ID,
         }),
     );
     let create_resp = app.clone().oneshot(create_req).await.expect("oneshot");
     assert_eq!(
         create_resp.status(),
         StatusCode::OK,
-        "POST /chats must succeed via runtime.workspace_dir()"
+        "POST /chats must succeed via the Chat workspace"
     );
     let created: serde_json::Value = read_json(create_resp).await;
     let chat_id = created["id"].as_str().expect("created chat id").to_string();
     accept_first_input(&state, &chat_id).await;
 
-    let expected_chat_index = guard
-        .path()
-        .join("workspaces")
-        .join(AGENT_ID)
-        .join("chat-index.sqlite");
+    let expected_chat_index = guard.path().join("chats").join("chat-index.sqlite");
     assert!(
         expected_chat_index.exists(),
-        "chat-index.sqlite should be written under runtime.workspace_dir(), checked at {expected_chat_index:?}"
+        "chat-index.sqlite should be written under the Chat workspace, checked at {expected_chat_index:?}"
     );
 
     let list_req = get("/chats");
@@ -115,14 +109,16 @@ async fn create_then_list_chat_round_trip_uses_runtime_workspace_dir() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prompt_state_and_search_handlers_resolve_via_runtime() {
     let (state, _guard) = build_state();
+    let chat_id = uuid::Uuid::new_v4().to_string();
+    accept_first_input(&state, &chat_id).await;
     let app = build_app(state);
 
-    let ps_req = get("/chats/prompt-state?chat_id=session-feat-604");
+    let ps_req = get(&format!("/chats/{chat_id}/prompt-state"));
     let ps_resp = app.clone().oneshot(ps_req).await.expect("oneshot");
     assert_eq!(
         ps_resp.status(),
         StatusCode::OK,
-        "prompt-state must succeed via runtime.workspace_dir()"
+        "prompt-state must succeed via the Chat workspace"
     );
     let ps_body: serde_json::Value = read_json(ps_resp).await;
     assert!(ps_body.get("mode").is_none());
@@ -132,7 +128,7 @@ async fn prompt_state_and_search_handlers_resolve_via_runtime() {
     assert_eq!(
         search_resp.status(),
         StatusCode::OK,
-        "search must succeed via runtime.workspace_dir()"
+        "search must succeed via the Chat workspace"
     );
     let search_body: serde_json::Value = read_json(search_resp).await;
     let results = search_body["results"]
@@ -142,33 +138,17 @@ async fn prompt_state_and_search_handlers_resolve_via_runtime() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_scoped_route_resolves_runtime_through_registry() {
-    let (state, guard) = build_state();
-    let app = build_app(state.clone());
-
-    let create_req = Request::builder()
-        .method("POST")
-        .uri(format!("/agents/{AGENT_ID}/chats"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            serde_json::json!({"name": "agent-scoped feat-604"}).to_string(),
+async fn previous_agent_chat_route_is_unregistered() {
+    let (state, _guard) = build_state();
+    let app = build_app(state);
+    let response = app
+        .oneshot(json_post(
+            &format!("/agents/{AGENT_ID}/chats"),
+            serde_json::json!({}),
         ))
-        .expect("request");
-    let create_resp = app.oneshot(create_req).await.expect("oneshot");
-    assert_eq!(create_resp.status(), StatusCode::OK);
-    let created: serde_json::Value = read_json(create_resp).await;
-    assert!(created["id"].is_string());
-    accept_first_input(&state, created["id"].as_str().unwrap()).await;
-
-    let expected_chat_index = guard
-        .path()
-        .join("workspaces")
-        .join(AGENT_ID)
-        .join("chat-index.sqlite");
-    assert!(
-        expected_chat_index.exists(),
-        "agent-scoped POST should reuse the same workspace dir as the root handler"
-    );
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[allow(dead_code)]

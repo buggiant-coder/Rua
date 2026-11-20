@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
-use rua_core::ChatScopeStore;
+use rua_core::ChatStore;
 use rua_task::{TaskCompletionNotification, TaskNotificationSink, TaskRunnerError};
 
 use crate::sync_publication::{
@@ -127,7 +127,7 @@ impl TaskNotificationSink for ServerTaskNotificationSink {
         }
 
         if let Some(runtime) = self.sync_runtime.get() {
-            let scope_store = ChatScopeStore::resolve(&self.data_dir, owner.chat_address.clone());
+            let scope_store = ChatStore::resolve(&self.data_dir, owner.chat_address.clone());
             let _ = publish_sync_fact_with_runtime(
                 runtime,
                 SyncPublicationFact::StableConversationState {

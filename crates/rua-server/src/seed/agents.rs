@@ -243,7 +243,7 @@ fn create_workspace_dirs(workspace_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(workspace_dir).map_err(|e| RuaError::Io {
         message: format!("Failed to create agent workspace dir: {e}"),
     })?;
-    for subdir in ["sessions", "skills", "prompts"] {
+    for subdir in ["skills", "prompts"] {
         std::fs::create_dir_all(workspace_dir.join(subdir)).map_err(|e| RuaError::Io {
             message: format!("Failed to create {subdir} dir: {e}"),
         })?;

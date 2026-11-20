@@ -23,10 +23,9 @@ describe("projectChatsApi", () => {
     await projectChatsApi.getMetadata("project/one", "chat/one", {
       signal: controller.signal,
     });
-    expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/metadata",
-      { signal: controller.signal },
-    );
+    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/metadata", {
+      signal: controller.signal,
+    });
   });
 
   it("lists Project Chats with encoded search, pagination, auth, and total count", async () => {
@@ -81,18 +80,15 @@ describe("projectChatsApi", () => {
       pin_order: 42,
     });
 
-    expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone",
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: "Renamed",
-          pinned: true,
-          pin_order: 42,
-        }),
-      },
-    );
+    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Renamed",
+        pinned: true,
+        pin_order: 42,
+      }),
+    });
   });
 
   it("uses Project-scoped routes for variant, rollback, and branch actions", async () => {
@@ -109,42 +105,29 @@ describe("projectChatsApi", () => {
       before_turn_id: "turn-2",
     });
 
-    expect(request).toHaveBeenNthCalledWith(
-      1,
-      "/projects/project%2Fone/chats/chat%2Fone",
-      {
-        method: "PUT",
-        body: JSON.stringify({
-          turn_id: "turn-1",
-          selected_variant_id: "variant-2",
-        }),
-      },
-    );
-    expect(request).toHaveBeenNthCalledWith(
-      2,
-      "/projects/project%2Fone/chats/chat%2Fone/rollback",
-      {
-        method: "POST",
-        body: JSON.stringify({ before_turn_id: "turn-2" }),
-      },
-    );
-    expect(request).toHaveBeenNthCalledWith(
-      3,
-      "/projects/project%2Fone/chats/chat%2Fone/branch",
-      {
-        method: "POST",
-        body: JSON.stringify({ before_turn_id: "turn-2" }),
-      },
-    );
+    expect(request).toHaveBeenNthCalledWith(1, "/chats/chat%2Fone", {
+      method: "PUT",
+      body: JSON.stringify({
+        turn_id: "turn-1",
+        selected_variant_id: "variant-2",
+      }),
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "/chats/chat%2Fone/rollback", {
+      method: "POST",
+      body: JSON.stringify({ before_turn_id: "turn-2" }),
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "/chats/chat%2Fone/branch", {
+      method: "POST",
+      body: JSON.stringify({ before_turn_id: "turn-2" }),
+    });
   });
 
   it("deletes through the Project Chat route with explicit force state", async () => {
     await projectChatsApi.deleteChat("project/one", "chat/one", true);
 
-    expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone?force=true",
-      { method: "DELETE" },
-    );
+    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone?force=true", {
+      method: "DELETE",
+    });
   });
 
   it("commits Agent selection through the canonical Project Chat route", async () => {
@@ -155,17 +138,14 @@ describe("projectChatsApi", () => {
       "code",
     );
 
-    expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/agent-selection",
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          expected_agent_id: "default",
-          agent_id: "code",
-        }),
-      },
-    );
+    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/agent-selection", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        expected_agent_id: "default",
+        agent_id: "code",
+      }),
+    });
   });
 
   it("routes Project model, options, Stop, and queue controls through canonical siblings", async () => {
@@ -212,41 +192,34 @@ describe("projectChatsApi", () => {
     );
 
     expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone",
+      "/chats/chat%2Fone",
       expect.objectContaining({
-        method: "PATCH",
+        method: "PUT",
         body: JSON.stringify({
           model: { provider_id: "openai", model: "gpt-5" },
         }),
       }),
     );
+    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/running-config");
+    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/resource-policy");
+    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/running-config", {
+      method: "PUT",
+      body: JSON.stringify(config),
+    });
+    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/console/stop", {
+      method: "POST",
+      body: JSON.stringify({ turn_id: "turn-1", authority_epoch: "epoch-1" }),
+    });
     expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/running-config",
-    );
-    expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/resource-policy",
-    );
-    expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/running-config",
-      { method: "PUT", body: JSON.stringify(config) },
-    );
-    expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/console/stop",
-      {
-        method: "POST",
-        body: JSON.stringify({ turn_id: "turn-1", authority_epoch: "epoch-1" }),
-      },
-    );
-    expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/queue/input%2Fone/send-now",
+      "/chats/chat%2Fone/queue/input%2Fone/send-now",
       { method: "POST", body: JSON.stringify(sendNow) },
     );
     expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/queue/input%2Fone",
+      "/chats/chat%2Fone/queue/input%2Fone",
       { method: "PATCH", body: JSON.stringify({ message: "edited" }) },
     );
     expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/queue/input%2Fone",
+      "/chats/chat%2Fone/queue/input%2Fone",
       { method: "DELETE" },
     );
   });
@@ -294,48 +267,38 @@ describe("projectChatsApi", () => {
     });
 
     expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/approvals/snapshot",
+      "/chats/chat%2Fone/approvals/snapshot",
     );
     expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/approvals/approval%2Fone/decide",
+      "/chats/chat%2Fone/approvals/approval%2Fone/decide",
       { method: "POST", body: JSON.stringify(approvalBody) },
     );
+    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/acp/runners");
     expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/acp/runners",
+      "/chats/chat%2Fone/acp/sessions?runner=codex%2Frunner&cwd=%2Frepo",
     );
+    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/acp/enter", {
+      method: "POST",
+      body: JSON.stringify({
+        runner: "codex",
+        cwd: "/repo",
+        resume_session_id: "session/one",
+      }),
+    });
+    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/acp/exit", {
+      method: "POST",
+    });
+    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/acp/status");
+    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/acp/permissions");
     expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/acp/sessions?runner=codex%2Frunner&cwd=%2Frepo",
-    );
-    expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/acp/enter",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          runner: "codex",
-          cwd: "/repo",
-          resume_session_id: "session/one",
-        }),
-      },
-    );
-    expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/acp/exit",
-      { method: "POST" },
-    );
-    expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/acp/status",
-    );
-    expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/acp/permissions",
-    );
-    expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/acp/permissions/request%2Fone/decide",
+      "/chats/chat%2Fone/acp/permissions/request%2Fone/decide",
       {
         method: "POST",
         body: JSON.stringify({ option_id: "allow/once" }),
       },
     );
     expect(request).toHaveBeenCalledWith(
-      "/projects/project%2Fone/chats/chat%2Fone/acp-history-preview",
+      "/chats/chat%2Fone/acp-history-preview",
       {
         method: "POST",
         body: JSON.stringify({

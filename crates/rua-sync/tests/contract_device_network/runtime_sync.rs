@@ -5,7 +5,7 @@ use bao_tree::{io::outboard::PreOrderMemOutboard, ChunkRanges};
 use iroh_blobs::api::blobs::BlobStatus;
 use iroh_blobs::protocol::ChunkRangesExt;
 use iroh_blobs::store::IROH_BLOCK_SIZE;
-use rua_core::{ChatAddress, ChatScopeStore};
+use rua_core::{ChatAddress, ChatStore};
 use rua_sync::chat_adapter::ChatIndexSyncAdapter;
 use rua_sync::endpoint::SyncNode;
 use rua_sync::hlc::HlcTimestamp;
@@ -108,7 +108,7 @@ async fn saved_paired_peers_resume_live_sync_without_manual_cycles() {
 }
 
 fn seed_chat(data_dir: &std::path::Path, address: &ChatAddress) {
-    let scope = ChatScopeStore::resolve(data_dir, address.clone());
+    let scope = ChatStore::resolve(data_dir, address.clone());
     rua_session::chat_index::upsert_sync(
         scope.root(),
         &rua_session::chat_index::ChatIndexRecord {
@@ -130,7 +130,7 @@ fn seed_chat(data_dir: &std::path::Path, address: &ChatAddress) {
 }
 
 fn chat_exists(data_dir: &std::path::Path, address: &ChatAddress) -> bool {
-    let scope = ChatScopeStore::resolve(data_dir, address.clone());
+    let scope = ChatStore::resolve(data_dir, address.clone());
     rua_session::chat_index::get_sync(scope.root(), address.chat_id().as_str())
         .expect("read Chat Index")
         .is_some()
@@ -215,8 +215,8 @@ async fn offline_agent_and_project_chat_deletes_converge_after_reconnect() {
     let merge_store = MergeStore::open(merge_dir.path()).expect("open Merge Store");
     let registry = chat_registry(dir_b.path(), &hex::encode(device_b.device_id_short()));
     let addresses = [
-        ChatAddress::agent("agent-offline", "chat-agent-delete"),
-        ChatAddress::project("project-offline", "chat-project-delete"),
+        ChatAddress::new("chat-agent-delete"),
+        ChatAddress::new("chat-project-delete"),
     ];
     for address in &addresses {
         seed_chat(dir_b.path(), address);

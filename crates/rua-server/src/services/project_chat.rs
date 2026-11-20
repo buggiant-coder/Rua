@@ -50,6 +50,7 @@ pub struct ProjectChatAgentSelection {
 
 #[derive(Debug, Clone)]
 pub struct ProjectChatMaterializationSnapshot {
+    pub project_id: String,
     pub initial_model: Option<serde_json::Value>,
     pub configuration: crate::services::product_hooks::ChatHookConfiguration,
 }
@@ -151,9 +152,10 @@ pub async fn materialize_first_project_turn(
     placement: &ConversationAuthorityPlacement,
     snapshot: ProjectChatMaterializationSnapshot,
 ) -> Result<(), String> {
-    let media_ids =
-        crate::services::first_chat_submission::validate_submission_media(scope_root, input)
-            .await?;
+    let media_ids = crate::services::first_chat_submission::validate_submission_media(
+        scope_root, address, input,
+    )
+    .await?;
     materialize_staged_project_chat(scope_root, address, placement, |staging_root| async move {
         stage_first_turn(
             &staging_root,
@@ -206,6 +208,9 @@ pub async fn persist_first_project_submission(
             .await
         }
         (Some(_), Some(header)) => {
+            if header.project_id.as_deref() != Some(snapshot.project_id.as_str()) {
+                return Err("Chat already belongs to a different Project".into());
+            }
             let winner_placement =
                 crate::services::conversation_authority_placement::parse_conversation_authority_placement(
                     &serde_json::Value::Object(header.extra.clone()),
@@ -265,9 +270,6 @@ where
     F: FnOnce(PathBuf) -> Fut,
     Fut: std::future::Future<Output = Result<(), String>>,
 {
-    if address.project_id().is_none() {
-        return Err("Project Chat materialization requires Project Scope".to_string());
-    }
     crate::services::first_chat_submission::materialize_staged_chat(
         scope_root,
         address,
@@ -289,9 +291,6 @@ pub async fn update_project_chat(
     address: &ChatAddress,
     update: ProjectChatUpdate,
 ) -> Result<crate::endpoints::chats::ChatSpecDto, String> {
-    if address.project_id().is_none() {
-        return Err("Project Chat update requires Project Scope".to_string());
-    }
     if update.name.is_none()
         && update.pinned.is_none()
         && update.tag.is_none()
@@ -305,7 +304,8 @@ pub async fn update_project_chat(
     if update.model.is_some() {
         return Err("Project Chat model updates must use Conversation Control".to_string());
     }
-    let chat_service = rua_chat::ChatService::for_resolved_scope(scope_root, address.clone());
+    let chat_service =
+        rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope_root));
     let common_chat = chat_service
         .update_listing(
             address,
@@ -392,11 +392,6 @@ pub async fn remove_project_chat_storage(
     scope_root: &Path,
     address: &ChatAddress,
 ) -> Result<crate::endpoints::chats::ChatSpecDto, ProjectChatDeleteError> {
-    if address.project_id().is_none() {
-        return Err(ProjectChatDeleteError::Failed(
-            "Project Chat delete requires Project Scope".to_string(),
-        ));
-    }
     let chat = crate::endpoints::chats::chat_from_index_entry(
         chat_index::get(scope_root, address.chat_id().as_str())
             .await
@@ -540,7 +535,8 @@ async fn stage_project_chat_header(
     .map_err(|error| error.to_string())?;
     let mut header =
         crate::services::chat_metadata_store::chat_header_from_metadata_record(&chat, agent_id);
-    rua_chat::apply_project_scope_defaults(&mut header, agent_id);
+    header.project_id = Some(snapshot.project_id);
+    rua_chat::apply_chat_defaults(&mut header);
     header.extra.insert(
         "hook_configuration".into(),
         serde_json::to_value(snapshot.configuration).map_err(|error| error.to_string())?,
@@ -558,6 +554,8 @@ fn project_chat_index_entry(
     let created_at = parse_header_time(&header.metadata.created_at)?;
     let updated_at = parse_header_time(&header.metadata.last_activity_at)?;
     let mut meta = serde_json::Map::new();
+    meta.insert("agent_id".into(), serde_json::json!(header.agent_id));
+    meta.insert("project_id".into(), serde_json::json!(header.project_id));
     meta.insert(
         CHAT_AUTHORITY_PLACEMENT_META_KEY.to_string(),
         serde_json::to_value(placement).map_err(|error| error.to_string())?,
@@ -587,13 +585,10 @@ fn project_chat_index_entry(
 pub fn selection_from_header(
     header: &ChatSessionHeader,
 ) -> Result<ProjectChatAgentSelection, String> {
-    let selected_agent_id = header
-        .extra
-        .get("selected_agent_id")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "Project Chat selected Agent is missing".to_string())?;
+    let selected_agent_id = header.agent_id.trim();
+    if selected_agent_id.is_empty() {
+        return Err("Chat selected Agent is missing".into());
+    }
     let events: Vec<ProjectAgentSwitchEvent> = header
         .extra
         .get(PROJECT_AGENT_SWITCH_EVENTS_META_KEY)
@@ -666,9 +661,6 @@ pub async fn switch_project_chat_agent_with_configuration(
     approval_authority: &rua_security::ApprovalAuthority,
     configuration: Option<&crate::services::product_hooks::ChatHookConfiguration>,
 ) -> Result<ProjectChatAgentState, String> {
-    if address.project_id().is_none() {
-        return Err("Project Agent switch requires Project Scope".to_string());
-    }
     if !next_agent.enabled {
         return Err(format!("Agent '{}' is disabled", next_agent.id));
     }
@@ -729,7 +721,9 @@ pub async fn switch_project_chat_agent_with_configuration(
         .as_array_mut()
         .ok_or_else(|| "Project Agent switch audit log is invalid".to_string())?;
     events.push(serde_json::to_value(event).map_err(|error| error.to_string())?);
-    rua_chat::apply_project_scope_defaults(&mut header, &next.agent_id);
+    header.agent_id = next.agent_id.clone();
+    header.metadata.agent_id = next.agent_id.clone();
+    rua_chat::apply_chat_defaults(&mut header);
     if let Some(configuration) = configuration {
         let value = serde_json::to_value(configuration).map_err(|error| error.to_string())?;
         if let Some(epoch) = header

@@ -664,7 +664,7 @@ async fn openai_responses_completed_event_terminates_stream_without_http_eof() {
         "rua-openai-response-capture-{}",
         uuid::Uuid::new_v4()
     ));
-    let address = rua_core::ChatAddress::agent("agent-capture", "chat-capture");
+    let address = rua_core::ChatAddress::new("chat-capture");
     debug_capture::register_capture(
         address.clone(),
         ActiveCapture {

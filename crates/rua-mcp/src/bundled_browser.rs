@@ -478,14 +478,9 @@ pub fn session_key(ctx: &McpCallContext) -> McpResult<String> {
             .ok_or_else(|| invalid("Browser Use requires a trusted full Chat Address"))?,
     )
     .map_err(|_| invalid("Invalid Browser Use Chat Address"))?;
-    if ctx.agent_id.is_empty()
-        || address.chat_id().as_str().is_empty()
-        || address
-            .agent_id()
-            .is_some_and(|agent| agent.as_str() != ctx.agent_id)
-    {
+    if ctx.agent_id.is_empty() || address.chat_id().as_str().is_empty() {
         return Err(invalid(
-            "Browser Use owner does not match the executing Agent",
+            "Browser Use requires a Chat ID and an executing Agent",
         ));
     }
     let identity = serde_json::to_vec(&(device, &ctx.agent_id, address.identity_key()))

@@ -473,8 +473,8 @@ async function loadApprovalSnapshot(
   };
 }
 
-function chatViewCacheKey(agentId: string, chatId: string): string {
-  return `${agentId}:${chatId}`;
+function chatViewCacheKey(_agentId: string, chatId: string): string {
+  return `chat:${chatId}`;
 }
 
 function cacheableChatHistory(history: ChatHistory): ChatHistory {
@@ -1025,6 +1025,8 @@ import {
 
 type SubmitRequest = {
   project_working_directory_id?: string;
+  agent_id?: string;
+  project_id?: string;
   initial_acp?: import("../conversationLifecycle").DraftAcpSelection;
   input: Message[];
   submission_id: string;
@@ -1251,7 +1253,8 @@ export interface ConversationViewRuntimeOptions {
   activeAcpRunner?: string | null;
   acpHistoryPreview?: AcpHistoryPreviewPayload | null;
   activityWake?: ConversationActivityWake | number | null;
-  projectExecutionAgentId?: string;
+  executionAgentId?: string;
+  projectId?: string;
   unmaterialized?: boolean;
   deferInitialAttach?: boolean;
 }
@@ -1263,11 +1266,15 @@ export function useConversationViewRuntime({
   activeAcpRunner,
   acpHistoryPreview,
   activityWake = null,
-  projectExecutionAgentId,
+  executionAgentId,
+  projectId: contextProjectId,
   unmaterialized = false,
   deferInitialAttach = unmaterialized,
 }: ConversationViewRuntimeOptions): ConversationViewRuntime {
-  const identity = useConversationIdentity(address);
+  const identity = useConversationIdentity(address, {
+    agentId: executionAgentId,
+    projectId: contextProjectId,
+  });
   const {
     chatId: conversationId,
     projectId,
@@ -1277,8 +1284,7 @@ export function useConversationViewRuntime({
   const identityRef = useRef(identity);
   identityRef.current = identity;
   const submitDraftModel = unmaterialized;
-  const selectedAgent =
-    identity.agentId ?? projectExecutionAgentId ?? "default";
+  const selectedAgent = executionAgentId ?? "default";
   const conversationTargetRef = useRef(conversationTarget);
   conversationTargetRef.current = conversationTarget;
   const restoredSubmissionRef = useRef(
@@ -1363,15 +1369,8 @@ export function useConversationViewRuntime({
     typeof activityWake === "number"
       ? activityWake
       : activityWake?.sequence ?? 0;
-  const recoveryScope =
-    typeof activityWake === "object" ? activityWake?.address.scope : null;
   const activityRecoverySeq =
-    typeof activityWake === "object" &&
-    activityWake?.chat_id === conversationId &&
-    (recoveryScope?.kind === "agent"
-      ? recoveryScope.agent_id === identity.agentId
-      : recoveryScope?.kind === "project" &&
-        recoveryScope.project_id === projectId)
+    typeof activityWake === "object" && activityWake?.chat_id === conversationId
       ? activityWake.recoverySequence ?? 0
       : 0;
   const lastActivityRecoveryRef = useRef<{
@@ -2014,11 +2013,7 @@ export function useConversationViewRuntime({
             ? reconnectFold
             : initialConversationStreamFold;
         let sawApprovalRequest = false;
-        const activity = convergence.openActivity(
-          targetAtCall,
-          chatAtCall,
-          reconnectCursor,
-        );
+        const activity = convergence.openActivity(chatAtCall, reconnectCursor);
         let reconciliationWorker: HistoryReconciliationWorker | null = null;
         try {
           const resumePosition = activityCursorRef.current;
@@ -2892,7 +2887,6 @@ export function useConversationViewRuntime({
 
       const agentAtCall = selectedAgent;
       const chatAtCall = conversationId;
-      const targetAtCall = conversationTarget;
       const generatedActionId = crypto.randomUUID();
       const submissionId =
         existingSubmissionId || `submission-${generatedActionId}`;
@@ -2976,6 +2970,8 @@ export function useConversationViewRuntime({
           attachmentEpochs[0],
         );
         if (unmaterialized) {
+          submitRequest.agent_id = agentAtCall;
+          submitRequest.project_id = projectId;
           submitRequest.initial_acp =
             loadDraftConversationAcp(
               projectId ? `project:${projectId}` : agentAtCall,
@@ -2991,10 +2987,8 @@ export function useConversationViewRuntime({
         });
         submittedToTransport = true;
         const response = await conversationApi.submit(
-          targetAtCall,
           chatAtCall,
           submitRequest,
-          projectId ? agentAtCall : undefined,
         );
 
         if (!response.ok) {
@@ -3063,9 +3057,7 @@ export function useConversationViewRuntime({
         }
 
         clearSubmitted(submittedDraftKey, submissionId);
-        if (targetAtCall.scope === "agent") {
-          dispatchChatSubmitted(agentAtCall, conversationId, trimmed);
-        }
+        dispatchChatSubmitted(agentAtCall, conversationId, trimmed);
         clearSubmittedVariant();
         setContextCompactionStatus(null);
         clearSendingSubmission();
@@ -3580,9 +3572,7 @@ export function useConversationViewRuntime({
       const regenerateText = text || (item ? assistantResponseText(item) : "");
       if (!regenerateText || !conversationId) return;
 
-      const agentAtCall = selectedAgent;
       const chatAtCall = conversationId;
-      const targetAtCall = conversationTarget;
       const baselineVariantIds = Array.from(
         new Set([
           ...(item?.variants.map((variant) => variant.variant_id) || []),
@@ -3627,10 +3617,8 @@ export function useConversationViewRuntime({
           regenerate_turn_id: turnId,
         };
         const response = await conversationApi.submit(
-          targetAtCall,
           chatAtCall,
           submitRequest,
-          projectId ? agentAtCall : undefined,
           controller.signal,
         );
 

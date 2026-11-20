@@ -1451,17 +1451,10 @@ async fn publish_evergreen_chat_sync_wake(
         return;
     };
     let stream_id = format!("sync-wake-{address}-{}", uuid::Uuid::new_v4());
-    let payload = match address.agent_id() {
-        Some(agent_id) => serde_json::json!({
-            "type": "chat_sync_wake",
-            "agent_id": agent_id,
-            "chat_id": address.chat_id(),
-        }),
-        None => serde_json::json!({
-            "type": "chat_sync_wake",
-            "address": address,
-        }),
-    }
+    let payload = serde_json::json!({
+        "type": "chat_sync_wake",
+        "address": address,
+    })
     .to_string();
     hub.publish_event(&stream_id, &address, payload).await;
     hub.finish(&stream_id, &address).await;

@@ -13,6 +13,9 @@ import { useMultiDeviceFeatureAvailability } from "@/hooks/useMultiDeviceFeature
 import { RouteActivityProvider, useRouteViewerVisible } from "./RouteActivity";
 
 const deviceWatch = vi.hoisted(() => ({ close: vi.fn(), open: vi.fn() }));
+vi.mock("@/api/consoleTransport", () => ({
+  consoleFetch: (path: string, options: RequestInit) => fetch(path, options),
+}));
 vi.mock("@/api/config", () => ({ getApiUrl: (path: string) => `/api${path}` }));
 vi.mock("@/api/authHeaders", () => ({ buildAuthHeaders: () => ({}) }));
 vi.mock("@/api/modules/sync", () => ({
@@ -27,10 +30,7 @@ vi.mock("@/api/modules/sync", () => ({
 }));
 
 function Viewer({ visibility }: { visibility: (visible: boolean) => void }) {
-  useConversationActivityWake(
-    { scope: "agent", agentId: "default" },
-    "old-chat",
-  );
+  useConversationActivityWake("old-chat");
   useMultiDeviceFeatureAvailability();
   const visible = useRouteViewerVisible();
   useEffect(() => visibility(visible), [visibility, visible]);
@@ -61,10 +61,7 @@ describe("route viewer lifecycle", () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  function setup(
-    loader: () => Promise<null>,
-    initialPath = "/agents/default/chats/old-chat",
-  ) {
+  function setup(loader: () => Promise<null>, initialPath = "/chats/old-chat") {
     const visibility = vi.fn();
     const router = createMemoryRouter(
       [
@@ -90,10 +87,7 @@ describe("route viewer lifecycle", () => {
     return { router, visibility };
   }
 
-  it.each([
-    "/agents/default/chats/old-chat",
-    "/projects/old-project/chats/old-chat",
-  ])(
+  it.each(["/chats/old-chat", "/chats/project-chat"])(
     "releases viewers before the destination loader can complete from %s",
     async (initialPath) => {
       let finishLoader: () => void = () => {};
@@ -138,7 +132,7 @@ describe("route viewer lifecycle", () => {
     });
     await waitFor(() => expect(signals[0].aborted).toBe(true));
     await act(async () => {
-      await router.navigate("/agents/default/chats/old-chat");
+      await router.navigate("/chats/old-chat");
     });
     await waitFor(() => expect(signals).toHaveLength(2));
     expect(signals[1].aborted).toBe(false);
@@ -152,7 +146,7 @@ describe("route viewer lifecycle", () => {
     const { router } = setup(async () => null);
     await waitFor(() => expect(signals).toHaveLength(1));
     await act(async () => {
-      await router.navigate("/agents/default/chats/old-chat?filter=all");
+      await router.navigate("/chats/old-chat?filter=all");
     });
     expect(signals).toHaveLength(1);
     expect(signals[0].aborted).toBe(false);

@@ -10,17 +10,13 @@ use futures::Stream;
 use serde::Deserialize;
 
 use crate::errors::ApiError;
+use crate::services::chat_context::ChatContext;
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
 struct TaskListQuery {
     state: Option<String>,
     limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RetryProjectTaskRequest {
-    authorization_agent_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,91 +27,33 @@ struct SendTaskInputRequest {
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/agents/{agent_id}/chats/{chat_id}/tasks", get(list_tasks))
+        .route("/chats/{chatId}/tasks", get(list_tasks))
+        .route("/chats/{chatId}/tasks/activity", get(task_activity))
+        .route("/chats/{chatId}/tasks/{task_id}", get(get_task))
+        .route("/chats/{chatId}/tasks/{task_id}/cancel", post(cancel_task))
         .route(
-            "/agents/{agent_id}/chats/{chat_id}/tasks/activity",
-            get(task_activity),
-        )
-        .route(
-            "/agents/{agent_id}/chats/{chat_id}/tasks/{task_id}",
-            get(get_task),
-        )
-        .route(
-            "/agents/{agent_id}/chats/{chat_id}/tasks/{task_id}/cancel",
-            post(cancel_task),
-        )
-        .route(
-            "/agents/{agent_id}/chats/{chat_id}/tasks/{task_id}/input",
+            "/chats/{chatId}/tasks/{task_id}/input",
             post(send_task_input),
         )
+        .route("/chats/{chatId}/tasks/{task_id}/watch", post(watch_task))
         .route(
-            "/agents/{agent_id}/chats/{chat_id}/tasks/{task_id}/watch",
-            post(watch_task),
-        )
-        .route(
-            "/agents/{agent_id}/chats/{chat_id}/tasks/{task_id}/unwatch",
+            "/chats/{chatId}/tasks/{task_id}/unwatch",
             post(unwatch_task),
         )
+        .route("/chats/{chatId}/tasks/{task_id}/retry", post(retry_task))
         .route(
-            "/agents/{agent_id}/chats/{chat_id}/tasks/{task_id}/retry",
-            post(retry_task),
-        )
-        .route(
-            "/agents/{agent_id}/chats/{chat_id}/tasks/{task_id}/result",
+            "/chats/{chatId}/tasks/{task_id}/result",
             get(get_task_result),
-        )
-        .route(
-            "/projects/{project_id}/chats/{chat_id}/tasks",
-            get(list_project_tasks),
-        )
-        .route(
-            "/projects/{project_id}/chats/{chat_id}/tasks/activity",
-            get(project_task_activity),
-        )
-        .route(
-            "/projects/{project_id}/chats/{chat_id}/tasks/{task_id}",
-            get(get_project_task),
-        )
-        .route(
-            "/projects/{project_id}/chats/{chat_id}/tasks/{task_id}/cancel",
-            post(cancel_project_task),
-        )
-        .route(
-            "/projects/{project_id}/chats/{chat_id}/tasks/{task_id}/input",
-            post(send_project_task_input),
-        )
-        .route(
-            "/projects/{project_id}/chats/{chat_id}/tasks/{task_id}/watch",
-            post(watch_project_task),
-        )
-        .route(
-            "/projects/{project_id}/chats/{chat_id}/tasks/{task_id}/unwatch",
-            post(unwatch_project_task),
-        )
-        .route(
-            "/projects/{project_id}/chats/{chat_id}/tasks/{task_id}/retry",
-            post(retry_project_task),
-        )
-        .route(
-            "/projects/{project_id}/chats/{chat_id}/tasks/{task_id}/result",
-            get(get_project_task_result),
         )
 }
 
 async fn task_activity(
     State(state): State<AppState>,
-    Path((agent_id, chat_id)): Path<(String, String)>,
+    ChatContext { project_id, .. }: ChatContext,
+    Path(chat_id): Path<String>,
 ) -> Response {
-    let owner = rua_task::TaskOwner::new(agent_id, chat_id);
-    task_activity_for_owner(state, owner).await
-}
-
-async fn project_task_activity(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
-) -> Response {
-    let action = crate::services::device_command_bus::ProjectDeviceAction::ListTasks {
-        project_id: rua_core::ProjectId::new(&project_id),
+    let action = |project_id| crate::services::device_command_bus::ProjectDeviceAction::ListTasks {
+        project_id,
         chat_id: chat_id.clone(),
         filter: rua_task::TaskListFilter {
             state: None,
@@ -123,7 +61,7 @@ async fn project_task_activity(
             offset: 0,
         },
     };
-    match remote_project_task_response(&state, &project_id, action).await {
+    match remote_project_task_response(&state, project_id.as_deref(), action).await {
         Ok(Some(crate::services::device_command_bus::ProjectDeviceResponse::TaskList {
             tasks,
         })) => {
@@ -148,7 +86,7 @@ async fn project_task_activity(
         Err(response) => return response,
         Ok(None) => {}
     }
-    let owner = project_task_owner(project_id, chat_id);
+    let owner = rua_task::TaskOwner::new(chat_id);
     task_activity_for_owner(state, owner).await
 }
 
@@ -215,15 +153,8 @@ fn task_activity_stream(
 
 async fn list_tasks(
     State(state): State<AppState>,
-    Path((agent_id, chat_id)): Path<(String, String)>,
-    Query(query): Query<TaskListQuery>,
-) -> Response {
-    list_tasks_for_owner(state, rua_task::TaskOwner::new(agent_id, chat_id), query).await
-}
-
-async fn list_project_tasks(
-    State(state): State<AppState>,
-    Path((project_id, chat_id)): Path<(String, String)>,
+    ChatContext { project_id, .. }: ChatContext,
+    Path(chat_id): Path<String>,
     Query(query): Query<TaskListQuery>,
 ) -> Response {
     let task_state = match parse_task_state(query.state) {
@@ -235,12 +166,12 @@ async fn list_project_tasks(
         limit: query.limit,
         offset: 0,
     };
-    let action = crate::services::device_command_bus::ProjectDeviceAction::ListTasks {
-        project_id: rua_core::ProjectId::new(&project_id),
+    let action = |project_id| crate::services::device_command_bus::ProjectDeviceAction::ListTasks {
+        project_id,
         chat_id: chat_id.clone(),
         filter: filter.clone(),
     };
-    match remote_project_task_response(&state, &project_id, action).await {
+    match remote_project_task_response(&state, project_id.as_deref(), action).await {
         Ok(Some(crate::services::device_command_bus::ProjectDeviceResponse::TaskList {
             tasks,
         })) => return Json(tasks).into_response(),
@@ -253,24 +184,7 @@ async fn list_project_tasks(
         Err(response) => return response,
         Ok(None) => {}
     }
-    list_tasks_with_filter_for_owner(state, project_task_owner(project_id, chat_id), filter).await
-}
-
-async fn list_tasks_for_owner(
-    state: AppState,
-    owner: rua_task::TaskOwner,
-    query: TaskListQuery,
-) -> Response {
-    let task_state = match parse_task_state(query.state) {
-        Ok(state) => state,
-        Err(error) => return error.into_response(),
-    };
-    let filter = rua_task::TaskListFilter {
-        state: task_state,
-        limit: query.limit,
-        offset: 0,
-    };
-    list_tasks_with_filter_for_owner(state, owner, filter).await
+    list_tasks_with_filter_for_owner(state, rua_task::TaskOwner::new(chat_id), filter).await
 }
 
 fn parse_task_state(state: Option<String>) -> Result<Option<rua_task::TaskState>, ApiError> {
@@ -297,21 +211,15 @@ async fn list_tasks_with_filter_for_owner(
 
 async fn get_task(
     State(state): State<AppState>,
-    Path((agent_id, chat_id, task_id)): Path<(String, String, String)>,
+    ChatContext { project_id, .. }: ChatContext,
+    Path((chat_id, task_id)): Path<(String, String)>,
 ) -> Response {
-    get_task_for_owner(state, rua_task::TaskOwner::new(agent_id, chat_id), task_id).await
-}
-
-async fn get_project_task(
-    State(state): State<AppState>,
-    Path((project_id, chat_id, task_id)): Path<(String, String, String)>,
-) -> Response {
-    let action = crate::services::device_command_bus::ProjectDeviceAction::GetTask {
-        project_id: rua_core::ProjectId::new(&project_id),
+    let action = |project_id| crate::services::device_command_bus::ProjectDeviceAction::GetTask {
+        project_id,
         chat_id: chat_id.clone(),
         task_id: task_id.clone(),
     };
-    match remote_project_task_response(&state, &project_id, action).await {
+    match remote_project_task_response(&state, project_id.as_deref(), action).await {
         Ok(Some(crate::services::device_command_bus::ProjectDeviceResponse::Task { task })) => {
             return Json(task).into_response();
         }
@@ -324,7 +232,7 @@ async fn get_project_task(
         Err(response) => return response,
         Ok(None) => {}
     }
-    get_task_for_owner(state, project_task_owner(project_id, chat_id), task_id).await
+    get_task_for_owner(state, rua_task::TaskOwner::new(chat_id), task_id).await
 }
 
 async fn get_task_for_owner(
@@ -340,21 +248,16 @@ async fn get_task_for_owner(
 
 async fn get_task_result(
     State(state): State<AppState>,
-    Path((agent_id, chat_id, task_id)): Path<(String, String, String)>,
+    ChatContext { project_id, .. }: ChatContext,
+    Path((chat_id, task_id)): Path<(String, String)>,
 ) -> Response {
-    get_task_result_for_owner(state, rua_task::TaskOwner::new(agent_id, chat_id), task_id).await
-}
-
-async fn get_project_task_result(
-    State(state): State<AppState>,
-    Path((project_id, chat_id, task_id)): Path<(String, String, String)>,
-) -> Response {
-    let action = crate::services::device_command_bus::ProjectDeviceAction::GetTaskResult {
-        project_id: rua_core::ProjectId::new(&project_id),
-        chat_id: chat_id.clone(),
-        task_id: task_id.clone(),
-    };
-    match remote_project_task_response(&state, &project_id, action).await {
+    let action =
+        |project_id| crate::services::device_command_bus::ProjectDeviceAction::GetTaskResult {
+            project_id,
+            chat_id: chat_id.clone(),
+            task_id: task_id.clone(),
+        };
+    match remote_project_task_response(&state, project_id.as_deref(), action).await {
         Ok(Some(crate::services::device_command_bus::ProjectDeviceResponse::TaskResult {
             result,
         })) => return Json(result).into_response(),
@@ -367,7 +270,7 @@ async fn get_project_task_result(
         Err(response) => return response,
         Ok(None) => {}
     }
-    get_task_result_for_owner(state, project_task_owner(project_id, chat_id), task_id).await
+    get_task_result_for_owner(state, rua_task::TaskOwner::new(chat_id), task_id).await
 }
 
 async fn get_task_result_for_owner(
@@ -387,16 +290,10 @@ async fn get_task_result_for_owner(
     }
 }
 
-async fn cancel_task(
-    State(state): State<AppState>,
-    Path((agent_id, chat_id, task_id)): Path<(String, String, String)>,
-) -> Response {
-    cancel_task_for_owner(state, rua_task::TaskOwner::new(agent_id, chat_id), task_id).await
-}
-
 async fn send_task_input(
     State(state): State<AppState>,
-    Path((agent_id, chat_id, task_id)): Path<(String, String, String)>,
+    ChatContext { project_id, .. }: ChatContext,
+    Path((chat_id, task_id)): Path<(String, String)>,
     Json(request): Json<SendTaskInputRequest>,
 ) -> Response {
     let submission = match rua_task::TaskInputSubmission::new(request.submission_id, request.input)
@@ -404,32 +301,14 @@ async fn send_task_input(
         Ok(submission) => submission,
         Err(message) => return ApiError::BadRequest(message).into_response(),
     };
-    send_task_input_for_owner(
-        state,
-        rua_task::TaskOwner::new(agent_id, chat_id),
-        task_id,
-        submission,
-    )
-    .await
-}
-
-async fn send_project_task_input(
-    State(state): State<AppState>,
-    Path((project_id, chat_id, task_id)): Path<(String, String, String)>,
-    Json(request): Json<SendTaskInputRequest>,
-) -> Response {
-    let submission = match rua_task::TaskInputSubmission::new(request.submission_id, request.input)
-    {
-        Ok(submission) => submission,
-        Err(message) => return ApiError::BadRequest(message).into_response(),
-    };
-    let action = crate::services::device_command_bus::ProjectDeviceAction::SendTaskInput {
-        project_id: rua_core::ProjectId::new(&project_id),
-        chat_id: chat_id.clone(),
-        task_id: task_id.clone(),
-        submission: submission.clone(),
-    };
-    match remote_project_task_response(&state, &project_id, action).await {
+    let action =
+        |project_id| crate::services::device_command_bus::ProjectDeviceAction::SendTaskInput {
+            project_id,
+            chat_id: chat_id.clone(),
+            task_id: task_id.clone(),
+            submission: submission.clone(),
+        };
+    match remote_project_task_response(&state, project_id.as_deref(), action).await {
         Ok(Some(crate::services::device_command_bus::ProjectDeviceResponse::TaskInput {
             acceptance,
         })) => return Json(acceptance).into_response(),
@@ -444,7 +323,7 @@ async fn send_project_task_input(
     }
     send_task_input_for_owner(
         state,
-        project_task_owner(project_id, chat_id),
+        rua_task::TaskOwner::new(chat_id),
         task_id,
         submission,
     )
@@ -469,65 +348,43 @@ async fn send_task_input_for_owner(
 
 async fn watch_task(
     State(state): State<AppState>,
-    Path((agent_id, chat_id, task_id)): Path<(String, String, String)>,
+    ChatContext { project_id, .. }: ChatContext,
+    Path((chat_id, task_id)): Path<(String, String)>,
 ) -> Response {
-    watch_task_for_owner(
-        state,
-        rua_task::TaskOwner::new(agent_id, chat_id),
-        task_id,
-        true,
-    )
-    .await
+    watch_task_for_chat(state, project_id, chat_id, task_id, true).await
 }
 
 async fn unwatch_task(
     State(state): State<AppState>,
-    Path((agent_id, chat_id, task_id)): Path<(String, String, String)>,
+    ChatContext { project_id, .. }: ChatContext,
+    Path((chat_id, task_id)): Path<(String, String)>,
 ) -> Response {
-    watch_task_for_owner(
-        state,
-        rua_task::TaskOwner::new(agent_id, chat_id),
-        task_id,
-        false,
-    )
-    .await
+    watch_task_for_chat(state, project_id, chat_id, task_id, false).await
 }
 
-async fn watch_project_task(
-    State(state): State<AppState>,
-    Path((project_id, chat_id, task_id)): Path<(String, String, String)>,
-) -> Response {
-    watch_project_task_for_owner(state, project_id, chat_id, task_id, true).await
-}
-
-async fn unwatch_project_task(
-    State(state): State<AppState>,
-    Path((project_id, chat_id, task_id)): Path<(String, String, String)>,
-) -> Response {
-    watch_project_task_for_owner(state, project_id, chat_id, task_id, false).await
-}
-
-async fn watch_project_task_for_owner(
+async fn watch_task_for_chat(
     state: AppState,
-    project_id: String,
+    project_id: Option<String>,
     chat_id: String,
     task_id: String,
     watch: bool,
 ) -> Response {
-    let action = if watch {
-        crate::services::device_command_bus::ProjectDeviceAction::WatchTask {
-            project_id: rua_core::ProjectId::new(&project_id),
-            chat_id: chat_id.clone(),
-            task_id: task_id.clone(),
-        }
-    } else {
-        crate::services::device_command_bus::ProjectDeviceAction::UnwatchTask {
-            project_id: rua_core::ProjectId::new(&project_id),
-            chat_id: chat_id.clone(),
-            task_id: task_id.clone(),
+    let action = |project_id| {
+        if watch {
+            crate::services::device_command_bus::ProjectDeviceAction::WatchTask {
+                project_id,
+                chat_id: chat_id.clone(),
+                task_id: task_id.clone(),
+            }
+        } else {
+            crate::services::device_command_bus::ProjectDeviceAction::UnwatchTask {
+                project_id,
+                chat_id: chat_id.clone(),
+                task_id: task_id.clone(),
+            }
         }
     };
-    match remote_project_task_response(&state, &project_id, action).await {
+    match remote_project_task_response(&state, project_id.as_deref(), action).await {
         Ok(Some(crate::services::device_command_bus::ProjectDeviceResponse::TaskWatch {
             status,
         })) => return Json(status).into_response(),
@@ -540,13 +397,7 @@ async fn watch_project_task_for_owner(
         Err(response) => return response,
         Ok(None) => {}
     }
-    watch_task_for_owner(
-        state,
-        project_task_owner(project_id, chat_id),
-        task_id,
-        watch,
-    )
-    .await
+    watch_task_for_owner(state, rua_task::TaskOwner::new(chat_id), task_id, watch).await
 }
 
 async fn watch_task_for_owner(
@@ -566,16 +417,18 @@ async fn watch_task_for_owner(
     }
 }
 
-async fn cancel_project_task(
+async fn cancel_task(
     State(state): State<AppState>,
-    Path((project_id, chat_id, task_id)): Path<(String, String, String)>,
+    ChatContext { project_id, .. }: ChatContext,
+    Path((chat_id, task_id)): Path<(String, String)>,
 ) -> Response {
-    let action = crate::services::device_command_bus::ProjectDeviceAction::CancelTask {
-        project_id: rua_core::ProjectId::new(&project_id),
-        chat_id: chat_id.clone(),
-        task_id: task_id.clone(),
-    };
-    match remote_project_task_response(&state, &project_id, action).await {
+    let action =
+        |project_id| crate::services::device_command_bus::ProjectDeviceAction::CancelTask {
+            project_id,
+            chat_id: chat_id.clone(),
+            task_id: task_id.clone(),
+        };
+    match remote_project_task_response(&state, project_id.as_deref(), action).await {
         Ok(Some(crate::services::device_command_bus::ProjectDeviceResponse::Task { task })) => {
             return Json(task).into_response();
         }
@@ -588,7 +441,7 @@ async fn cancel_project_task(
         Err(response) => return response,
         Ok(None) => {}
     }
-    cancel_task_for_owner(state, project_task_owner(project_id, chat_id), task_id).await
+    cancel_task_for_owner(state, rua_task::TaskOwner::new(chat_id), task_id).await
 }
 
 async fn cancel_task_for_owner(
@@ -604,38 +457,23 @@ async fn cancel_task_for_owner(
 
 async fn retry_task(
     State(state): State<AppState>,
-    Path((agent_id, chat_id, task_id)): Path<(String, String, String)>,
+    ChatContext {
+        project_id,
+        agent_id,
+    }: ChatContext,
+    Path((chat_id, task_id)): Path<(String, String)>,
 ) -> Response {
     let authorization = match rua_task::TaskAttemptAuthorization::new(agent_id.clone()) {
         Ok(authorization) => authorization,
         Err(message) => return ApiError::BadRequest(message).into_response(),
     };
-    retry_task_for_owner(
-        state,
-        rua_task::TaskOwner::new(agent_id, chat_id),
-        task_id,
-        authorization,
-    )
-    .await
-}
-
-async fn retry_project_task(
-    State(state): State<AppState>,
-    Path((project_id, chat_id, task_id)): Path<(String, String, String)>,
-    Json(request): Json<RetryProjectTaskRequest>,
-) -> Response {
-    let authorization =
-        match rua_task::TaskAttemptAuthorization::new(request.authorization_agent_id.clone()) {
-            Ok(authorization) => authorization,
-            Err(message) => return ApiError::BadRequest(message).into_response(),
-        };
-    let action = crate::services::device_command_bus::ProjectDeviceAction::RetryTask {
-        project_id: rua_core::ProjectId::new(&project_id),
+    let action = |project_id| crate::services::device_command_bus::ProjectDeviceAction::RetryTask {
+        project_id,
         chat_id: chat_id.clone(),
         task_id: task_id.clone(),
-        authorization_agent_id: request.authorization_agent_id,
+        authorization_agent_id: agent_id,
     };
-    match remote_project_task_response(&state, &project_id, action).await {
+    match remote_project_task_response(&state, project_id.as_deref(), action).await {
         Ok(Some(crate::services::device_command_bus::ProjectDeviceResponse::Task { task })) => {
             return Json(task).into_response();
         }
@@ -650,7 +488,7 @@ async fn retry_project_task(
     }
     retry_task_for_owner(
         state,
-        project_task_owner(project_id, chat_id),
+        rua_task::TaskOwner::new(chat_id),
         task_id,
         authorization,
     )
@@ -666,6 +504,7 @@ async fn retry_task_for_owner(
     let _resource_admission = match state
         .conversation_input_intake
         .project_work_admission(&owner.chat_address)
+        .await
     {
         Ok(guard) => guard,
         Err(error) => return ApiError::Conflict(error).into_response(),
@@ -677,7 +516,7 @@ async fn retry_task_for_owner(
     {
         return ApiError::Conflict(error).into_response();
     }
-    let scope = rua_core::ChatScopeStore::resolve(&state.rua_root, owner.chat_address.clone());
+    let scope = rua_core::ChatStore::resolve(&state.rua_root, owner.chat_address.clone());
     match rua_session::WorkspaceSessionStore::new(scope.root())
         .load_chat_header(owner.chat_id())
         .await
@@ -703,15 +542,14 @@ async fn retry_task_for_owner(
     }
 }
 
-fn project_task_owner(project_id: String, chat_id: String) -> rua_task::TaskOwner {
-    rua_task::TaskOwner::from_address(rua_core::ChatAddress::project(project_id, chat_id))
-}
-
 async fn remote_project_task_response(
     state: &AppState,
-    project_id: &str,
-    action: crate::services::device_command_bus::ProjectDeviceAction,
+    project_id: Option<&str>,
+    action: impl FnOnce(rua_core::ProjectId) -> crate::services::device_command_bus::ProjectDeviceAction,
 ) -> Result<Option<crate::services::device_command_bus::ProjectDeviceResponse>, Response> {
+    let Some(project_id) = project_id else {
+        return Ok(None);
+    };
     let project_id = rua_core::ProjectId::new(project_id);
     let project = match state.project_catalog.get(&project_id) {
         Ok(Some(project)) => project,
@@ -747,7 +585,7 @@ async fn remote_project_task_response(
         command_id: format!("project-task-{}", uuid::Uuid::new_v4()),
         source_device_id,
         target_device_id: project.resource_device_id,
-        action,
+        action: action(project_id),
     };
     crate::services::device_command_bus::deliver_project_device_command_via_session(
         &session_manager,

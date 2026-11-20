@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use rua_core::chat::ChatAddress;
-use rua_core::ChatScopeStore;
+use rua_core::ChatStore;
 use rua_session::WorkspaceSessionStore;
 use serde::{Deserialize, Serialize};
 
@@ -38,7 +38,7 @@ impl LocalChatDeletionPlan {
     }
 
     pub async fn prepare(rua_root: impl AsRef<Path>, address: ChatAddress) -> Result<Self, String> {
-        let scope_root = ChatScopeStore::resolve(rua_root.as_ref(), address.clone())
+        let scope_root = ChatStore::resolve(rua_root.as_ref(), address.clone())
             .root()
             .to_path_buf();
         let store = WorkspaceSessionStore::new(&scope_root);

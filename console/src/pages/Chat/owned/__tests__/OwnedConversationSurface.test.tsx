@@ -94,74 +94,35 @@ vi.mock("@/hooks/useTTS", () => ({
   }),
 }));
 
-vi.mock("@/api/modules/chat", () => ({
-  chatApi: {
-    getChat: (...args: unknown[]) => mockGetChat(...args),
-    submitPath: (chatId: string, agentId: string) =>
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/console/submit`,
-    livePath: (chatId: string, agentId: string) =>
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/console/live`,
-    stopChat: (...args: unknown[]) => mockStopChat(...args),
-    selectVariant: async (
-      chatId: string,
-      turnId: string,
-      variantId: string,
-      agentId: string,
-    ) => {
-      await fetch(
-        `/api/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-          chatId,
-        )}`,
-        {
-          method: "PUT",
-          body: JSON.stringify({
-            turn_id: turnId,
-            selected_variant_id: variantId,
-          }),
-        },
-      );
-      return { id: chatId };
+vi.mock("@/api/modules/chat", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/modules/chat")>();
+  return {
+    ...actual,
+    chatApi: {
+      ...actual.chatApi,
+      getChat: (...args: Parameters<typeof actual.chatApi.getChat>) =>
+        mockGetChat(...args) ?? actual.chatApi.getChat(...args),
+      stopChat: (...args: unknown[]) => mockStopChat(...args),
+      uploadFile: (...args: unknown[]) => mockUploadFile(...args),
+      filePreviewUrl: (path: string) => `/preview${path}`,
     },
-    rollback: (
-      chatId: string,
-      body: { before_turn_id: string },
-      agentId: string,
-    ) =>
-      fetch(
-        `/api/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-          chatId,
-        )}/rollback`,
-        { method: "POST", body: JSON.stringify(body) },
-      ).then((response) => response.json()),
-    branch: (
-      chatId: string,
-      body: { before_turn_id: string },
-      agentId: string,
-    ) =>
-      fetch(
-        `/api/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-          chatId,
-        )}/branch`,
-        { method: "POST", body: JSON.stringify(body) },
-      ).then((response) => response.json()),
-    uploadFile: (...args: unknown[]) => mockUploadFile(...args),
-    mediaUrl: (_scope: unknown, _chatId: string, mediaId: string) =>
-      `/api/agents/default/chats/chat-1/media/${mediaId}`,
-    filePreviewUrl: (path: string) => `/preview${path}`,
-  },
-}));
+  };
+});
 
-vi.mock("@/api/modules/console", () => ({
-  consoleApi: {
-    getApprovalSnapshot: (...args: unknown[]) =>
-      mockGetApprovalSnapshot(...args),
-    decideApproval: (...args: unknown[]) => mockDecideApproval(...args),
-  },
-}));
+vi.mock("@/api/modules/conversation", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@/api/modules/conversation")
+  >();
+  return {
+    ...actual,
+    conversationApi: {
+      ...actual.conversationApi,
+      getApprovalSnapshot: (...args: unknown[]) =>
+        mockGetApprovalSnapshot(...args),
+      decideApproval: (...args: unknown[]) => mockDecideApproval(...args),
+    },
+  };
+});
 
 vi.mock("@/api/modules/acp", () => ({
   acpApi: {
@@ -489,7 +450,8 @@ describe("OwnedConversationSurface", () => {
     const { container, unmount } = render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-perf" }}
+          address={{ chatId: "chat-perf" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -522,7 +484,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -558,7 +521,6 @@ describe("OwnedConversationSurface", () => {
               id: "task-1",
               status: "waiting_approval",
               chat: {
-                scope: { kind: "agent", agent_id: "default" },
                 chat_id: "chat-1",
               },
             },
@@ -567,7 +529,6 @@ describe("OwnedConversationSurface", () => {
               id: "req-1",
               status: "delivery_failed",
               chat: {
-                scope: { kind: "agent", agent_id: "default" },
                 chat_id: "chat-other",
               },
             },
@@ -578,7 +539,8 @@ describe("OwnedConversationSurface", () => {
       render(
         <MemoryRouter>
           <OwnedConversationSurface
-            address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+            address={{ chatId: "chat-1" }}
+            executionAgentId="default"
             chatModel={configuredModel}
             currentDeviceId="device-local"
           />
@@ -609,7 +571,7 @@ describe("OwnedConversationSurface", () => {
       fireEvent.click(navigable[0]);
       await waitFor(() =>
         expect(screen.getByTestId("source-route")).toHaveTextContent(
-          "/agents/default/chats/chat-other",
+          "/chats/chat-other",
         ),
       );
     });
@@ -635,7 +597,6 @@ describe("OwnedConversationSurface", () => {
                 id: "task-1",
                 status: "running",
                 chat: {
-                  scope: { kind: "agent", agent_id: "default" },
                   chat_id: "chat-1",
                 },
               },
@@ -655,7 +616,8 @@ describe("OwnedConversationSurface", () => {
       render(
         <MemoryRouter>
           <OwnedConversationSurface
-            address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+            address={{ chatId: "chat-1" }}
+            executionAgentId="default"
             chatModel={configuredModel}
             currentDeviceId="device-local"
           />
@@ -683,7 +645,8 @@ describe("OwnedConversationSurface", () => {
       render(
         <MemoryRouter>
           <OwnedConversationSurface
-            address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+            address={{ chatId: "chat-1" }}
+            executionAgentId="default"
             chatModel={configuredModel}
             currentDeviceId="device-local"
           />
@@ -720,7 +683,8 @@ describe("OwnedConversationSurface", () => {
       render(
         <MemoryRouter>
           <OwnedConversationSurface
-            address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+            address={{ chatId: "chat-1" }}
+            executionAgentId="default"
             chatModel={configuredModel}
             currentDeviceId="device-local"
           />
@@ -745,7 +709,6 @@ describe("OwnedConversationSurface", () => {
                 id: "task-1",
                 status: "running",
                 chat: {
-                  scope: { kind: "agent", agent_id: "default" },
                   chat_id: "chat-1",
                 },
               },
@@ -759,7 +722,8 @@ describe("OwnedConversationSurface", () => {
       render(
         <MemoryRouter>
           <OwnedConversationSurface
-            address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+            address={{ chatId: "chat-1" }}
+            executionAgentId="default"
             chatModel={configuredModel}
             currentDeviceId="device-local"
           />
@@ -785,7 +749,6 @@ describe("OwnedConversationSurface", () => {
                 id: "task-1",
                 status: "running",
                 chat: {
-                  scope: { kind: "agent", agent_id: "default" },
                   chat_id: "chat-1",
                 },
               },
@@ -799,7 +762,8 @@ describe("OwnedConversationSurface", () => {
       render(
         <MemoryRouter>
           <OwnedConversationSurface
-            address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+            address={{ chatId: "chat-1" }}
+            executionAgentId="default"
             chatModel={configuredModel}
             currentDeviceId="device-local"
           />
@@ -827,7 +791,6 @@ describe("OwnedConversationSurface", () => {
       meta: {
         collaboration: {
           source: {
-            scope: { kind: "agent", agent_id: "default" },
             chat_id: "source",
           },
           executor: { kind: "acp", runner: "mock_agent" },
@@ -844,7 +807,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "child-chat" }}
+          address={{ chatId: "child-chat" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
         <LocationProbe />
@@ -870,7 +834,6 @@ describe("OwnedConversationSurface", () => {
       meta: {
         collaboration: {
           source: {
-            scope: { kind: "project", project_id: "project-1" },
             chat_id: "source",
           },
           executor: { kind: "agent" },
@@ -892,11 +855,8 @@ describe("OwnedConversationSurface", () => {
         <>
           <output data-testid="selected-model">{history?.model?.model}</output>
           <OwnedConversationSurface
-            address={{
-              scope: "agent",
-              agentId: "implementation",
-              chatId: "child-chat",
-            }}
+            address={{ chatId: "child-chat" }}
+            executionAgentId="implementation"
             chatModel={history === null ? undefined : history.model ?? null}
             onHistoryChange={setHistory}
           />
@@ -920,7 +880,6 @@ describe("OwnedConversationSurface", () => {
       meta: {
         collaboration: {
           source: {
-            scope: { kind: "agent", agent_id: "default" },
             chat_id: "source",
           },
           executor: { kind: "acp", runner: "mock_agent" },
@@ -937,7 +896,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "child-chat" }}
+          address={{ chatId: "child-chat" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
         <LocationProbe />
@@ -957,7 +917,7 @@ describe("OwnedConversationSurface", () => {
     );
     await waitFor(() =>
       expect(screen.getByTestId("source-route")).toHaveTextContent(
-        "/agents/default/chats/source",
+        "/chats/source",
       ),
     );
   });
@@ -996,7 +956,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -1041,7 +1002,7 @@ describe("OwnedConversationSurface", () => {
     await screen.findByText("Hello done");
     expect(screen.queryByText("Generating")).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/agents/default/chats/chat-1/console/submit",
+      "/api/chats/chat-1/console/submit",
       expect.objectContaining({
         method: "POST",
       }),
@@ -1064,7 +1025,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
         />
       </MemoryRouter>,
     );
@@ -1103,7 +1065,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
         />
       </MemoryRouter>,
     );
@@ -1128,7 +1091,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "lazy-chat" }}
+          address={{ chatId: "lazy-chat" }}
+          executionAgentId="default"
           unmaterialized
           chatModel={configuredModel}
         />
@@ -1137,7 +1101,7 @@ describe("OwnedConversationSurface", () => {
 
     const input = await screen.findByPlaceholderText("Message");
     await waitFor(() =>
-      expect(mockGetChat).toHaveBeenCalledWith("lazy-chat", "default", {
+      expect(mockGetChat).toHaveBeenCalledWith("lazy-chat", {
         turnLimit: 20,
       }),
     );
@@ -1145,9 +1109,8 @@ describe("OwnedConversationSurface", () => {
       expect(
         fetchMock.mock.calls.some(
           ([input, init]) =>
-            String(input).includes(
-              "/api/agents/default/chats/lazy-chat/console/live",
-            ) && JSON.parse(String(init?.body)).chat_id === "lazy-chat",
+            String(input).includes("/api/chats/lazy-chat/console/live") &&
+            JSON.parse(String(init?.body)).chat_id === "lazy-chat",
         ),
       ).toBe(true),
     );
@@ -1168,7 +1131,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           authorityPlacementDeviceId="device-remote"
         />
       </MemoryRouter>,
@@ -1196,7 +1160,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
           authorityPlacementDeviceId="device-remote"
         />
@@ -1213,7 +1178,7 @@ describe("OwnedConversationSurface", () => {
     await screen.findByText("Delivered, waiting for result");
     expect(
       JSON.parse(
-        localStorage.getItem("rua:remote-pending-submissions:default:chat-1") ||
+        localStorage.getItem("rua:remote-pending-submissions:chat:chat-1") ||
           "[]",
       )[0].device_delivery_id,
     ).toBe("device-delivery-1");
@@ -1257,7 +1222,8 @@ describe("OwnedConversationSurface", () => {
       render(
         <MemoryRouter>
           <OwnedConversationSurface
-            address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+            address={{ chatId: "chat-1" }}
+            executionAgentId="default"
             chatModel={configuredModel}
             authorityPlacementDeviceId={target}
             currentDeviceId={current}
@@ -1324,7 +1290,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
           authorityPlacementDeviceId="device-remote"
         />
@@ -1383,7 +1350,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
           authorityPlacementDeviceId="device-remote"
         />
@@ -1400,7 +1368,7 @@ describe("OwnedConversationSurface", () => {
     );
     await waitFor(() =>
       expect(
-        localStorage.getItem("rua:remote-pending-submissions:default:chat-1"),
+        localStorage.getItem("rua:remote-pending-submissions:chat:chat-1"),
       ).toBeNull(),
     );
     const fetchCalls = fetchMock.mock.calls.map(([url, init]) => ({
@@ -1430,7 +1398,7 @@ describe("OwnedConversationSurface", () => {
       },
     });
     localStorage.setItem(
-      "rua:remote-pending-submissions:default:chat-1",
+      "rua:remote-pending-submissions:chat:chat-1",
       JSON.stringify([
         {
           device_delivery_id: "device-delivery-1",
@@ -1451,7 +1419,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -1532,7 +1501,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
           authorityPlacementDeviceId="desktop"
           currentDeviceId="desktop"
@@ -1543,7 +1513,7 @@ describe("OwnedConversationSurface", () => {
     await screen.findByText("Run on target");
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/agents/default/chats/chat-1/console/live",
+        "/api/chats/chat-1/console/live",
         expect.objectContaining({ method: "POST" }),
       ),
     );
@@ -1660,7 +1630,8 @@ describe("OwnedConversationSurface", () => {
       render(
         <MemoryRouter>
           <OwnedConversationSurface
-            address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+            address={{ chatId: "chat-1" }}
+            executionAgentId="default"
             chatModel={configuredModel}
             authorityPlacementDeviceId="desktop"
             currentDeviceId="desktop"
@@ -1678,7 +1649,7 @@ describe("OwnedConversationSurface", () => {
       await screen.findByText("Run after open");
       await waitFor(() =>
         expect(fetchMock).toHaveBeenCalledWith(
-          "/api/agents/default/chats/chat-1/console/live",
+          "/api/chats/chat-1/console/live",
           expect.objectContaining({ method: "POST" }),
         ),
       );
@@ -1713,7 +1684,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
           authorityPlacementDeviceId="device-remote"
         />
@@ -1749,7 +1721,8 @@ describe("OwnedConversationSurface", () => {
     const { container } = render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -1804,7 +1777,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -1861,7 +1835,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -1871,10 +1846,15 @@ describe("OwnedConversationSurface", () => {
     fireEvent.click(within(tray).getByRole("button", { name: "Run once" }));
 
     await waitFor(() =>
-      expect(mockDecideApproval).toHaveBeenCalledWith("default", "approval-1", {
-        decision: "run_once",
-        decided_by: "webui",
-      }),
+      expect(mockDecideApproval).toHaveBeenCalledWith(
+        { agentId: "default", projectId: undefined },
+        "chat-1",
+        "approval-1",
+        {
+          decision: "run_once",
+          decided_by: "webui",
+        },
+      ),
     );
     expect(mockGetChat).toHaveBeenCalledTimes(1);
   });
@@ -1931,7 +1911,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -2009,7 +1990,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -2032,14 +2014,19 @@ describe("OwnedConversationSurface", () => {
     );
 
     await waitFor(() =>
-      expect(mockDecideApproval).toHaveBeenCalledWith("default", "approval-1", {
-        decision: "allow_chat",
-        decided_by: "webui",
-        matcher: {
-          type: "bash_command_pattern",
-          pattern: "du -sh /Users/example/projects/rua",
+      expect(mockDecideApproval).toHaveBeenCalledWith(
+        { agentId: "default", projectId: undefined },
+        "chat-1",
+        "approval-1",
+        {
+          decision: "allow_chat",
+          decided_by: "webui",
+          matcher: {
+            type: "bash_command_pattern",
+            pattern: "du -sh /Users/example/projects/rua",
+          },
         },
-      }),
+      ),
     );
   });
 
@@ -2086,7 +2073,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -2099,10 +2087,15 @@ describe("OwnedConversationSurface", () => {
     fireEvent.click(within(tray).getByRole("button", { name: "Run once" }));
 
     await waitFor(() =>
-      expect(mockDecideApproval).toHaveBeenCalledWith("default", "approval-1", {
-        decision: "run_once",
-        decided_by: "webui",
-      }),
+      expect(mockDecideApproval).toHaveBeenCalledWith(
+        { agentId: "default", projectId: undefined },
+        "chat-1",
+        "approval-1",
+        {
+          decision: "run_once",
+          decided_by: "webui",
+        },
+      ),
     );
     tray = await screen.findByLabelText("Approval queue");
     expect(within(tray).getByText("1 / 1")).toBeInTheDocument();
@@ -2170,7 +2163,8 @@ describe("OwnedConversationSurface", () => {
     const { container } = render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -2253,7 +2247,8 @@ describe("OwnedConversationSurface", () => {
     const { container } = render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -2298,7 +2293,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -2345,7 +2341,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -2399,7 +2396,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -2440,7 +2438,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -2520,7 +2519,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -2617,7 +2617,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -2732,7 +2733,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -2804,7 +2806,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -2845,7 +2848,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -2932,7 +2936,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -3033,7 +3038,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -3093,7 +3099,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -3153,7 +3160,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
           blockPreferences={{
             aggregateExpanded: true,
@@ -3275,7 +3283,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -3316,11 +3325,8 @@ describe("OwnedConversationSurface", () => {
       render(
         <MemoryRouter>
           <OwnedConversationSurface
-            address={{
-              scope: "agent",
-              agentId: "default",
-              chatId: "chat-reopening",
-            }}
+            address={{ chatId: "chat-reopening" }}
+            executionAgentId="default"
             chatModel={configuredModel}
           />
         </MemoryRouter>,
@@ -3380,7 +3386,8 @@ describe("OwnedConversationSurface", () => {
       render(
         <MemoryRouter>
           <OwnedConversationSurface
-            address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+            address={{ chatId: "chat-1" }}
+            executionAgentId="default"
             chatModel={configuredModel}
           />
         </MemoryRouter>,
@@ -3491,7 +3498,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -3580,7 +3588,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -3677,7 +3686,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -3805,7 +3815,8 @@ describe("OwnedConversationSurface", () => {
         <MemoryRouter>
           <ModalProvider>
             <OwnedConversationSurface
-              address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+              address={{ chatId: "chat-1" }}
+              executionAgentId="default"
               chatModel={configuredModel}
             />
           </ModalProvider>
@@ -3870,7 +3881,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -3901,13 +3913,14 @@ describe("OwnedConversationSurface", () => {
   });
 
   it("restores and saves drafts per conversation id", async () => {
-    saveDraft("default:chat-1", "saved draft");
+    saveDraft("chat:chat-1", "saved draft");
     mockGetChat.mockResolvedValue(idleHistory());
 
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,
@@ -3921,7 +3934,7 @@ describe("OwnedConversationSurface", () => {
     fireEvent.change(input, { target: { value: "changed draft" } });
     expect(input).toHaveValue("changed draft");
     await waitFor(() =>
-      expect(sessionStorage.getItem("rua_input_draft_default:chat-1")).toBe(
+      expect(sessionStorage.getItem("rua_input_draft_chat:chat-1")).toBe(
         "changed draft",
       ),
     );
@@ -3930,10 +3943,10 @@ describe("OwnedConversationSurface", () => {
   it("uses canonical Project submit and live endpoints with the default Agent", async () => {
     const onSubmitAccepted = vi.fn();
     const fetchMock = routeFetch((url, init) => {
-      if (url.includes("/projects/project-1/chats/chat-1/console/submit")) {
+      if (url.includes("/chats/chat-1/console/submit")) {
         return submitAcceptedResponse();
       }
-      if (url.includes("/projects/project-1/chats/chat-1/console/live")) {
+      if (url.includes("/chats/chat-1/console/live")) {
         expect(JSON.parse(String(init?.body))).toEqual({
           viewer_id: expect.any(String),
         });
@@ -3948,16 +3961,11 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{
-            scope: "project",
-            projectId: {
-              scope: "project",
-              projectId: "project-1",
-              agentId: "default",
-            }.projectId,
-            chatId: "chat-1",
-          }}
-          lazy
+          address={{ chatId: "chat-1" }}
+          projectId="project-1"
+          executionAgentId="default"
+          unmaterialized
+          deferInitialAttach
           draftKey="project:project-1:chat-1"
           authorityPlacementDeviceId="device-local"
           currentDeviceId="device-local"
@@ -3972,12 +3980,12 @@ describe("OwnedConversationSurface", () => {
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/projects/project-1/chats/chat-1/console/submit",
+        "/api/chats/chat-1/console/submit",
         expect.objectContaining({ method: "POST" }),
       ),
     );
     const submitCall = fetchMock.mock.calls.find(([url]) =>
-      String(url).includes("/projects/project-1/chats/chat-1/console/submit"),
+      String(url).includes("/chats/chat-1/console/submit"),
     );
     expect(JSON.parse(String(submitCall?.[1]?.body))).toEqual(
       expect.objectContaining({
@@ -3988,7 +3996,7 @@ describe("OwnedConversationSurface", () => {
     );
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/projects/project-1/chats/chat-1/console/live",
+        "/api/chats/chat-1/console/live",
         expect.objectContaining({ method: "POST" }),
       ),
     );
@@ -3998,14 +4006,14 @@ describe("OwnedConversationSurface", () => {
 
   it("loads a materialized Project Chat from its canonical history endpoint", async () => {
     const fetchMock = routeFetch((url) => {
-      if (url.includes("/projects/project-1/chats/chat-saved?turn_limit=20")) {
+      if (url.includes("/chats/chat-saved?turn_limit=20")) {
         return jsonResponse({
           status: "idle",
           messages: [],
           model: configuredModel,
         });
       }
-      if (url.includes("/projects/project-1/chats/chat-saved/console/live")) {
+      if (url.includes("/chats/chat-saved/console/live")) {
         return sseResponse([
           { object: "response", status: "completed", output: [] },
         ]);
@@ -4017,15 +4025,9 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{
-            scope: "project",
-            projectId: {
-              scope: "project",
-              projectId: "project-1",
-              agentId: "default",
-            }.projectId,
-            chatId: "chat-saved",
-          }}
+          address={{ chatId: "chat-saved" }}
+          projectId="project-1"
+          executionAgentId="default"
           authorityPlacementDeviceId="device-local"
           currentDeviceId="device-local"
         />
@@ -4036,9 +4038,7 @@ describe("OwnedConversationSurface", () => {
       expect(
         fetchMock.mock.calls.some(
           ([url, init]) =>
-            String(url).startsWith(
-              "/api/projects/project-1/chats/chat-saved?",
-            ) &&
+            String(url).startsWith("/api/chats/chat-saved?") &&
             (!init?.method || init.method === "GET"),
         ),
       ).toBe(true),
@@ -4047,13 +4047,13 @@ describe("OwnedConversationSurface", () => {
 
   it("keeps a Project draft and uses the existing failed queue item when Submit is rejected", async () => {
     const fetchMock = routeFetch((url) => {
-      if (url.includes("/projects/project-1/chats/chat-1/console/submit")) {
+      if (url.includes("/chats/chat-1/console/submit")) {
         return submitAcceptedResponse({
           accepted: false,
           detail: "Project directory is unavailable",
         });
       }
-      if (url.includes("/projects/project-1/chats/chat-1?turn_limit=20")) {
+      if (url.includes("/chats/chat-1?turn_limit=20")) {
         return jsonResponse(idleHistory());
       }
       if (url.includes("/approvals/snapshot")) {
@@ -4062,7 +4062,7 @@ describe("OwnedConversationSurface", () => {
       if (url.includes("/acp/permissions")) {
         return jsonResponse({ pending: [] });
       }
-      if (url.includes("/projects/project-1/chats/chat-1/console/live")) {
+      if (url.includes("/chats/chat-1/console/live")) {
         return sseResponse([
           { object: "response", status: "completed", output: [] },
         ]);
@@ -4074,16 +4074,11 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{
-            scope: "project",
-            projectId: {
-              scope: "project",
-              projectId: "project-1",
-              agentId: "default",
-            }.projectId,
-            chatId: "chat-1",
-          }}
-          lazy
+          address={{ chatId: "chat-1" }}
+          projectId="project-1"
+          executionAgentId="default"
+          unmaterialized
+          deferInitialAttach
           draftKey="project:project-1:chat-1"
           authorityPlacementDeviceId="device-local"
           currentDeviceId="device-local"
@@ -4113,7 +4108,8 @@ describe("OwnedConversationSurface", () => {
     render(
       <MemoryRouter>
         <OwnedConversationSurface
-          address={{ scope: "agent", agentId: "default", chatId: "chat-1" }}
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
           chatModel={configuredModel}
         />
       </MemoryRouter>,

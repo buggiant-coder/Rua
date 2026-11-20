@@ -24,18 +24,14 @@ describe("landingRoute", () => {
       context: {},
     });
 
-    expect(response.headers.get("Location")).toBe(
-      "/agents/agent-b/chats/chat-2",
-    );
+    expect(response.headers.get("Location")).toBe("/chats/chat-2");
   });
 
   it("redirects to the last Project Chat when it was opened most recently", async () => {
     localStorage.setItem(
       "rua_last_chat_route",
       JSON.stringify({
-        version: 1,
-        kind: "project-chat",
-        path: "/projects/project-1/chats/chat-2",
+        path: "/chats/chat-2",
       }),
     );
 
@@ -45,9 +41,7 @@ describe("landingRoute", () => {
       context: {},
     });
 
-    expect(response.headers.get("Location")).toBe(
-      "/projects/project-1/chats/chat-2",
-    );
+    expect(response.headers.get("Location")).toBe("/chats/chat-2");
   });
 
   it("reserves a Lazy Chat when the selected Agent has no navigation hint", async () => {
@@ -59,8 +53,6 @@ describe("landingRoute", () => {
       context: {},
     });
 
-    expect(response.headers.get("Location")).toBe(
-      "/agents/default/chats/lazy-chat",
-    );
+    expect(response.headers.get("Location")).toBe("/chats/lazy-chat");
   });
 });

@@ -1,6 +1,6 @@
 import type { UserNotificationRequest } from "./types";
 
-const CHAT_ADDRESS_PATTERN = /^(agents|projects)\/([^/]+)\/chats\/([^/]+)$/;
+const CHAT_ADDRESS_PATTERN = /^chats\/[^/]+$/;
 const VIEWER_CHANNEL = "rua:chat-viewer-v1";
 const VIEWER_HEARTBEAT_MS = 1_000;
 const VIEWER_LEASE_MS = 3_500;

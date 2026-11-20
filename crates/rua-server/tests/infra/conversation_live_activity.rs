@@ -50,7 +50,7 @@ async fn seed_session_authority(workspace_dir: &std::path::Path, chat_id: &str, 
             "base_manifest_hash": format!("sha256:{}", "1".repeat(64)),
         }),
     );
-    rua_chat::apply_agent_scope_defaults(&mut header, "default");
+    rua_chat::apply_chat_defaults(&mut header);
     rua_session::WorkspaceSessionStore::new(workspace_dir)
         .save_chat_header(&header)
         .await
@@ -63,7 +63,6 @@ async fn idle_live_viewer_receives_a_complete_sse_keepalive_frame() {
     let state = AppState::from_tempdir(tmp.path().to_path_buf(), ServerProfile::Test);
     let activity = ConversationLiveActivity::new(
         Arc::clone(&state.streams),
-        Arc::clone(&state.registry),
         Arc::clone(&state.sync_device),
         Arc::clone(&state.sync_node),
         Arc::clone(&state.device_network),
@@ -72,7 +71,7 @@ async fn idle_live_viewer_receives_a_complete_sse_keepalive_frame() {
     .with_conversation_authority(Arc::clone(&state.conversation_authority));
     let mut viewer = activity
         .subscribe_viewer(
-            &ChatAddress::agent("default", DRAFT_CHAT_ID),
+            &ChatAddress::new(DRAFT_CHAT_ID),
             "default",
             "viewer-keepalive",
             None,
@@ -94,7 +93,6 @@ async fn draft_live_viewer_waits_for_materialization_without_authority_error() {
     let state = AppState::from_tempdir(tmp.path().to_path_buf(), ServerProfile::Test);
     let activity = ConversationLiveActivity::new(
         Arc::clone(&state.streams),
-        Arc::clone(&state.registry),
         Arc::clone(&state.sync_device),
         Arc::clone(&state.sync_node),
         Arc::clone(&state.device_network),
@@ -103,7 +101,7 @@ async fn draft_live_viewer_waits_for_materialization_without_authority_error() {
     .with_conversation_authority(Arc::clone(&state.conversation_authority));
     let mut viewer = activity
         .subscribe_viewer(
-            &ChatAddress::agent("default", DRAFT_CHAT_ID),
+            &ChatAddress::new(DRAFT_CHAT_ID),
             "default",
             "viewer-draft",
             None,
@@ -118,13 +116,8 @@ async fn draft_live_viewer_waits_for_materialization_without_authority_error() {
     );
 
     let local_device_id = current_sync_device_id(&state.sync_device).expect("test Device identity");
-    let runtime = state
-        .registry
-        .get_or_create("default")
-        .await
-        .expect("workspace");
     materialize_targeted_chat(
-        &runtime.workspace_dir(),
+        &state.rua_root.join("chats"),
         "default",
         DRAFT_CHAT_ID,
         "Draft",
@@ -139,7 +132,7 @@ async fn draft_live_viewer_waits_for_materialization_without_authority_error() {
 
     let key = StreamKey::new(
         CONSOLE_CHANNEL_ID,
-        ChatAddress::agent("default", DRAFT_CHAT_ID),
+        ChatAddress::new(DRAFT_CHAT_ID),
         Priority::Normal,
     );
     let (producer_id, _cancel_rx) = state.streams.register_active_keyed(&key).await;
@@ -190,17 +183,15 @@ async fn project_draft_live_viewer_waits_on_its_resource_device() {
             extra: BTreeMap::new(),
         })
         .expect("seed Project descriptor");
-    let address = ChatAddress::project(project_id, PROJECT_CHAT_ID);
+    let address = ChatAddress::new(PROJECT_CHAT_ID);
     let activity = ConversationLiveActivity::new(
         Arc::clone(&state.streams),
-        Arc::clone(&state.registry),
         Arc::clone(&state.sync_device),
         Arc::clone(&state.sync_node),
         Arc::clone(&state.device_network),
         state.rua_root.clone(),
     )
     .with_conversation_authority(Arc::clone(&state.conversation_authority))
-    .with_project_catalog(Arc::clone(&state.project_catalog))
     .with_chat_activity_wake_hub(Arc::clone(&state.chat_activity_wake_hub))
     .with_active_stream_broadcast_hub(Arc::clone(&state.active_stream_broadcast_hub));
     let mut viewer = activity
@@ -237,18 +228,24 @@ async fn unavailable_project_live_does_not_fallback_or_persist_retry_intent() {
             extra: BTreeMap::new(),
         })
         .expect("seed Project descriptor");
-    let address = ChatAddress::project(project_id, PROJECT_CHAT_ID);
-    let scope = rua_core::ChatScopeStore::resolve(&state.rua_root, address.clone());
+    let address = ChatAddress::new(PROJECT_CHAT_ID);
+    let scope = rua_core::ChatStore::resolve(&state.rua_root, address.clone());
+    seed_session_authority(scope.root(), PROJECT_CHAT_ID, "0102030405060708").await;
+    let store = rua_session::WorkspaceSessionStore::new(scope.root());
+    store
+        .update_chat_header(PROJECT_CHAT_ID, |header| {
+            header.project_id = Some(project_id.to_string())
+        })
+        .await
+        .unwrap();
     let activity = ConversationLiveActivity::new(
         Arc::clone(&state.streams),
-        Arc::clone(&state.registry),
         Arc::clone(&state.sync_device),
         Arc::clone(&state.sync_node),
         Arc::clone(&state.device_network),
         state.rua_root.clone(),
     )
-    .with_conversation_authority(Arc::clone(&state.conversation_authority))
-    .with_project_catalog(Arc::clone(&state.project_catalog));
+    .with_conversation_authority(Arc::clone(&state.conversation_authority));
     let mut viewer = activity
         .subscribe_viewer(&address, "default", "viewer-project-unavailable", None)
         .await;
@@ -270,11 +267,16 @@ async fn unavailable_project_live_does_not_fallback_or_persist_retry_intent() {
             .unwrap()
             .is_none()
     );
-    assert!(rua_session::WorkspaceSessionStore::new(scope.root())
-        .load_chat_header(PROJECT_CHAT_ID)
-        .await
-        .unwrap()
-        .is_none());
+    assert_eq!(
+        store
+            .load_chat_header(PROJECT_CHAT_ID)
+            .await
+            .unwrap()
+            .unwrap()
+            .project_id
+            .as_deref(),
+        Some(project_id.as_str())
+    );
     assert!(state
         .conversation_authority
         .active_turn(&address)
@@ -311,14 +313,9 @@ async fn idle_live_viewer_receives_next_local_run() {
     let tmp = TempDir::new().expect("tempdir");
     let state = AppState::from_tempdir(tmp.path().to_path_buf(), ServerProfile::Test);
     let local_device_id = current_sync_device_id(&state.sync_device).expect("test Device identity");
-    let runtime = state
-        .registry
-        .get_or_create("default")
-        .await
-        .expect("workspace");
     let now = chrono::Utc::now();
     rua_server::services::chat_index::upsert(
-        &runtime.workspace_dir(),
+        &state.rua_root.join("chats"),
         rua_server::services::chat_index::ChatIndexEntry {
             id: CHAT_ID.to_string(),
             name: "Live".to_string(),
@@ -342,10 +339,9 @@ async fn idle_live_viewer_receives_next_local_run() {
     )
     .await
     .expect("seed placement");
-    seed_session_authority(&runtime.workspace_dir(), CHAT_ID, &local_device_id).await;
+    seed_session_authority(&state.rua_root.join("chats"), CHAT_ID, &local_device_id).await;
     let activity = ConversationLiveActivity::new(
         Arc::clone(&state.streams),
-        Arc::clone(&state.registry),
         Arc::clone(&state.sync_device),
         Arc::clone(&state.sync_node),
         Arc::clone(&state.device_network),
@@ -354,12 +350,7 @@ async fn idle_live_viewer_receives_next_local_run() {
     .with_conversation_authority(Arc::clone(&state.conversation_authority))
     .with_active_stream_broadcast_hub(Arc::clone(&state.active_stream_broadcast_hub));
     let mut viewer = activity
-        .subscribe_viewer(
-            &ChatAddress::agent("default", CHAT_ID),
-            "default",
-            "viewer-a",
-            None,
-        )
+        .subscribe_viewer(&ChatAddress::new(CHAT_ID), "default", "viewer-a", None)
         .await;
     let initial_control = tokio::time::timeout(Duration::from_secs(1), viewer.next())
         .await
@@ -388,12 +379,7 @@ async fn idle_live_viewer_receives_next_local_run() {
     .to_string();
     state
         .active_stream_broadcast_hub
-        .publish_conversation_event(
-            "turn-stream",
-            &ChatAddress::agent("default", CHAT_ID),
-            epoch(1),
-            payload,
-        )
+        .publish_conversation_event("turn-stream", &ChatAddress::new(CHAT_ID), epoch(1), payload)
         .await;
 
     let received = tokio::time::timeout(Duration::from_secs(1), viewer.next())
@@ -427,15 +413,10 @@ async fn local_broadcast_replay_is_one_ordered_transaction() {
     let tmp = TempDir::new().expect("tempdir");
     let state = AppState::from_tempdir(tmp.path().to_path_buf(), ServerProfile::Test);
     let local_device_id = current_sync_device_id(&state.sync_device).expect("test Device identity");
-    let runtime = state
-        .registry
-        .get_or_create("default")
-        .await
-        .expect("workspace");
-    let address = ChatAddress::agent("default", CHAT_ID);
+    let address = ChatAddress::new(CHAT_ID);
     let now = chrono::Utc::now();
     rua_server::services::chat_index::upsert(
-        &runtime.workspace_dir(),
+        &state.rua_root.join("chats"),
         rua_server::services::chat_index::ChatIndexEntry {
             id: CHAT_ID.to_string(),
             name: "Live".to_string(),
@@ -459,7 +440,7 @@ async fn local_broadcast_replay_is_one_ordered_transaction() {
     )
     .await
     .expect("seed placement");
-    seed_session_authority(&runtime.workspace_dir(), CHAT_ID, &local_device_id).await;
+    seed_session_authority(&state.rua_root.join("chats"), CHAT_ID, &local_device_id).await;
 
     state
         .active_stream_broadcast_hub
@@ -503,7 +484,6 @@ async fn local_broadcast_replay_is_one_ordered_transaction() {
 
     let activity = ConversationLiveActivity::new(
         Arc::clone(&state.streams),
-        Arc::clone(&state.registry),
         Arc::clone(&state.sync_device),
         Arc::clone(&state.sync_node),
         Arc::clone(&state.device_network),
@@ -643,14 +623,9 @@ async fn late_local_viewer_receives_replay_as_snapshot_before_live_events() {
     let tmp = TempDir::new().expect("tempdir");
     let state = AppState::from_tempdir(tmp.path().to_path_buf(), ServerProfile::Test);
     let local_device_id = current_sync_device_id(&state.sync_device).expect("test Device identity");
-    let runtime = state
-        .registry
-        .get_or_create("default")
-        .await
-        .expect("workspace");
     let now = chrono::Utc::now();
     rua_server::services::chat_index::upsert(
-        &runtime.workspace_dir(),
+        &state.rua_root.join("chats"),
         rua_server::services::chat_index::ChatIndexEntry {
             id: CHAT_ID.to_string(),
             name: "Live".to_string(),
@@ -674,11 +649,11 @@ async fn late_local_viewer_receives_replay_as_snapshot_before_live_events() {
     )
     .await
     .expect("seed placement");
-    seed_session_authority(&runtime.workspace_dir(), CHAT_ID, &local_device_id).await;
+    seed_session_authority(&state.rua_root.join("chats"), CHAT_ID, &local_device_id).await;
 
     let key = StreamKey::new(
         CONSOLE_CHANNEL_ID,
-        ChatAddress::agent("default", CHAT_ID),
+        ChatAddress::new(CHAT_ID),
         Priority::Normal,
     );
     let (producer_id, _cancel_rx) = state.streams.register_active_keyed(&key).await;
@@ -704,7 +679,6 @@ async fn late_local_viewer_receives_replay_as_snapshot_before_live_events() {
 
     let activity = ConversationLiveActivity::new(
         Arc::clone(&state.streams),
-        Arc::clone(&state.registry),
         Arc::clone(&state.sync_device),
         Arc::clone(&state.sync_node),
         Arc::clone(&state.device_network),
@@ -712,12 +686,7 @@ async fn late_local_viewer_receives_replay_as_snapshot_before_live_events() {
     )
     .with_conversation_authority(Arc::clone(&state.conversation_authority));
     let mut viewer = activity
-        .subscribe_viewer(
-            &ChatAddress::agent("default", CHAT_ID),
-            "default",
-            "viewer-a",
-            None,
-        )
+        .subscribe_viewer(&ChatAddress::new(CHAT_ID), "default", "viewer-a", None)
         .await;
     let initial_control = tokio::time::timeout(Duration::from_secs(1), viewer.next())
         .await
@@ -775,7 +744,7 @@ async fn late_local_viewer_receives_replay_as_snapshot_before_live_events() {
 #[tokio::test]
 async fn conversation_broadcast_frames_carry_authority_epoch() {
     let hub = ActiveStreamBroadcastHub::new();
-    let address = ChatAddress::agent("default", CHAT_ID);
+    let address = ChatAddress::new(CHAT_ID);
     let mut rx = hub
         .subscribe_chat(&address, &BTreeMap::new())
         .await
@@ -811,7 +780,7 @@ async fn conversation_broadcast_frames_carry_authority_epoch() {
 #[tokio::test]
 async fn conversation_broadcast_assigns_one_activity_sequence_across_streams() {
     let hub = ActiveStreamBroadcastHub::new();
-    let address = ChatAddress::agent("default", CHAT_ID);
+    let address = ChatAddress::new(CHAT_ID);
     let mut rx = hub
         .subscribe_chat(&address, &BTreeMap::new())
         .await
@@ -869,7 +838,7 @@ async fn conversation_broadcast_assigns_one_activity_sequence_across_streams() {
 #[tokio::test]
 async fn chat_subscription_replays_different_streams_in_activity_order() {
     let hub = ActiveStreamBroadcastHub::new();
-    let address = ChatAddress::agent("default", CHAT_ID);
+    let address = ChatAddress::new(CHAT_ID);
 
     hub.publish_conversation_event(
         "turn-stream",
@@ -911,7 +880,7 @@ async fn chat_subscription_replays_different_streams_in_activity_order() {
 #[tokio::test]
 async fn positioned_chat_subscription_replays_only_expected_activity_sequences() {
     let hub = ActiveStreamBroadcastHub::new();
-    let address = ChatAddress::agent("default", CHAT_ID);
+    let address = ChatAddress::new(CHAT_ID);
 
     for sequence in 1..=4 {
         hub.publish_conversation_event(
@@ -945,7 +914,7 @@ async fn positioned_chat_subscription_replays_only_expected_activity_sequences()
 #[tokio::test]
 async fn positioned_chat_subscription_resets_a_stale_generation() {
     let hub = ActiveStreamBroadcastHub::new();
-    let address = ChatAddress::agent("default", CHAT_ID);
+    let address = ChatAddress::new(CHAT_ID);
     hub.publish_conversation_event(
         "turn-stream",
         &address,
@@ -976,7 +945,7 @@ async fn positioned_chat_subscription_resets_a_stale_generation() {
 #[tokio::test]
 async fn device_session_chat_subscription_honors_the_activity_position() {
     let hub = Arc::new(ActiveStreamBroadcastHub::new());
-    let address = ChatAddress::agent("default", CHAT_ID);
+    let address = ChatAddress::new(CHAT_ID);
     for sequence in 1..=4 {
         hub.publish_conversation_event(
             "turn-stream",
@@ -1067,7 +1036,7 @@ async fn device_session_chat_subscription_honors_the_activity_position() {
 #[tokio::test]
 async fn completed_turn_stream_does_not_leave_a_structural_replay_gap() {
     let hub = ActiveStreamBroadcastHub::new();
-    let address = ChatAddress::agent("default", CHAT_ID);
+    let address = ChatAddress::new(CHAT_ID);
 
     hub.publish_conversation_event(
         "control-stream",
@@ -1123,7 +1092,7 @@ async fn completed_turn_stream_does_not_leave_a_structural_replay_gap() {
 #[tokio::test]
 async fn bounded_conversation_replay_emits_one_explicit_prefix_gap() {
     let hub = ActiveStreamBroadcastHub::new();
-    let address = ChatAddress::agent("default", CHAT_ID);
+    let address = ChatAddress::new(CHAT_ID);
 
     for sequence in 1..=5_000 {
         hub.publish_conversation_event(
@@ -1203,7 +1172,7 @@ async fn bounded_conversation_replay_emits_one_explicit_prefix_gap() {
 #[tokio::test]
 async fn chat_subscription_replays_each_stream_from_its_own_cursor() {
     let hub = ActiveStreamBroadcastHub::new();
-    let address = ChatAddress::agent("default", CHAT_ID);
+    let address = ChatAddress::new(CHAT_ID);
     for index in 1..=6 {
         hub.publish_conversation_event(
             "stream-high",
@@ -1253,7 +1222,7 @@ async fn chat_subscription_replays_each_stream_from_its_own_cursor() {
 #[tokio::test]
 async fn device_session_cursor_keeps_unseen_completed_stream_activity() {
     let hub = Arc::new(ActiveStreamBroadcastHub::new());
-    let address = ChatAddress::agent("default", CHAT_ID);
+    let address = ChatAddress::new(CHAT_ID);
 
     hub.publish_conversation_event(
         "control-stream",
@@ -1341,10 +1310,10 @@ async fn device_session_cursor_keeps_unseen_completed_stream_activity() {
 }
 
 #[tokio::test]
-async fn agent_and_project_same_chat_id_live_activity_are_isolated() {
+async fn distinct_chat_ids_have_isolated_live_activity() {
     let hub = ActiveStreamBroadcastHub::new();
-    let agent_address = ChatAddress::agent("same-owner-id", CHAT_ID);
-    let project_address = ChatAddress::project("same-owner-id", CHAT_ID);
+    let agent_address = ChatAddress::new(CHAT_ID);
+    let project_address = ChatAddress::new(PROJECT_CHAT_ID);
     let mut agent_rx = hub
         .subscribe_chat(&agent_address, &BTreeMap::new())
         .await
@@ -1377,7 +1346,7 @@ async fn agent_and_project_same_chat_id_live_activity_are_isolated() {
         tokio::time::timeout(Duration::from_millis(50), project_rx.recv())
             .await
             .is_err(),
-        "Agent activity must not reach the equal-UUID Project Chat"
+        "Agent activity must not reach the other Project Chat"
     );
 
     hub.publish_conversation_event(
@@ -1437,10 +1406,7 @@ async fn active_stream_device_protocol_requires_typed_chat_address() {
 
     let request = ActiveStreamBroadcastSubscribeRequest {
         device_delivery_id: String::new(),
-        owner: Some(ActiveStreamOwner::chat(ChatAddress::project(
-            "project-a",
-            CHAT_ID,
-        ))),
+        owner: Some(ActiveStreamOwner::chat(ChatAddress::new(CHAT_ID))),
         after_seq_by_stream: BTreeMap::new(),
         activity_generation: None,
         conversation_activity_position: None,
@@ -1458,7 +1424,7 @@ async fn active_stream_device_protocol_requires_typed_chat_address() {
 #[tokio::test]
 async fn activity_generation_change_resets_remote_replay_cursors() {
     let hub = Arc::new(ActiveStreamBroadcastHub::new());
-    let address = ChatAddress::agent("default", CHAT_ID);
+    let address = ChatAddress::new(CHAT_ID);
     hub.publish_conversation_event(
         "turn-stream",
         &address,
@@ -1506,7 +1472,7 @@ fn gossip_wake_is_emitted_only_for_authority_scoped_chat_frames() {
     let chat = ChatLiveWake::from_frame(
         ActiveStreamBroadcastFrame::Started {
             device_delivery_id: "stream-1".to_string(),
-            owner: ActiveStreamOwner::chat(ChatAddress::agent("default", CHAT_ID)),
+            owner: ActiveStreamOwner::chat(ChatAddress::new(CHAT_ID)),
             authority_epoch: Some(epoch(4)),
             seq: 0,
         },

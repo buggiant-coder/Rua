@@ -647,7 +647,7 @@ async fn put_encrypted_blob_uses_temporary_tag_reclaimed_by_gc() {
 
 #[tokio::test]
 async fn gc_preserves_current_media_and_skill_payloads_after_restart_and_reclaims_old_payloads() {
-    use rua_sync::media_adapter::{MediaOwner, MediaSyncAdapter};
+    use rua_sync::media_adapter::MediaSyncAdapter;
     use rua_sync::opaque_replica_log::OpaqueReplicaLog;
     use rua_sync::skill_adapter::SkillBlobManifestSyncAdapter;
 
@@ -681,7 +681,6 @@ async fn gc_preserves_current_media_and_skill_payloads_after_restart_and_reclaim
     std::fs::write(&path, vec![b'a'; 300 * 1024]).unwrap();
     let old = media
         .snapshot_change_for_media_path(
-            &MediaOwner::Agent("default".into()),
             "7f705ce4-77ce-4303-9c78-55545538b29b",
             &path,
             "old-media",
@@ -699,7 +698,6 @@ async fn gc_preserves_current_media_and_skill_payloads_after_restart_and_reclaim
     std::fs::write(&path, vec![b'b'; 300 * 1024]).unwrap();
     let current = media
         .snapshot_change_for_media_path(
-            &MediaOwner::Agent("default".into()),
             "7f705ce4-77ce-4303-9c78-55545538b29b",
             &path,
             "current-media",

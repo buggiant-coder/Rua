@@ -14,6 +14,11 @@ use serde_json::json;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+const CHAT_PINNED_ID: &str = "00000000-0000-4000-8000-000000000710";
+const CHAT_DELETABLE_ID: &str = "00000000-0000-4000-8000-000000000711";
+const CHAT_DELETE_ID: &str = "00000000-0000-4000-8000-000000000712";
+const CHAT_KEEP_ID: &str = "00000000-0000-4000-8000-000000000713";
+
 fn build_app() -> (Router, AppState, TempDir) {
     let temp = tempfile::tempdir().expect("tempdir");
     let workspace = temp.path().join("workspaces/default");
@@ -34,7 +39,7 @@ fn build_app() -> (Router, AppState, TempDir) {
     let state = AppState::from_tempdir(temp.path().to_path_buf(), ServerProfile::Test);
     let api = Router::new()
         .merge(endpoints::storage::router())
-        .merge(endpoints::chats::root_router())
+        .merge(endpoints::chats::router())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             rua_server::middleware::agent_context_middleware,
@@ -51,7 +56,7 @@ async fn seed_chat(
     pinned: bool,
     content: serde_json::Value,
 ) {
-    let workspace = state.rua_root.join("workspaces/default");
+    let workspace = state.rua_root.join("chats");
     let timestamp = DateTime::parse_from_rfc3339(updated_at)
         .expect("timestamp")
         .with_timezone(&Utc);
@@ -176,7 +181,7 @@ async fn storage_chat_list_reports_breakdown_sorting_and_before_filter() {
     )
     .await;
 
-    let workspace = state.rua_root.join("workspaces/default");
+    let workspace = state.rua_root.join("chats");
     let store = WorkspaceSessionStore::new(&workspace);
     let task_dir = store.chat_dir("chat-large").join("tasks/task-1");
     std::fs::create_dir_all(&task_dir).expect("task dir");
@@ -258,7 +263,7 @@ async fn storage_preview_deduplicates_shared_media_and_reports_reclaimable_bytes
         )
         .await;
     }
-    let workspace = state.rua_root.join("workspaces/default");
+    let workspace = state.rua_root.join("chats");
     std::fs::create_dir_all(workspace.join("media")).unwrap();
     std::fs::write(workspace.join("media").join(shared_media), b"shared-media").unwrap();
 
@@ -275,7 +280,7 @@ async fn storage_preview_deduplicates_shared_media_and_reports_reclaimable_bytes
         &app,
         Method::POST,
         "/api/storage/chats/preview",
-        Some(json!({"addresses": [ChatAddress::agent("default", "chat-preview-a")]})),
+        Some(json!({"addresses": [ChatAddress::new("chat-preview-a")]})),
     )
     .await;
     let one = read_json(one).await;
@@ -291,8 +296,8 @@ async fn storage_preview_deduplicates_shared_media_and_reports_reclaimable_bytes
         Method::POST,
         "/api/storage/chats/preview",
         Some(json!({"addresses": [
-            ChatAddress::agent("default", "chat-preview-a"),
-            ChatAddress::agent("default", "chat-preview-b")
+            ChatAddress::new("chat-preview-a"),
+            ChatAddress::new("chat-preview-b")
         ]})),
     )
     .await;
@@ -320,7 +325,7 @@ async fn local_chat_delete_plan_removes_session_tasks_and_tool_archives_idempote
         json!([{"tool_use_id": "tool-local-apply"}]),
     )
     .await;
-    let workspace = state.rua_root.join("workspaces/default");
+    let workspace = state.rua_root.join("chats");
     let store = WorkspaceSessionStore::new(&workspace);
     let chat_dir = store.chat_dir("chat-local-apply");
     let task_dir = chat_dir.join("tasks/task-local-apply");
@@ -333,7 +338,7 @@ async fn local_chat_delete_plan_removes_session_tasks_and_tool_archives_idempote
     let tool_output = tool_dir.join(format!("{tool_key}.output"));
     std::fs::write(&tool_json, b"tool-json").expect("tool json");
     std::fs::write(&tool_output, b"tool-output").expect("tool output");
-    let address = ChatAddress::agent("default", "chat-local-apply");
+    let address = ChatAddress::new("chat-local-apply");
 
     rua_server::services::chat_deletion::LocalChatDeletionPlan::prepare(
         &state.rua_root,
@@ -366,7 +371,7 @@ async fn pinned_chat_is_protected_from_storage_single_and_batch_delete() {
     let (app, state, _temp) = build_app();
     seed_chat(
         &state,
-        "chat-pinned",
+        CHAT_PINNED_ID,
         "Pinned",
         "2026-08-21T00:00:00Z",
         true,
@@ -375,15 +380,15 @@ async fn pinned_chat_is_protected_from_storage_single_and_batch_delete() {
     .await;
     seed_chat(
         &state,
-        "chat-deletable",
+        CHAT_DELETABLE_ID,
         "Deletable",
         "2026-08-21T00:00:00Z",
         false,
         json!([{"type": "text", "text": "delete"}]),
     )
     .await;
-    let pinned = ChatAddress::agent("default", "chat-pinned");
-    let deletable = ChatAddress::agent("default", "chat-deletable");
+    let pinned = ChatAddress::new(CHAT_PINNED_ID);
+    let deletable = ChatAddress::new(CHAT_DELETABLE_ID);
 
     let response = json_request(
         &app,
@@ -401,24 +406,30 @@ async fn pinned_chat_is_protected_from_storage_single_and_batch_delete() {
     assert_eq!(result["skipped"].as_array().unwrap().len(), 1);
     assert!(result["failed"].as_array().unwrap().is_empty());
     assert!(result["pending"].as_array().unwrap().is_empty());
-    let ordinary = json_request(&app, Method::DELETE, "/api/chats/chat-pinned", None).await;
+    let ordinary = json_request(
+        &app,
+        Method::DELETE,
+        &format!("/api/chats/{CHAT_PINNED_ID}"),
+        None,
+    )
+    .await;
     assert_eq!(ordinary.status(), StatusCode::CONFLICT);
     let batch = json_request(
         &app,
         Method::POST,
         "/api/chats/batch-delete",
-        Some(json!(["chat-pinned"])),
+        Some(json!([CHAT_PINNED_ID])),
     )
     .await;
     assert_eq!(batch.status(), StatusCode::CONFLICT);
     assert!(
-        chat_index::get(&state.rua_root.join("workspaces/default"), "chat-pinned")
+        chat_index::get(&state.rua_root.join("chats"), CHAT_PINNED_ID)
             .await
             .expect("index")
             .is_some()
     );
     assert!(
-        chat_index::get(&state.rua_root.join("workspaces/default"), "chat-deletable")
+        chat_index::get(&state.rua_root.join("chats"), CHAT_DELETABLE_ID)
             .await
             .expect("index")
             .is_none()
@@ -432,7 +443,7 @@ async fn storage_delete_removes_owned_artifacts_and_preserves_shared_media() {
     let owned_media = "00000000-0000-4000-8000-000000000202";
     seed_chat(
         &state,
-        "chat-delete",
+        CHAT_DELETE_ID,
         "Delete",
         "2026-08-21T00:00:00Z",
         false,
@@ -444,14 +455,21 @@ async fn storage_delete_removes_owned_artifacts_and_preserves_shared_media() {
     .await;
     seed_chat(
         &state,
-        "chat-keep",
+        CHAT_KEEP_ID,
         "Keep",
         "2026-08-20T00:00:00Z",
         false,
         json!([{"media_ref": format!("media/{shared_media}")}]),
     )
     .await;
-    let workspace = state.rua_root.join("workspaces/default");
+    let workspace = state.rua_root.join("chats");
+    WorkspaceSessionStore::new(&workspace)
+        .update_chat_header(CHAT_KEEP_ID, |header| {
+            header.project_id = Some("other-project".into());
+            header.agent_id = "other-agent".into();
+        })
+        .await
+        .expect("the surviving Chat uses different Project and Agent configuration");
     let media_dir = workspace.join("media");
     std::fs::create_dir_all(&media_dir).expect("media dir");
     std::fs::write(media_dir.join(shared_media), b"shared").expect("shared media");
@@ -471,7 +489,7 @@ async fn storage_delete_removes_owned_artifacts_and_preserves_shared_media() {
         Method::POST,
         "/api/storage/chats/delete",
         Some(json!({
-            "addresses": [ChatAddress::agent("default", "chat-delete")],
+            "addresses": [ChatAddress::new(CHAT_DELETE_ID)],
             "acknowledge_data_loss": true
         })),
     )
@@ -490,11 +508,11 @@ async fn storage_delete_removes_owned_artifacts_and_preserves_shared_media() {
         .join("tool_call_logs")
         .join(format!("{tool_key}.json"))
         .exists());
-    assert!(chat_index::get(&workspace, "chat-delete")
+    assert!(chat_index::get(&workspace, CHAT_DELETE_ID)
         .await
         .expect("index")
         .is_none());
-    assert!(chat_index::get(&workspace, "chat-keep")
+    assert!(chat_index::get(&workspace, CHAT_KEEP_ID)
         .await
         .expect("index")
         .is_some());
@@ -514,7 +532,7 @@ async fn deleting_chat_without_media_does_not_read_unrelated_history() {
         )
         .await;
     }
-    let workspace = state.rua_root.join("workspaces/default");
+    let workspace = state.rua_root.join("chats");
     // An unrelated history must not be a dependency of a media-free deletion.
     std::fs::write(
         workspace.join("sessions/unrelated/session.json"),
@@ -524,8 +542,6 @@ async fn deleting_chat_without_media_does_not_read_unrelated_history() {
     let prepared = rua_server::services::chat_storage::prepare_chat_deletion(
         &state,
         &workspace,
-        rua_core::ChatScope::agent("default"),
-        "Default".into(),
         &std::collections::BTreeSet::from(["target".to_string()]),
     )
     .await
@@ -552,26 +568,18 @@ async fn deletion_scan_preserves_shared_media_and_batch_accounting() {
         )
         .await;
     }
-    let workspace = state.rua_root.join("workspaces/default");
+    let workspace = state.rua_root.join("chats");
     std::fs::create_dir_all(workspace.join("media")).unwrap();
     std::fs::write(workspace.join("media").join(media), b"shared").unwrap();
-    let full = rua_server::services::chat_storage::scan_scope(
-        &workspace,
-        rua_core::ChatScope::agent("default"),
-        "Default".into(),
-    )
-    .await
-    .unwrap();
-    for ids in [vec!["first"], vec!["first", "second"]] {
-        let deleting = ids.into_iter().map(str::to_string).collect();
-        let selected = rua_server::services::chat_storage::scan_scope_for_deletion(
-            &workspace,
-            rua_core::ChatScope::agent("default"),
-            "Default".into(),
-            &deleting,
-        )
+    let full = rua_server::services::chat_storage::scan_scope(&workspace)
         .await
         .unwrap();
+    for ids in [vec!["first"], vec!["first", "second"]] {
+        let deleting = ids.into_iter().map(str::to_string).collect();
+        let selected =
+            rua_server::services::chat_storage::scan_scope_for_deletion(&workspace, &deleting)
+                .await
+                .unwrap();
         assert_eq!(selected.entries.len(), deleting.len());
         assert_eq!(
             rua_server::services::chat_storage::removable_media(&selected, &deleting),

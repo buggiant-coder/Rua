@@ -130,8 +130,9 @@ async fn agent_cli_chat_streams_one_turn_until_terminal() {
     let response = request_json(
         &test.app,
         Method::POST,
-        "/agents/default/chats/00000000-0000-4000-8000-000000000401/console/chat",
+        "/chats/00000000-0000-4000-8000-000000000401/console/chat",
         json!({
+            "agent_id": "default",
             "chat_id": "00000000-0000-4000-8000-000000000401",
             "message": "hello"
         }),
@@ -157,8 +158,9 @@ async fn agent_cli_chat_queues_non_idle_chat() {
     let response = request_json(
         &test.app,
         Method::POST,
-        "/agents/default/chats/00000000-0000-4000-8000-000000000402/console/chat",
+        "/chats/00000000-0000-4000-8000-000000000402/console/chat",
         json!({
+            "agent_id": "default",
             "chat_id": "00000000-0000-4000-8000-000000000402",
             "message": "hello"
         }),

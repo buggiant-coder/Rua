@@ -567,7 +567,7 @@ fn test_config() -> DeviceSessionConfig {
 
 fn remote_input_request(target_device_id: &str) -> RemoteConversationInputRequest {
     RemoteConversationInputRequest {
-        address: rua_core::ChatAddress::agent("default".to_string(), "chat-a".to_string()),
+        address: rua_core::ChatAddress::new("chat-a".to_string()),
         agent_id: "default".to_string(),
         source_device_id: "source-device".to_string(),
         target_device_id: target_device_id.to_string(),
@@ -639,7 +639,7 @@ fn acp_list_runners_command_uses_snake_case_wire_action() {
     let command = AcpChatDeviceCommand {
         command_id: "acp-command-list-runners".to_string(),
         agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), "chat-a".to_string()),
+            address: rua_core::ChatAddress::new("chat-a".to_string()),
         source_device_id: "source-device".to_string(),
         target_device_id: "target-device".to_string(),
         authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -720,7 +720,7 @@ fn v8_chat_command_variants_round_trip() {
     }
 
     let manifest = ConversationManifest {
-        address: rua_core::ChatAddress::agent("default", "chat-a"),
+        address: rua_core::ChatAddress::new("chat-a"),
         latest_turn: 1,
         latest_sequence: 2,
         turn_count: 1,
@@ -733,7 +733,7 @@ fn v8_chat_command_variants_round_trip() {
     let command = ConversationAuthorityAdoptDeviceCommand {
         command_id: "adopt-1".to_string(),
         agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), "chat-a".to_string()),
+            address: rua_core::ChatAddress::new("chat-a".to_string()),
         source_device_id: "source-device".to_string(),
         authority_source_device_id: "source-device".to_string(),
         target_device_id: "target-device".to_string(),
@@ -824,7 +824,7 @@ fn v8_chat_command_variants_round_trip() {
     let supersede = ConversationAuthoritySupersedeDeviceCommand {
         command_id: "supersede-1".to_string(),
         agent_id: "default".to_string(),
-        address: rua_core::ChatAddress::agent("default".to_string(), "chat-a".to_string()),
+        address: rua_core::ChatAddress::new("chat-a".to_string()),
         source_device_id: "target-device".to_string(),
         target_device_id: "previous-device".to_string(),
         previous_authority_epoch: epoch(1),
@@ -838,7 +838,7 @@ fn v8_chat_command_variants_round_trip() {
         superseded_input_ids: vec!["input-1".to_string()],
     };
     let redirect = ConversationAuthorityRedirect {
-        address: rua_core::ChatAddress::agent("default".to_string(), "chat-a".to_string()),
+        address: rua_core::ChatAddress::new("chat-a".to_string()),
         placement: replacement,
     };
     assert_json_round_trip(supersede);
@@ -1125,6 +1125,7 @@ async fn seed_chat_header(workspace_dir: &std::path::Path, chat_id: &str, device
 
 async fn seed_project_chat_state(
     scope_root: &std::path::Path,
+    project_id: &rua_core::ProjectId,
     address: &ChatAddress,
     device_id: &str,
 ) {
@@ -1149,7 +1150,8 @@ async fn seed_project_chat_state(
                 "sha256:1111111111111111111111111111111111111111111111111111111111111111",
         }),
     );
-    rua_chat::apply_project_scope_defaults(&mut header, "default");
+    header.project_id = Some(project_id.to_string());
+    rua_chat::apply_chat_defaults(&mut header);
     seed_configuration(&mut header, device_id);
     WorkspaceSessionStore::new(scope_root)
         .save_chat_header(&header)
@@ -1384,7 +1386,7 @@ fn authority_adopt_command(
     ConversationAuthorityAdoptDeviceCommand {
         command_id: command_id.to_string(),
         agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
         source_device_id: source_device_id.to_string(),
         authority_source_device_id: source_device_id.to_string(),
         target_device_id: target_device_id.to_string(),
@@ -1415,16 +1417,14 @@ fn command_handler(state: &AppState, target_device_id: &str) -> DeviceCommandHan
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn project_live_target_distinguishes_wrong_owner_from_unknown_chat() {
+async fn project_live_target_resolves_membership_by_chat_id() {
     let target_dir = TempDir::new().expect("target state");
     let target_state = AppState::from_tempdir(target_dir.path().to_path_buf(), ServerProfile::Test);
     let target_device_id =
         rua_server::services::device_context::current_sync_device_id(&target_state.sync_device)
             .expect("target Device identity");
     let first_root = target_dir.path().join("first-project");
-    let second_root = target_dir.path().join("second-project");
     std::fs::create_dir_all(&first_root).unwrap();
-    std::fs::create_dir_all(&second_root).unwrap();
     let first = target_state
         .project_catalog
         .create_bound(rua_project::ProjectCreateRequest {
@@ -1434,20 +1434,16 @@ async fn project_live_target_distinguishes_wrong_owner_from_unknown_chat() {
         })
         .unwrap()
         .project;
-    let second = target_state
-        .project_catalog
-        .create_bound(rua_project::ProjectCreateRequest {
-            resource_device_id: target_device_id.clone(),
-            resource_root: second_root.to_string_lossy().to_string(),
-            display_name: Some("Second".to_string()),
-        })
-        .unwrap()
-        .project;
     let chat_id = "00000000-0000-4000-8000-000000000426";
-    let first_address = ChatAddress::project(first.project_id.clone(), chat_id);
-    let first_scope =
-        rua_core::ChatScopeStore::resolve(&target_state.rua_root, first_address.clone());
-    seed_project_chat_state(first_scope.root(), &first_address, &target_device_id).await;
+    let first_address = ChatAddress::new(chat_id);
+    let first_scope = rua_core::ChatStore::resolve(&target_state.rua_root, first_address.clone());
+    seed_project_chat_state(
+        first_scope.root(),
+        &first.project_id,
+        &first_address,
+        &target_device_id,
+    )
+    .await;
     let handler = ActiveStreamBroadcastDeviceSessionHandler::new(Arc::clone(
         &target_state.active_stream_broadcast_hub,
     ))
@@ -1457,14 +1453,11 @@ async fn project_live_target_distinguishes_wrong_owner_from_unknown_chat() {
         target_device_id,
     );
 
-    for (address, expected) in [
+    for (address, materialized) in [
+        (ChatAddress::new(chat_id), true),
         (
-            ChatAddress::project(second.project_id.clone(), chat_id),
-            format!("belongs to Project {}", first.project_id),
-        ),
-        (
-            ChatAddress::project(second.project_id, "00000000-0000-4000-8000-000000000427"),
-            "Project Chat not found".to_string(),
+            ChatAddress::new("00000000-0000-4000-8000-000000000427"),
+            false,
         ),
     ] {
         let payload = serde_json::to_vec(&ActiveStreamBroadcastSubscribeRequest {
@@ -1479,14 +1472,12 @@ async fn project_live_target_distinguishes_wrong_owner_from_unknown_chat() {
             viewer: None,
         })
         .unwrap();
-        let error = match handler.subscribe_live_activity(&payload).await {
-            Ok(_) => panic!("invalid Project Chat address must be rejected"),
-            Err(error) => error,
-        };
-        assert!(
-            error.contains(&expected),
-            "expected '{expected}', got '{error}'"
-        );
+        let result = handler.subscribe_live_activity(&payload).await;
+        if materialized {
+            assert!(result.is_ok());
+        } else {
+            assert!(result.err().unwrap().contains("Chat not found"));
+        }
     }
 }
 
@@ -1522,9 +1513,15 @@ async fn remote_project_live_replays_one_activity_to_two_viewer_devices() {
         .apply_descriptor(project.clone())
         .unwrap();
     let chat_id = "00000000-0000-4000-8000-000000000428";
-    let address = ChatAddress::project(project.project_id.clone(), chat_id);
-    let target_scope = rua_core::ChatScopeStore::resolve(&target_state.rua_root, address.clone());
-    seed_project_chat_state(target_scope.root(), &address, &target_device_id).await;
+    let address = ChatAddress::new(chat_id);
+    let target_scope = rua_core::ChatStore::resolve(&target_state.rua_root, address.clone());
+    seed_project_chat_state(
+        target_scope.root(),
+        &project.project_id,
+        &address,
+        &target_device_id,
+    )
+    .await;
 
     let first = build_runtime(
         96,
@@ -1774,9 +1771,15 @@ async fn remote_project_stop_and_queue_controls_do_not_require_controller_chat_s
         .apply_descriptor(project.clone())
         .unwrap();
     let chat_id = "00000000-0000-4000-8000-000000000429";
-    let address = ChatAddress::project(project.project_id.clone(), chat_id);
-    let target_scope = rua_core::ChatScopeStore::resolve(&target_state.rua_root, address.clone());
-    seed_project_chat_state(target_scope.root(), &address, &target_device_id).await;
+    let address = ChatAddress::new(chat_id);
+    let target_scope = rua_core::ChatStore::resolve(&target_state.rua_root, address.clone());
+    seed_project_chat_state(
+        target_scope.root(),
+        &project.project_id,
+        &address,
+        &target_device_id,
+    )
+    .await;
     let mut first_viewer = target_state
         .active_stream_broadcast_hub
         .subscribe_chat(&address, &BTreeMap::new())
@@ -1876,7 +1879,7 @@ async fn remote_project_stop_and_queue_controls_do_not_require_controller_chat_s
         target_device_id
     );
 
-    let source_scope = rua_core::ChatScopeStore::resolve(&source_state.rua_root, address.clone());
+    let source_scope = rua_core::ChatStore::resolve(&source_state.rua_root, address.clone());
     assert!(
         rua_server::services::chat_index::get(source_scope.root(), chat_id)
             .await
@@ -2255,9 +2258,15 @@ async fn remote_project_model_reasoning_and_options_use_resource_authority() {
         .apply_descriptor(project.clone())
         .unwrap();
     let chat_id = "00000000-0000-4000-8000-000000000430";
-    let address = ChatAddress::project(project.project_id.clone(), chat_id);
-    let target_scope = rua_core::ChatScopeStore::resolve(&target_state.rua_root, address.clone());
-    seed_project_chat_state(target_scope.root(), &address, &target_device_id).await;
+    let address = ChatAddress::new(chat_id);
+    let target_scope = rua_core::ChatStore::resolve(&target_state.rua_root, address.clone());
+    seed_project_chat_state(
+        target_scope.root(),
+        &project.project_id,
+        &address,
+        &target_device_id,
+    )
+    .await;
     let store = WorkspaceSessionStore::new(target_scope.root());
     let header = store.load_chat_header(chat_id).await.unwrap().unwrap();
     let mut configuration = header.extra["hook_configuration"].clone();
@@ -2301,7 +2310,7 @@ async fn remote_project_model_reasoning_and_options_use_resource_authority() {
     .await;
     install_connectable_peer(&source, &target);
     *source_state.device_network.lock().await = Some(source.runtime.clone());
-    let source_scope = rua_core::ChatScopeStore::resolve(&source_state.rua_root, address.clone());
+    let source_scope = rua_core::ChatStore::resolve(&source_state.rua_root, address.clone());
     assert!(
         WorkspaceSessionStore::new(source_scope.root())
             .load_chat_header(chat_id)
@@ -2583,9 +2592,15 @@ async fn remote_project_approval_and_acp_use_resource_authority_without_controll
         .apply_descriptor(project.clone())
         .unwrap();
     let chat_id = "00000000-0000-4000-8000-000000000431";
-    let address = ChatAddress::project(project.project_id.clone(), chat_id);
-    let target_scope = rua_core::ChatScopeStore::resolve(&target_state.rua_root, address.clone());
-    seed_project_chat_state(target_scope.root(), &address, &target_device_id).await;
+    let address = ChatAddress::new(chat_id);
+    let target_scope = rua_core::ChatStore::resolve(&target_state.rua_root, address.clone());
+    seed_project_chat_state(
+        target_scope.root(),
+        &project.project_id,
+        &address,
+        &target_device_id,
+    )
+    .await;
     let placement =
         rua_server::services::conversation_authority_target::load_chat_authority_placement_target(
             target_scope.root(),
@@ -2645,7 +2660,7 @@ async fn remote_project_approval_and_acp_use_resource_authority_without_controll
     .await;
     install_connectable_peer(&source, &target);
     *source_state.device_network.lock().await = Some(source.runtime.clone());
-    let source_scope = rua_core::ChatScopeStore::resolve(&source_state.rua_root, address.clone());
+    let source_scope = rua_core::ChatStore::resolve(&source_state.rua_root, address.clone());
     assert!(
         WorkspaceSessionStore::new(source_scope.root())
             .load_chat_header(chat_id)
@@ -3002,11 +3017,11 @@ async fn remote_project_approval_and_acp_use_resource_authority_without_controll
     assert_eq!(reexited.status(), StatusCode::OK);
 
     let lazy_chat_id = "00000000-0000-4000-8000-000000000433";
-    let lazy_address = ChatAddress::project(project.project_id.clone(), lazy_chat_id);
+    let lazy_address = ChatAddress::new(lazy_chat_id);
     let lazy_source_scope =
-        rua_core::ChatScopeStore::resolve(&source_state.rua_root, lazy_address.clone());
+        rua_core::ChatStore::resolve(&source_state.rua_root, lazy_address.clone());
     let lazy_target_scope =
-        rua_core::ChatScopeStore::resolve(&target_state.rua_root, lazy_address.clone());
+        rua_core::ChatStore::resolve(&target_state.rua_root, lazy_address.clone());
     let lazy_chat_uri = format!("/api/projects/{}/chats/{lazy_chat_id}", project.project_id);
     let lazy_entered = source_app
         .clone()
@@ -3219,9 +3234,15 @@ async fn collaboration_device_command_is_idempotent_epoch_gated_and_rebuilds_pro
         .apply_descriptor(project.clone())
         .unwrap();
     let chat_id = "00000000-0000-4000-8000-000000000511";
-    let address = ChatAddress::project(project.project_id.clone(), chat_id);
-    let target_scope = rua_core::ChatScopeStore::resolve(&target_state.rua_root, address.clone());
-    seed_project_chat_state(target_scope.root(), &address, &target_device_id).await;
+    let address = ChatAddress::new(chat_id);
+    let target_scope = rua_core::ChatStore::resolve(&target_state.rua_root, address.clone());
+    seed_project_chat_state(
+        target_scope.root(),
+        &project.project_id,
+        &address,
+        &target_device_id,
+    )
+    .await;
     let configuration = rua_server::services::product_hooks::ChatHookConfiguration {
         epoch: "project-source-configuration".into(),
         running_config: rua_config::ChatRunningConfig::default(),
@@ -3365,7 +3386,7 @@ async fn collaboration_device_command_is_idempotent_epoch_gated_and_rebuilds_pro
     assert_eq!(authority_device_id, target_device_id);
     assert_eq!(authority_epoch, placement.authority_epoch);
     assert_eq!(reply.state, "created");
-    let child_scope = rua_core::ChatScopeStore::resolve(&target_state.rua_root, reply.chat.clone());
+    let child_scope = rua_core::ChatStore::resolve(&target_state.rua_root, reply.chat.clone());
     let child_header = WorkspaceSessionStore::new(child_scope.root())
         .load_chat_header(reply.chat.chat_id().as_str())
         .await
@@ -3670,9 +3691,15 @@ async fn remote_project_agent_switch_is_live_for_two_viewers_without_controller_
         .apply_descriptor(project.clone())
         .unwrap();
     let chat_id = "00000000-0000-4000-8000-000000000432";
-    let address = ChatAddress::project(project.project_id.clone(), chat_id);
-    let target_scope = rua_core::ChatScopeStore::resolve(&target_state.rua_root, address.clone());
-    seed_project_chat_state(target_scope.root(), &address, &target_device_id).await;
+    let address = ChatAddress::new(chat_id);
+    let target_scope = rua_core::ChatStore::resolve(&target_state.rua_root, address.clone());
+    seed_project_chat_state(
+        target_scope.root(),
+        &project.project_id,
+        &address,
+        &target_device_id,
+    )
+    .await;
 
     let first = build_runtime(
         111,
@@ -3719,7 +3746,7 @@ async fn remote_project_agent_switch_is_live_for_two_viewers_without_controller_
     *first_state.device_network.lock().await = Some(first.runtime.clone());
     *second_state.device_network.lock().await = Some(second.runtime.clone());
     for state in [&first_state, &second_state] {
-        let scope = rua_core::ChatScopeStore::resolve(&state.rua_root, address.clone());
+        let scope = rua_core::ChatStore::resolve(&state.rua_root, address.clone());
         assert!(
             WorkspaceSessionStore::new(scope.root())
                 .load_chat_header(chat_id)
@@ -3921,9 +3948,15 @@ async fn remote_project_variant_and_rollback_are_live_without_controller_storage
         .apply_descriptor(project.clone())
         .unwrap();
     let chat_id = "00000000-0000-4000-8000-000000000433";
-    let address = ChatAddress::project(project.project_id.clone(), chat_id);
-    let target_scope = rua_core::ChatScopeStore::resolve(&target_state.rua_root, address.clone());
-    seed_project_chat_state(target_scope.root(), &address, &target_device_id).await;
+    let address = ChatAddress::new(chat_id);
+    let target_scope = rua_core::ChatStore::resolve(&target_state.rua_root, address.clone());
+    seed_project_chat_state(
+        target_scope.root(),
+        &project.project_id,
+        &address,
+        &target_device_id,
+    )
+    .await;
     let target_store = WorkspaceSessionStore::new(target_scope.root());
     target_store
         .append_conversation_turn(
@@ -4024,7 +4057,7 @@ async fn remote_project_variant_and_rollback_are_live_without_controller_storage
             ),
         ));
     *source_state.device_network.lock().await = Some(source.runtime.clone());
-    let source_scope = rua_core::ChatScopeStore::resolve(&source_state.rua_root, address.clone());
+    let source_scope = rua_core::ChatStore::resolve(&source_state.rua_root, address.clone());
     assert!(
         WorkspaceSessionStore::new(source_scope.root())
             .load_chat_header(chat_id)
@@ -4226,9 +4259,15 @@ async fn removed_remote_project_background_tool_route_does_not_transfer_executio
         .unwrap();
     let chat_id = "00000000-0000-4000-8000-000000000434";
     let tool_call_id = "remote-project-background-tool";
-    let address = ChatAddress::project(project.project_id.clone(), chat_id);
-    let target_scope = rua_core::ChatScopeStore::resolve(&target_state.rua_root, address.clone());
-    seed_project_chat_state(target_scope.root(), &address, &target_device_id).await;
+    let address = ChatAddress::new(chat_id);
+    let target_scope = rua_core::ChatStore::resolve(&target_state.rua_root, address.clone());
+    seed_project_chat_state(
+        target_scope.root(),
+        &project.project_id,
+        &address,
+        &target_device_id,
+    )
+    .await;
 
     let source = build_runtime(
         124,
@@ -4250,7 +4289,7 @@ async fn removed_remote_project_background_tool_route_does_not_transfer_executio
     .await;
     install_connectable_peer(&source, &target);
     *source_state.device_network.lock().await = Some(source.runtime.clone());
-    let source_scope = rua_core::ChatScopeStore::resolve(&source_state.rua_root, address.clone());
+    let source_scope = rua_core::ChatStore::resolve(&source_state.rua_root, address.clone());
     assert!(
         WorkspaceSessionStore::new(source_scope.root())
             .load_chat_header(chat_id)
@@ -4519,8 +4558,8 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
         outcome => panic!("unexpected Project Submit outcome: {outcome:?}"),
     };
 
-    let address = ChatAddress::project(created.project.project_id.clone(), chat_id);
-    let source_scope = rua_core::ChatScopeStore::resolve(&source_state.rua_root, address.clone());
+    let address = ChatAddress::new(chat_id);
+    let source_scope = rua_core::ChatStore::resolve(&source_state.rua_root, address.clone());
     assert!(
         rua_server::services::chat_index::get(source_scope.root(), chat_id)
             .await
@@ -4540,7 +4579,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
         !source_scope.evergreen_chat_root().exists(),
         "source Evergreen Chat storage must still be absent"
     );
-    let target_scope = rua_core::ChatScopeStore::resolve(&target_state.rua_root, address.clone());
+    let target_scope = rua_core::ChatStore::resolve(&target_state.rua_root, address.clone());
     let target_store = WorkspaceSessionStore::new(target_scope.root());
     let header = target_store
         .load_chat_header(chat_id)
@@ -4643,7 +4682,6 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
             source_state.rua_root.clone(),
         )
         .with_conversation_authority(Arc::clone(&source_state.conversation_authority))
-        .with_project_catalog(Arc::clone(&source_state.project_catalog))
         .with_history_sync(history_sync_tx)
         .with_chat_activity_wake_hub(Arc::clone(&source_state.chat_activity_wake_hub))
         .with_acp_chat_registry(Arc::clone(&source_state.acp_chat_registry))
@@ -4792,7 +4830,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
     );
     assert_eq!(live_delta["delta"], "live-before-sync");
 
-    let second_scope = rua_core::ChatScopeStore::resolve(&second_state.rua_root, address.clone());
+    let second_scope = rua_core::ChatStore::resolve(&second_state.rua_root, address.clone());
     assert!(
         WorkspaceSessionStore::new(second_scope.root())
             .load_chat_header(chat_id)
@@ -4870,10 +4908,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
         loop {
             if target_state
                 .conversation_authority
-                .active_turn(&ChatAddress::project(
-                    created.project.project_id.clone(),
-                    chat_id,
-                ))
+                .active_turn(&ChatAddress::new(chat_id))
                 .await
                 .is_none()
             {
@@ -5014,7 +5049,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
             ..
         }
     ));
-    let sibling_address = ChatAddress::project(created.project.project_id.clone(), sibling_chat_id);
+    let sibling_address = ChatAddress::new(sibling_chat_id);
     tokio::time::timeout(Duration::from_secs(10), async {
         while target_state
             .conversation_authority
@@ -5028,7 +5063,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
     .await
     .expect("sibling Project Chat did not become idle");
     let sibling_scope =
-        rua_core::ChatScopeStore::resolve(&target_state.rua_root, sibling_address.clone());
+        rua_core::ChatStore::resolve(&target_state.rua_root, sibling_address.clone());
     let sibling_header = WorkspaceSessionStore::new(sibling_scope.root())
         .load_chat_header(sibling_chat_id)
         .await
@@ -5105,7 +5140,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
         )
         .await
         .unwrap();
-    let first_address = ChatAddress::project(created.project.project_id.clone(), chat_id);
+    let first_address = ChatAddress::new(chat_id);
     target_state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
@@ -5170,7 +5205,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
             if chat["name"] == "Remote renamed" && chat["pinned"] == true
     ));
 
-    let control_address = ChatAddress::project(created.project.project_id.clone(), chat_id);
+    let control_address = ChatAddress::new(chat_id);
     let control_placement =
         rua_server::services::conversation_authority_target::load_chat_authority_placement_target(
             target_scope.root(),
@@ -5485,7 +5520,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
             ..
         }
     ));
-    let offline_address = ChatAddress::project(created.project.project_id.clone(), offline_chat_id);
+    let offline_address = ChatAddress::new(offline_chat_id);
     tokio::time::timeout(Duration::from_secs(10), async {
         while target_state
             .conversation_authority
@@ -5499,7 +5534,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
     .await
     .expect("offline Project Chat did not become idle");
     let offline_scope =
-        rua_core::ChatScopeStore::resolve(&target_state.rua_root, offline_address.clone());
+        rua_core::ChatStore::resolve(&target_state.rua_root, offline_address.clone());
     let offline_store = WorkspaceSessionStore::new(offline_scope.root());
     let offline_header_before = offline_store
         .load_chat_header(offline_chat_id)
@@ -5568,7 +5603,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
         offline_turn_count_before
     );
     let offline_source_scope =
-        rua_core::ChatScopeStore::resolve(&source_state.rua_root, offline_address.clone());
+        rua_core::ChatStore::resolve(&source_state.rua_root, offline_address.clone());
     copy_tree(offline_scope.root(), offline_source_scope.root())
         .expect("synchronize stable offline Project Chat history");
     target.runtime.shutdown().await.unwrap();
@@ -5808,10 +5843,7 @@ async fn remote_project_turns_read_fresh_instructions_only_from_the_resource_roo
                 let request_count = captured.requests.lock().await.len();
                 let idle = target_state
                     .conversation_authority
-                    .active_turn(&ChatAddress::project(
-                        created.project.project_id.clone(),
-                        chat_id,
-                    ))
+                    .active_turn(&ChatAddress::new(chat_id))
                     .await
                     .is_none();
                 if request_count >= expected_count && idle {
@@ -5824,18 +5856,14 @@ async fn remote_project_turns_read_fresh_instructions_only_from_the_resource_roo
         .expect("resource Project Turn did not finish");
 
         if expected_count == 1 {
-            let target_scope = rua_core::ChatScopeStore::resolve(
-                &target_state.rua_root,
-                ChatAddress::project(created.project.project_id.clone(), chat_id),
-            );
+            let target_scope =
+                rua_core::ChatStore::resolve(&target_state.rua_root, ChatAddress::new(chat_id));
             let synced_chat = rua_server::services::chat_index::get(target_scope.root(), chat_id)
                 .await
                 .expect("read resource Chat Index")
                 .expect("resource Chat Index entry");
-            let source_scope = rua_core::ChatScopeStore::resolve(
-                &source_state.rua_root,
-                ChatAddress::project(created.project.project_id.clone(), chat_id),
-            );
+            let source_scope =
+                rua_core::ChatStore::resolve(&source_state.rua_root, ChatAddress::new(chat_id));
             rua_server::services::chat_index::upsert(source_scope.root(), synced_chat)
                 .await
                 .expect("simulate synchronized Project Chat metadata");
@@ -6006,14 +6034,14 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
     seed_chat_header(&workspace_dir, chat_id, &target_device_id).await;
     let key = StreamKey::new(
         CONSOLE_CHANNEL_ID,
-        ChatAddress::agent("default", chat_id),
+        ChatAddress::new(chat_id),
         Priority::Normal,
     );
     let (_producer_id, _cancel_rx) = state.streams.register_active_keyed(&key).await;
     let active_turn = state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: target_device_id.clone(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -6023,7 +6051,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
     let queued = state
         .conversation_authority
         .enqueue_input(
-            &ChatAddress::agent("default", chat_id),
+            &ChatAddress::new(chat_id),
             ConversationInputPayload {
                 message: "queued on target".to_string(),
                 model_override: None,
@@ -6086,7 +6114,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
         &ConversationControlDeviceCommand {
             command_id: "stopped-background-result".into(),
             agent_id: "default".into(),
-            address: ChatAddress::agent("default", chat_id),
+            address: ChatAddress::new(chat_id),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
             authority_epoch: active_turn.authority_epoch,
@@ -6104,7 +6132,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
     assert_eq!(
         state
             .conversation_authority
-            .active_turn(&ChatAddress::agent("default", chat_id))
+            .active_turn(&ChatAddress::new(chat_id))
             .await
             .unwrap()
             .turn_id,
@@ -6121,7 +6149,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
             &ConversationControlDeviceCommand {
                 command_id: command_id.to_string(),
                 agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
                 source_device_id: source.device_id.clone(),
                 target_device_id: target.device_id.clone(),
                 authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -6144,7 +6172,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
         &ConversationControlDeviceCommand {
             command_id: "control-edit-1".to_string(),
             agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -6165,7 +6193,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
     let delete_command = ConversationControlDeviceCommand {
         command_id: "control-delete-1".to_string(),
         agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
         source_device_id: source.device_id.clone(),
         target_device_id: target.device_id.clone(),
         authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -6191,7 +6219,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
 
     let now = chrono::Utc::now();
     let remote_input = RemoteConversationInputRequest {
-        address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+        address: rua_core::ChatAddress::new(chat_id.to_string()),
         agent_id: "default".to_string(),
         source_device_id: source.device_id.clone(),
         target_device_id: target.device_id.clone(),
@@ -6242,7 +6270,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
     let send_now_command = ConversationControlDeviceCommand {
         command_id: "control-send-now-1".to_string(),
         agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
         source_device_id: source.device_id.clone(),
         target_device_id: target.device_id.clone(),
         authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -6283,7 +6311,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
         &ConversationControlDeviceCommand {
             command_id: "control-model-1".to_string(),
             agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -6310,7 +6338,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
     assert_eq!(header.extra.get("model"), Some(&model));
     let active_after_model_update = state
         .conversation_authority
-        .active_turn(&ChatAddress::agent("default", chat_id))
+        .active_turn(&ChatAddress::new(chat_id))
         .await
         .expect("current target Turn remains active");
     assert_eq!(active_after_model_update.turn_id, active_turn.turn_id);
@@ -6324,7 +6352,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
         &ConversationManifestDeviceCommand {
             command_id: "manifest-1".to_string(),
             agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
             required_manifest: None,
@@ -6337,7 +6365,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
         manifest.manifest, None,
         "disk state without publication evidence must not become a hydration target"
     );
-    let address = ChatAddress::agent("default", chat_id);
+    let address = ChatAddress::new(chat_id);
     let published_manifest = load_conversation_manifest(&workspace_dir, &address)
         .await
         .expect("load published manifest")
@@ -6400,7 +6428,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
         &AcpChatDeviceCommand {
             command_id: "acp-status-1".to_string(),
             agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -6416,7 +6444,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
         &AcpChatDeviceCommand {
             command_id: "acp-permissions-1".to_string(),
             agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -6436,7 +6464,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
         &AcpChatDeviceCommand {
             command_id: "acp-permission-decide-1".to_string(),
             agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -6456,7 +6484,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
         &RemoteChatControlCommand {
             command_id: "stop-without-wait-1".to_string(),
             agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -6472,10 +6500,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
     assert_eq!(
         state
             .conversation_authority
-            .control_view(
-                &ChatAddress::agent("default", chat_id),
-                &serde_json::json!({})
-            )
+            .control_view(&ChatAddress::new(chat_id), &serde_json::json!({}))
             .await
             .queue
             .entries
@@ -6568,7 +6593,7 @@ async fn remote_acp_lifecycle_persists_binding_on_authority_device() {
         &AcpChatDeviceCommand {
             command_id: "remote-acp-enter".to_string(),
             agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
             authority_epoch: epoch(1),
@@ -6609,7 +6634,7 @@ async fn remote_acp_lifecycle_persists_binding_on_authority_device() {
         &AcpChatDeviceCommand {
             command_id: "remote-acp-exit".to_string(),
             agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
             authority_epoch: epoch(1),
@@ -6688,7 +6713,7 @@ async fn remote_live_sends_initial_control_before_replay() {
     live_hub
         .publish_conversation_event(
             "remote-live-stream",
-            &ChatAddress::agent("default", chat_id),
+            &ChatAddress::new(chat_id),
             epoch(1),
             serde_json::json!({"type": "text_delta", "delta": "already produced"}).to_string(),
         )
@@ -6697,7 +6722,6 @@ async fn remote_live_sends_initial_control_before_replay() {
 
     let activity = ConversationLiveActivity::new(
         Arc::clone(&source_state.streams),
-        Arc::clone(&source_state.registry),
         Arc::clone(&source_state.sync_device),
         Arc::clone(&source_state.sync_node),
         Arc::clone(&source_state.device_network),
@@ -6705,12 +6729,7 @@ async fn remote_live_sends_initial_control_before_replay() {
     )
     .with_conversation_authority(Arc::clone(&source_state.conversation_authority));
     let mut viewer = activity
-        .subscribe_viewer(
-            &ChatAddress::agent("default", chat_id),
-            "default",
-            "viewer-a",
-            None,
-        )
+        .subscribe_viewer(&ChatAddress::new(chat_id), "default", "viewer-a", None)
         .await;
 
     let first = tokio::time::timeout(Duration::from_secs(5), viewer.next())
@@ -6814,7 +6833,6 @@ async fn failed_chat_live_recovers_when_another_chat_connects_the_shared_session
 
     let activity = ConversationLiveActivity::new(
         Arc::clone(&source_state.streams),
-        Arc::clone(&source_state.registry),
         Arc::clone(&source_state.sync_device),
         Arc::clone(&source_state.sync_node),
         Arc::clone(&source_state.device_network),
@@ -6822,12 +6840,7 @@ async fn failed_chat_live_recovers_when_another_chat_connects_the_shared_session
     )
     .with_conversation_authority(Arc::clone(&source_state.conversation_authority));
     let mut viewer_a = activity
-        .subscribe_viewer(
-            &ChatAddress::agent("default", chat_a),
-            "default",
-            "viewer-a",
-            None,
-        )
+        .subscribe_viewer(&ChatAddress::new(chat_a), "default", "viewer-a", None)
         .await;
 
     let unavailable = tokio::time::timeout(Duration::from_secs(5), viewer_a.next())
@@ -6847,12 +6860,7 @@ async fn failed_chat_live_recovers_when_another_chat_connects_the_shared_session
 
     install_connectable_peer(&source, &target);
     let mut viewer_b = activity
-        .subscribe_viewer(
-            &ChatAddress::agent("default", chat_b),
-            "default",
-            "viewer-b",
-            None,
-        )
+        .subscribe_viewer(&ChatAddress::new(chat_b), "default", "viewer-b", None)
         .await;
     let control_b = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -6982,7 +6990,7 @@ async fn synced_placement_wake_reconnects_remote_live_without_retry_timer() {
     live_hub
         .publish_conversation_event(
             "placement-recovery-stream",
-            &ChatAddress::agent("default", chat_id),
+            &ChatAddress::new(chat_id),
             epoch(2),
             serde_json::json!({"type": "text_delta", "delta": "new authority output"}).to_string(),
         )
@@ -6991,7 +6999,6 @@ async fn synced_placement_wake_reconnects_remote_live_without_retry_timer() {
 
     let activity = ConversationLiveActivity::new(
         Arc::clone(&source_state.streams),
-        Arc::clone(&source_state.registry),
         Arc::clone(&source_state.sync_device),
         Arc::clone(&source_state.sync_node),
         Arc::clone(&source_state.device_network),
@@ -7000,12 +7007,7 @@ async fn synced_placement_wake_reconnects_remote_live_without_retry_timer() {
     .with_conversation_authority(Arc::clone(&source_state.conversation_authority))
     .with_chat_activity_wake_hub(Arc::clone(&wake_hub));
     let mut viewer = activity
-        .subscribe_viewer(
-            &ChatAddress::agent("default", chat_id),
-            "default",
-            "viewer-a",
-            None,
-        )
+        .subscribe_viewer(&ChatAddress::new(chat_id), "default", "viewer-a", None)
         .await;
 
     let unavailable = tokio::time::timeout(Duration::from_secs(2), viewer.next())
@@ -7020,7 +7022,7 @@ async fn synced_placement_wake_reconnects_remote_live_without_retry_timer() {
     seed_authority_placement_at_epoch(&source_workspace, chat_id, &target_device_id, epoch(2))
         .await;
     wake_hub.publish(ChatLiveWake::placement_changed(
-        ChatAddress::agent("default", chat_id),
+        ChatAddress::new(chat_id),
         target_device_id.clone(),
         epoch(2),
         format!("sha256:{}", "0".repeat(64)),
@@ -7165,7 +7167,7 @@ async fn higher_epoch_wake_interrupts_only_the_old_live_route() {
     old_live_hub
         .publish_conversation_event(
             "old-authority-stream",
-            &ChatAddress::agent("default", chat_id),
+            &ChatAddress::new(chat_id),
             epoch(1),
             serde_json::json!({"type": "text_delta", "delta": "old"}).to_string(),
         )
@@ -7173,7 +7175,7 @@ async fn higher_epoch_wake_interrupts_only_the_old_live_route() {
     new_live_hub
         .publish_conversation_event(
             "new-authority-stream",
-            &ChatAddress::agent("default", chat_id),
+            &ChatAddress::new(chat_id),
             epoch(2),
             serde_json::json!({"type": "text_delta", "delta": "new"}).to_string(),
         )
@@ -7182,7 +7184,6 @@ async fn higher_epoch_wake_interrupts_only_the_old_live_route() {
 
     let activity = ConversationLiveActivity::new(
         Arc::clone(&source_state.streams),
-        Arc::clone(&source_state.registry),
         Arc::clone(&source_state.sync_device),
         Arc::clone(&source_state.sync_node),
         Arc::clone(&source_state.device_network),
@@ -7191,12 +7192,7 @@ async fn higher_epoch_wake_interrupts_only_the_old_live_route() {
     .with_conversation_authority(Arc::clone(&source_state.conversation_authority))
     .with_chat_activity_wake_hub(Arc::clone(&wake_hub));
     let mut viewer = activity
-        .subscribe_viewer(
-            &ChatAddress::agent("default", chat_id),
-            "default",
-            "viewer-a",
-            None,
-        )
+        .subscribe_viewer(&ChatAddress::new(chat_id), "default", "viewer-a", None)
         .await;
 
     let old_control = tokio::time::timeout(Duration::from_secs(3), async {
@@ -7234,7 +7230,7 @@ async fn higher_epoch_wake_interrupts_only_the_old_live_route() {
 
     seed_authority_placement_at_epoch(&source_workspace, chat_id, &new_device_id, epoch(2)).await;
     wake_hub.publish(ChatLiveWake::placement_changed(
-        ChatAddress::agent("default", chat_id),
+        ChatAddress::new(chat_id),
         new_device_id.clone(),
         epoch(2),
         format!("sha256:{}", "0".repeat(64)),
@@ -7361,8 +7357,8 @@ async fn target_prepares_history_and_required_media_before_adopting_authority() 
         "available",
     )
     .await;
-    let address = rua_core::ChatAddress::agent("default", chat_id);
-    let empty_address = rua_core::ChatAddress::agent("default", empty_chat_id);
+    let address = rua_core::ChatAddress::new(chat_id);
+    let empty_address = rua_core::ChatAddress::new(empty_chat_id);
     let required_manifest = load_conversation_manifest(&source_workspace, &address)
         .await
         .expect("load source manifest")
@@ -7563,7 +7559,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     seed_authority_placement(&controller_workspace, chat_id, &old_device_id).await;
     seed_adoptable_chat(&old_workspace, chat_id, &old_device_id, "available").await;
     seed_adoptable_chat(&new_workspace, chat_id, &old_device_id, "available").await;
-    let address = rua_core::ChatAddress::agent("default", chat_id);
+    let address = rua_core::ChatAddress::new(chat_id);
     let required_manifest = load_conversation_manifest(&new_workspace, &address)
         .await
         .expect("load adoption manifest")
@@ -7572,7 +7568,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     old_state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: old_device_id.clone(),
             authority_epoch: epoch(1),
@@ -7582,7 +7578,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     let queued = old_state
         .conversation_authority
         .enqueue_input(
-            &ChatAddress::agent("default", chat_id),
+            &ChatAddress::new(chat_id),
             ConversationInputPayload {
                 message: "must be superseded".to_string(),
                 model_override: None,
@@ -7598,7 +7594,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
         .expect("old authority queue entry");
     old_state
         .conversation_authority
-        .finish_active_turn(&ChatAddress::agent("default", chat_id))
+        .finish_active_turn(&ChatAddress::new(chat_id))
         .await;
 
     let controller = build_runtime(
@@ -7667,9 +7663,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
             &old_peer,
             ActiveStreamBroadcastSubscribeRequest {
                 device_delivery_id: String::new(),
-                owner: Some(ActiveStreamOwner::chat(ChatAddress::agent(
-                    "default", chat_id,
-                ))),
+                owner: Some(ActiveStreamOwner::chat(ChatAddress::new(chat_id))),
                 after_seq_by_stream: BTreeMap::new(),
                 activity_generation: None,
                 conversation_activity_position: None,
@@ -7817,7 +7811,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     let old_control = old_state
         .conversation_authority
         .control_view(
-            &ChatAddress::agent("default", chat_id),
+            &ChatAddress::new(chat_id),
             &rua_server::services::chat_index::get(&old_workspace, chat_id)
                 .await
                 .expect("old Chat Index")
@@ -7830,7 +7824,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     new_state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: new_device_id.clone(),
             authority_epoch: adopted.placement.authority_epoch,
@@ -7840,7 +7834,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     let redirected_queue_entry = new_state
         .conversation_authority
         .enqueue_input(
-            &ChatAddress::agent("default", chat_id),
+            &ChatAddress::new(chat_id),
             ConversationInputPayload {
                 message: "delete after Redirect".to_string(),
                 model_override: None,
@@ -7857,7 +7851,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     let redirected_delete = ConversationControlDeviceCommand {
         command_id: "queue-delete-follows-one-redirect".to_string(),
         agent_id: "default".to_string(),
-        address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+        address: rua_core::ChatAddress::new(chat_id.to_string()),
         source_device_id: controller.device_id.clone(),
         target_device_id: old.device_id.clone(),
         authority_epoch: epoch(1),
@@ -7893,7 +7887,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     assert_eq!(duplicate_at_new_authority, deleted);
     new_state
         .conversation_authority
-        .finish_active_turn(&ChatAddress::agent("default", chat_id))
+        .finish_active_turn(&ChatAddress::new(chat_id))
         .await;
 
     seed_authority_placement_at_epoch(&controller_workspace, chat_id, &old_device_id, epoch(1))
@@ -7903,7 +7897,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
         &AcpChatDeviceCommand {
             command_id: "stale-acp-status-after-supersession".to_string(),
             agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             source_device_id: controller.device_id.clone(),
             target_device_id: old.device_id.clone(),
             authority_epoch: epoch(1),
@@ -7921,7 +7915,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     let redirected_acp_status = AcpChatDeviceCommand {
         command_id: "acp-status-follows-one-redirect".to_string(),
         agent_id: "default".to_string(),
-        address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+        address: rua_core::ChatAddress::new(chat_id.to_string()),
         source_device_id: controller.device_id.clone(),
         target_device_id: old.device_id.clone(),
         authority_epoch: epoch(1),
@@ -7950,7 +7944,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     new_state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: new_device_id.clone(),
             authority_epoch: adopted.placement.authority_epoch,
@@ -7986,7 +7980,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     let redirected_queue = new_state
         .conversation_authority
         .control_view(
-            &ChatAddress::agent("default", chat_id),
+            &ChatAddress::new(chat_id),
             &rua_server::services::chat_index::get(&new_workspace, chat_id)
                 .await
                 .expect("new Chat Index")
@@ -8001,7 +7995,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
         .any(|entry| entry.submission_id == "redirected-submission"));
     new_state
         .conversation_authority
-        .finish_active_turn(&ChatAddress::agent("default", chat_id))
+        .finish_active_turn(&ChatAddress::new(chat_id))
         .await;
     seed_authority_placement_at_epoch(&controller_workspace, chat_id, &old_device_id, epoch(1))
         .await;
@@ -8028,7 +8022,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     let stale_control = ConversationControlDeviceCommand {
         command_id: "stale-control-after-supersession".to_string(),
         agent_id: "default".to_string(),
-        address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+        address: rua_core::ChatAddress::new(chat_id.to_string()),
         source_device_id: controller.device_id.clone(),
         target_device_id: old.device_id.clone(),
         authority_epoch: epoch(1),
@@ -8083,7 +8077,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
 
     let mut stale_input = remote_input_request(&old.device_id);
     stale_input.agent_id = "default".to_string();
-    stale_input.address = rua_core::ChatAddress::agent(stale_input.agent_id.clone(), chat_id);
+    stale_input.address = rua_core::ChatAddress::new(chat_id);
     stale_input.source_device_id = controller.device_id.clone();
     stale_input.authority_epoch = epoch(1);
     let input_error = deliver_remote_conversation_input_via_session(
@@ -8102,7 +8096,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     let stale_stop = RemoteChatControlCommand {
         command_id: "stale-stop-after-supersession".to_string(),
         agent_id: "default".to_string(),
-        address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+        address: rua_core::ChatAddress::new(chat_id.to_string()),
         source_device_id: controller.device_id.clone(),
         target_device_id: old.device_id.clone(),
         authority_epoch: epoch(1),
@@ -8143,9 +8137,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
 
     let request = ActiveStreamBroadcastSubscribeRequest {
         device_delivery_id: String::new(),
-        owner: Some(ActiveStreamOwner::chat(ChatAddress::agent(
-            "default", chat_id,
-        ))),
+        owner: Some(ActiveStreamOwner::chat(ChatAddress::new(chat_id))),
         after_seq_by_stream: BTreeMap::new(),
         activity_generation: None,
         conversation_activity_position: None,
@@ -8242,7 +8234,7 @@ async fn redirect_verification_rejects_a_second_redirect_without_updating_local_
     *source_state.device_network.lock().await = Some(source.runtime.clone());
 
     let redirect = ConversationAuthorityRedirect {
-        address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+        address: rua_core::ChatAddress::new(chat_id.to_string()),
         placement:
             rua_server::services::conversation_authority_placement::ConversationAuthorityPlacement {
                 device_id: target_device_id,
@@ -8316,7 +8308,7 @@ async fn target_rejects_adoption_for_model_active_turn_and_acp() {
             model_id,
         )
         .await;
-        let address = ChatAddress::agent("default", chat_id);
+        let address = ChatAddress::new(chat_id);
         let source_manifest = load_conversation_manifest(&source_workspace, &address)
             .await
             .expect("load source validation manifest")
@@ -8333,7 +8325,7 @@ async fn target_rejects_adoption_for_model_active_turn_and_acp() {
     target_state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent("default".to_string(), active_chat.to_string()),
+            address: rua_core::ChatAddress::new(active_chat.to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: old_authority_device_id.to_string(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -8385,7 +8377,7 @@ async fn target_rejects_adoption_for_model_active_turn_and_acp() {
         (active_chat, "authority-adopt-active", "active_turn"),
         (acp_chat, "authority-adopt-acp", "acp_active"),
     ] {
-        let address = rua_core::ChatAddress::agent("default", chat_id);
+        let address = rua_core::ChatAddress::new(chat_id);
         let manifest = load_conversation_manifest(&source_workspace, &address)
             .await
             .expect("load source manifest")
@@ -8443,7 +8435,7 @@ async fn remote_model_control_is_normalized_and_persisted_on_authority() {
     target_state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: target_device_id.clone(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -8489,7 +8481,7 @@ async fn remote_model_control_is_normalized_and_persisted_on_authority() {
             &ConversationControlDeviceCommand {
                 command_id: "model-control-target-normalization".to_string(),
                 agent_id: "default".to_string(),
-                address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+                address: rua_core::ChatAddress::new(chat_id.to_string()),
                 source_device_id: source.device_id.clone(),
                 target_device_id: target.device_id.clone(),
                 authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -8556,7 +8548,7 @@ async fn remote_model_control_is_normalized_and_persisted_on_authority() {
         &ConversationControlDeviceCommand {
             command_id: "model-control-unavailable".to_string(),
             agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -8661,7 +8653,7 @@ async fn agent_chat_model_and_authority_switch_matrix_accepts_input() {
                 .with_chat_media_root(target_state.rua_root.clone()),
         ));
     let app = axum::Router::new()
-        .nest("/api", rua_server::endpoints::chats::agent_scoped_router())
+        .nest("/api", rua_server::endpoints::chats::router())
         .layer(axum::middleware::from_fn_with_state(
             source_state.clone(),
             rua_server::middleware::agent_context_middleware,
@@ -8675,7 +8667,7 @@ async fn agent_chat_model_and_authority_switch_matrix_accepts_input() {
             vec!["device"],
         ] {
             let chat_id = uuid::Uuid::new_v4().to_string();
-            let address = ChatAddress::agent("default", &chat_id);
+            let address = ChatAddress::new(&chat_id);
             let mut selected_model = "model-a";
             let mut exists = materialized;
             if materialized {
@@ -8937,7 +8929,7 @@ async fn remote_chat_options_update_authority_runtime_and_control_view() {
         &ConversationControlDeviceCommand {
             command_id: "running-config-read".to_string(),
             agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -8961,7 +8953,7 @@ async fn remote_chat_options_update_authority_runtime_and_control_view() {
         &ConversationControlDeviceCommand {
             command_id: "running-config-update".to_string(),
             agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -9026,7 +9018,7 @@ async fn remote_chat_options_update_authority_runtime_and_control_view() {
         &ConversationControlDeviceCommand {
             command_id: "running-config-invalid".to_string(),
             agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -9071,14 +9063,14 @@ async fn stop_waits_for_handoff_and_duplicate_command_does_not_stop_later_turn()
     seed_chat_header(&workspace_dir, chat_id, &target_device_id).await;
     let key = StreamKey::new(
         CONSOLE_CHANNEL_ID,
-        ChatAddress::agent("default", chat_id),
+        ChatAddress::new(chat_id),
         Priority::Normal,
     );
     let (producer_id, mut cancel_rx) = state.streams.register_active_keyed(&key).await;
     let active_turn = state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: target_device_id.clone(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -9117,7 +9109,7 @@ async fn stop_waits_for_handoff_and_duplicate_command_does_not_stop_later_turn()
             .complete_active_turn_and_drain_queue(
                 streams.as_ref(),
                 &handoff_key,
-                &ChatAddress::agent("default", chat_id),
+                &ChatAddress::new(chat_id),
                 &turn_id,
                 "interrupted",
                 Some(chrono::Utc::now().to_rfc3339()),
@@ -9133,7 +9125,7 @@ async fn stop_waits_for_handoff_and_duplicate_command_does_not_stop_later_turn()
     let command = RemoteChatControlCommand {
         command_id: "stop-await-handoff-1".to_string(),
         agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
         source_device_id: source.device_id.clone(),
         target_device_id: target.device_id.clone(),
         authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -9154,14 +9146,14 @@ async fn stop_waits_for_handoff_and_duplicate_command_does_not_stop_later_turn()
     handoff.await.expect("handoff task");
     assert!(state
         .conversation_authority
-        .active_turn(&ChatAddress::agent("default", chat_id))
+        .active_turn(&ChatAddress::new(chat_id))
         .await
         .is_none());
 
     let later_turn = state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent("default".to_string(), chat_id.to_string()),
+            address: rua_core::ChatAddress::new(chat_id.to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: target_device_id,
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -9179,7 +9171,7 @@ async fn stop_waits_for_handoff_and_duplicate_command_does_not_stop_later_turn()
     assert_eq!(
         state
             .conversation_authority
-            .active_turn(&ChatAddress::agent("default", chat_id))
+            .active_turn(&ChatAddress::new(chat_id))
             .await
             .expect("later turn remains active")
             .turn_id,
@@ -9318,7 +9310,7 @@ async fn chat_live_switch_and_commands_reuse_one_device_session_generation() {
     live_hub
         .publish_conversation_event(
             "stream-a",
-            &ChatAddress::agent("default", "chat-a"),
+            &ChatAddress::new("chat-a"),
             epoch(1),
             serde_json::json!({"type": "text_delta", "delta": "A"}).to_string(),
         )
@@ -9334,9 +9326,7 @@ async fn chat_live_switch_and_commands_reuse_one_device_session_generation() {
             &first_target_device_id,
             ActiveStreamBroadcastSubscribeRequest {
                 device_delivery_id: String::new(),
-                owner: Some(ActiveStreamOwner::chat(ChatAddress::agent(
-                    "default", "chat-a",
-                ))),
+                owner: Some(ActiveStreamOwner::chat(ChatAddress::new("chat-a"))),
                 after_seq_by_stream: BTreeMap::new(),
                 activity_generation: None,
                 conversation_activity_position: None,
@@ -9393,7 +9383,7 @@ async fn chat_live_switch_and_commands_reuse_one_device_session_generation() {
     live_hub
         .publish_conversation_event(
             "stream-b",
-            &ChatAddress::agent("default", "chat-b"),
+            &ChatAddress::new("chat-b"),
             epoch(1),
             serde_json::json!({"type": "text_delta", "delta": "B"}).to_string(),
         )
@@ -9409,9 +9399,7 @@ async fn chat_live_switch_and_commands_reuse_one_device_session_generation() {
             &second_target_device_id,
             ActiveStreamBroadcastSubscribeRequest {
                 device_delivery_id: String::new(),
-                owner: Some(ActiveStreamOwner::chat(ChatAddress::agent(
-                    "default", "chat-b",
-                ))),
+                owner: Some(ActiveStreamOwner::chat(ChatAddress::new("chat-b"))),
                 after_seq_by_stream: BTreeMap::new(),
                 activity_generation: None,
                 conversation_activity_position: None,
@@ -9549,7 +9537,7 @@ async fn terminal_commands_multiple_activity_streams_and_chat_reuse_one_session_
     live_hub
         .publish_conversation_event(
             "chat-stream",
-            &ChatAddress::agent("default", "chat-a"),
+            &ChatAddress::new("chat-a"),
             epoch(1),
             serde_json::json!({"type": "text_delta", "delta": "chat"}).to_string(),
         )
@@ -9559,7 +9547,7 @@ async fn terminal_commands_multiple_activity_streams_and_chat_reuse_one_session_
     for owner in [
         ActiveStreamOwner::terminal("terminal-a"),
         ActiveStreamOwner::terminal("terminal-b"),
-        ActiveStreamOwner::chat(ChatAddress::agent("default", "chat-a")),
+        ActiveStreamOwner::chat(ChatAddress::new("chat-a")),
     ] {
         let payload = serde_json::to_vec(&ActiveStreamBroadcastSubscribeRequest {
             device_delivery_id: String::new(),
@@ -9609,7 +9597,7 @@ async fn terminal_commands_multiple_activity_streams_and_chat_reuse_one_session_
     live_hub
         .publish_conversation_event(
             "chat-stream",
-            &ChatAddress::agent("default", "chat-a"),
+            &ChatAddress::new("chat-a"),
             epoch(1),
             serde_json::json!({"type": "text_delta", "delta": "chat-continues"}).to_string(),
         )
@@ -10145,7 +10133,7 @@ async fn terminal_attachment_chunk_retry_preserves_positioned_tail_over_device_s
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_live_reconnect_resumes_after_last_observed_sequence() {
     assert_chat_live_reconnect_resumes_after_last_observed_sequence(
-        ChatAddress::agent("default", "chat-reconnect"),
+        ChatAddress::new("chat-reconnect"),
         36,
         37,
         38,
@@ -10156,7 +10144,7 @@ async fn chat_live_reconnect_resumes_after_last_observed_sequence() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn project_chat_live_reconnect_resumes_after_last_observed_sequence() {
     assert_chat_live_reconnect_resumes_after_last_observed_sequence(
-        ChatAddress::project("project-reconnect", "chat-reconnect"),
+        ChatAddress::new("chat-reconnect"),
         39,
         40,
         41,
@@ -10328,7 +10316,7 @@ async fn collapsed_chat_replay_preserves_stream_boundaries() {
         live_hub
             .publish_conversation_event(
                 stream_id,
-                &ChatAddress::agent("default", "chat-collapse"),
+                &ChatAddress::new("chat-collapse"),
                 epoch(1),
                 serde_json::json!({"type": "text_delta", "delta": stream_id}).to_string(),
             )
@@ -10337,10 +10325,7 @@ async fn collapsed_chat_replay_preserves_stream_boundaries() {
 
     let payload = serde_json::to_vec(&ActiveStreamBroadcastSubscribeRequest {
         device_delivery_id: String::new(),
-        owner: Some(ActiveStreamOwner::chat(ChatAddress::agent(
-            "default",
-            "chat-collapse",
-        ))),
+        owner: Some(ActiveStreamOwner::chat(ChatAddress::new("chat-collapse"))),
         after_seq_by_stream: BTreeMap::new(),
         activity_generation: None,
         conversation_activity_position: None,
@@ -10448,7 +10433,7 @@ async fn chat_live_wake_gossip_bridge_does_not_open_device_sessions() {
     activity_hub
         .publish_conversation_event(
             "stream-gossip",
-            &ChatAddress::agent("default", "chat-gossip"),
+            &ChatAddress::new("chat-gossip"),
             epoch(9),
             serde_json::json!({"type": "text_delta", "delta": "wake"}).to_string(),
         )
@@ -10534,7 +10519,7 @@ async fn authority_takeover_broadcasts_placement_changed_over_gossip() {
     broadcast_placement_changed(
         &source.runtime,
         &secret_cell,
-        ChatAddress::agent("default", "chat-takeover"),
+        ChatAddress::new("chat-takeover"),
         rua_server::services::conversation_authority_placement::ConversationAuthorityPlacement {
             device_id: source.device_id.clone(),
             authority_epoch: epoch(12),
@@ -10586,7 +10571,7 @@ async fn timed_out_chat_command_is_bounded() {
         &ConversationControlDeviceCommand {
             command_id: "control-view-timeout".to_string(),
             agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), "chat-a".to_string()),
+            address: rua_core::ChatAddress::new("chat-a".to_string()),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -10638,7 +10623,7 @@ async fn version_incompatible_control_view_fails_explicitly_without_retry() {
         &ConversationControlDeviceCommand {
             command_id: "control-view-version-mismatch".to_string(),
             agent_id: "default".to_string(),
-            address: rua_core::ChatAddress::agent("default".to_string(), "chat-a".to_string()),
+            address: rua_core::ChatAddress::new("chat-a".to_string()),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -11128,7 +11113,7 @@ async fn remote_input_confirmation_same_prepared_attempt_reuses_cached_acceptanc
         Arc::clone(&fixture.source_state.device_network),
         fixture.source_state.rua_root.clone(),
     );
-    let address = ChatAddress::agent("default", &fixture.chat_id);
+    let address = ChatAddress::new(&fixture.chat_id);
     let manifest =
         rua_server::services::conversation_manifest::initial_conversation_manifest_hash(&address)
             .unwrap();

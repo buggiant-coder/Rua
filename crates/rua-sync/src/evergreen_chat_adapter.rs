@@ -4,7 +4,7 @@ use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
 use rand::RngCore;
-use rua_core::{ChatAddress, ChatScope, ChatScopeStore};
+use rua_core::{ChatAddress, ChatStore};
 
 use crate::hlc::HlcTimestamp;
 use crate::merge_store::{live_cursor, tombstone_cursor, MergeStore};
@@ -159,7 +159,7 @@ impl EvergreenChatSyncAdapter {
     }
 
     fn scope_root(&self, address: &ChatAddress) -> PathBuf {
-        ChatScopeStore::resolve(&self.data_dir, address.clone())
+        ChatStore::resolve(&self.data_dir, address.clone())
             .root()
             .to_path_buf()
     }
@@ -173,10 +173,29 @@ impl EvergreenChatSyncAdapter {
         .ok_or_else(|| SyncError::Store(format!("invalid evergreen chat record: {relative}")))
     }
 
-    fn project_is_deleted(&self, address: &ChatAddress) -> bool {
-        address.project_id().is_some_and(|project_id| {
-            rua_project::project_tombstone_exists(&self.data_dir.join("projects"), project_id)
-        })
+    fn project_is_deleted(
+        &self,
+        address: &ChatAddress,
+        incoming: Option<&serde_json::Value>,
+    ) -> bool {
+        let local = read_json_file(
+            &self
+                .scope_root(address)
+                .join("sessions")
+                .join(address.chat_id().as_str())
+                .join("session.json"),
+        );
+        local
+            .as_ref()
+            .or(incoming)
+            .and_then(|header| header.get("project_id"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|project_id| {
+                rua_project::project_tombstone_exists(
+                    &self.data_dir.join("projects"),
+                    &rua_core::ProjectId::new(project_id),
+                )
+            })
     }
 }
 
@@ -187,68 +206,43 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
     }
 
     async fn export_records(&self) -> SyncResult<Vec<SyncChange>> {
+        let scope_root = rua_core::RuaRoot::new(&self.data_dir).chat_workspace();
         let mut changes = Vec::new();
-        for (scope_kind, roots) in [
-            ("agent", self.data_dir.join("workspaces")),
-            ("project", self.data_dir.join("projects")),
-        ] {
-            if !roots.is_dir() {
+        let mut chat_ids = BTreeSet::new();
+        let sessions_dir = scope_root.sessions_dir();
+        if sessions_dir.is_dir() {
+            for session in std::fs::read_dir(&sessions_dir)? {
+                let session = session?;
+                if !session.path().is_dir() {
+                    continue;
+                }
+                if let Some(chat_id) = session.file_name().to_str().map(ToOwned::to_owned) {
+                    chat_ids.insert(chat_id);
+                }
+            }
+        }
+        let prompt_state_dir = scope_root.as_path().join("prompt-state");
+        if prompt_state_dir.is_dir() {
+            for prompt_state in std::fs::read_dir(&prompt_state_dir)? {
+                let path = prompt_state?.path();
+                if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                    if let Some(chat_id) = path.file_stem().and_then(|stem| stem.to_str()) {
+                        chat_ids.insert(chat_id.to_string());
+                    }
+                }
+            }
+        }
+        for chat_id in chat_ids {
+            let address = ChatAddress::new(chat_id);
+            if self.project_is_deleted(&address, None) {
                 continue;
             }
-            for entry in std::fs::read_dir(&roots)? {
-                let entry = entry?;
-                let scope_root = entry.path();
-                if !scope_root.is_dir() {
-                    continue;
-                }
-                let Some(owner_id) = entry.file_name().to_str().map(ToOwned::to_owned) else {
-                    continue;
-                };
-                if scope_kind == "project"
-                    && rua_project::project_tombstone_exists(
-                        &self.data_dir.join("projects"),
-                        &rua_core::ProjectId::new(owner_id.clone()),
-                    )
-                {
-                    continue;
-                }
-                let scope = ChatScope::from_kind_and_owner(scope_kind, owner_id)
-                    .expect("known Chat Scope kind");
-                let mut chat_ids = BTreeSet::new();
-                let sessions_dir = scope_root.join("sessions");
-                if sessions_dir.is_dir() {
-                    for session in std::fs::read_dir(&sessions_dir)? {
-                        let session = session?;
-                        if !session.path().is_dir() {
-                            continue;
-                        }
-                        if let Some(chat_id) = session.file_name().to_str().map(ToOwned::to_owned) {
-                            chat_ids.insert(chat_id);
-                        }
-                    }
-                }
-                let prompt_state_dir = scope_root.join("prompt-state");
-                if prompt_state_dir.is_dir() {
-                    for prompt_state in std::fs::read_dir(&prompt_state_dir)? {
-                        let prompt_state = prompt_state?;
-                        let path = prompt_state.path();
-                        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                            continue;
-                        }
-                        if let Some(chat_id) = path.file_stem().and_then(|stem| stem.to_str()) {
-                            chat_ids.insert(chat_id.to_string());
-                        }
-                    }
-                }
-                for chat_id in chat_ids {
-                    changes.extend(Self::snapshot_changes_for_chat(
-                        &scope_root,
-                        &ChatAddress::new(scope.clone(), chat_id),
-                        self.device_id.clone(),
-                        zero_hlc(),
-                    )?);
-                }
-            }
+            changes.extend(Self::snapshot_changes_for_chat(
+                scope_root.as_path(),
+                &address,
+                self.device_id.clone(),
+                zero_hlc(),
+            )?);
         }
         changes.sort_by(|a, b| a.record_id.cmp(&b.record_id));
         Ok(changes)
@@ -329,7 +323,23 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
         }
 
         let path = self.path_for_record(&address, relative)?;
-        if !is_delete && self.project_is_deleted(&address) {
+        if !is_delete
+            && matches!(relative, "session" | "session.json")
+            && change
+                .payload
+                .get("chat_id")
+                .is_some_and(|id| id.as_str() != Some(address.chat_id().as_str()))
+        {
+            return Err(SyncError::InvalidPayload(
+                "Chat header ID differs from its address".into(),
+            ));
+        }
+        if !is_delete
+            && self.project_is_deleted(
+                &address,
+                (relative == "session" || relative == "session.json").then_some(&change.payload),
+            )
+        {
             match std::fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -376,7 +386,7 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
             }
         }
         if relative == "session" || relative == "session.json" {
-            let scope = ChatScopeStore::resolve(&self.data_dir, address.clone());
+            let scope = ChatStore::resolve(&self.data_dir, address.clone());
             rua_session::WorkspaceSessionStore::new(scope.root())
                 .merge_replicated_chat_header(
                     address.chat_id().as_str(),
@@ -400,6 +410,19 @@ fn preserve_confirmed_authority(
     local: Option<&serde_json::Value>,
     incoming: &mut serde_json::Value,
 ) -> rua_core::Result<()> {
+    if let Some(local) = local {
+        let project = |header: &serde_json::Value| {
+            header
+                .get("project_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        if project(local) != project(incoming) {
+            return Err(rua_core::RuaError::Validation {
+                message: "Chat Project membership is immutable".into(),
+            });
+        }
+    }
     let epoch = |placement: &serde_json::Value| {
         placement
             .get("authority_epoch")
@@ -523,44 +546,26 @@ pub fn collect_evergreen_chat_file_snapshots(
 }
 
 pub fn file_record_id(address: &ChatAddress, relative: &str) -> String {
-    format!(
-        "{}/{}/{}/{relative}",
-        address.scope().kind(),
-        address.scope().owner_id(),
-        address.chat_id()
-    )
+    format!("chats/{}/{relative}", address.chat_id())
 }
 
 pub fn parse_file_record_id(record_id: &str) -> SyncResult<(ChatAddress, &str)> {
-    let mut parts = record_id.splitn(4, '/');
-    let scope_kind = parts
-        .next()
-        .filter(|value| *value == "agent" || *value == "project")
-        .ok_or_else(|| {
-            SyncError::Store(format!("invalid evergreen chat record id: {record_id}"))
-        })?;
-    let owner_id = parts
-        .next()
-        .filter(|value| valid_component(value))
-        .ok_or_else(|| {
-            SyncError::Store(format!("invalid evergreen chat record id: {record_id}"))
-        })?;
-    let chat_id = parts
-        .next()
-        .filter(|value| valid_component(value))
-        .ok_or_else(|| {
-            SyncError::Store(format!("invalid evergreen chat record id: {record_id}"))
-        })?;
-    let relative = parts
-        .next()
-        .filter(|value| !value.is_empty() && !value.contains("..") && !value.contains('\\'))
-        .ok_or_else(|| {
-            SyncError::Store(format!("invalid evergreen chat record id: {record_id}"))
-        })?;
-    let scope = ChatScope::from_kind_and_owner(scope_kind, owner_id).ok_or_else(|| {
+    let tail = record_id.strip_prefix("chats/").ok_or_else(|| {
         SyncError::Store(format!("invalid evergreen chat record id: {record_id}"))
     })?;
-    Ok((ChatAddress::new(scope, chat_id), relative))
+    let (chat_id, relative) = tail
+        .split_once('/')
+        .filter(|(chat_id, relative)| {
+            valid_component(chat_id)
+                && !relative.is_empty()
+                && !relative.starts_with('/')
+                && !relative.contains("..")
+                && !relative.contains('\\')
+        })
+        .ok_or_else(|| {
+            SyncError::Store(format!("invalid evergreen chat record id: {record_id}"))
+        })?;
+    Ok((ChatAddress::new(chat_id), relative))
 }
 
 fn evergreen_chat_file_path(

@@ -33,7 +33,9 @@ impl LlmDebugCaptureRegistry {
         let registry = Self {
             root: data_dir.join("debug").join("llm-captures"),
         };
-        registry.restore_persisted_captures(data_dir);
+        let workspace = rua_core::RuaRoot::new(data_dir).chat_workspace();
+        let store = rua_session::WorkspaceSessionStore::new(workspace.as_path());
+        registry.restore_session_states(store.sessions_dir());
         registry
     }
 
@@ -213,22 +215,6 @@ impl LlmDebugCaptureRegistry {
             },
         );
         Ok(Some(info))
-    }
-
-    fn restore_persisted_captures(&self, data_dir: &Path) {
-        for collection in [data_dir.join("workspaces"), data_dir.join("projects")] {
-            let scopes = match fs::read_dir(&collection) {
-                Ok(scopes) => scopes,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => {
-                    tracing::warn!(path = %collection.display(), %error, "failed to scan persisted LLM debug capture roots");
-                    continue;
-                }
-            };
-            for scope in scopes.flatten() {
-                self.restore_session_states(&scope.path().join("sessions"));
-            }
-        }
     }
 
     fn restore_session_states(&self, sessions_dir: &Path) {

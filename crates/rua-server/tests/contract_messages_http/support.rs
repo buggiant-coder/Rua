@@ -22,11 +22,10 @@ pub fn build_app() -> TestApp {
     std::fs::create_dir_all(tmp.path().join("workspaces/default")).expect("default workspace");
     let state = AppState::from_tempdir(tmp.path().to_path_buf(), ServerProfile::Test);
     let app = Router::new()
-        .merge(chats::root_router())
-        .merge(chats::agent_scoped_router())
+        .merge(chats::router())
         .merge(messages::router())
         .merge(messages::channel_webhook_router())
-        .merge(console::agent_scoped_router())
+        .merge(console::router())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             agent_context_middleware,

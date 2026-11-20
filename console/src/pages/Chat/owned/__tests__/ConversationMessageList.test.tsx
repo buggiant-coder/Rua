@@ -77,16 +77,8 @@ vi.mock("@/api/modules/chat", () => ({
     filePreviewUrl: (path: string) => `/preview${path}`,
     localImagePreviewUrl: (path: string, agentId = "default") =>
       `/agents/${agentId}/files/preview?path=${encodeURIComponent(path)}`,
-    mediaUrl: (
-      scope:
-        | { kind: "agent"; agentId: string }
-        | { kind: "project"; projectId: string },
-      chatId: string,
-      mediaId: string,
-    ) =>
-      scope.kind === "project"
-        ? `/api/projects/${scope.projectId}/chats/${chatId}/media/${mediaId}?token=test`
-        : `/api/agents/${scope.agentId}/chats/${chatId}/media/${mediaId}?token=test`,
+    mediaUrl: (chatId: string, mediaId: string) =>
+      `/api/chats/${chatId}/media/${mediaId}?token=test`,
   },
 }));
 
@@ -784,9 +776,7 @@ describe("ConversationMessageList", () => {
     const scrollHeight = vi
       .spyOn(HTMLElement.prototype, "scrollHeight", "get")
       .mockImplementation(function (this: HTMLElement) {
-        return this.classList.contains("rua-chat-user-content-frame")
-          ? 120
-          : 0;
+        return this.classList.contains("rua-chat-user-content-frame") ? 120 : 0;
       });
     const projection = projectConversation("chat-1", {
       status: "idle",
@@ -812,9 +802,7 @@ describe("ConversationMessageList", () => {
     const bubble = container.querySelector(
       '[data-rua-chat-message-id="user-1"] .rua-chat-bubble--user',
     );
-    const contentFrame = bubble?.querySelector(
-      ".rua-chat-user-content-frame",
-    );
+    const contentFrame = bubble?.querySelector(".rua-chat-user-content-frame");
     const collapse = within(bubble as HTMLElement).getByRole("button", {
       name: "Collapse user input",
     });
@@ -917,9 +905,10 @@ describe("ConversationMessageList", () => {
     expect(content?.querySelectorAll(".rua-local-markdown")).toHaveLength(1);
     expect(content?.textContent).toContain("Before [Image #1] after");
     expect(link).toHaveAttribute("href", "#rua-image-1");
-    expect(
-      content?.querySelector(".rua-chat-user-images img"),
-    ).toHaveAttribute("src", "/preview/uploads/picture.png");
+    expect(content?.querySelector(".rua-chat-user-images img")).toHaveAttribute(
+      "src",
+      "/preview/uploads/picture.png",
+    );
 
     fireEvent.click(link);
     expect(screen.getByRole("dialog", { name: "picture.png" })).toBeVisible();
@@ -949,97 +938,81 @@ describe("ConversationMessageList", () => {
     );
   });
 
-  it.each([
-    {
-      scope: { kind: "project" as const, projectId: "project-1" },
-      ownerPath: "projects/project-1",
-    },
-    {
-      scope: { kind: "agent" as const, agentId: "agent-1" },
-      ownerPath: "agents/agent-1",
-    },
-  ])(
-    "reads submitted user images through $ownerPath after reopening history",
-    async ({ scope, ownerPath }) => {
-      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-        ok: true,
-        blob: async () => new Blob(["image"], { type: "image/png" }),
-      } as Response);
-      const createObjectURL = vi
-        .spyOn(URL, "createObjectURL")
-        .mockReturnValue("blob:submitted-media");
-      const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL");
-      const projection = projectConversation("chat-project-1", {
-        status: "idle",
-        messages: [
-          {
-            id: "user-1",
-            role: "user",
-            content: [
-              {
-                type: "image",
-                media_ref: "media/00000000-0000-4000-8000-000000000001",
-                file_name: "submitted.png",
-              },
-            ],
-          },
-        ],
-      });
+  it("reads submitted user images by Chat ID after reopening history", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob(["image"], { type: "image/png" }),
+    } as Response);
+    const createObjectURL = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:submitted-media");
+    const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL");
+    const projection = projectConversation("chat-project-1", {
+      status: "idle",
+      messages: [
+        {
+          id: "user-1",
+          role: "user",
+          content: [
+            {
+              type: "image",
+              media_ref: "media/00000000-0000-4000-8000-000000000001",
+              file_name: "submitted.png",
+            },
+          ],
+        },
+      ],
+    });
 
-      const view = (
-        <ConversationMessageList projection={projection} mediaScope={scope} />
-      );
-      const { container, unmount } = render(view);
+    const view = <ConversationMessageList projection={projection} />;
+    const { container, unmount } = render(view);
 
-      await waitFor(() =>
-        expect(
-          container.querySelector(".rua-chat-user-images img"),
-        ).toHaveAttribute("src", "blob:submitted-media"),
-      );
-      expect(fetchMock).toHaveBeenCalledWith(
-        new URL(
-          `/api/${ownerPath}/chats/chat-project-1/media/00000000-0000-4000-8000-000000000001`,
-          window.location.href,
-        ).href,
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            Authorization: expect.any(String),
-          }),
+    await waitFor(() =>
+      expect(
+        container.querySelector(".rua-chat-user-images img"),
+      ).toHaveAttribute("src", "blob:submitted-media"),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL(
+        `/api/chats/chat-project-1/media/00000000-0000-4000-8000-000000000001`,
+        window.location.href,
+      ).href,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: expect.any(String),
         }),
-      );
-      fireEvent.click(
-        screen.getByRole("button", { name: "Open submitted.png" }),
-      );
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open submitted.png" }));
+    expect(
+      within(screen.getByRole("dialog")).getByAltText("submitted.png"),
+    ).toHaveAttribute("src", "blob:submitted-media");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Close image" }));
+
+    fireEvent.click(screen.getByRole("link", { name: "[Image #1]" }));
+    await waitFor(() =>
       expect(
         within(screen.getByRole("dialog")).getByAltText("submitted.png"),
-      ).toHaveAttribute("src", "blob:submitted-media");
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      fireEvent.click(screen.getByRole("button", { name: "Close image" }));
+      ).toHaveAttribute("src", "blob:submitted-media"),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole("button", { name: "Close image" }));
+    unmount();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:submitted-media");
 
-      fireEvent.click(screen.getByRole("link", { name: "[Image #1]" }));
-      await waitFor(() =>
-        expect(
-          within(screen.getByRole("dialog")).getByAltText("submitted.png"),
-        ).toHaveAttribute("src", "blob:submitted-media"),
-      );
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-      fireEvent.click(screen.getByRole("button", { name: "Close image" }));
-      unmount();
-      expect(revokeObjectURL).toHaveBeenCalledWith("blob:submitted-media");
-
-      const reopened = render(view);
-      await waitFor(() =>
-        expect(
-          reopened.container.querySelector(".rua-chat-user-images img"),
-        ).toHaveAttribute("src", "blob:submitted-media"),
-      );
-      expect(fetchMock).toHaveBeenCalledTimes(3);
-      reopened.unmount();
-      fetchMock.mockRestore();
-      createObjectURL.mockRestore();
-      revokeObjectURL.mockRestore();
-    },
-  );
+    const reopened = render(view);
+    await waitFor(() =>
+      expect(
+        reopened.container.querySelector(".rua-chat-user-images img"),
+      ).toHaveAttribute("src", "blob:submitted-media"),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    reopened.unmount();
+    fetchMock.mockRestore();
+    createObjectURL.mockRestore();
+    revokeObjectURL.mockRestore();
+  });
 
   it("hides legacy model-only image path hints and keeps a compact preview", () => {
     const projection = projectConversation("chat-1", {
@@ -1148,16 +1121,11 @@ describe("ConversationMessageList", () => {
         },
       ],
     });
-    render(
-      <ConversationMessageList
-        projection={projection}
-        mediaScope={{ kind: "project", projectId: "project-1" }}
-      />,
-    );
+    render(<ConversationMessageList projection={projection} />);
     for (const name of ["Markdown preview", "Figure"]) {
       expect(screen.getByRole("img", { name })).toHaveAttribute(
         "src",
-        `/api/projects/project-1/chats/chat-1/media/${id}?token=test`,
+        `/api/chats/chat-1/media/${id}?token=test`,
       );
     }
   });
@@ -1697,9 +1665,7 @@ describe("ConversationMessageList", () => {
     const bubble = message?.querySelector(
       ".rua-chat-bubble--acp-history-preview",
     );
-    expect(bubble?.classList.contains("rua-chat-bubble--assistant")).toBe(
-      true,
-    );
+    expect(bubble?.classList.contains("rua-chat-bubble--assistant")).toBe(true);
     const preview = container.querySelector(
       ".rua-chat-acp-history-preview-scroll",
     );
@@ -2695,9 +2661,7 @@ describe("ConversationMessageList", () => {
       '.rua-chat-message--assistant[data-rua-chat-role="assistant"]',
     );
     const bubble = assistant?.querySelector(".rua-chat-bubble--assistant");
-    const footerRow = assistant?.querySelector(
-      ".rua-chat-response-footer-row",
-    );
+    const footerRow = assistant?.querySelector(".rua-chat-response-footer-row");
 
     expect(assistant).toBeTruthy();
     expect(bubble).toBeTruthy();
@@ -2733,9 +2697,7 @@ describe("ConversationMessageList", () => {
       <ConversationMessageList projection={projection} />,
     );
 
-    const footerRow = container.querySelector(
-      ".rua-chat-response-footer-row",
-    );
+    const footerRow = container.querySelector(".rua-chat-response-footer-row");
     expect(footerRow?.children[0]).toHaveClass("rua-local-bubble-footer");
     expect(footerRow?.children[1]).toHaveClass("rua-response-variant-pager");
   });
@@ -2775,9 +2737,7 @@ describe("ConversationMessageList", () => {
       <ConversationMessageList projection={withActiveTurn(projection)} />,
     );
 
-    const footerRow = container.querySelector(
-      ".rua-chat-response-footer-row",
-    );
+    const footerRow = container.querySelector(".rua-chat-response-footer-row");
     expect(footerRow).toBeNull();
     expect(container.querySelector(".rua-response-variant-pager")).toBeNull();
   });
@@ -3358,9 +3318,7 @@ describe("ConversationMessageList", () => {
     );
 
     fireEvent.click(screen.getByText("1 tool call"));
-    expect(
-      container.querySelector(".rua-tool-group.pinned-open"),
-    ).toBeTruthy();
+    expect(container.querySelector(".rua-tool-group.pinned-open")).toBeTruthy();
 
     rerender(
       <ConversationMessageList
@@ -3369,9 +3327,7 @@ describe("ConversationMessageList", () => {
       />,
     );
 
-    expect(
-      container.querySelector(".rua-tool-group.pinned-open"),
-    ).toBeTruthy();
+    expect(container.querySelector(".rua-tool-group.pinned-open")).toBeTruthy();
     expect(screen.getByLabelText("Input code block")).toBeInTheDocument();
   });
 
@@ -4758,9 +4714,7 @@ describe("ConversationMessageList", () => {
       screen.queryByRole("button", { name: "chat.backgroundTool" }),
     ).not.toBeInTheDocument();
     expect(container.querySelector(".rua-local-tool-spinner")).toBeNull();
-    expect(
-      container.querySelector(".rua-chat-inline-spinner"),
-    ).not.toBeNull();
+    expect(container.querySelector(".rua-chat-inline-spinner")).not.toBeNull();
   });
 
   it("shows one independent running indicator while active Turn content recovers", () => {
@@ -4784,9 +4738,7 @@ describe("ConversationMessageList", () => {
       <ConversationMessageList projection={project(null)} />,
     );
     const expectRunning = () => {
-      const indicators = container.querySelectorAll(
-        "[data-rua-chat-running]",
-      );
+      const indicators = container.querySelectorAll("[data-rua-chat-running]");
       expect(indicators).toHaveLength(1);
       expect(indicators[0].textContent).toBe("");
       expect(
@@ -4876,9 +4828,9 @@ describe("ConversationMessageList", () => {
     const { container } = render(
       <ConversationMessageList projection={restored} />,
     );
-    expect(
-      container.querySelectorAll("[data-rua-chat-running]"),
-    ).toHaveLength(1);
+    expect(container.querySelectorAll("[data-rua-chat-running]")).toHaveLength(
+      1,
+    );
     expect(screen.getByText("Partial response")).toBeInTheDocument();
   });
 
@@ -4920,12 +4872,8 @@ describe("ConversationMessageList", () => {
       kind: "active",
       responseId: "chat-1:assistant:user-shell",
     });
-    expect(
-      container.querySelector(".rua-chat-inline-spinner"),
-    ).not.toBeNull();
-    expect(
-      container.querySelector(".rua-chat-response-footer-row"),
-    ).toBeNull();
+    expect(container.querySelector(".rua-chat-inline-spinner")).not.toBeNull();
+    expect(container.querySelector(".rua-chat-response-footer-row")).toBeNull();
   });
 
   it("keeps generating tool cards visible for unregistered tool names", () => {

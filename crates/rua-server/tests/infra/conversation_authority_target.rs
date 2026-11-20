@@ -111,7 +111,6 @@ async fn submit_uses_only_backend_authority_placement() {
         Some(&workspace),
         CHAT_ID,
         &request,
-        "default",
         Some("device-local"),
         None,
     )
@@ -145,7 +144,6 @@ async fn submit_rejects_media_uploaded_under_a_stale_authority_epoch() {
         Some(&workspace),
         CHAT_ID,
         &request,
-        "default",
         Some("device-local"),
         None,
     )
@@ -180,7 +178,6 @@ async fn only_the_authority_requires_referenced_media_to_exist_locally() {
         Some(&workspace),
         CHAT_ID,
         &request,
-        "default",
         Some("device-controller"),
         None,
     )
@@ -193,7 +190,6 @@ async fn only_the_authority_requires_referenced_media_to_exist_locally() {
         Some(&workspace),
         CHAT_ID,
         &request,
-        "default",
         Some("device-authority"),
         None,
     )
@@ -206,7 +202,7 @@ async fn only_the_authority_requires_referenced_media_to_exist_locally() {
 fn required_media_set_is_canonical_deduplicated_and_sorted() {
     let tmp = TempDir::new().expect("tempdir");
     let workspace = tmp.path().join("workspace");
-    let address = ChatAddress::agent("default", CHAT_ID);
+    let address = ChatAddress::new(CHAT_ID);
     let chat_dir = workspace.join("sessions").join(CHAT_ID);
     std::fs::create_dir_all(&chat_dir).expect("chat dir");
     std::fs::write(
@@ -245,7 +241,7 @@ fn required_media_set_is_canonical_deduplicated_and_sorted() {
 #[test]
 fn required_media_set_reads_canonical_message_log_segments() {
     let tmp = TempDir::new().unwrap();
-    let address = ChatAddress::project("project-media", CHAT_ID);
+    let address = ChatAddress::new(CHAT_ID);
     let messages = tmp.path().join("sessions").join(CHAT_ID).join("messages");
     std::fs::create_dir_all(&messages).unwrap();
     let entry = serde_json::json!({
@@ -284,7 +280,6 @@ async fn draft_target_preparation_does_not_install_authority_placement() {
         Some(&workspace),
         CHAT_ID,
         &request(),
-        "default",
         Some("device-local"),
         None,
     )
@@ -305,7 +300,6 @@ async fn draft_target_preparation_does_not_install_authority_placement() {
         Some(&workspace),
         CHAT_ID,
         &existing_request,
-        "default",
         Some("device-local"),
         None
     )
@@ -380,7 +374,7 @@ async fn live_activity_route_carries_explicit_authority_epoch() {
     let route = ConversationAuthorityRouter
         .resolve_live_activity_route(ConversationLiveActivityRouteRequest {
             workspace_dir: Some(&workspace),
-            address: &rua_core::ChatAddress::agent("default", CHAT_ID),
+            address: &rua_core::ChatAddress::new(CHAT_ID),
             local_device_id: Some("device-local"),
         })
         .await;
@@ -450,7 +444,6 @@ async fn session_header_placement_is_authoritative_over_chat_index() {
         Some(&workspace),
         CHAT_ID,
         &request(),
-        "default",
         Some("device-local"),
         None,
     )

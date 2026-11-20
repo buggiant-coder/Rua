@@ -7,16 +7,14 @@
 //! durable Turn Index, and the Task Runtime's Attempt store — never a mirrored
 //! counter, and termination is confirmed from the same source that records it.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rua_core::{ChatAddress, ChatScope, ChatScopeStore, RuaRoot};
+use rua_core::{ChatAddress, RuaRoot};
 use rua_workspace::{AgentWork, AgentWorkAuthority, WorkKind, WorkUnit, WorkspaceError};
 
 use crate::services::console_chat::CONSOLE_CHANNEL_ID;
 use crate::services::conversation_authority::ConversationAuthority;
-use crate::services::project_chat;
 use crate::streaming::ActiveStreamRegistry;
 
 /// The process-composition work authority for Agent shutdown.
@@ -25,7 +23,6 @@ pub struct WorkspaceWorkAuthority {
     streams: Arc<ActiveStreamRegistry>,
     task_runtime: Arc<rua_task::TaskRuntime>,
     root: RuaRoot,
-    project_catalog: Option<Arc<rua_project::ProjectCatalog>>,
 }
 
 impl WorkspaceWorkAuthority {
@@ -34,113 +31,13 @@ impl WorkspaceWorkAuthority {
         streams: Arc<ActiveStreamRegistry>,
         task_runtime: Arc<rua_task::TaskRuntime>,
         root: RuaRoot,
-        project_catalog: Option<Arc<rua_project::ProjectCatalog>>,
     ) -> Self {
         Self {
             authority,
             streams,
             task_runtime,
             root,
-            project_catalog,
         }
-    }
-
-    fn agent_scope_root(&self, agent_id: &str) -> Result<PathBuf, WorkspaceError> {
-        self.root
-            .agent_workspace(agent_id)
-            .map(|workspace| workspace.as_path().to_path_buf())
-            .map_err(|error| {
-                WorkspaceError::internal(format!("Agent workspace is invalid: {error}"))
-            })
-    }
-
-    /// Whether a Scope already owns a Chat Index file.
-    ///
-    /// Reading the index would create it: the underlying reader makes the
-    /// directory and the SQLite file before it queries. A shutdown probe must not
-    /// look like Agent activity, so a Scope with no index is treated as holding no
-    /// Chats and is never opened.
-    fn has_chat_index(&self, address: &ChatAddress) -> Result<bool, WorkspaceError> {
-        let store = ChatScopeStore::resolve(self.root.as_path(), address.clone());
-        store.chat_index_path().try_exists().map_err(|error| {
-            WorkspaceError::internal(format!(
-                "Chat Index existence could not be inspected for {address}: {error}"
-            ))
-        })
-    }
-
-    /// Project-Scoped Chats whose currently selected Agent is `agent_id`.
-    ///
-    /// A Project Chat is owned by the Project, so its work must be attributed
-    /// through the Project's own selection record rather than guessed from the
-    /// Agent that happens to execute the Turn.
-    async fn agent_project_chats(
-        &self,
-        agent_id: &str,
-    ) -> Result<Vec<ChatAddress>, WorkspaceError> {
-        let Some(catalog) = self.project_catalog.as_ref() else {
-            return Ok(Vec::new());
-        };
-        let projects = catalog.list_active().map_err(|error| {
-            WorkspaceError::internal(format!("Project Catalog is unavailable: {error}"))
-        })?;
-
-        let mut addresses = Vec::new();
-        for project in projects {
-            let project_id = project.project_id;
-            let scope_root = match self
-                .root
-                .project_workspace(project_id.as_str())
-                .map(|workspace| workspace.as_path().to_path_buf())
-            {
-                Ok(root) => root,
-                Err(error) => {
-                    tracing::warn!(
-                        agent_id,
-                        project_id = %project_id,
-                        error = %error,
-                        "skipping Project with an invalid workspace root"
-                    );
-                    continue;
-                }
-            };
-            let project_address = ChatAddress::project(project_id.clone(), "");
-            if !self.has_chat_index(&project_address)? {
-                continue;
-            }
-            let chats = match crate::services::chat_index::list_all(&scope_root).await {
-                Ok(chats) => chats,
-                Err(error) => {
-                    return Err(WorkspaceError::internal(format!(
-                        "Project Chat Index could not be read during shutdown: {error}"
-                    )));
-                }
-            };
-            for chat in chats {
-                let address = ChatAddress::project(project_id.clone(), chat.id);
-                match project_chat::load_project_chat_agent_selection(
-                    &scope_root,
-                    address.chat_id().as_str(),
-                )
-                .await
-                {
-                    Ok(selection) if selection.agent_id == agent_id => addresses.push(address),
-                    Ok(_) => {}
-                    Err(error) => {
-                        // A Project Chat with no resolvable selection cannot be
-                        // attributed to this Agent, and it must not be attributed
-                        // to any other Agent either.
-                        tracing::debug!(
-                            agent_id,
-                            %address,
-                            error = %error,
-                            "Project Chat has no resolvable Agent selection"
-                        );
-                    }
-                }
-            }
-        }
-        Ok(addresses)
     }
 
     /// Every Chat Address whose work this Agent currently owns.
@@ -154,46 +51,29 @@ impl WorkspaceWorkAuthority {
             self.authority.active_turn_addresses(Some(agent_id)).await;
         addresses.extend(self.authority.queued_input_addresses(agent_id).await);
 
-        let agent_root = self.agent_scope_root(agent_id)?;
-        if self.has_chat_index(&ChatAddress::agent(agent_id, ""))? {
-            match crate::services::chat_index::list_all(&agent_root).await {
-                Ok(chats) => addresses.extend(
-                    chats
-                        .into_iter()
-                        .map(|chat| ChatAddress::agent(agent_id, chat.id)),
-                ),
-                Err(error) => {
-                    return Err(WorkspaceError::internal(format!(
-                        "Agent Chat Index could not be read during shutdown: {error}"
-                    )))
-                }
-            }
+        let workspace = self.root.chat_workspace();
+        if workspace.chat_index_path().try_exists().map_err(|error| {
+            WorkspaceError::internal(format!("Cannot inspect the Chat Index: {error}"))
+        })? {
+            let chats = crate::services::chat_index::list_all(workspace.as_path())
+                .await
+                .map_err(WorkspaceError::internal)?;
+            addresses.extend(
+                chats
+                    .into_iter()
+                    .filter(|chat| {
+                        chat.meta
+                            .get("agent_id")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(agent_id)
+                    })
+                    .map(|chat| ChatAddress::new(chat.id)),
+            );
         }
-
-        addresses.extend(self.agent_project_chats(agent_id).await?);
 
         addresses.sort_by_key(ChatAddress::identity_key);
         addresses.dedup();
         Ok(addresses)
-    }
-
-    fn scope_root(&self, address: &ChatAddress) -> Result<PathBuf, WorkspaceError> {
-        match address.scope() {
-            ChatScope::Agent { .. } => Ok(self
-                .root
-                .agent_workspace(address.scope().owner_id())
-                .map(|workspace| workspace.as_path().to_path_buf())
-                .map_err(|error| {
-                    WorkspaceError::internal(format!("Agent workspace is invalid: {error}"))
-                })?),
-            ChatScope::Project { .. } => Ok(self
-                .root
-                .project_workspace(address.scope().owner_id())
-                .map(|workspace| workspace.as_path().to_path_buf())
-                .map_err(|error| {
-                    WorkspaceError::internal(format!("Project workspace is invalid: {error}"))
-                })?),
-        }
     }
 
     /// Whether one Turn is genuinely terminal, read from the authority that
@@ -207,14 +87,7 @@ impl WorkspaceWorkAuthority {
                 return false;
             }
         }
-        let scope_root = match self.scope_root(address) {
-            Ok(root) => root,
-            Err(error) => {
-                tracing::warn!(%address, error = %error, "cannot resolve Chat scope root");
-                return false;
-            }
-        };
-        let store = rua_session::WorkspaceSessionStore::new(scope_root);
+        let store = rua_session::WorkspaceSessionStore::new(self.root.chat_workspace().as_path());
         match store
             .read_turn_range(address.chat_id().as_str(), 1, usize::MAX)
             .await
@@ -265,11 +138,7 @@ impl WorkspaceWorkAuthority {
             }
         }
 
-        // Attempts are enumerated from the Task store, so an Attempt in a Chat
-        // this process no longer indexes is still real work. Attribution uses
-        // the Attempt's own owner: a Project-Scoped Attempt belongs to its
-        // Project, and only an Attempt whose owner is this Agent's Agent-Scoped
-        // Chat is this Agent's to report.
+        // A Task keeps its authorizing Agent even if its Chat selects another.
         for record in self.outstanding_tasks().await? {
             let owner = record.spec.owner.chat_address.clone();
             if record.attempts.is_empty() {

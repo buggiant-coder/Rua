@@ -56,7 +56,7 @@ fn session_context() -> rua_core::phone_use::PhoneSessionContext {
         &HashMap::from([
             (
                 crate::hooks::SECURITY_CHAT_ADDRESS_METADATA_KEY.into(),
-                json!(rua_core::ChatAddress::agent("default", "phone-chat")),
+                json!(rua_core::ChatAddress::new("phone-chat")),
             ),
             ("turn_id".into(), json!("phone-turn")),
             ("authority_epoch".into(), json!("authority-epoch")),
@@ -153,7 +153,7 @@ async fn failed_cancelled_and_timed_out_turns_release_the_captured_session() {
         assert_eq!(request["params"]["generation"], "phone-hook-test");
         assert_eq!(
             request["params"]["invocation"]["chat_address"],
-            json!(rua_core::ChatAddress::agent("default", "phone-chat"))
+            json!(rua_core::ChatAddress::new("phone-chat"))
         );
         assert_eq!(request["params"]["invocation"]["turn_id"], "phone-turn");
         assert_eq!(

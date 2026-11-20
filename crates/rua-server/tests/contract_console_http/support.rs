@@ -36,8 +36,8 @@ fn build_app_internal(facade: Option<Arc<dyn ConsoleChatFacade>>) -> TestApp {
         state.console_facade = facade;
     }
     let app = Router::new()
-        .merge(endpoints::console::agent_scoped_router())
-        .nest("/api", endpoints::chats::agent_scoped_router())
+        .merge(endpoints::console::router())
+        .nest("/api", endpoints::chats::router())
         .nest("/api", endpoints::chat_media::router())
         .nest("/api", endpoints::projects::router())
         .nest("/api", endpoints::sync::router())

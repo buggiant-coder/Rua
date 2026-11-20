@@ -49,7 +49,7 @@ impl Fixture {
         let marker = dropped.clone();
         let api = Router::new()
             .route(
-                "/api/agents/a/chats/slow/acp/permissions",
+                "/api/chats/slow/acp/permissions",
                 get(move || {
                     let marker = marker.clone();
                     async move {
@@ -59,7 +59,7 @@ impl Fixture {
                 }),
             )
             .route(
-                "/api/agents/a/chats/fast/acp/permissions",
+                "/api/chats/fast/acp/permissions",
                 get(|| async { Json(json!({"source":"canonical"})) }),
             )
             .route(
@@ -126,11 +126,19 @@ async fn blocked_remote_channel_does_not_block_other_channels_or_local_reads() {
     let mut socket = fixture.socket().await;
     send(&mut socket, json!({"type":"auth", "version":1, "token":""})).await;
     assert_eq!(receive(&mut socket).await["type"], "ready");
-    send(&mut socket, json!({"type":"open","id":"slow","method":"GET","path":"/agents/a/chats/slow/acp/permissions"})).await;
+    send(
+        &mut socket,
+        json!({"type":"open","id":"slow","method":"GET","path":"/chats/slow/acp/permissions"}),
+    )
+    .await;
     for i in 0..4 {
         send(&mut socket, json!({"type":"open","id":format!("stream-{i}"),"method":"GET","path":"/platform/conversation-activity"})).await;
     }
-    send(&mut socket, json!({"type":"open","id":"fast","method":"GET","path":"/agents/a/chats/fast/acp/permissions"})).await;
+    send(
+        &mut socket,
+        json!({"type":"open","id":"fast","method":"GET","path":"/chats/fast/acp/permissions"}),
+    )
+    .await;
     let mut fast_body = String::new();
     loop {
         let frame = receive(&mut socket).await;
@@ -172,7 +180,7 @@ async fn blocked_remote_channel_does_not_block_other_channels_or_local_reads() {
     })
     .await
     .expect("cancel drops only the remote request future");
-    send(&mut socket, json!({"type":"open","id":"after-cancel","method":"GET","path":"/agents/a/chats/fast/acp/permissions"})).await;
+    send(&mut socket, json!({"type":"open","id":"after-cancel","method":"GET","path":"/chats/fast/acp/permissions"})).await;
     loop {
         if receive(&mut socket).await["id"] == "after-cancel" {
             break;
@@ -198,8 +206,23 @@ async fn transport_rejects_foreign_origin_unauthenticated_mobile_and_mutation_re
     let mut socket = fixture.socket().await;
     send(&mut socket, json!({"type":"auth", "version":1})).await;
     assert_eq!(receive(&mut socket).await["type"], "ready");
-    send(&mut socket, json!({"type":"open","id":"mutation","method":"POST","path":"/agents/a/chats/c/console/stop"})).await;
+    send(
+        &mut socket,
+        json!({"type":"open","id":"mutation","method":"POST","path":"/chats/c/console/stop"}),
+    )
+    .await;
     assert_eq!(receive(&mut socket).await["type"], "error");
+    for path in [
+        "/agents/a/chats/fast/acp/permissions",
+        "/projects/p/chats/fast/console/activity",
+    ] {
+        send(
+            &mut socket,
+            json!({"type":"open","id":"old","method":"GET","path":path}),
+        )
+        .await;
+        assert_eq!(receive(&mut socket).await["type"], "error");
+    }
     let mobile = Fixture::new(true).await;
     let mut socket = mobile.socket().await;
     send(&mut socket, json!({"type":"auth", "version":1})).await;

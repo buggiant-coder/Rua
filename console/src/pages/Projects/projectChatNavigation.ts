@@ -1,3 +1,8 @@
+import { chatPath } from "../Chat/conversationAddress";
+import {
+  readDraftChatContext,
+  saveDraftChatContext,
+} from "../Chat/chatContext";
 import * as drafts from "../Chat/drafts";
 import {
   forgetRememberedProject,
@@ -10,13 +15,11 @@ import {
   draftConversationModelKey,
   forgetConversation,
   loadLastConversationId,
-  loadDraftConversationId,
   materializeConversation,
   rememberConversation,
   resolveOrCreateDraftConversationId,
 } from "../Chat/conversationLifecycle";
 
-const PROJECT_CHAT_AGENT_PREFIX = "rua_project_chat_agent_";
 const PROJECT_RECENT_AGENT_PREFIX = "rua_project_recent_agent_";
 
 function scopedKey(prefix: string, projectId: string, chatId: string): string {
@@ -31,27 +34,14 @@ export function projectConversationScope(projectId: string): string {
   return `project:${projectId}`;
 }
 
-export function projectChatPath(projectId: string, chatId: string): string {
-  return `/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(
-    chatId,
-  )}`;
-}
-
 export function createProjectChat(
   projectId: string,
   agentId = projectLastSelectedAgent(projectId) || "default",
 ): string {
   const scope = projectConversationScope(projectId);
-  const existingChatId = loadDraftConversationId(scope);
   const chatId = resolveOrCreateDraftConversationId(scope);
-  if (!existingChatId) {
-    try {
-      sessionStorage.setItem(
-        scopedKey(PROJECT_CHAT_AGENT_PREFIX, projectId, chatId),
-        agentId,
-      );
-    } catch {}
-  }
+  if (!readDraftChatContext(chatId))
+    setProjectChatDraftAgent(projectId, chatId, agentId);
   rememberProjectId(projectId);
   return chatId;
 }
@@ -60,15 +50,8 @@ export function projectChatExecutionAgent(
   projectId: string,
   chatId: string,
 ): string {
-  try {
-    return (
-      sessionStorage.getItem(
-        scopedKey(PROJECT_CHAT_AGENT_PREFIX, projectId, chatId),
-      ) || "default"
-    );
-  } catch {
-    return "default";
-  }
+  const context = readDraftChatContext(chatId);
+  return context?.projectId === projectId ? context.agentId : "default";
 }
 
 export function setProjectChatDraftAgent(
@@ -76,12 +59,7 @@ export function setProjectChatDraftAgent(
   chatId: string,
   agentId: string,
 ): void {
-  try {
-    sessionStorage.setItem(
-      scopedKey(PROJECT_CHAT_AGENT_PREFIX, projectId, chatId),
-      agentId,
-    );
-  } catch {}
+  saveDraftChatContext(chatId, { agentId, projectId });
 }
 
 const PROJECT_CHAT_DIRECTORY_PREFIX = "rua_project_chat_directory_";
@@ -91,9 +69,6 @@ export function clearProjectChatDraftState(
   chatId: string,
 ): void {
   try {
-    sessionStorage.removeItem(
-      scopedKey(PROJECT_CHAT_AGENT_PREFIX, projectId, chatId),
-    );
     sessionStorage.removeItem(
       scopedKey(PROJECT_CHAT_DIRECTORY_PREFIX, projectId, chatId),
     );
@@ -148,10 +123,10 @@ export async function resolveProjectChatPath(
 ): Promise<string> {
   const hintedChatId = lastProjectChatId(projectId);
   if (hintedChatId) {
-    return projectChatPath(projectId, hintedChatId);
+    return chatPath(hintedChatId);
   }
 
-  return projectChatPath(projectId, createProjectChat(projectId));
+  return chatPath(createProjectChat(projectId));
 }
 
 export function discardProjectChatLocalState(
@@ -171,7 +146,6 @@ export function discardProjectLocalState(projectId: string): void {
   } catch {}
   try {
     const prefixes = [
-      `${PROJECT_CHAT_AGENT_PREFIX}${projectId}:`,
       `${PROJECT_CHAT_DIRECTORY_PREFIX}${projectId}:`,
       draftConversationModelKey(projectConversationScope(projectId), ""),
     ];

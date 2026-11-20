@@ -114,7 +114,7 @@ async fn maintenance_task_aborts_on_stop() {
 }
 
 #[tokio::test]
-async fn maintenance_uses_running_session_ttl_days_for_orphan_sessions() {
+async fn agent_maintenance_preserves_shared_chat_storage_when_index_rows_are_missing() {
     let dir = tempfile::tempdir().unwrap();
     let root = RuaRoot::new(dir.path());
     let agent_id = "test-agent";
@@ -124,38 +124,66 @@ async fn maintenance_uses_running_session_ttl_days_for_orphan_sessions() {
     workspace.ensure().unwrap();
 
     let workspace_dir = workspace.as_path().to_path_buf();
-    let sessions_dir = workspace.sessions_dir();
-    std::fs::create_dir_all(&sessions_dir).unwrap();
+    let chats = root.chat_workspace();
+    let store = rua_session::WorkspaceSessionStore::new(chats.as_path());
+    let old_age = Duration::from_secs(2 * 24 * 3600);
     std::fs::write(
         workspace_dir.join("agent.json"),
-        serde_json::to_vec_pretty(&json!({
-            "id": agent_id,
-            "name": "Test",
-            "running": {
-                "session_ttl_days": 1
-            }
-        }))
-        .unwrap(),
+        serde_json::to_vec(&json!({"id": agent_id, "running": {"session_ttl_days": 1}})).unwrap(),
     )
     .unwrap();
-    ensure_chat_entry(&workspace_dir, "live-session", "console", "default", None)
+    for (chat_id, selected_agent) in [
+        ("registered", agent_id),
+        ("repairable", agent_id),
+        ("other", "another-agent"),
+    ] {
+        let header = rua_session::ChatSessionHeader::new(rua_session::ChatMetadata {
+            chat_id: chat_id.into(),
+            agent_id: selected_agent.into(),
+            title: chat_id.into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            last_activity_at: "2026-01-01T00:00:00Z".into(),
+            pinned: false,
+            archived: false,
+            preview: None,
+        });
+        store.save_chat_header(&header).await.unwrap();
+        set_modified_age(&store.chat_dir(chat_id), old_age);
+    }
+    ensure_chat_entry(chats.as_path(), "registered", "console", "default", None)
         .await
         .unwrap();
-
-    let orphan_dir = sessions_dir.join("old-orphan");
-    std::fs::create_dir_all(orphan_dir.join("messages")).unwrap();
-    set_modified_age(&orphan_dir, Duration::from_secs(2 * 24 * 3600));
+    let unassigned = store.chat_dir("unassigned");
+    std::fs::create_dir_all(&unassigned).unwrap();
+    set_modified_age(&unassigned, old_age);
+    let expired_agent_file = workspace_dir.join("expired.tmp");
+    std::fs::write(&expired_agent_file, b"temporary").unwrap();
+    set_modified_age(&expired_agent_file, old_age);
 
     let ctx = test_helpers::test_context(dir.path().to_path_buf());
     let rt = WorkspaceRuntime::new(agent_id, "Test", workspace, PlatformProfile::Desktop, ctx);
     rt.spawn_maintenance_task(Duration::from_millis(50));
 
-    tokio::time::sleep(Duration::from_millis(180)).await;
-
-    assert!(
-        !orphan_dir.exists(),
-        "maintenance should use running.session_ttl_days instead of the hard-coded default"
-    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while rt.maintenance_tick_count() == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("agent maintenance tick");
+    assert!(!expired_agent_file.exists());
+    assert!(unassigned.is_dir());
+    for chat_id in ["registered", "repairable", "other"] {
+        assert!(store.load_chat_header(chat_id).await.unwrap().is_some());
+    }
+    assert!(rua_session::chat_index::get(chats.as_path(), "registered")
+        .await
+        .unwrap()
+        .is_some());
+    assert!(rua_session::chat_index::get(chats.as_path(), "repairable")
+        .await
+        .unwrap()
+        .is_none());
 
     // These fixtures install no work authority, so a shutdown honestly reports
     // that work termination is unconfirmed. What this test owns is the

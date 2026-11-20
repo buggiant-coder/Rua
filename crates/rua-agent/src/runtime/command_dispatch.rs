@@ -324,7 +324,8 @@ impl CommandRuntimeDispatcherAdapter {
     }
 
     async fn load_persisted_acp_binding(&self, chat_id: &str) -> Option<PersistedAcpBinding> {
-        let store = rua_session::WorkspaceSessionStore::new(&self.workspace_dir);
+        let workspace = rua_core::RuaRoot::new(&self.data_dir).chat_workspace();
+        let store = rua_session::WorkspaceSessionStore::new(workspace.as_path());
         let header = match store.load_chat_header(chat_id).await {
             Ok(Some(header)) => header,
             Ok(None) => return None,

@@ -21,12 +21,9 @@ import type {
 } from "../types";
 import type { ChatListSort } from "../types/chatListSort";
 
-export type ChatMediaScope =
-  | { kind: "agent"; agentId: string }
-  | { kind: "project"; projectId: string };
-
 export type ChatMediaUploadContext = {
   agentId?: string;
+  projectId?: string | null;
   model?: ModelSlot | null;
 };
 
@@ -39,12 +36,8 @@ export interface ChatUploadResponse {
   original_filename?: string;
 }
 
-function chatMediaPath(scope: ChatMediaScope, chatId: string): string {
-  const owner =
-    scope.kind === "project"
-      ? `/projects/${encodeURIComponent(scope.projectId)}`
-      : `/agents/${encodeURIComponent(scope.agentId)}`;
-  return `${owner}/chats/${encodeURIComponent(chatId)}/media`;
+function chatMediaPath(chatId: string): string {
+  return `/chats/${encodeURIComponent(chatId)}/media`;
 }
 
 const FILES_PREVIEW = "/files/preview";
@@ -70,11 +63,7 @@ export type LlmDebugCaptureStatus = {
   path?: string;
 };
 
-function chatHistoryPath(
-  agentId: string,
-  chatId: string,
-  options?: GetChatOptions,
-): string {
+function chatHistoryPath(chatId: string, options?: GetChatOptions): string {
   const searchParams = new URLSearchParams();
   if (options?.turnLimit != null) {
     searchParams.set("turn_limit", String(options.turnLimit));
@@ -85,89 +74,66 @@ function chatHistoryPath(
   if (options?.aroundTurnId)
     searchParams.set("around_turn_id", options.aroundTurnId);
   const query = searchParams.toString();
-  return `/agents/${agentId}/chats/${encodeURIComponent(chatId)}${
-    query ? `?${query}` : ""
-  }`;
+  return `/chats/${encodeURIComponent(chatId)}${query ? `?${query}` : ""}`;
 }
 
 export const chatApi = {
-  getRunningConfig: (chatId: string, agentId: string = getSelectedAgentId()) =>
+  getRunningConfig: (chatId: string, _agentId?: string) =>
     request<ChatRunningConfig>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/running-config`,
+      `/chats/${encodeURIComponent(chatId)}/running-config`,
     ),
 
   updateRunningConfig: (
     chatId: string,
     config: ChatRunningConfig,
-    agentId: string = getSelectedAgentId(),
+    _agentId?: string,
   ) =>
     request<ChatRunningConfig>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/running-config`,
+      `/chats/${encodeURIComponent(chatId)}/running-config`,
       {
         method: "PUT",
         body: JSON.stringify(config),
       },
     ),
 
-  getLlmDebugCapture: (
-    chatId: string,
-    agentId: string = getSelectedAgentId(),
-  ) =>
+  getLlmDebugCapture: (chatId: string, _agentId?: string) =>
     request<LlmDebugCaptureStatus>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/llm-debug-capture`,
+      `/chats/${encodeURIComponent(chatId)}/llm-debug-capture`,
     ),
 
-  startLlmDebugCapture: (
-    chatId: string,
-    agentId: string = getSelectedAgentId(),
-  ) =>
+  startLlmDebugCapture: (chatId: string, _agentId?: string) =>
     request<LlmDebugCaptureStatus>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/llm-debug-capture`,
+      `/chats/${encodeURIComponent(chatId)}/llm-debug-capture`,
       { method: "POST" },
     ),
 
-  stopLlmDebugCapture: (
-    chatId: string,
-    agentId: string = getSelectedAgentId(),
-  ) =>
+  stopLlmDebugCapture: (chatId: string, _agentId?: string) =>
     request<LlmDebugCaptureStatus>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/llm-debug-capture`,
+      `/chats/${encodeURIComponent(chatId)}/llm-debug-capture`,
       { method: "DELETE" },
     ),
 
-  submitPath: (chatId: string, agentId: string = getSelectedAgentId()) =>
-    `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-      chatId,
-    )}/console/submit`,
+  submitPath: (chatId: string, _agentId?: string) =>
+    `/chats/${encodeURIComponent(chatId)}/console/submit`,
 
-  livePath: (chatId: string, agentId: string = getSelectedAgentId()) =>
-    `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-      chatId,
-    )}/console/live`,
+  livePath: (chatId: string, _agentId?: string) =>
+    `/chats/${encodeURIComponent(chatId)}/console/live`,
 
   uploadFile: async (
-    scope: ChatMediaScope,
     chatId: string,
     file: File,
     context?: ChatMediaUploadContext,
   ): Promise<ChatUploadResponse> => {
     return withTransferSlot(async () => {
       const formData = new FormData();
-      if (context?.agentId) formData.append("agent_id", context.agentId);
+      const agentId = context?.agentId;
+      const projectId = context?.projectId;
+      if (agentId) formData.append("agent_id", agentId);
+      if (projectId) formData.append("project_id", projectId);
       if (context?.model)
         formData.append("model", JSON.stringify(context.model));
       formData.append("file", file);
-      const response = await fetch(getApiUrl(chatMediaPath(scope, chatId)), {
+      const response = await fetch(getApiUrl(chatMediaPath(chatId)), {
         method: "POST",
         headers: buildAuthHeaders(),
         body: formData,
@@ -184,13 +150,9 @@ export const chatApi = {
     });
   },
 
-  mediaUrl: (
-    scope: ChatMediaScope,
-    chatId: string,
-    mediaId: string,
-  ): string => {
+  mediaUrl: (chatId: string, mediaId: string): string => {
     const url = getApiUrl(
-      `${chatMediaPath(scope, chatId)}/${encodeURIComponent(mediaId)}`,
+      `${chatMediaPath(chatId)}/${encodeURIComponent(mediaId)}`,
     );
     const token = getApiToken();
     return token ? `${url}?token=${encodeURIComponent(token)}` : url;
@@ -238,9 +200,10 @@ export const chatApi = {
       executor?: string;
       status?: string;
     } & Partial<ChatListSort>,
-    agentId: string = getSelectedAgentId(),
+    agentId?: string,
   ): Promise<{ data: ChatSpec[]; total: number }> => {
     const searchParams = new URLSearchParams();
+    if (agentId) searchParams.append("agent_id", agentId);
     if (params?.user_id) searchParams.append("user_id", params.user_id);
     if (params?.channel) searchParams.append("channel", params.channel);
     if (params?.search?.trim())
@@ -262,7 +225,7 @@ export const chatApi = {
       searchParams.append("sort_order", params.sort_order);
     const query = searchParams.toString();
     const response = await fetch(
-      getApiUrl(`/agents/${agentId}/chats${query ? `?${query}` : ""}`),
+      getApiUrl(`/chats${query ? `?${query}` : ""}`),
       {
         headers: buildAuthHeaders(),
       },
@@ -278,95 +241,66 @@ export const chatApi = {
     chat: Partial<ChatSpec>,
     agentId: string = getSelectedAgentId(),
   ) =>
-    request<ChatSpec>(`/agents/${agentId}/chats`, {
+    request<ChatSpec>(`/chats`, {
       method: "POST",
-      body: JSON.stringify(chat),
+      body: JSON.stringify({ ...chat, agent_id: agentId }),
     }),
 
-  getChat: (
-    chatId: string,
-    agentId: string = getSelectedAgentId(),
-    options?: GetChatOptions,
-  ) => request<ChatHistory>(chatHistoryPath(agentId, chatId, options)),
+  getChat: (chatId: string, options?: GetChatOptions) =>
+    request<ChatHistory>(chatHistoryPath(chatId, options)),
 
   getMetadata: (
     chatId: string,
-    agentId: string,
+    _agentId?: string,
     options?: { signal?: AbortSignal },
   ) =>
-    request<ChatSpec>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/metadata`,
-      options,
-    ),
+    request<ChatSpec>(`/chats/${encodeURIComponent(chatId)}/metadata`, options),
 
-  updateChat: (
-    chatId: string,
-    chat: ChatUpdateRequest,
-    agentId: string = getSelectedAgentId(),
-  ) =>
-    request<ChatSpec>(
-      `/agents/${agentId}/chats/${encodeURIComponent(chatId)}`,
-      {
-        method: "PUT",
-        body: JSON.stringify(chat),
-      },
-    ),
+  updateChat: (chatId: string, chat: ChatUpdateRequest, _agentId?: string) =>
+    request<ChatSpec>(`/chats/${encodeURIComponent(chatId)}`, {
+      method: "PUT",
+      body: JSON.stringify(chat),
+    }),
 
   selectVariant: (
     chatId: string,
     turnId: string,
     variantId: string,
-    agentId: string = getSelectedAgentId(),
+    _agentId?: string,
   ) =>
-    request<ChatSpec>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}`,
-      {
-        method: "PUT",
-        body: JSON.stringify({
-          turn_id: turnId,
-          selected_variant_id: variantId,
-        }),
-      },
-    ),
+    request<ChatSpec>(`/chats/${encodeURIComponent(chatId)}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        turn_id: turnId,
+        selected_variant_id: variantId,
+      }),
+    }),
 
   rollback: (
     chatId: string,
     body: { before_turn_id: string },
-    agentId: string = getSelectedAgentId(),
+    _agentId?: string,
   ) =>
     request<{ chat: ChatSpec; cancelled_tasks: number }>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/rollback`,
+      `/chats/${encodeURIComponent(chatId)}/rollback`,
       {
         method: "POST",
         body: JSON.stringify(body),
       },
     ),
 
-  getProjectionExclusions: (
-    chatId: string,
-    agentId: string = getSelectedAgentId(),
-  ) =>
+  getProjectionExclusions: (chatId: string, _agentId?: string) =>
     request<{ message_ids: string[] }>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/projection-exclusions`,
+      `/chats/${encodeURIComponent(chatId)}/projection-exclusions`,
     ),
 
   updateProjectionExclusions: (
     chatId: string,
     messageIds: string[],
-    agentId: string = getSelectedAgentId(),
+    _agentId?: string,
   ) =>
     request<{ message_ids: string[] }>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/projection-exclusions`,
+      `/chats/${encodeURIComponent(chatId)}/projection-exclusions`,
       {
         method: "PUT",
         body: JSON.stringify({ message_ids: messageIds }),
@@ -376,28 +310,21 @@ export const chatApi = {
   branch: (
     chatId: string,
     body: { before_turn_id: string },
-    agentId: string = getSelectedAgentId(),
+    _agentId?: string,
   ) =>
-    request<{ chat: ChatSpec }>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/branch`,
-      {
-        method: "POST",
-        body: JSON.stringify(body),
-      },
-    ),
+    request<{ chat: ChatSpec }>(`/chats/${encodeURIComponent(chatId)}/branch`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   setAuthorityPlacement: (
     chatId: string,
     deviceId: string,
-    agentId: string = getSelectedAgentId(),
+    _agentId?: string,
     model?: ModelSlot,
   ) =>
     request<ChatSpec>(
-      `/agents/${agentId}/chats/${encodeURIComponent(
-        chatId,
-      )}/authority-placement`,
+      `/chats/${encodeURIComponent(chatId)}/authority-placement`,
       {
         method: "PUT",
         body: JSON.stringify({
@@ -410,27 +337,21 @@ export const chatApi = {
   persistAcpHistoryPreview: (
     chatId: string,
     body: AcpHistoryPreviewRequest,
-    agentId: string = getSelectedAgentId(),
+    _agentId?: string,
   ) =>
     request<AcpHistoryPreviewResponse>(
-      `/agents/${agentId}/chats/${encodeURIComponent(
-        chatId,
-      )}/acp-history-preview`,
+      `/chats/${encodeURIComponent(chatId)}/acp-history-preview`,
       {
         method: "POST",
         body: JSON.stringify(body),
       },
     ),
 
-  deleteQueuedInput: (
-    chatId: string,
-    inputId: string,
-    agentId: string = getSelectedAgentId(),
-  ) =>
+  deleteQueuedInput: (chatId: string, inputId: string, _agentId?: string) =>
     request<QueueInputDeleteResponse>(
-      `/agents/${agentId}/chats/${encodeURIComponent(
-        chatId,
-      )}/queue/${encodeURIComponent(inputId)}`,
+      `/chats/${encodeURIComponent(chatId)}/queue/${encodeURIComponent(
+        inputId,
+      )}`,
       {
         method: "DELETE",
       },
@@ -440,12 +361,12 @@ export const chatApi = {
     chatId: string,
     inputId: string,
     message: string,
-    agentId: string = getSelectedAgentId(),
+    _agentId?: string,
   ) =>
     request<QueueInputEditResponse>(
-      `/agents/${agentId}/chats/${encodeURIComponent(
-        chatId,
-      )}/queue/${encodeURIComponent(inputId)}`,
+      `/chats/${encodeURIComponent(chatId)}/queue/${encodeURIComponent(
+        inputId,
+      )}`,
       {
         method: "PATCH",
         body: JSON.stringify({ message }),
@@ -456,64 +377,54 @@ export const chatApi = {
     chatId: string,
     inputId: string,
     body: QueueInputSendNowRequest,
-    agentId: string = getSelectedAgentId(),
+    _agentId?: string,
   ) =>
     request<QueueInputSendNowResponse>(
-      `/agents/${agentId}/chats/${encodeURIComponent(
-        chatId,
-      )}/queue/${encodeURIComponent(inputId)}/send-now`,
+      `/chats/${encodeURIComponent(chatId)}/queue/${encodeURIComponent(
+        inputId,
+      )}/send-now`,
       {
         method: "POST",
         body: JSON.stringify(body),
       },
     ),
 
-  deleteChat: (chatId: string, agentId: string = getSelectedAgentId()) =>
-    request<ChatDeleteResponse>(
-      `/agents/${agentId}/chats/${encodeURIComponent(chatId)}`,
-      {
-        method: "DELETE",
-      },
-    ),
+  deleteChat: (chatId: string, _agentId?: string) =>
+    request<ChatDeleteResponse>(`/chats/${encodeURIComponent(chatId)}`, {
+      method: "DELETE",
+    }),
 
   updatePinOrder: (
     items: { id: string; pin_order: number }[],
-    agentId: string = getSelectedAgentId(),
+    _agentId?: string,
   ) =>
-    request<{ success: boolean }>(`/agents/${agentId}/chats/pin-order`, {
+    request<{ success: boolean }>(`/chats/pin-order`, {
       method: "PUT",
       body: JSON.stringify(items),
     }),
 
-  batchDeleteChats: (
-    chatIds: string[],
-    agentId: string = getSelectedAgentId(),
-  ) =>
+  batchDeleteChats: (chatIds: string[], _agentId?: string) =>
     request<{ success: boolean; deleted_count: number }>(
-      `/agents/${agentId}/chats/batch-delete`,
+      `/chats/batch-delete`,
       {
         method: "POST",
         body: JSON.stringify(chatIds),
       },
     ),
 
-  stopChat: (
-    chatId: string,
-    body: StopChatRequest,
-    agentId: string = getSelectedAgentId(),
-  ) =>
+  stopChat: (chatId: string, body: StopChatRequest, _agentId?: string) =>
     request<StopChatResult>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/console/stop`,
+      `/chats/${encodeURIComponent(chatId)}/console/stop`,
       {
         method: "POST",
         body: JSON.stringify(body),
       },
     ),
 
-  searchChats: (query: string, agentId: string = getSelectedAgentId()) =>
+  searchChats: (query: string, agentId?: string) =>
     request<ChatSearchResponse>(
-      `/agents/${agentId}/chats/search?q=${encodeURIComponent(query)}`,
+      `/chats/search?q=${encodeURIComponent(query)}${
+        agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ""
+      }`,
     ),
 };

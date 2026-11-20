@@ -148,10 +148,7 @@ async fn approval_authority_unified_with_data_isolation() {
     let req = authority
         .create_request(ApprovalRequestInput {
             agent_id: "a".into(),
-            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::agent(
-                "a",
-                "session-a",
-            )),
+            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new("session-a")),
             turn_id: "session-a".into(),
             tool_call_id: "call-a".into(),
             tool_name: "tool_x".into(),

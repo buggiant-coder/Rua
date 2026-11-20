@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use rua_core::ChatScopeStore;
+use rua_core::ChatStore;
 use rua_session::{RuntimeNote, RuntimeNotePayload, TaskAttemptTerminalRuntimeNote};
 use rua_task::{TaskCompletionNotification, TaskNotificationSink, TaskRunnerError, TaskState};
 
@@ -26,7 +26,7 @@ impl TaskNotificationSink for TaskRuntimeNoteSink {
         let note = task_terminal_note(&notification.record)?;
         let record = notification.record;
         let scope_store =
-            ChatScopeStore::resolve(&self.data_dir, record.spec.owner.chat_address.clone());
+            ChatStore::resolve(&self.data_dir, record.spec.owner.chat_address.clone());
         let store = rua_session::WorkspaceSessionStore::new(scope_store.root());
         let chat_id = record.spec.owner.chat_id().to_string();
         if let Some(turn_id) = record.spec.origin.turn_id.as_deref() {

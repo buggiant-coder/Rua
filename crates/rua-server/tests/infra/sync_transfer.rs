@@ -1,4 +1,4 @@
-use rua_core::{ChatAddress, ChatScopeStore, RunControl};
+use rua_core::{ChatAddress, ChatStore, RunControl};
 use rua_device_network::device_list::{DeviceEntry, DeviceList};
 use rua_device_network::{
     BoundDeviceNetworkMembership, DeviceNetworkBootstrap, DeviceNetworkIdentity,
@@ -6,7 +6,7 @@ use rua_device_network::{
     DeviceSessionBulkTransferHandler, DeviceSessionCommandHandler, DeviceSessionConfig,
 };
 use rua_server::services::chat_media_transfer::{AuthorizedMediaUpload, ChatMediaTransferRegistry};
-use rua_server::services::chat_metadata_store::apply_confirmed_authority_placement;
+use rua_server::services::console_chat::materialize_targeted_chat;
 use rua_server::services::conversation_authority_placement::{
     ConversationAuthorityEpoch, ConversationAuthorityPlacement,
 };
@@ -777,8 +777,8 @@ async fn prepared_first_input_transfers_staged_media_before_target_acceptance() 
         .set_bulk_transfer_handler(bulk);
     let source = build_peer(71, [71; 32], vec![peer_entry(72)], None).await;
     install_connectable_peer(&source, &target);
-    let address = ChatAddress::agent("default", "00000000-0000-4000-8000-000000000115");
-    let source_scope = ChatScopeStore::resolve(&source_root, address.clone());
+    let address = ChatAddress::new("00000000-0000-4000-8000-000000000115");
+    let source_scope = ChatStore::resolve(&source_root, address.clone());
     let media = rua_server::services::chat_media::ChatMediaService
         .store(
             &source_root,
@@ -842,7 +842,7 @@ async fn prepared_first_input_transfers_staged_media_before_target_acceptance() 
         .await
         .unwrap()
         .is_none());
-    let target_scope = ChatScopeStore::resolve(&target_root, address.clone());
+    let target_scope = ChatStore::resolve(&target_root, address.clone());
     assert_eq!(
         std::fs::read(target_scope.root().join("media").join(&media.media_id)).unwrap(),
         b"first input bytes"
@@ -890,25 +890,32 @@ async fn media_upload_over_device_session(first_submission: bool) {
                 .with_chat_media_root(authority_root.clone()),
         ));
 
-    let address = ChatAddress::agent("default", "00000000-0000-4000-8000-000000000113");
-    let scope = ChatScopeStore::resolve(&authority_root, address.clone());
+    let address = ChatAddress::new("00000000-0000-4000-8000-000000000113");
+    let scope = ChatStore::resolve(&authority_root, address.clone());
     let placement = ConversationAuthorityPlacement {
         authority_epoch: ConversationAuthorityEpoch::next_for_device(&authority.device_id, None),
         device_id: authority.device_id.clone(),
         base_manifest_hash: initial_conversation_manifest_hash(&address).expect("manifest hash"),
     };
     if first_submission {
-        std::fs::create_dir_all(scope.root()).unwrap();
-        rua_config::atomic_write_json(&authority_root.join("config.json"), &serde_json::json!({"agents":{"active_agent":"default","profiles":{"default":{"id":"default","name":"Default","workspace_dir":scope.root()}}}})).unwrap();
+        let agent_dir = authority_root.join("workspaces/default");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        rua_config::atomic_write_json(&authority_root.join("config.json"), &serde_json::json!({"agents":{"active_agent":"default","profiles":{"default":{"id":"default","name":"Default","workspace_dir":agent_dir}}}})).unwrap();
         rua_config::atomic_write_json(
-            &scope.root().join("agent.json"),
-            &serde_json::json!({"id":"default","name":"Default","workspace_dir":scope.root()}),
+            &agent_dir.join("agent.json"),
+            &serde_json::json!({"id":"default","name":"Default","workspace_dir":agent_dir}),
         )
         .unwrap();
     } else {
-        apply_confirmed_authority_placement(scope.root(), &address, placement.clone())
-            .await
-            .expect("materialize placement");
+        materialize_targeted_chat(
+            scope.root(),
+            "default",
+            address.chat_id().as_str(),
+            "Media transfer",
+            &placement,
+        )
+        .await
+        .expect("materialize placement");
     }
 
     let media_id = uuid::Uuid::new_v4().to_string();
@@ -955,6 +962,8 @@ async fn media_upload_over_device_session(first_submission: bool) {
     let stale = deliver_chat_media_prepare_via_session(
         controller.runtime.session_manager(),
         &ChatMediaPrepareCommand {
+            agent_id: "default".into(),
+            project_id: None,
             sha256: None,
             first_submission: false,
             command_id: uuid::Uuid::new_v4().to_string(),
@@ -972,21 +981,24 @@ async fn media_upload_over_device_session(first_submission: bool) {
     .await;
     assert!(stale.is_err(), "stale Authority Epoch must be rejected");
 
+    let prepare = ChatMediaPrepareCommand {
+        agent_id: "default".into(),
+        project_id: None,
+        sha256: None,
+        first_submission,
+        command_id: uuid::Uuid::new_v4().to_string(),
+        operation_id: operation_id.clone(),
+        address: address.clone(),
+        source_device_id: controller.device_id.clone(),
+        target_device_id: authority.device_id.clone(),
+        authority_epoch: placement.authority_epoch,
+        media_id: media_id.clone(),
+        byte_size: payload.len() as u64,
+        mime_type: "image/png".to_string(),
+    };
     deliver_chat_media_prepare_via_session(
         controller.runtime.session_manager(),
-        &ChatMediaPrepareCommand {
-            sha256: None,
-            first_submission,
-            command_id: uuid::Uuid::new_v4().to_string(),
-            operation_id: operation_id.clone(),
-            address: address.clone(),
-            source_device_id: controller.device_id.clone(),
-            target_device_id: authority.device_id.clone(),
-            authority_epoch: placement.authority_epoch,
-            media_id: media_id.clone(),
-            byte_size: payload.len() as u64,
-            mime_type: "image/png".to_string(),
-        },
+        &prepare,
         Duration::from_secs(5),
     )
     .await
@@ -1017,9 +1029,7 @@ async fn media_upload_over_device_session(first_submission: bool) {
     .await
     .expect("upload Media");
 
-    let authority_media = authority_root
-        .join("workspaces/default/media")
-        .join(&media_id);
+    let authority_media = scope.root().join("media").join(&media_id);
     assert_eq!(
         std::fs::read(&authority_media).expect("Authority Media"),
         payload
@@ -1032,6 +1042,23 @@ async fn media_upload_over_device_session(first_submission: bool) {
         .is_file());
 
     if first_submission {
+        use sha2::Digest;
+        let digest = format!("{:x}", sha2::Sha256::digest(&payload));
+        let other = ChatMediaPrepareCommand {
+            address: ChatAddress::new(uuid::Uuid::new_v4().to_string()),
+            command_id: uuid::Uuid::new_v4().to_string(),
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            sha256: Some(digest),
+            ..prepare
+        };
+        let error = deliver_chat_media_prepare_via_session(
+            controller.runtime.session_manager(),
+            &other,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect_err("identical staged bytes belong to the original draft");
+        assert!(error.to_string().contains("different Chat"), "{error}");
         assert!(rua_session::WorkspaceSessionStore::new(scope.root())
             .load_chat_header(address.chat_id().as_str())
             .await

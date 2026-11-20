@@ -20,11 +20,12 @@ import { useTranslation } from "react-i18next";
 import { navigateWithPageTransition } from "@/layouts/pageTransition";
 import {
   type ConversationAddress,
-  agentChatPath,
-  projectChatPath,
+  conversationPath,
+  chatPath,
 } from "@/pages/Chat/conversationAddress";
 import { prepareChatTransition } from "../preparedChatTransition";
 import * as drafts from "../drafts";
+import { projectChatDraftKey } from "../../Projects/projectChatNavigation";
 import { Modal, TextArea, toast } from "@/ui";
 import type { ApprovalRequest } from "@/api/modules/console";
 import type {
@@ -99,7 +100,8 @@ type OwnedConversationSurfaceProps = {
   address: ConversationAddress;
   unmaterialized?: boolean;
   deferInitialAttach?: boolean;
-  projectExecutionAgentId?: string;
+  executionAgentId?: string;
+  projectId?: string;
   draftKey?: string;
   submitDisabled?: boolean;
   submitDisabledReason?: string;
@@ -519,7 +521,8 @@ export default function OwnedConversationSurface({
   address,
   unmaterialized = false,
   deferInitialAttach = false,
-  projectExecutionAgentId,
+  executionAgentId,
+  projectId: contextProjectId,
   draftKey: externalDraftKey,
   submitDisabled = false,
   submitDisabledReason,
@@ -554,7 +557,8 @@ export default function OwnedConversationSurface({
     activeAcpRunner,
     acpHistoryPreview,
     activityWake,
-    projectExecutionAgentId,
+    executionAgentId,
+    projectId: contextProjectId,
     unmaterialized,
     deferInitialAttach,
   });
@@ -564,7 +568,6 @@ export default function OwnedConversationSurface({
     agentId,
     projectId,
     target,
-    mediaScope,
     ownerKey: runtimeOwnerKey,
     viewKey,
   } = identity;
@@ -723,27 +726,26 @@ export default function OwnedConversationSurface({
     async (beforeTurnId: string, userText: string) => {
       const branchId = await branch(beforeTurnId);
       if (!branchId) return;
-      drafts.save(`${runtimeOwnerKey}:${branchId}`, userText);
+      drafts.save(
+        projectId
+          ? projectChatDraftKey(projectId, branchId)
+          : `chat:${branchId}`,
+        userText,
+      );
       try {
         if (projectId) {
-          navigateWithPageTransition(
-            navigate,
-            projectChatPath(projectId, branchId),
-          );
+          navigateWithPageTransition(navigate, chatPath(branchId));
         } else {
           const ready = await prepareChatTransition(selectedAgent, branchId);
           if (ready) {
-            navigateWithPageTransition(
-              navigate,
-              agentChatPath(selectedAgent, branchId),
-            );
+            navigateWithPageTransition(navigate, chatPath(branchId));
           }
         }
       } catch (err) {
         toast.error(err instanceof Error ? err.message : String(err));
       }
     },
-    [branch, runtimeOwnerKey, projectId, selectedAgent, navigate],
+    [branch, projectId, selectedAgent, navigate],
   );
 
   const handleReclaimQueuedSubmission = useCallback(
@@ -764,15 +766,9 @@ export default function OwnedConversationSurface({
   const backgroundWork = runtime.history?.control?.background_work ?? null;
   const openBackgroundChat = useCallback(
     (chat: TaskChatAddress) => {
-      const scope = chat?.scope;
       const chatId = chat?.chat_id;
-      if (!scope || typeof chatId !== "string" || !chatId) return;
-      navigateWithPageTransition(
-        navigate,
-        scope.kind === "project"
-          ? projectChatPath(scope.project_id, chatId)
-          : agentChatPath(scope.agent_id, chatId),
-      );
+      if (typeof chatId !== "string" || !chatId) return;
+      navigateWithPageTransition(navigate, conversationPath({ chatId }));
     },
     [navigate],
   );
@@ -786,16 +782,10 @@ export default function OwnedConversationSurface({
     collaboration?.source_available === false ||
     (collaboration !== undefined &&
       collaboration.configuration.status !== "ready");
-  const sourceScope = collaboration?.source.scope as
-    | { kind: "agent"; agent_id: string }
-    | { kind: "project"; project_id: string }
-    | undefined;
   const sourceChatId = collaboration?.source.chat_id;
   const sourcePath =
-    typeof sourceChatId === "string" && sourceScope
-      ? sourceScope.kind === "project"
-        ? projectChatPath(sourceScope.project_id, sourceChatId)
-        : agentChatPath(sourceScope.agent_id, sourceChatId)
+    typeof sourceChatId === "string"
+      ? conversationPath({ chatId: sourceChatId })
       : undefined;
 
   return (
@@ -869,7 +859,6 @@ export default function OwnedConversationSurface({
             )}
             projection={runtime.projection}
             agentId={agentId}
-            mediaScope={mediaScope}
             approvalSnapshot={runtime.approvalSnapshot}
             onSelectVariant={runtime.selectVariant}
             onRegenerate={runtime.regenerate}
@@ -1009,9 +998,11 @@ export default function OwnedConversationSurface({
         />
         <OwnedConversationComposer
           chatId={conversationId!}
-          mediaScope={mediaScope}
-          uploadAgentId={selectedAgent}
-          chatModel={chatModel}
+          draftContext={
+            unmaterialized
+              ? { agentId: selectedAgent, projectId, model: chatModel }
+              : undefined
+          }
           currentAuthorityEpoch={
             runtime.history?.control?.placement?.authority_epoch ?? null
           }

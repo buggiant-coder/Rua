@@ -22,12 +22,10 @@ export function scopeKey(scope: NavigationScope): string {
 }
 
 export function scopeAddress(
-  scope: NavigationScope,
+  _scope: NavigationScope,
   chatId: string,
 ): ConversationAddress {
-  return scope.kind === "agent"
-    ? { scope: "agent", agentId: scope.id, chatId }
-    : { scope: "project", projectId: scope.id, chatId };
+  return { chatId };
 }
 
 const metadataFields = [
@@ -206,13 +204,8 @@ export function useConversationGroup(
 
   useEffect(
     () =>
-      subscribeConversationMetadata((address, chat, change) => {
-        if (
-          address.scope !== kind ||
-          (address.scope === "agent" ? address.agentId : address.projectId) !==
-            id
-        )
-          return;
+      subscribeConversationMetadata((_address, chat, change) => {
+        if ((kind === "agent" ? chat.agent_id : chat.project_id) !== id) return;
         const overlay = overlays.current.get(chat.id) ?? {
           chat,
           fields: new Map<MetadataField, FieldUpdate>(),
@@ -278,16 +271,7 @@ export function useConversationGroup(
   );
 
   useEffect(() => {
-    return subscribeConversationNavigation((address, background) => {
-      if (
-        address &&
-        !(
-          address.scope === kind &&
-          (address.scope === "agent" ? address.agentId : address.projectId) ===
-            id
-        )
-      )
-        return;
+    return subscribeConversationNavigation((_address, background) => {
       if (background && loadingRef.current) return;
       staleRef.current = true;
       requestRef.current += 1;

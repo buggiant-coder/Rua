@@ -29,7 +29,7 @@ impl ConsoleChatFacade for ProjectCliFacade {
         _viewer_id: &str,
         _position: Option<rua_core::ConversationActivityPosition>,
     ) -> SseOutputStream {
-        assert!(address.project_id().is_some());
+        assert!(uuid::Uuid::parse_str(address.chat_id().as_str()).is_ok());
         let mut turn_id = self.turn_id.subscribe();
         Box::pin(futures::stream::once(async move {
             let turn_id = loop {
@@ -87,7 +87,7 @@ impl ConsoleChatFacade for ProjectCliFacade {
         _execution_agent_id: &str,
         request: ConsoleChatRequest,
     ) -> ConsoleSubmitOutcome {
-        assert!(address.project_id().is_some());
+        assert!(uuid::Uuid::parse_str(address.chat_id().as_str()).is_ok());
         let turn_id = request
             .extra
             .get("turn_id")
@@ -142,10 +142,9 @@ async fn project_cli_chat_streams_one_turn_until_terminal() {
     let response = request(
         &test.app,
         Method::POST,
-        &format!(
-            "/api/projects/{project_id}/chats/00000000-0000-4000-8000-000000000403/console/chat"
-        ),
+        "/api/chats/00000000-0000-4000-8000-000000000403/console/chat",
         Some(json!({
+            "project_id": project_id,
             "agent_id": "default",
             "chat_id": "00000000-0000-4000-8000-000000000403",
             "message": "inspect the project"
@@ -176,10 +175,9 @@ async fn project_cli_chat_queues_non_idle_chat() {
     let response = request(
         &test.app,
         Method::POST,
-        &format!(
-            "/api/projects/{project_id}/chats/00000000-0000-4000-8000-000000000404/console/chat"
-        ),
+        "/api/chats/00000000-0000-4000-8000-000000000404/console/chat",
         Some(json!({
+            "project_id": project_id,
             "agent_id": "default",
             "chat_id": "00000000-0000-4000-8000-000000000404",
             "message": "inspect the project"
@@ -233,10 +231,9 @@ async fn project_cli_chat_real_facade_has_project_runtime() {
     let response = request(
         &test.app,
         Method::POST,
-        &format!(
-            "/api/projects/{project_id}/chats/00000000-0000-4000-8000-000000000407/console/chat"
-        ),
+        "/api/chats/00000000-0000-4000-8000-000000000407/console/chat",
         Some(json!({
+            "project_id": project_id,
             "agent_id": "default",
             "chat_id": "00000000-0000-4000-8000-000000000407",
             "message": "inspect the project"

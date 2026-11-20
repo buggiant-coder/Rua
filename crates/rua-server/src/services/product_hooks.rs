@@ -258,6 +258,7 @@ pub struct HookExecutionRequirement {
 
 #[derive(Debug, Clone)]
 pub struct ChatConfigurationMaterialization {
+    pub project_id: Option<String>,
     pub selected_agent_id: String,
     pub running_config: rua_config::ChatRunningConfig,
     pub security_config: rua_config::types::security::SecurityConfig,
@@ -833,10 +834,12 @@ impl ProductHookService {
         &self,
         address: &ChatAddress,
         agent_id: &str,
+        project_id: Option<&str>,
     ) -> Result<ChatHookConfiguration, String> {
         self.resolve_chat_configuration_inner(
             address,
             ChatConfigurationMaterialization {
+                project_id: project_id.map(str::to_owned),
                 selected_agent_id: agent_id.to_string(),
                 running_config: rua_config::ChatRunningConfig::default(),
                 security_config: Default::default(),
@@ -901,12 +904,12 @@ impl ProductHookService {
             .collect::<Vec<_>>();
         drop(activations);
         drop(definitions);
-        let project = match address.project_id() {
+        let project = match materialization.project_id.as_deref() {
             Some(project_id) => self
                 .project_bindings
                 .read()
                 .await
-                .get(project_id.as_str())
+                .get(project_id)
                 .cloned()
                 .unwrap_or_default(),
             None => Vec::new(),
@@ -1110,11 +1113,7 @@ impl ProductHookService {
         let now = chrono::Utc::now().to_rfc3339();
         self.runs.write().await.push(HookRunView {
             invocation_id: format!("hook-run-{}", uuid::Uuid::new_v4()),
-            agent_id: address
-                .agent_id()
-                .map(|agent_id| agent_id.as_str())
-                .unwrap_or_default()
-                .to_string(),
+            agent_id: frozen.selected_agent_id,
             chat_id: address.chat_id().as_str().to_string(),
             turn_id: turn_id.to_string(),
             event: "turn.terminal".to_string(),
@@ -1132,6 +1131,7 @@ impl ProductHookService {
     pub async fn record_terminal_observer_diagnostics(
         &self,
         terminal: &crate::services::conversation_authority::ConversationTurnTerminalFact,
+        selected_agent_id: &str,
         diagnostics: &[crate::services::terminal_observer::TerminalObserverDiagnostic],
     ) {
         let now = chrono::Utc::now().to_rfc3339();
@@ -1139,12 +1139,7 @@ impl ProductHookService {
         for item in diagnostics {
             runs.push(HookRunView {
                 invocation_id: format!("hook-run-{}", uuid::Uuid::new_v4()),
-                agent_id: terminal
-                    .address
-                    .agent_id()
-                    .map(|agent_id| agent_id.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
+                agent_id: selected_agent_id.to_owned(),
                 chat_id: terminal.address.chat_id().as_str().to_string(),
                 turn_id: terminal.turn_id.clone(),
                 event: "turn.terminal".to_string(),

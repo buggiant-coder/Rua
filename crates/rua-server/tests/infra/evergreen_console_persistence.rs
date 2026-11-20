@@ -1314,7 +1314,7 @@ fn write_source_pending_remote_marker(
     rua_config::atomic_write_json(
         &path,
         &json!({
-            "address": rua_core::ChatAddress::agent("default", chat_id),
+            "address": rua_core::ChatAddress::new(chat_id),
             "submission_id": device_delivery_id,
             "input_id": format!("input-{device_delivery_id}"),
             "mode": "started",
@@ -1340,7 +1340,7 @@ fn write_source_pending_terminal_remote_marker(
     rua_config::atomic_write_json(
         &path,
         &json!({
-            "address": rua_core::ChatAddress::agent("default", chat_id),
+            "address": rua_core::ChatAddress::new(chat_id),
             "submission_id": device_delivery_id,
             "input_id": format!("input-{device_delivery_id}"),
             "mode": "started",
@@ -1359,7 +1359,7 @@ fn source_pending_remote_marker_path(
     data_dir: &std::path::Path,
     chat_id: &str,
 ) -> std::path::PathBuf {
-    rua_core::ChatScopeStore::resolve(data_dir, rua_core::ChatAddress::agent("default", chat_id))
+    rua_core::ChatStore::resolve(data_dir, rua_core::ChatAddress::new(chat_id))
         .root()
         .join("device_commands")
         .join("source_pending_conversation_inputs")
@@ -3031,8 +3031,9 @@ async fn console_chat_projects_durable_runtime_notes_from_message_log() {
     let configuration = state
         .product_hooks
         .resolve_complete_chat_configuration(
-            &rua_core::ChatAddress::agent("default", chat_id),
+            &rua_core::ChatAddress::new(chat_id),
             rua_server::services::product_hooks::ChatConfigurationMaterialization {
+                project_id: None,
                 selected_agent_id: "default".into(),
                 running_config: Default::default(),
                 security_config: Default::default(),
@@ -3501,7 +3502,8 @@ async fn console_chat_recalls_and_searches_typed_memory_signal_without_polluting
     assert!(recall.hits[0].snippet.contains("<memory_signal>"));
     let saved = store
         .search_saved_conversations(rua_session::SavedConversationSearchRequest {
-            agent_id: "default".to_string(),
+            agent_id: Some("default".to_string()),
+            project_id: None,
             query: "memory_signal".to_string(),
             limit: 10,
             offset: 0,
@@ -4547,7 +4549,7 @@ async fn seed_persistence_chat(root: &std::path::Path, chat_id: &str) {
         archived: false,
         preview: None,
     });
-    rua_chat::apply_agent_scope_defaults(&mut header, "agent-1");
+    rua_chat::apply_chat_defaults(&mut header);
     store.save_chat_header(&header).await.unwrap();
 }
 
@@ -4576,8 +4578,9 @@ async fn seed_runtime_configuration_with_capabilities(
     let configuration = state
         .product_hooks
         .resolve_complete_chat_configuration(
-            &rua_core::ChatAddress::agent(agent_id, &header.chat_id),
+            &rua_core::ChatAddress::new(&header.chat_id),
             rua_server::services::product_hooks::ChatConfigurationMaterialization {
+                project_id: None,
                 selected_agent_id: agent_id.into(),
                 running_config: rua_config::ChatRunningConfig::from_agent_defaults(&running),
                 security_config: Default::default(),
@@ -4652,11 +4655,10 @@ async fn persistence_reports_corrupt_header_without_replacing_it() {
 async fn persistence_reports_index_failure_after_saving_authoritative_header() {
     let dir = tempfile::tempdir().unwrap();
     seed_persistence_chat(dir.path(), "index-error").await;
-    let scope = rua_core::ChatScopeStore::for_agent_workspace(
-        dir.path(),
-        rua_core::ChatAddress::agent("agent-1", "index-error"),
-    )
-    .unwrap();
+    let scope = rua_core::ChatStore::at_workspace(
+        rua_core::WorkspaceRoot::new(dir.path()),
+        rua_core::ChatAddress::new("index-error"),
+    );
     std::fs::create_dir_all(scope.chat_index_path()).unwrap();
     let persistence = WorkspaceSessionPersistence::new(dir.path().into());
     assert!(persistence

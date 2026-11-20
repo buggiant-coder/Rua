@@ -88,6 +88,162 @@ Details: [model knowledge and reasoning](docs/adr/0006-model-knowledge-catalog-a
 
 ## Chat identity, storage, and navigation
 
+Proposed evolution: [ADR 0059](docs/adr/0059-unified-chat-and-device-resources.md)
+explores unified Chat behavior with Agent-independent ownership, fixed optional
+Project membership, and resources across Devices. Its product-design interview
+concluded on 2026-11-20; the scoped definitions below remain the current contract
+pending technical design and implementation.
+
+**Chat Identity (proposed):** A Chat ID independently identifies one Chat within
+a user's identity domain; Project membership and selected Agent are not parts of
+its canonical identity.
+
+**Project Membership (proposed):** A Chat's association with one Project, or no
+Project, fixed when its new-Chat draft is established and preserved unchanged
+through materialization and the rest of its lifetime.
+
+**Chat Draft (proposed):** An unmaterialized Chat with an independent ID and fixed
+Project membership. New-Chat drafts and input caches are organized by Project or
+no Project, while each Chat retains its own input. Agent changes do not change
+the cache association. Every New Chat action applies the current Agent Selector
+choice even when restoring a draft; fixed membership and input are retained.
+Existing lazy materialization behavior remains intact.
+
+**Unified Chat List (proposed):** A shared listing/search entry point across
+Projects and unassigned Chats, retaining Project navigation and filtering by
+Project or currently selected Agent under the existing visibility rules.
+
+**Shared Project Context (proposed):** The Project's shared resource references,
+adopted and versioned for each new Turn. The Agent directly receives each resource's
+Device and root path alongside the Chat execution position; ordinary directory
+contents and Device capabilities are inspected on demand. Resource IDs remain
+internal association identities. Directory guidance comes from applicable
+AGENTS.md files; Project has no separate fixed global instruction document.
+
+**AGENTS.md Instructions (proposed):** Guidance discovered along the
+repository-root-to-working-directory chain, using Codex-style AGENTS.override.md /
+AGENTS.md selection and directory scope. Agent-owned Workspace prompts remain a
+separate source. Rua refreshes applicable AGENTS.md at new Turn boundaries and
+records its provenance. Before acting on a new explicit target path, Rua loads
+its applicable AGENTS.md and lets the Agent reconsider the operation. Reading
+is best effort: unreadable content is omitted without pausing the operation.
+Use these filenames consistently in user-facing discussion instead of introducing
+separate "rule file" or "shared description" concepts.
+
+**Project Resource Collection (proposed):** Zero or more Project-managed resource
+associations shared by its Chats, with no Chat-specific additions or exclusions.
+A Project may exist without resources; Chats without a Project have no bound
+resource collection.
+
+**Project Metadata (proposed):** Project-owned organization, defaults and resource
+association data managed from any paired Device and synchronized, without a fixed
+management Device. New resource locations still require validation by their
+owning Device; metadata changes do not operate on source files.
+
+**Project Resource Identity (proposed):** A stable resource reference whose
+Device and root directory are not rebound in place. Changing either creates a
+new resource identity; renaming its display label preserves identity. This
+association identity is distinct from Agent-facing file locations, which use
+the owning Device and real filesystem path.
+
+**Resource Association Removal (proposed):** Removing a Project resource from
+future Turns while existing Turns/Tasks retain their captured references.
+Removal can proceed while the resource Device is offline if the Project update
+can be saved; it does not delete files, cancel work, revoke filesystem
+permissions, or change an independently selected Chat working directory.
+
+**Project Resource Authorization (proposed):** Resource access governed by the
+existing permission system, without separate per-resource read-only/read-write
+settings.
+
+**Chat Agent Switch (proposed):** Replacement of the Agent-contributed
+configuration while retaining Chat model/thinking choices, execution position,
+Project membership, history, and attachments. Valid Agent configuration can be
+selected while optional Tool/MCP capabilities are temporarily unavailable;
+affected operations report the missing capability without borrowing the previous
+Agent's configuration.
+
+**Agent Deletion and Chat Retention (proposed):** Agent deletion is rejected while
+its execution, background Tasks, pending input or approvals remain unfinished.
+Admitted deletion preserves Chat history and attachments. User-originated Chats
+can select another Agent to continue; fixed-executor collaborations require a new
+collaboration to use a different Agent.
+
+**Collaboration Executor (proposed):** The Agent or ACP runner identity and driver
+kind fixed when a collaboration Chat is created, preserving the existing
+collaboration-specific rule within the unified Chat model.
+
+**Collaboration Execution Position (proposed):** The actual Device and working
+directory inherited from the source execution when the collaboration is created,
+then maintained independently by that Chat. Source position changes do not move
+existing collaborations. Initial directory use may be shared; independent
+position settings do not imply copied files or exclusive directory ownership.
+Security configuration continues to follow the source under the existing rules.
+
+**Chat Configuration Change Admission (proposed):** Agent selection, default
+working-directory changes, and Chat runtime Device switching require no active
+foreground Turn, queued input, or unresolved approval, including Task-originated
+approvals. Running background Tasks alone do not block these changes. An active
+ACP binding separately requires explicit exit before Agent or runtime Device
+switching; being idle does not make an external runner session portable.
+
+**Chat Execution Defaults (proposed):** Device and directory choices adopted at
+Chat creation only. Project defaults do not redirect existing Chats; a new Chat
+without a Project defaults to the Device serving the connected Rua client.
+
+**Chat Runtime Device (proposed):** The Device running the Chat's Agent loop and
+hosting its Conversation Authority. Calling a Tool on another Device does not
+move this authority or create another Agent conversation.
+
+**Tool Execution Device (proposed):** The Device performing an individual Tool
+operation, which can differ from the Chat Runtime Device. Remote commands may
+omit their working directory and use the target execution environment's user
+home directory; local commands retain the Chat working-directory default.
+Remote work still owned as foreground execution is cancelled when the target
+detects loss of its execution connection; only target evidence confirms stopping.
+
+**Task Execution Placement (proposed):** A Task remains owned by its Chat while
+its actual execution Device manages authoritative execution state and results.
+Eligible foreground work can transfer into a Task on that Device without being
+restarted. Accepted background work survives network disconnection and Chat Stop;
+Task Runtime restart interrupts unfinished Attempts without automatic replay.
+Chat configuration changes leave existing Tasks' captured configuration,
+execution Device, working directory, and output locations intact; subsequent
+result processing uses the Chat's current runtime Device and selected Agent.
+Explicit Retry retains the Task's original resolved Device and working directory
+while checking current effective authorization; a different location requires a
+new Task.
+
+**Resource Device (proposed):** The Device holding a resource's original files.
+Resources are accessed explicitly through file tools or transfer; ordinary
+programs use files local to their Tool Execution Device, without transparent
+remote mounts.
+
+**Chat Execution Position (proposed):** The Chat Runtime Device plus an optional
+explicit local working directory; otherwise Rua provides a dedicated managed
+Chat directory, stable for that Chat on that Device and reused when selected
+again. Chat runtime Device changes require a target-local directory choice;
+individual remote Tool calls do not change this default position.
+
+**Cooperative Chat Handoff (proposed):** Execution-Device switching requires the
+old Device to confirm foreground execution is stopped or quiescent before the
+new Device adopts the Chat; unavailable old Devices cannot be forcibly replaced.
+Background Tasks stay on their execution Devices, whose unavailability alone
+is not a Chat-handoff blocker. Handoff does not initiate file or attachment
+copying; file access/transfer remains on demand.
+
+**Chat Deletion Cleanup (proposed):** After permanent deletion is admitted, its
+logical effect does not wait for offline Devices to erase their local managed
+data. Those Devices clean up after learning the deletion; execution-stop
+admission and shared-data ownership remain separate constraints.
+
+**Project Lifecycle (proposed):** Archive/delete metadata commits on the initiating
+Device without waiting for offline Devices or remote stopping confirmation, then
+propagates through Sync. Archive retains the Project and member Chats, removes
+normal execution entry points, and applies existing stopping/admission checks on
+Devices that observe it. Permanent deletion removes the Project/member Chats and
+later reclaims eligible Rua-managed data while preserving external source files.
+
 Details: [address and lazy materialization](docs/adr/0018-chat-address-scope-and-lazy-materialization.md),
 [Projects](docs/adr/0019-project-scoped-chat-and-fixed-resource-binding.md),
 [Session storage](docs/adr/0020-session-file-and-append-only-message-log.md),

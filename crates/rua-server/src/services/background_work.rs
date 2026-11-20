@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
-use rua_core::{ChatAddress, ChatScopeStore};
+use rua_core::{ChatAddress, ChatStore};
 use serde::{Deserialize, Serialize};
 
 pub(crate) const BACKGROUND_RESULT_KEY: &str = "background_result";
@@ -52,7 +52,7 @@ impl BackgroundWork {
     }
 
     pub async fn suppressed(&self, address: &ChatAddress) -> Result<bool, String> {
-        let scope = ChatScopeStore::resolve(&self.root, address.clone());
+        let scope = ChatStore::resolve(&self.root, address.clone());
         rua_session::WorkspaceSessionStore::new(scope.root())
             .load_collaboration_wake_state(address.chat_id().as_str())
             .await
@@ -61,7 +61,7 @@ impl BackgroundWork {
     }
 
     async fn load(&self, address: &ChatAddress) -> Result<BackgroundWorkView, String> {
-        let scope = ChatScopeStore::resolve(&self.root, address.clone());
+        let scope = ChatStore::resolve(&self.root, address.clone());
         let store = rua_session::WorkspaceSessionStore::new(scope.root());
         let mut view = BackgroundWorkView {
             suppressed: store
@@ -153,7 +153,7 @@ impl BackgroundWork {
         &self,
         address: &ChatAddress,
     ) -> Result<Option<(ChatAddress, serde_json::Value)>, String> {
-        let scope = ChatScopeStore::resolve(&self.root, address.clone());
+        let scope = ChatStore::resolve(&self.root, address.clone());
         let header = rua_session::WorkspaceSessionStore::new(scope.root())
             .load_chat_header(address.chat_id().as_str())
             .await
@@ -171,7 +171,7 @@ impl BackgroundWork {
         let Some(descriptor) = descriptor else {
             return Ok(None);
         };
-        let scope = ChatScopeStore::resolve(&self.root, descriptor.source.clone());
+        let scope = ChatStore::resolve(&self.root, descriptor.source.clone());
         let header = rua_session::WorkspaceSessionStore::new(scope.root())
             .load_chat_header(descriptor.source.chat_id().as_str())
             .await

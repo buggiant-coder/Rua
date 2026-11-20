@@ -426,15 +426,11 @@ impl WorkspaceRuntime {
             .lock()
             .expect("Maintenance interval poisoned") = Some(interval);
         let workspace_dir = self.workspace_dir();
-        let sessions_dir = self.root.sessions_dir();
         let agent_id = self.agent_id.clone();
         let tick_count = Arc::clone(&self.maintenance_tick_count);
 
         let retention_days = std::time::Duration::from_secs(
             Self::load_retention_days(&workspace_dir) as u64 * 24 * 3600,
-        );
-        let session_max_age = std::time::Duration::from_secs(
-            Self::load_session_ttl_days(&workspace_dir) as u64 * 24 * 3600,
         );
 
         // Re-spawning replaces the loop; the previous one must observe its own
@@ -450,14 +446,6 @@ impl WorkspaceRuntime {
                 retention_days,
                 ..Default::default()
             };
-            let session_config = rua_cron::SessionCleanupConfig {
-                max_age: session_max_age,
-            };
-
-            let chats_store = crate::chats_cleanup_store::ChatIndexSessionCleanupStore::new(
-                workspace_dir.clone(),
-            );
-
             let mut ticker = tokio::time::interval(interval);
             ticker.tick().await;
             loop {
@@ -470,7 +458,6 @@ impl WorkspaceRuntime {
                 }
                 tracing::info!(agent_id = %agent_id, "Running periodic maintenance");
                 rua_cron::run_workspace_maintenance(&workspace_dir, &ws_config).await;
-                rua_cron::run_session_cleanup(&sessions_dir, &session_config, &chats_store).await;
                 tick_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         });
@@ -559,21 +546,6 @@ impl WorkspaceRuntime {
             })
             .map(|d| d as u32)
             .unwrap_or(5)
-    }
-
-    fn load_session_ttl_days(workspace_dir: &std::path::Path) -> u32 {
-        let agent_json = workspace_dir.join("agent.json");
-        std::fs::read(&agent_json)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-            .and_then(|v| {
-                v.get("running")
-                    .and_then(|running| running.get("session_ttl_days"))
-                    .or_else(|| v.get("session_ttl_days"))
-                    .and_then(|days| days.as_u64())
-            })
-            .map(|d| d as u32)
-            .unwrap_or(30)
     }
 
     pub fn maintenance_tick_count(&self) -> usize {
@@ -995,6 +967,15 @@ impl WorkspaceRuntime {
 
     pub fn workspace_dir(&self) -> std::path::PathBuf {
         self.root.as_path().to_path_buf()
+    }
+
+    /// Chat state is shared across Agent runtimes; Agent prompts and configuration
+    /// remain under `workspace_dir`.
+    pub fn chat_workspace_dir(&self) -> std::path::PathBuf {
+        rua_core::RuaRoot::new(&self.ctx.rua_root)
+            .chat_workspace()
+            .as_path()
+            .to_path_buf()
     }
 
     pub(crate) fn task_runtime(&self) -> Arc<rua_task::TaskRuntime> {

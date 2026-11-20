@@ -32,7 +32,7 @@ async fn root_console_routes_are_removed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_scoped_stop_requires_explicit_turn_and_authority_epoch() {
     let test = build_app();
-    let path = "/agents/default/chats/00000000-0000-4000-8000-000000000431/console/stop";
+    let path = "/chats/00000000-0000-4000-8000-000000000431/console/stop";
     for body in [json!({}), json!({"turn_id": "observed-turn"})] {
         let response = request_json(&test.app, Method::POST, path, body).await;
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -74,8 +74,9 @@ async fn header_chat_submit_materializes_default_model_with_auto_thinking() {
     let resp = request_json(
         &test.app,
         Method::POST,
-        &format!("/agents/default/chats/{chat_id}/console/submit"),
+        &format!("/chats/{chat_id}/console/submit"),
         json!({
+            "agent_id": "default",
             "chat_id": chat_id,
             "input": [{
                 "role": "user",
@@ -93,7 +94,7 @@ async fn header_chat_submit_materializes_default_model_with_auto_thinking() {
         .get_or_create("default")
         .await
         .expect("runtime");
-    let header = WorkspaceSessionStore::new(runtime.workspace_dir())
+    let header = WorkspaceSessionStore::new(runtime.chat_workspace_dir())
         .load_chat_header(&chat_id)
         .await
         .expect("load header")
@@ -116,15 +117,16 @@ async fn header_chat_submit_materializes_default_model_with_auto_thinking() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_scoped_first_submit_materializes_fixed_selection_and_policy() {
+async fn first_submit_materializes_selected_agent_and_policy() {
     let test = build_app();
     let chat_id = uuid::Uuid::new_v4().to_string();
 
     let response = request_json(
         &test.app,
         Method::POST,
-        &format!("/agents/default/chats/{chat_id}/console/submit"),
+        &format!("/chats/{chat_id}/console/submit"),
         json!({
+            "agent_id": "default",
             "chat_id": chat_id,
             "input": [{
                 "role": "user",
@@ -143,22 +145,22 @@ async fn agent_scoped_first_submit_materializes_fixed_selection_and_policy() {
         .get_or_create("default")
         .await
         .expect("runtime");
-    let store = WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let header = store
         .load_chat_header(&chat_id)
         .await
         .expect("load header")
         .expect("header exists");
     assert_eq!(
-        header.extra.get("selected_agent_id"),
-        Some(&json!("default")),
+        header.agent_id.as_str(),
+        "default",
         "Session File extra: {:?}",
         header.extra
     );
     assert_eq!(
         header.extra["chat_policy"],
         json!({
-            "agent_assignment": "fixed",
+            "agent_assignment": "selectable",
             "resource": "none",
             "authority_placement": "selectable"
         })
@@ -199,8 +201,9 @@ async fn header_chat_submit_materializes_structured_selected_model() {
     let resp = request_json(
         &test.app,
         Method::POST,
-        &format!("/agents/default/chats/{chat_id}/console/submit"),
+        &format!("/chats/{chat_id}/console/submit"),
         json!({
+            "agent_id": "default",
             "chat_id": chat_id,
             "input": [{
                 "role": "user",
@@ -224,7 +227,7 @@ async fn header_chat_submit_materializes_structured_selected_model() {
         .get_or_create("default")
         .await
         .expect("runtime");
-    let workspace_dir = runtime.workspace_dir();
+    let workspace_dir = runtime.chat_workspace_dir();
     let header = WorkspaceSessionStore::new(&workspace_dir)
         .load_chat_header(&chat_id)
         .await
@@ -284,8 +287,9 @@ async fn agent_chat_model_update_changes_session_without_rewriting_chat_index() 
     let response = request_json(
         &test.app,
         Method::POST,
-        &format!("/agents/default/chats/{chat_id}/console/submit"),
+        &format!("/chats/{chat_id}/console/submit"),
         json!({
+            "agent_id": "default",
             "chat_id": chat_id,
             "input": [{"role": "user", "content": "create model chat"}],
             "model": {
@@ -304,7 +308,7 @@ async fn agent_chat_model_update_changes_session_without_rewriting_chat_index() 
         .get_or_create("default")
         .await
         .expect("runtime");
-    let workspace = runtime.workspace_dir();
+    let workspace = runtime.chat_workspace_dir();
     let index_before = rua_session::chat_index::get(&workspace, &chat_id)
         .await
         .expect("read Chat Index")
@@ -344,8 +348,9 @@ async fn agent_chat_history_reads_current_configuration_without_chat_index_row()
     let response = request_json(
         &test.app,
         Method::POST,
-        &format!("/agents/default/chats/{chat_id}/console/submit"),
+        &format!("/chats/{chat_id}/console/submit"),
         json!({
+            "agent_id": "default",
             "chat_id": chat_id,
             "input": [{"role": "user", "content": "Session authority history"}]
         }),
@@ -359,9 +364,9 @@ async fn agent_chat_history_reads_current_configuration_without_chat_index_row()
         .get_or_create("default")
         .await
         .expect("runtime");
-    let workspace = runtime.workspace_dir();
-    let address = ChatAddress::agent("default", &chat_id);
-    let service = rua_chat::ChatService::for_resolved_scope(&workspace, address.clone());
+    let workspace = runtime.chat_workspace_dir();
+    let address = ChatAddress::new(&chat_id);
+    let service = rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(&workspace));
     service
         .update_listing(
             &address,
@@ -389,18 +394,16 @@ async fn agent_chat_history_reads_current_configuration_without_chat_index_row()
         .await
         .expect("remove repairable Chat Index projection");
 
-    let history = request(
-        &test.app,
-        Method::GET,
-        &format!("/api/agents/default/chats/{chat_id}"),
-    )
-    .await;
+    let history = request(&test.app, Method::GET, &format!("/api/chats/{chat_id}")).await;
     assert_eq!(history.status(), StatusCode::OK);
     let history = read_json(history).await;
     assert_eq!(history["title"], "Session-owned title");
     assert_eq!(history["model"]["model"], "session-model");
     assert_eq!(history["meta"]["selected_agent_id"], "default");
-    assert_eq!(history["meta"]["chat_policy"]["agent_assignment"], "fixed");
+    assert_eq!(
+        history["meta"]["chat_policy"]["agent_assignment"],
+        "selectable"
+    );
     assert!(history["meta"]["authority_placement"].is_object());
 }
 
@@ -447,8 +450,9 @@ async fn header_chat_submit_remains_available_after_sync_is_disabled() {
     let response = request_json(
         &test.app,
         Method::POST,
-        &format!("/agents/default/chats/{chat_id}/console/submit"),
+        &format!("/chats/{chat_id}/console/submit"),
         json!({
+            "agent_id": "default",
             "chat_id": chat_id,
             "input": [{
                 "role": "user",
@@ -474,9 +478,7 @@ async fn header_push_messages_includes_pending_approvals_for_selected_agent() {
         .approval_authority()
         .create_request(ApprovalRequestInput {
             agent_id: "default".into(),
-            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::agent(
-                "default", "compat",
-            )),
+            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new("compat")),
             turn_id: "compat".into(),
             tool_call_id: "call-1".into(),
             tool_name: "bash".into(),
@@ -518,6 +520,7 @@ async fn header_chat_interject_route_is_removed() {
         Method::POST,
         "/console/chat/interject",
         json!({
+            "agent_id": "default",
             "chat_id": chat_id,
             "message": "queued interjection"
         }),
@@ -537,6 +540,7 @@ async fn header_chat_queue_route_is_removed() {
         Method::POST,
         "/console/chat/queue",
         json!({
+            "agent_id": "default",
             "chat_id": chat_id,
             "message": "queued passive interjection"
         }),

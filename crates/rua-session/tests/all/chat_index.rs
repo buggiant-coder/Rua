@@ -88,7 +88,7 @@ fn conversation_views_and_collaboration_filters_apply_before_pagination() {
             "agent-child",
             "running",
             Some(CollaborationDescriptor {
-                source: rua_core::ChatAddress::agent("default", "source-a"),
+                source: rua_core::ChatAddress::new("source-a"),
                 executor: CollaborationExecutor::Agent,
                 executor_agent_id: "reviewer".into(),
                 authority_device_id: "device".into(),
@@ -102,7 +102,7 @@ fn conversation_views_and_collaboration_filters_apply_before_pagination() {
             "acp-child",
             "idle",
             Some(CollaborationDescriptor {
-                source: rua_core::ChatAddress::agent("default", "source-b"),
+                source: rua_core::ChatAddress::new("source-b"),
                 executor: CollaborationExecutor::Acp {
                     runner: "mock_agent".into(),
                 },

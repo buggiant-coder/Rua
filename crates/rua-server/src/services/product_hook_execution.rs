@@ -5,11 +5,87 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rua_core::{ChatAddress, ChatScope};
+use rua_core::ChatAddress;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
+
+/// A Handler resource owner is independent of the Chat's identity and storage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HandlerResourceScope {
+    Agent {
+        agent_id: String,
+        #[serde(flatten)]
+        extra: BTreeMap<String, serde_json::Value>,
+    },
+    Project {
+        project_id: String,
+        #[serde(flatten)]
+        extra: BTreeMap<String, serde_json::Value>,
+    },
+    Chat {
+        chat_id: String,
+        #[serde(flatten)]
+        extra: BTreeMap<String, serde_json::Value>,
+    },
+}
+
+impl PartialEq for HandlerResourceScope {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind() == other.kind() && self.owner_id() == other.owner_id()
+    }
+}
+impl Eq for HandlerResourceScope {}
+
+impl HandlerResourceScope {
+    pub(crate) fn for_owner(owner_namespace: &str, address: &ChatAddress) -> Result<Self, String> {
+        if let Some(agent_id) = owner_namespace.strip_prefix("agent:") {
+            return Ok(Self::agent(agent_id));
+        }
+        if let Some(project_id) = owner_namespace.strip_prefix("project:") {
+            return Ok(Self::project(project_id));
+        }
+        if owner_namespace.starts_with("plugin:") {
+            return Ok(Self::chat(address));
+        }
+        Err(format!("unsupported Handler owner: {owner_namespace}"))
+    }
+
+    pub fn agent(id: impl Into<String>) -> Self {
+        Self::Agent {
+            agent_id: id.into(),
+            extra: BTreeMap::new(),
+        }
+    }
+    pub fn project(id: impl Into<String>) -> Self {
+        Self::Project {
+            project_id: id.into(),
+            extra: BTreeMap::new(),
+        }
+    }
+    pub fn chat(address: &ChatAddress) -> Self {
+        Self::Chat {
+            chat_id: address.chat_id().to_string(),
+            extra: BTreeMap::new(),
+        }
+    }
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Agent { .. } => "agent",
+            Self::Project { .. } => "project",
+            Self::Chat { .. } => "chat",
+        }
+    }
+    pub fn owner_id(&self) -> &str {
+        match self {
+            Self::Agent { agent_id, .. } => agent_id,
+            Self::Project { project_id, .. } => project_id,
+            Self::Chat { chat_id, .. } => chat_id,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -34,7 +110,7 @@ pub struct HandlerInvocation {
     pub kind: HandlerKind,
     pub authority_device_id: String,
     pub chat_address: ChatAddress,
-    pub scope: ChatScope,
+    pub scope: HandlerResourceScope,
     pub resource_id: String,
     pub executable: Option<String>,
     pub program: Option<String>,
@@ -53,7 +129,7 @@ pub struct HandlerAdapterInvocation {
     pub invocation_id: String,
     pub authority_device_id: String,
     pub chat_address: ChatAddress,
-    pub scope: ChatScope,
+    pub scope: HandlerResourceScope,
     pub resource_id: String,
     pub executable: Option<String>,
     pub program: Option<String>,
@@ -153,7 +229,7 @@ pub trait CommandHandler: Send + Sync {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandExecutionResource {
-    pub scope: ChatScope,
+    pub scope: HandlerResourceScope,
     pub resource_id: String,
     pub root: PathBuf,
 }
@@ -231,7 +307,7 @@ struct CommandInvocationPayload<'a> {
     invocation_id: &'a str,
     authority_device_id: &'a str,
     chat_address: &'a ChatAddress,
-    scope: &'a ChatScope,
+    scope: &'a HandlerResourceScope,
     resource_id: &'a str,
     program: &'a str,
     args: &'a [String],

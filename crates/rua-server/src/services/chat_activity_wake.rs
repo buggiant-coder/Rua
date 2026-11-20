@@ -265,7 +265,7 @@ pub async fn broadcast_placement_changed(
 pub fn spawn_chat_placement_convergence(
     wake_hub: Arc<ChatActivityWakeHub>,
     conversation_authority: Arc<crate::services::conversation_authority::ConversationAuthority>,
-    registry: Arc<dyn rua_workspace::WorkspaceRegistry>,
+    workspace_dir: std::path::PathBuf,
 ) {
     tokio::spawn(async move {
         let mut wakes = wake_hub.subscribe();
@@ -278,13 +278,6 @@ pub fn spawn_chat_placement_convergence(
             if wake.phase != "placement_changed" {
                 continue;
             }
-            let Some(agent_id) = wake.address.agent_id() else {
-                continue;
-            };
-            let Ok(runtime) = registry.get_or_create(agent_id.as_str()).await else {
-                continue;
-            };
-            let workspace_dir = runtime.workspace_dir();
             converge_placement_from_wake(&conversation_authority, &workspace_dir, &wake).await;
         }
     });
@@ -420,7 +413,7 @@ mod tests {
 
     fn sample_wake() -> ChatLiveWake {
         ChatLiveWake::placement_changed(
-            ChatAddress::agent("default", "chat-x"),
+            ChatAddress::new("chat-x"),
             "aabbccddaabbccdd",
             ConversationAuthorityEpoch::from_parts(1_000, 7, [1u8; 8]),
             format!("sha256:{}", "0".repeat(64)),
@@ -509,7 +502,7 @@ mod tests {
                 "base_manifest_hash": format!("sha256:{}", "1".repeat(64)),
             }),
         );
-        rua_chat::apply_agent_scope_defaults(&mut header, "default");
+        rua_chat::apply_chat_defaults(&mut header);
         rua_session::WorkspaceSessionStore::new(workspace_dir)
             .save_chat_header(&header)
             .await
@@ -522,7 +515,7 @@ mod tests {
         authority_epoch: ConversationAuthorityEpoch,
     ) -> ChatLiveWake {
         ChatLiveWake::placement_changed(
-            ChatAddress::agent("default", chat_id),
+            ChatAddress::new(chat_id),
             device_id,
             authority_epoch,
             format!("sha256:{}", "2".repeat(64)),

@@ -46,7 +46,7 @@ async fn safe_request_is_relayed_without_creating_rua_approval_state() {
     assert_eq!(decision, PermissionDecision::Relay);
     assert!(security
         .approval_authority()
-        .snapshot_at(&rua_core::ChatAddress::agent("agent-1", "chat-1"))
+        .snapshot_at(&rua_core::ChatAddress::new("chat-1"))
         .await
         .pending
         .is_empty());

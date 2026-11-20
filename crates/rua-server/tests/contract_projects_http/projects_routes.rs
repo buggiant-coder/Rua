@@ -1,6 +1,6 @@
 use axum::http::{Method, StatusCode};
 use chrono::Utc;
-use rua_core::{ChatAddress, ChatScopeStore, ProjectId};
+use rua_core::{ChatAddress, ChatStore, ProjectId};
 use rua_project::{ProjectDescriptor, ProjectLifecycle};
 use rua_provider::config_loader::{DefaultModel, ProviderConfig};
 use rua_security::{
@@ -37,15 +37,15 @@ async fn first_project_input_starts_acp_with_resource_cwd() {
         "key": "first-project-acp", "enabled": true, "command": "python3", "args": [mock], "env": {}, "trusted": true
     }))).await;
     assert_eq!(created.status(), StatusCode::CREATED);
-    let address = ChatAddress::project(project_id.clone(), "00000000-0000-4000-8000-000000000907");
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    let address = ChatAddress::new("00000000-0000-4000-8000-000000000907");
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let store = rua_session::WorkspaceSessionStore::new(scope.root());
     assert!(store
         .load_chat_header(address.chat_id().as_str())
         .await
         .unwrap()
         .is_none());
-    let submitted = request(&test.app, Method::POST, &format!("/api/projects/{project_id}/chats/{}/console/submit", address.chat_id()), Some(json!({
+    let submitted = request(&test.app, Method::POST, &format!("/api/chats/{}/console/submit", address.chat_id()), Some(json!({ "project_id": project_id,
         "agent_id": "default", "message": "project ACP input", "initial_acp": {"runner": "first-project-acp", "cwd": "/source/not-project"}, "collaboration_mode":"plan", "harness_configuration":{"mode":"strict"}
     }))).await;
     assert_eq!(submitted.status(), StatusCode::OK);
@@ -82,10 +82,7 @@ async fn first_project_input_starts_acp_with_resource_cwd() {
     let exited = request(
         &test.app,
         Method::POST,
-        &format!(
-            "/api/projects/{project_id}/chats/{}/acp/exit",
-            address.chat_id()
-        ),
+        &format!("/api/chats/{}/acp/exit", address.chat_id()),
         None,
     )
     .await;
@@ -301,12 +298,9 @@ async fn project_list_activity_comes_from_chat_index_without_reading_history() {
         .project_catalog
         .apply_descriptor(project.clone())
         .unwrap();
-    let scope = ChatScopeStore::resolve(
+    let scope = ChatStore::resolve(
         &test.state.rua_root,
-        ChatAddress::project(
-            project.project_id.clone(),
-            "00000000-0000-4000-8000-000000000812",
-        ),
+        ChatAddress::new("00000000-0000-4000-8000-000000000812"),
     );
 
     let list = request(&test.app, Method::GET, "/api/projects", None).await;
@@ -330,7 +324,7 @@ async fn project_list_activity_comes_from_chat_index_without_reading_history() {
         channel: "console".to_string(),
         created_at: project.created_at,
         updated_at: activity_at,
-        meta: json!({}),
+        meta: json!({"project_id": project.project_id}),
         status: "idle".to_string(),
         pinned: false,
         pin_order: 0,
@@ -370,7 +364,7 @@ fn run_git(root: &Path, args: &[&str]) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_and_project_routes_complete_the_unified_chat_acceptance() {
+async fn ordinary_and_project_chats_share_the_chat_id_route() {
     let test = build_app();
     let local_device_id = local_device_id(&test.state);
     let repo = test._temp.path().join("unified-chat-repo");
@@ -398,8 +392,9 @@ async fn agent_and_project_routes_complete_the_unified_chat_acceptance() {
     let agent_submit = request(
         &test.app,
         Method::POST,
-        &format!("/api/agents/default/chats/{agent_chat_id}/console/submit"),
+        &format!("/api/chats/{agent_chat_id}/console/submit"),
         Some(json!({
+            "agent_id": "default",
             "chat_id": agent_chat_id,
             "input": [{
                 "role": "user",
@@ -413,8 +408,8 @@ async fn agent_and_project_routes_complete_the_unified_chat_acceptance() {
     let project_submit = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{project_id}/chats/{project_chat_id}/console/submit"),
-        Some(json!({
+        &format!("/api/chats/{project_chat_id}/console/submit"),
+        Some(json!({ "project_id": project_id,
             "agent_id": "default",
             "chat_id": project_chat_id,
             "message": "Project route acceptance",
@@ -428,12 +423,12 @@ async fn agent_and_project_routes_complete_the_unified_chat_acceptance() {
         .as_str()
         .is_some_and(|turn_id| !turn_id.is_empty()));
     assert_eq!(project_submit["control"]["queue"]["entries"], json!([]));
-    wait_for_project_chat_idle(&test.state, &project_id, project_chat_id).await;
+    wait_for_chat_idle(&test.state, project_chat_id).await;
 
     let agent_update = request(
         &test.app,
         Method::PUT,
-        &format!("/api/agents/default/chats/{agent_chat_id}"),
+        &format!("/api/chats/{agent_chat_id}"),
         Some(json!({
             "name": "Unified Agent Chat",
             "pinned": true,
@@ -445,7 +440,7 @@ async fn agent_and_project_routes_complete_the_unified_chat_acceptance() {
     let project_update = request(
         &test.app,
         Method::PATCH,
-        &format!("/api/projects/{project_id}/chats/{project_chat_id}"),
+        &format!("/api/chats/{project_chat_id}"),
         Some(json!({
             "name": "Unified Project Chat",
             "pinned": true,
@@ -455,8 +450,8 @@ async fn agent_and_project_routes_complete_the_unified_chat_acceptance() {
     assert_eq!(project_update.status(), StatusCode::OK);
 
     for uri in [
-        format!("/api/agents/default/chats/{agent_chat_id}"),
-        format!("/api/projects/{project_id}/chats/{project_chat_id}"),
+        format!("/api/chats/{agent_chat_id}"),
+        format!("/api/chats/{project_chat_id}"),
     ] {
         let history = request(&test.app, Method::GET, &uri, None).await;
         assert_eq!(history.status(), StatusCode::OK, "history route: {uri}");
@@ -501,7 +496,7 @@ async fn agent_and_project_routes_complete_the_unified_chat_acceptance() {
     let switch = request(
         &test.app,
         Method::PATCH,
-        &format!("/api/projects/{project_id}/chats/{project_chat_id}/agent-selection"),
+        &format!("/api/chats/{project_chat_id}/agent-selection"),
         Some(json!({
             "expected_agent_id": "default",
             "agent_id": "unified-code",
@@ -510,11 +505,11 @@ async fn agent_and_project_routes_complete_the_unified_chat_acceptance() {
     .await;
     assert_eq!(switch.status(), StatusCode::OK);
 
-    let agent_address = ChatAddress::agent("default", agent_chat_id);
-    let project_address = ChatAddress::project(project_id.clone(), project_chat_id);
-    let agent_scope = ChatScopeStore::resolve(&test.state.rua_root, agent_address);
-    let project_scope = ChatScopeStore::resolve(&test.state.rua_root, project_address);
-    assert_ne!(agent_scope.root(), project_scope.root());
+    let agent_address = ChatAddress::new(agent_chat_id);
+    let project_address = ChatAddress::new(project_chat_id);
+    let agent_scope = ChatStore::resolve(&test.state.rua_root, agent_address);
+    let project_scope = ChatStore::resolve(&test.state.rua_root, project_address);
+    assert_eq!(agent_scope.root(), project_scope.root());
 
     let agent_header = rua_session::WorkspaceSessionStore::new(agent_scope.root())
         .load_chat_header(agent_chat_id)
@@ -526,16 +521,21 @@ async fn agent_and_project_routes_complete_the_unified_chat_acceptance() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(agent_header.extra["selected_agent_id"], "default");
+    assert_eq!(agent_header.agent_id, "default");
+    assert!(agent_header.project_id.is_none());
+    assert_eq!(
+        project_header.project_id.as_deref(),
+        Some(project_id.as_str())
+    );
     assert_eq!(
         agent_header.extra["chat_policy"],
         json!({
-            "agent_assignment": "fixed",
+            "agent_assignment": "selectable",
             "resource": "none",
             "authority_placement": "selectable",
         })
     );
-    assert_eq!(project_header.extra["selected_agent_id"], "unified-code");
+    assert_eq!(project_header.agent_id, "unified-code");
     assert_eq!(
         project_header.extra["chat_policy"],
         json!({
@@ -545,7 +545,7 @@ async fn agent_and_project_routes_complete_the_unified_chat_acceptance() {
         })
     );
 
-    let agent_list = request(&test.app, Method::GET, "/api/agents/default/chats", None).await;
+    let agent_list = request(&test.app, Method::GET, "/api/chats?agent_id=default", None).await;
     assert_eq!(agent_list.status(), StatusCode::OK);
     assert!(response_json(agent_list)
         .await
@@ -571,7 +571,7 @@ async fn agent_and_project_routes_complete_the_unified_chat_acceptance() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn local_project_chat_first_submit_materializes_history_under_project_scope() {
+async fn local_project_chat_first_submit_materializes_history_by_chat_id() {
     let test = build_app();
     test.state
         .provider_cells
@@ -642,8 +642,8 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     let submit = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{first_id}/chats/{chat_id}/console/submit"),
-        Some(json!({
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({ "project_id": first_id,
             "agent_id": "default",
             "chat_id": chat_id,
             "input": [{
@@ -662,9 +662,8 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     assert_eq!(submit.status(), StatusCode::OK);
     let submit = response_json(submit).await;
     assert_eq!(submit["accepted"], true);
-    assert_eq!(submit["materialized"], true);
+    assert_eq!(submit["mode"], "started");
     assert_eq!(submit["chat_id"], chat_id);
-    assert_eq!(submit["transport"], "LocalAuthority");
     assert_eq!(submit["device_delivery_id"], serde_json::Value::Null);
     assert_eq!(submit["target_device_id"], serde_json::Value::Null);
     assert_eq!(submit["device_delivery_sequence"], serde_json::Value::Null);
@@ -672,7 +671,7 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     let history = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{first_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
     )
     .await;
@@ -688,8 +687,8 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     assert_eq!(history["model"]["provider_id"], "fixture");
     assert_eq!(history["model"]["model"], "project-first-turn-model");
 
-    let address = rua_core::ChatAddress::project(first_id.clone(), chat_id);
-    let scope = rua_core::ChatScopeStore::resolve(&test.state.rua_root, address);
+    let address = rua_core::ChatAddress::new(chat_id);
+    let scope = rua_core::ChatStore::resolve(&test.state.rua_root, address);
     assert!(scope.chat_index_path().is_file());
     assert!(scope.evergreen_chat_root().join("session.json").is_file());
     assert!(!first_repo.join("sessions").exists());
@@ -704,7 +703,7 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
         .expect("read Project Scope Chat Index")
         .expect("indexed Project Chat");
     assert_eq!(indexed.name, "Inspect this repository");
-    assert_eq!(header.extra["selected_agent_id"], "default");
+    assert_eq!(header.agent_id, "default");
     assert_eq!(
         header.extra["chat_policy"]["agent_assignment"],
         "selectable"
@@ -730,11 +729,11 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     )
     .await;
     assert_eq!(create_agent.status(), StatusCode::CREATED);
-    wait_for_project_chat_idle(&test.state, &first_id, chat_id).await;
+    wait_for_chat_idle(&test.state, chat_id).await;
     let switch = request(
         &test.app,
         Method::PATCH,
-        &format!("/api/projects/{first_id}/chats/{chat_id}/agent-selection"),
+        &format!("/api/chats/{chat_id}/agent-selection"),
         Some(json!({
             "expected_agent_id": "default",
             "agent_id": "code",
@@ -750,7 +749,7 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
         .await
         .expect("load switched Project Session File")
         .expect("switched Project Session File");
-    assert_eq!(switched_header.extra["selected_agent_id"], "code");
+    assert_eq!(switched_header.agent_id, "code");
     assert_eq!(
         switched_header.extra["chat_policy"]["agent_assignment"],
         "selectable"
@@ -763,7 +762,7 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     let model_update = request(
         &test.app,
         Method::PATCH,
-        &format!("/api/projects/{first_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         Some(json!({
             "model": {
                 "provider_id": "fixture",
@@ -789,8 +788,8 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     let second_submit = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{first_id}/chats/{chat_id}/console/submit"),
-        Some(json!({
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({ "project_id": first_id,
             "agent_id": "default",
             "chat_id": chat_id,
             "message": "Use the durable Project Chat Agent selection",
@@ -798,7 +797,7 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     )
     .await;
     assert_eq!(second_submit.status(), StatusCode::OK);
-    wait_for_project_chat_idle(&test.state, &first_id, chat_id).await;
+    wait_for_chat_idle(&test.state, chat_id).await;
     let turns = rua_session::WorkspaceSessionStore::new(scope.root())
         .read_turn_range(chat_id, 1, usize::MAX)
         .await
@@ -830,7 +829,7 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     let switched_history = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{first_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
     )
     .await;
@@ -841,7 +840,7 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     let stale_switch = request(
         &test.app,
         Method::PATCH,
-        &format!("/api/projects/{first_id}/chats/{chat_id}/agent-selection"),
+        &format!("/api/chats/{chat_id}/agent-selection"),
         Some(json!({
             "expected_agent_id": "default",
             "agent_id": "default",
@@ -860,7 +859,7 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     let unavailable_history = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{first_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
     )
     .await;
@@ -871,19 +870,20 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     let unavailable_submit = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{first_id}/chats/{chat_id}/console/submit"),
-        Some(json!({
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({ "project_id": first_id,
             "agent_id": "default",
             "chat_id": chat_id,
             "message": "Do not fall back silently",
         })),
     )
     .await;
-    assert_eq!(unavailable_submit.status(), StatusCode::CONFLICT);
+    assert_eq!(unavailable_submit.status(), StatusCode::OK);
+    assert_eq!(response_json(unavailable_submit).await["mode"], "rejected");
     let replace = request(
         &test.app,
         Method::PATCH,
-        &format!("/api/projects/{first_id}/chats/{chat_id}/agent-selection"),
+        &format!("/api/chats/{chat_id}/agent-selection"),
         Some(json!({
             "expected_agent_id": "code",
             "agent_id": "default",
@@ -902,7 +902,7 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     let select_for_delete = request(
         &test.app,
         Method::PATCH,
-        &format!("/api/projects/{first_id}/chats/{chat_id}/agent-selection"),
+        &format!("/api/chats/{chat_id}/agent-selection"),
         Some(json!({
             "expected_agent_id": "default",
             "agent_id": "code",
@@ -910,7 +910,7 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     )
     .await;
     assert_eq!(select_for_delete.status(), StatusCode::OK);
-    let delete_address = rua_core::ChatAddress::project(first_id.clone(), chat_id);
+    let delete_address = rua_core::ChatAddress::new(chat_id);
     let delete_placement =
         rua_server::services::conversation_authority_target::load_chat_authority_placement_target(
             scope.root(),
@@ -933,7 +933,7 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     let blocked_history = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{first_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
     )
     .await;
@@ -959,7 +959,7 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     let history_after_delete = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{first_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
     )
     .await;
@@ -981,7 +981,7 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     let offline_history = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{first_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
     )
     .await;
@@ -994,17 +994,18 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     let unavailable_submit = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{first_id}/chats/{failed_chat_id}/console/submit"),
-        Some(json!({
+        &format!("/api/chats/{failed_chat_id}/console/submit"),
+        Some(json!({ "project_id": first_id,
             "agent_id": "default",
             "chat_id": failed_chat_id,
             "message": "Do not queue this",
         })),
     )
     .await;
-    assert_eq!(unavailable_submit.status(), StatusCode::CONFLICT);
-    let failed_address = rua_core::ChatAddress::project(first_id.clone(), failed_chat_id);
-    let failed_scope = rua_core::ChatScopeStore::resolve(&test.state.rua_root, failed_address);
+    assert_eq!(unavailable_submit.status(), StatusCode::OK);
+    assert_eq!(response_json(unavailable_submit).await["mode"], "rejected");
+    let failed_address = rua_core::ChatAddress::new(failed_chat_id);
+    let failed_scope = rua_core::ChatStore::resolve(&test.state.rua_root, failed_address);
     assert!(!failed_scope.evergreen_chat_root().exists());
     assert!(
         !failed_scope.chat_index_path().is_file()
@@ -1015,50 +1016,29 @@ async fn local_project_chat_first_submit_materializes_history_under_project_scop
     );
 
     let lazy_chat_id = "00000000-0000-4000-8000-000000000407";
-    let lazy_history = request(
-        &test.app,
-        Method::GET,
-        &format!("/api/projects/{first_id}/chats/{lazy_chat_id}"),
-        None,
-    )
-    .await;
-    assert_eq!(lazy_history.status(), StatusCode::OK);
-    assert_eq!(response_json(lazy_history).await["messages"], json!([]));
+    for suffix in ["", "/approvals/snapshot", "/acp/permissions"] {
+        let response = request(
+            &test.app,
+            Method::GET,
+            &format!("/api/chats/{lazy_chat_id}{suffix}"),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 
-    let lazy_approvals = request(
+    let with_other_project = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{first_id}/chats/{lazy_chat_id}/approvals/snapshot"),
+        &format!("/api/chats/{chat_id}?project_id={second_id}"),
         None,
     )
     .await;
-    assert_eq!(lazy_approvals.status(), StatusCode::OK);
+    assert_eq!(with_other_project.status(), StatusCode::OK);
     assert_eq!(
-        response_json(lazy_approvals).await,
-        json!({"pending": [], "resolved": []})
+        response_json(with_other_project).await["project_id"],
+        first_id
     );
-
-    let lazy_acp_permissions = request(
-        &test.app,
-        Method::GET,
-        &format!("/api/projects/{first_id}/chats/{lazy_chat_id}/acp/permissions"),
-        None,
-    )
-    .await;
-    assert_eq!(lazy_acp_permissions.status(), StatusCode::OK);
-    assert_eq!(
-        response_json(lazy_acp_permissions).await,
-        json!({"pending": []})
-    );
-
-    let wrong_owner = request(
-        &test.app,
-        Method::GET,
-        &format!("/api/projects/{second_id}/chats/{chat_id}"),
-        None,
-    )
-    .await;
-    assert_eq!(wrong_owner.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1121,8 +1101,8 @@ async fn local_project_chat_first_submit_without_model_persists_default_model() 
     let submit = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/console/submit"),
-        Some(json!({
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({ "project_id": project_id,
             "agent_id": "default",
             "chat_id": chat_id,
             "input": [{
@@ -1138,7 +1118,7 @@ async fn local_project_chat_first_submit_without_model_persists_default_model() 
     let history = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{project_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
     )
     .await;
@@ -1150,7 +1130,7 @@ async fn local_project_chat_first_submit_without_model_persists_default_model() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn project_chat_without_session_storage_can_be_deleted() {
+async fn chat_deletion_requires_saved_membership_before_removing_a_projection() {
     let test = build_app();
     let repo = test._temp.path().join("index-only-project");
     std::fs::create_dir_all(&repo).unwrap();
@@ -1171,18 +1151,18 @@ async fn project_chat_without_session_storage_can_be_deleted() {
         .unwrap()
         .to_string();
     let chat_id = "00000000-0000-4000-8000-000000000414";
-    let path = format!("/api/projects/{project_id}/chats/{chat_id}");
+    let path = format!("/api/chats/{chat_id}");
     let submit = request(
         &test.app,
         Method::POST,
         &format!("{path}/console/submit"),
-        Some(json!({"agent_id": "default", "chat_id": chat_id, "message": "Disposable"})),
+        Some(json!({"project_id": project_id, "agent_id": "default", "chat_id": chat_id, "message": "Disposable"})),
     )
     .await;
     assert_eq!(submit.status(), StatusCode::OK);
-    wait_for_project_chat_idle(&test.state, &project_id, chat_id).await;
-    let address = ChatAddress::project(project_id.clone(), chat_id);
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    wait_for_chat_idle(&test.state, chat_id).await;
+    let address = ChatAddress::new(chat_id);
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     rua_session::WorkspaceSessionStore::new(scope.root())
         .delete_chat_storage_by_chat_id(chat_id)
         .await
@@ -1196,24 +1176,11 @@ async fn project_chat_without_session_storage_can_be_deleted() {
     .await;
     assert_eq!(response_json(list).await[0]["id"], chat_id);
     let deleted = request(&test.app, Method::DELETE, &path, None).await;
-    let status = deleted.status();
-    let body = response_json(deleted).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["deleted"], true);
+    assert_eq!(deleted.status(), StatusCode::NOT_FOUND);
     assert!(rua_server::services::chat_index::get(scope.root(), chat_id)
         .await
         .unwrap()
-        .is_none());
-    let list = request(
-        &test.app,
-        Method::GET,
-        &format!("/api/projects/{project_id}/chats"),
-        None,
-    )
-    .await;
-    assert!(response_json(list).await.as_array().unwrap().is_empty());
-    let repeated = request(&test.app, Method::DELETE, &path, None).await;
-    assert_eq!(repeated.status(), StatusCode::NOT_FOUND);
+        .is_some());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1238,22 +1205,22 @@ async fn project_acp_collaboration_can_be_force_deleted_without_changing_executo
         .unwrap()
         .to_string();
     let chat_id = "00000000-0000-4000-8000-000000000415";
-    let path = format!("/api/projects/{project_id}/chats/{chat_id}");
+    let path = format!("/api/chats/{chat_id}");
     let submit = request(
         &test.app, Method::POST, &format!("{path}/console/submit"),
-        Some(json!({"agent_id": "default", "chat_id": chat_id, "message": "Disposable collaboration"})),
+        Some(json!({"project_id": project_id, "agent_id": "default", "chat_id": chat_id, "message": "Disposable collaboration"})),
     ).await;
     assert_eq!(submit.status(), StatusCode::OK);
-    wait_for_project_chat_idle(&test.state, &project_id, chat_id).await;
-    let address = ChatAddress::project(project_id.clone(), chat_id);
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    wait_for_chat_idle(&test.state, chat_id).await;
+    let address = ChatAddress::new(chat_id);
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let store = rua_session::WorkspaceSessionStore::new(scope.root());
     store
         .update_chat_header(chat_id, |header| {
             header.extra.insert(
                 "collaboration".into(),
                 json!({
-                    "source": ChatAddress::project(project_id.clone(), "missing-source"),
+                    "source": ChatAddress::new("missing-source"),
                     "executor": {"kind": "acp", "runner": "claude"},
                     "executor_agent_id": "default",
                 }),
@@ -1334,8 +1301,8 @@ async fn project_chat_list_update_delete_and_busy_isolation_contract() {
         let submit = request(
             &test.app,
             Method::POST,
-            &format!("/api/projects/{project_id}/chats/{chat_id}/console/submit"),
-            Some(json!({
+            &format!("/api/chats/{chat_id}/console/submit"),
+            Some(json!({ "project_id": project_id,
                 "agent_id": "default",
                 "chat_id": chat_id,
                 "message": message,
@@ -1343,13 +1310,13 @@ async fn project_chat_list_update_delete_and_busy_isolation_contract() {
         )
         .await;
         assert_eq!(submit.status(), StatusCode::OK);
-        wait_for_project_chat_idle(&test.state, &project_id, chat_id).await;
+        wait_for_chat_idle(&test.state, chat_id).await;
     }
 
     let rename = request(
         &test.app,
         Method::PATCH,
-        &format!("/api/projects/{project_id}/chats/{}", chat_ids[0]),
+        &format!("/api/chats/{}", chat_ids[0]),
         Some(json!({
             "name": "Alpha renamed",
             "pinned": true,
@@ -1378,7 +1345,7 @@ async fn project_chat_list_update_delete_and_busy_isolation_contract() {
     assert_eq!(list[0]["id"], chat_ids[0]);
     assert_eq!(list[0]["name"], "Alpha renamed");
 
-    let archive_path = format!("/api/projects/{project_id}/chats/{}", chat_ids[0]);
+    let archive_path = format!("/api/chats/{}", chat_ids[0]);
     let archive = request(
         &test.app,
         Method::PATCH,
@@ -1457,7 +1424,7 @@ async fn project_chat_list_update_delete_and_busy_isolation_contract() {
     let unpin = request(
         &test.app,
         Method::PATCH,
-        &format!("/api/projects/{project_id}/chats/{}", chat_ids[0]),
+        &format!("/api/chats/{}", chat_ids[0]),
         Some(json!({
             "name": "Alpha renamed",
             "pinned": false,
@@ -1467,7 +1434,7 @@ async fn project_chat_list_update_delete_and_busy_isolation_contract() {
     .await;
     assert_eq!(unpin.status(), StatusCode::OK);
 
-    let idle_address = ChatAddress::project(project_id.clone(), chat_ids[2]);
+    let idle_address = ChatAddress::new(chat_ids[2]);
     let idle_approval = test
         .state
         .security
@@ -1511,7 +1478,7 @@ async fn project_chat_list_update_delete_and_busy_isolation_contract() {
     let archived_idle = request(
         &test.app,
         Method::PATCH,
-        &format!("/api/projects/{project_id}/chats/{}", chat_ids[2]),
+        &format!("/api/chats/{}", chat_ids[2]),
         Some(json!({"archived": true})),
     )
     .await;
@@ -1534,7 +1501,7 @@ async fn project_chat_list_update_delete_and_busy_isolation_contract() {
         .find_reuse_rule_at("default", &idle_address, "bash", &json!({"command": "pwd"}),)
         .await
         .is_none());
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, idle_address);
+    let scope = ChatStore::resolve(&test.state.rua_root, idle_address);
     assert!(
         rua_server::services::chat_index::get(scope.root(), chat_ids[2])
             .await
@@ -1543,9 +1510,9 @@ async fn project_chat_list_update_delete_and_busy_isolation_contract() {
     );
     assert_eq!(snapshot_directory(&repo), repository_before);
 
-    let first_address = ChatAddress::project(project_id.clone(), chat_ids[0]);
-    let second_address = ChatAddress::project(project_id.clone(), chat_ids[1]);
-    let first_scope = ChatScopeStore::resolve(&test.state.rua_root, first_address.clone());
+    let first_address = ChatAddress::new(chat_ids[0]);
+    let second_address = ChatAddress::new(chat_ids[1]);
+    let first_scope = ChatStore::resolve(&test.state.rua_root, first_address.clone());
     let first_placement =
         rua_server::services::conversation_authority_target::load_chat_authority_placement_target(
             first_scope.root(),
@@ -1553,7 +1520,7 @@ async fn project_chat_list_update_delete_and_busy_isolation_contract() {
         )
         .await
         .unwrap();
-    let second_scope = ChatScopeStore::resolve(&test.state.rua_root, second_address.clone());
+    let second_scope = ChatStore::resolve(&test.state.rua_root, second_address.clone());
     let second_placement =
         rua_server::services::conversation_authority_target::load_chat_authority_placement_target(
             second_scope.root(),
@@ -1595,7 +1562,7 @@ async fn project_chat_list_update_delete_and_busy_isolation_contract() {
     let busy_delete = request(
         &test.app,
         Method::DELETE,
-        &format!("/api/projects/{project_id}/chats/{}", chat_ids[0]),
+        &format!("/api/chats/{}", chat_ids[0]),
         None,
     )
     .await;
@@ -1618,10 +1585,7 @@ async fn project_chat_list_update_delete_and_busy_isolation_contract() {
     let force_delete = request(
         &test.app,
         Method::DELETE,
-        &format!(
-            "/api/projects/{project_id}/chats/{}?force=true",
-            chat_ids[0]
-        ),
+        &format!("/api/chats/{}?force=true", chat_ids[0]),
         None,
     )
     .await;
@@ -1651,10 +1615,7 @@ async fn project_chat_list_update_delete_and_busy_isolation_contract() {
     let offline_delete = request(
         &test.app,
         Method::DELETE,
-        &format!(
-            "/api/projects/{project_id}/chats/{}?force=true",
-            chat_ids[1]
-        ),
+        &format!("/api/chats/{}?force=true", chat_ids[1]),
         None,
     )
     .await;
@@ -1750,8 +1711,8 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     let submit = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/console/submit"),
-        Some(json!({
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({ "project_id": project_id,
             "agent_id": "default",
             "chat_id": chat_id,
             "message": "prepare controls",
@@ -1759,9 +1720,9 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     )
     .await;
     assert_eq!(submit.status(), StatusCode::OK);
-    wait_for_project_chat_idle(&test.state, &project_id, chat_id).await;
+    wait_for_chat_idle(&test.state, chat_id).await;
 
-    let options_path = format!("/api/projects/{project_id}/chats/{chat_id}/running-config");
+    let options_path = format!("/api/chats/{chat_id}/running-config");
     let options = request(&test.app, Method::GET, &options_path, None).await;
     assert_eq!(options.status(), StatusCode::OK);
     let mut options = response_json(options).await;
@@ -1785,7 +1746,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     let workspace = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/resource-policy"),
+        &format!("/api/chats/{chat_id}/resource-policy"),
         None,
     )
     .await;
@@ -1817,7 +1778,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     let unchanged = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/resource-policy"),
+        &format!("/api/chats/{chat_id}/resource-policy"),
         None,
     )
     .await;
@@ -1826,7 +1787,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
         response_json(unchanged).await["policy"]["profile"],
         "resource-write"
     );
-    let configuration_path = format!("/api/projects/{project_id}/chats/{chat_id}/configuration");
+    let configuration_path = format!("/api/chats/{chat_id}/configuration");
     let preview = request(&test.app, Method::GET, &configuration_path, None).await;
     assert_eq!(preview.status(), StatusCode::OK);
     let preview = response_json(preview).await;
@@ -1837,7 +1798,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     let workspace = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/resource-policy"),
+        &format!("/api/chats/{chat_id}/resource-policy"),
         None,
     )
     .await;
@@ -1855,7 +1816,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     let update_model = request(
         &test.app,
         Method::PATCH,
-        &format!("/api/projects/{project_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         Some(json!({"model": model.clone()})),
     )
     .await;
@@ -1868,7 +1829,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     let runners = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/acp/runners"),
+        &format!("/api/chats/{chat_id}/acp/runners"),
         None,
     )
     .await;
@@ -1877,7 +1838,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     let acp_status = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/acp/status"),
+        &format!("/api/chats/{chat_id}/acp/status"),
         None,
     )
     .await;
@@ -1886,8 +1847,8 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     assert_eq!(acp_status["active"], false);
     assert_eq!(acp_status["workspace_dir"], repo.to_string_lossy().as_ref());
 
-    let address = ChatAddress::project(project_id.clone(), chat_id);
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    let address = ChatAddress::new(chat_id);
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let placement =
         rua_server::services::conversation_authority_target::load_chat_authority_placement_target(
             scope.root(),
@@ -1944,10 +1905,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     let edit = request(
         &test.app,
         Method::PATCH,
-        &format!(
-            "/api/projects/{project_id}/chats/{chat_id}/queue/{}",
-            first.input_id
-        ),
+        &format!("/api/chats/{chat_id}/queue/{}", first.input_id),
         Some(json!({"message": "first edited"})),
     )
     .await;
@@ -1956,10 +1914,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     let send_now = request(
         &test.app,
         Method::POST,
-        &format!(
-            "/api/projects/{project_id}/chats/{chat_id}/queue/{}/send-now",
-            first.input_id
-        ),
+        &format!("/api/chats/{chat_id}/queue/{}/send-now", first.input_id),
         Some(json!({
             "command_id": "send-now-project-control",
             "authority_epoch": placement.authority_epoch,
@@ -1971,10 +1926,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     let delete = request(
         &test.app,
         Method::DELETE,
-        &format!(
-            "/api/projects/{project_id}/chats/{chat_id}/queue/{}",
-            second.input_id
-        ),
+        &format!("/api/chats/{chat_id}/queue/{}", second.input_id),
         None,
     )
     .await;
@@ -2004,7 +1956,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     let snapshot = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/approvals/snapshot"),
+        &format!("/api/chats/{chat_id}/approvals/snapshot"),
         None,
     )
     .await;
@@ -2016,10 +1968,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     let decide = request(
         &test.app,
         Method::POST,
-        &format!(
-            "/api/projects/{project_id}/chats/{chat_id}/approvals/{}/decide",
-            approval.id
-        ),
+        &format!("/api/chats/{chat_id}/approvals/{}/decide", approval.id),
         Some(json!({
             "decision": "run_once",
             "decided_by": "test",
@@ -2041,7 +1990,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     let stale = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/console/stop"),
+        &format!("/api/chats/{chat_id}/console/stop"),
         Some(json!({"turn_id": "old-turn", "authority_epoch": observed.authority_epoch})),
     )
     .await;
@@ -2078,7 +2027,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     let stop = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/console/stop"),
+        &format!("/api/chats/{chat_id}/console/stop"),
         Some(json!({"turn_id": observed.turn_id, "authority_epoch": observed.authority_epoch})),
     )
     .await;
@@ -2112,7 +2061,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     let idle_stop = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/console/stop"),
+        &format!("/api/chats/{chat_id}/console/stop"),
         Some(json!({"turn_id": observed.turn_id, "authority_epoch": observed.authority_epoch})),
     )
     .await;
@@ -2128,11 +2077,15 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     let placement_mutation = request(
         &test.app,
         Method::PUT,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/authority-placement"),
+        &format!("/api/chats/{chat_id}/authority-placement"),
         Some(json!({"device_id": "other-device"})),
     )
     .await;
-    assert_eq!(placement_mutation.status(), StatusCode::NOT_FOUND);
+    assert_eq!(placement_mutation.status(), StatusCode::CONFLICT);
+    assert!(response_json(placement_mutation).await["detail"]
+        .as_str()
+        .unwrap()
+        .contains("bound to its Project resource Device"));
 }
 
 struct ProjectLifecycleBlockingRunner {
@@ -2181,8 +2134,8 @@ async fn project_task_routes_use_typed_project_chat_ownership() {
     let submit = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/console/submit"),
-        Some(json!({
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({ "project_id": project_id,
             "agent_id": "default",
             "chat_id": chat_id,
             "message": "Materialize Project Task owner",
@@ -2190,9 +2143,9 @@ async fn project_task_routes_use_typed_project_chat_ownership() {
     )
     .await;
     assert_eq!(submit.status(), StatusCode::OK);
-    wait_for_project_chat_idle(&test.state, &project_id, chat_id).await;
+    wait_for_chat_idle(&test.state, chat_id).await;
 
-    let owner = rua_task::TaskOwner::from_address(ChatAddress::project(&project_id, chat_id));
+    let owner = rua_task::TaskOwner::from_address(ChatAddress::new(chat_id));
     let runner = Arc::new(ProjectLifecycleBlockingRunner {
         started: tokio::sync::Notify::new(),
     });
@@ -2234,7 +2187,7 @@ async fn project_task_routes_use_typed_project_chat_ownership() {
     let switch = request(
         &test.app,
         Method::PATCH,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/agent-selection"),
+        &format!("/api/chats/{chat_id}/agent-selection"),
         Some(json!({
             "expected_agent_id": "default",
             "agent_id": "agent-b",
@@ -2246,7 +2199,7 @@ async fn project_task_routes_use_typed_project_chat_ownership() {
     let list = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/tasks"),
+        &format!("/api/chats/{chat_id}/tasks"),
         None,
     )
     .await;
@@ -2255,17 +2208,13 @@ async fn project_task_routes_use_typed_project_chat_ownership() {
     assert_eq!(list.as_array().unwrap().len(), 1);
     assert_eq!(list[0]["task_id"], task_id);
     assert_eq!(
-        list[0]["spec"]["owner"]["chat_address"]["scope"]["kind"],
-        "project"
-    );
-    assert_eq!(
-        list[0]["spec"]["owner"]["chat_address"]["scope"]["project_id"],
-        project_id.as_str()
+        list[0]["spec"]["owner"]["chat_address"],
+        json!({"chat_id": chat_id})
     );
     let detail = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/tasks/{task_id}"),
+        &format!("/api/chats/{chat_id}/tasks/{task_id}"),
         None,
     )
     .await;
@@ -2275,19 +2224,15 @@ async fn project_task_routes_use_typed_project_chat_ownership() {
         "controller"
     );
 
-    let agent_scope = request(
+    let same_chat = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/default/chats/{chat_id}/tasks"),
+        &format!("/api/chats/{chat_id}/tasks?agent_id=default"),
         None,
     )
     .await;
-    assert_eq!(agent_scope.status(), StatusCode::OK);
-    assert!(response_json(agent_scope)
-        .await
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert_eq!(same_chat.status(), StatusCode::OK);
+    assert_eq!(response_json(same_chat).await[0]["task_id"], task_id);
 
     test.state
         .conversation_input_intake
@@ -2305,9 +2250,9 @@ async fn project_task_routes_use_typed_project_chat_ownership() {
         })
         .await
         .unwrap();
-    wait_for_project_chat_idle(&test.state, &project_id, chat_id).await;
-    let address = ChatAddress::project(&project_id, chat_id);
-    let scope = rua_core::ChatScopeStore::resolve(&test.state.rua_root, address);
+    wait_for_chat_idle(&test.state, chat_id).await;
+    let address = ChatAddress::new(chat_id);
+    let scope = rua_core::ChatStore::resolve(&test.state.rua_root, address);
     let store = rua_session::WorkspaceSessionStore::new(scope.root());
     let notification_turn_id = store
         .read_message_range(chat_id, 1, usize::MAX)
@@ -2337,7 +2282,7 @@ async fn project_task_routes_use_typed_project_chat_ownership() {
     let cancel = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/tasks/{task_id}/cancel"),
+        &format!("/api/chats/{chat_id}/tasks/{task_id}/cancel"),
         None,
     )
     .await;
@@ -2346,16 +2291,13 @@ async fn project_task_routes_use_typed_project_chat_ownership() {
     let retry = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/tasks/{task_id}/retry"),
+        &format!("/api/chats/{chat_id}/tasks/{task_id}/retry"),
         Some(json!({ "authorization_agent_id": "agent-b" })),
     )
     .await;
     assert_eq!(retry.status(), StatusCode::OK);
     let retried = response_json(retry).await;
-    assert_eq!(
-        retried["spec"]["owner"]["chat_address"]["scope"]["project_id"],
-        project_id
-    );
+    assert_eq!(retried["spec"]["owner"]["chat_address"]["chat_id"], chat_id);
     assert_eq!(
         retried["attempts"][0]["authorization_agent_id"],
         "controller"
@@ -2365,7 +2307,7 @@ async fn project_task_routes_use_typed_project_chat_ownership() {
     let cancel_retry = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/tasks/{task_id}/cancel"),
+        &format!("/api/chats/{chat_id}/tasks/{task_id}/cancel"),
         None,
     )
     .await;
@@ -2404,8 +2346,8 @@ async fn project_archive_and_reopen_ordered_hard_stop_contract() {
     let submit = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/console/submit"),
-        Some(json!({
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({ "project_id": project_id,
             "agent_id": "default",
             "chat_id": chat_id,
             "message": "prepare lifecycle",
@@ -2413,9 +2355,9 @@ async fn project_archive_and_reopen_ordered_hard_stop_contract() {
     )
     .await;
     assert_eq!(submit.status(), StatusCode::OK);
-    wait_for_project_chat_idle(&test.state, &project_id, chat_id).await;
-    let address = ChatAddress::project(project_id.clone(), chat_id);
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    wait_for_chat_idle(&test.state, chat_id).await;
+    let address = ChatAddress::new(chat_id);
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let placement =
         rua_server::services::conversation_authority_target::load_chat_authority_placement_target(
             scope.root(),
@@ -2556,11 +2498,17 @@ async fn project_archive_and_reopen_ordered_hard_stop_contract() {
         .project_catalog
         .begin_lifecycle_transition(&project_id_typed)
         .unwrap();
+    let session = rua_session::WorkspaceSessionStore::new(scope.root())
+        .load_chat_header(chat_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.project_id.as_deref(), Some(project_id.as_str()));
     let blocked_submit = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/console/submit"),
-        Some(json!({
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({ "project_id": project_id,
             "agent_id": "default",
             "chat_id": chat_id,
             "message": "must be blocked",
@@ -2568,6 +2516,10 @@ async fn project_archive_and_reopen_ordered_hard_stop_contract() {
     )
     .await;
     assert_eq!(blocked_submit.status(), StatusCode::CONFLICT);
+    assert!(response_json(blocked_submit).await["detail"]
+        .as_str()
+        .unwrap()
+        .contains("Project lifecycle transition"));
     test.state
         .project_catalog
         .end_lifecycle_transition(&project_id_typed);
@@ -2636,7 +2588,7 @@ async fn project_archive_and_reopen_ordered_hard_stop_contract() {
     let archived_history = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{project_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
     )
     .await;
@@ -2645,8 +2597,8 @@ async fn project_archive_and_reopen_ordered_hard_stop_contract() {
     let archived_submit = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/console/submit"),
-        Some(json!({
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({ "project_id": project_id,
             "agent_id": "default",
             "chat_id": chat_id,
             "message": "must stay archived",
@@ -2654,6 +2606,10 @@ async fn project_archive_and_reopen_ordered_hard_stop_contract() {
     )
     .await;
     assert_eq!(archived_submit.status(), StatusCode::CONFLICT);
+    assert!(response_json(archived_submit).await["detail"]
+        .as_str()
+        .unwrap()
+        .contains("Archived Project"));
 
     std::fs::remove_dir_all(&repo).unwrap();
     let failed_reopen = request(
@@ -2888,8 +2844,8 @@ async fn project_permanent_delete_cleans_rua_state_and_preserves_repository() {
     let submit = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/console/submit"),
-        Some(json!({
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({ "project_id": project_id,
             "agent_id": "default",
             "chat_id": chat_id,
             "message": "create history before delete",
@@ -2897,11 +2853,19 @@ async fn project_permanent_delete_cleans_rua_state_and_preserves_repository() {
     )
     .await;
     assert_eq!(submit.status(), StatusCode::OK);
-    wait_for_project_chat_idle(&test.state, &project_id, chat_id).await;
-    let address = ChatAddress::project(project_id.clone(), chat_id);
-    let scope_root = ChatScopeStore::resolve(&test.state.rua_root, address.clone())
+    wait_for_chat_idle(&test.state, chat_id).await;
+    let address = ChatAddress::new(chat_id);
+    let scope_root = ChatStore::resolve(&test.state.rua_root, address.clone())
         .root()
         .to_path_buf();
+
+    let survivor = "00000000-0000-4000-8000-000000000512";
+    let store = rua_session::WorkspaceSessionStore::new(&scope_root);
+    let mut unrelated = store.load_chat_header(chat_id).await.unwrap().unwrap();
+    unrelated.chat_id = survivor.to_string();
+    unrelated.metadata.chat_id = survivor.to_string();
+    unrelated.project_id = None;
+    store.save_chat_header(&unrelated).await.unwrap();
 
     for (call_id, decision) in [
         (
@@ -3035,7 +2999,8 @@ async fn project_permanent_delete_cleans_rua_state_and_preserves_repository() {
         .get(&project_id_typed)
         .unwrap()
         .is_none());
-    assert!(!scope_root.exists());
+    assert!(store.load_chat_header(chat_id).await.unwrap().is_none());
+    assert!(store.load_chat_header(survivor).await.unwrap().is_some());
     assert!(test
         .state
         .security
@@ -3175,8 +3140,8 @@ fn snapshot_directory(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     output
 }
 
-async fn wait_for_project_chat_idle(state: &rua_server::AppState, project_id: &str, chat_id: &str) {
-    let address = rua_core::ChatAddress::project(project_id, chat_id);
+async fn wait_for_chat_idle(state: &rua_server::AppState, chat_id: &str) {
+    let address = rua_core::ChatAddress::new(chat_id);
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             if state
@@ -3220,10 +3185,25 @@ async fn remote_project_stays_visible_without_availability_or_path_disclosure() 
     assert!(list["projects"][0].get("availability").is_none());
     assert!(list["projects"][0].get("resource_root").is_none());
     assert!(test.state.project_bindings.list().unwrap().is_empty());
+    let chat_id = "00000000-0000-4000-8000-000000000411";
+    let store = rua_session::WorkspaceSessionStore::new(test.state.rua_root.join("chats"));
+    let now = Utc::now().to_rfc3339();
+    let mut header = rua_session::ChatSessionHeader::new(rua_session::ChatMetadata {
+        chat_id: chat_id.into(),
+        agent_id: "default".into(),
+        title: "Remote".into(),
+        created_at: now.clone(),
+        last_activity_at: now,
+        pinned: false,
+        archived: false,
+        preview: None,
+    });
+    header.project_id = Some("remote-project".into());
+    store.save_chat_header(&header).await.unwrap();
     let deleted = request(
         &test.app,
         Method::DELETE,
-        "/api/projects/remote-project/chats/00000000-0000-4000-8000-000000000411",
+        &format!("/api/chats/{chat_id}"),
         None,
     )
     .await;
@@ -3271,22 +3251,19 @@ async fn project_chat_remote_delete_command_preserves_busy_force_and_not_found()
         .unwrap()
         .to_string();
     let chat_id = "00000000-0000-4000-8000-000000000419";
-    let path = format!("/api/projects/{project_id}/chats/{chat_id}");
+    let path = format!("/api/chats/{chat_id}");
     let submitted = request(
         &test.app,
         Method::POST,
         &format!("{path}/console/submit"),
         Some(json!({
-            "agent_id": "default", "chat_id": chat_id, "message": "Delete fixture",
+            "project_id": project_id, "agent_id": "default", "chat_id": chat_id, "message": "Delete fixture",
         })),
     )
     .await;
     assert_eq!(submitted.status(), StatusCode::OK);
-    wait_for_project_chat_idle(&test.state, &project_id, chat_id).await;
-    let scope = ChatScopeStore::resolve(
-        &test.state.rua_root,
-        ChatAddress::project(project_id.clone(), chat_id),
-    );
+    wait_for_chat_idle(&test.state, chat_id).await;
+    let scope = ChatStore::resolve(&test.state.rua_root, ChatAddress::new(chat_id));
     let store = rua_session::WorkspaceSessionStore::new(scope.root());
     store
         .update_chat_header(chat_id, |header| {
@@ -3445,8 +3422,8 @@ async fn project_chat_archive_filter_and_bulk_delete_archived_contract() {
         let submit = request(
             &test.app,
             Method::POST,
-            &format!("/api/projects/{project_id}/chats/{chat_id}/console/submit"),
-            Some(json!({
+            &format!("/api/chats/{chat_id}/console/submit"),
+            Some(json!({ "project_id": project_id,
                 "agent_id": "default",
                 "chat_id": chat_id,
                 "message": message,
@@ -3454,13 +3431,13 @@ async fn project_chat_archive_filter_and_bulk_delete_archived_contract() {
         )
         .await;
         assert_eq!(submit.status(), StatusCode::OK);
-        wait_for_project_chat_idle(&test.state, &project_id, chat_id).await;
+        wait_for_chat_idle(&test.state, chat_id).await;
     }
 
     let archive_patch = request(
         &test.app,
         Method::PATCH,
-        &format!("/api/projects/{project_id}/chats/{}", chat_ids[1]),
+        &format!("/api/chats/{}", chat_ids[1]),
         Some(json!({ "archived": true })),
     )
     .await;
@@ -3508,15 +3485,14 @@ async fn project_chat_archive_filter_and_bulk_delete_archived_contract() {
     assert_eq!(archived_chats[0]["id"], chat_ids[1]);
     assert_eq!(archived_chats[0]["archived"], true);
 
-    let collaboration_address = rua_core::ChatAddress::project(project_id.clone(), chat_ids[0]);
-    let scope =
-        rua_core::ChatScopeStore::resolve(&test.state.rua_root, collaboration_address.clone());
+    let collaboration_address = rua_core::ChatAddress::new(chat_ids[0]);
+    let scope = rua_core::ChatStore::resolve(&test.state.rua_root, collaboration_address.clone());
     let store = rua_session::WorkspaceSessionStore::new(scope.root());
     store.update_chat_header(chat_ids[0], |header| {
         header.metadata.archived = true;
         header.extra.insert("collaboration".into(), json!({"source":{"scope":{"kind":"project","project_id":project_id},"chat_id":chat_ids[1]},"executor":{"kind":"agent","agent_id":"default"}}));
     }).await.unwrap();
-    rua_chat::ChatService::for_resolved_scope(scope.root(), collaboration_address.clone())
+    rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope.root()))
         .repair_projection(&collaboration_address)
         .await
         .unwrap();
@@ -3560,7 +3536,7 @@ async fn project_chat_archive_filter_and_bulk_delete_archived_contract() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn project_metadata_get_reads_only_scoped_index_including_archived_chat() {
+async fn chat_metadata_reads_only_the_index_including_archived_project_chats() {
     let test = build_app();
     let chat_id = "00000000-0000-4000-8000-000000000914";
     for id in ["metadata-project", "metadata-other"] {
@@ -3579,11 +3555,8 @@ async fn project_metadata_get_reads_only_scoped_index_including_archived_chat() 
             })
             .unwrap();
     }
-    let scope = ChatScopeStore::resolve(
-        &test.state.rua_root,
-        ChatAddress::project("metadata-project", chat_id),
-    );
-    let uri = format!("/api/projects/metadata-project/chats/{chat_id}/metadata");
+    let scope = ChatStore::resolve(&test.state.rua_root, ChatAddress::new(chat_id));
+    let uri = format!("/api/chats/{chat_id}/metadata");
     let missing = request(&test.app, Method::GET, &uri, None).await;
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     assert!(response_json(missing).await["detail"].is_string());
@@ -3632,15 +3605,12 @@ async fn project_metadata_get_reads_only_scoped_index_including_archived_chat() 
         let response = request(
             &test.app,
             Method::GET,
-            &format!("/api/projects/{project}/chats/{chat_id}/metadata"),
+            &format!("{uri}?project_id={project}"),
             None,
         )
         .await;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        assert!(response_json(response).await["detail"].is_string());
-        let other =
-            ChatScopeStore::resolve(&test.state.rua_root, ChatAddress::project(project, chat_id));
-        assert!(!other.root().exists());
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await, metadata);
     }
 }
 
@@ -3692,18 +3662,16 @@ async fn multi_directory_project_creation_preserves_roots_and_rejects_duplicate_
     let submit = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{id}/chats/{chat_id}/console/submit"),
+        &format!("/api/chats/{chat_id}/console/submit"),
         Some(
-            json!({"agent_id":"default", "chat_id":chat_id, "message":"Inspect project resources"}),
+            json!({"project_id":id, "agent_id":"default", "chat_id":chat_id, "message":"Inspect project resources"}),
         ),
     )
     .await;
     assert_eq!(submit.status(), StatusCode::OK);
-    wait_for_project_chat_idle(&test.state, id.as_str(), chat_id).await;
-    let scope = rua_core::ChatScopeStore::resolve(
-        &test.state.rua_root,
-        rua_core::ChatAddress::project(id.clone(), chat_id),
-    );
+    wait_for_chat_idle(&test.state, chat_id).await;
+    let scope =
+        rua_core::ChatStore::resolve(&test.state.rua_root, rua_core::ChatAddress::new(chat_id));
     let header = rua_session::WorkspaceSessionStore::new(scope.root())
         .load_chat_header(chat_id)
         .await
@@ -3731,10 +3699,10 @@ async fn multi_directory_project_creation_preserves_roots_and_rejects_duplicate_
     )
     .await;
     assert_eq!(stale.status(), StatusCode::CONFLICT);
-    let again = request(&test.app, Method::POST, &format!("/api/projects/{id}/chats/{chat_id}/console/submit"),
-        Some(json!({"agent_id":"default", "message":"Continue", "project_working_directory_id":"initial"}))).await;
+    let again = request(&test.app, Method::POST, &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({ "project_id": id,"agent_id":"default", "message":"Continue", "project_working_directory_id":"initial"}))).await;
     assert_eq!(again.status(), StatusCode::OK);
-    wait_for_project_chat_idle(&test.state, id.as_str(), chat_id).await;
+    wait_for_chat_idle(&test.state, chat_id).await;
     let header = rua_session::WorkspaceSessionStore::new(scope.root())
         .load_chat_header(chat_id)
         .await
@@ -3742,10 +3710,10 @@ async fn multi_directory_project_creation_preserves_roots_and_rejects_duplicate_
         .unwrap();
     assert_eq!(header.extra["project_working_directory_id"], primary_id);
     let chosen_chat = "00000000-0000-4000-8000-000000000702";
-    let chosen = request(&test.app, Method::POST, &format!("/api/projects/{id}/chats/{chosen_chat}/console/submit"),
-        Some(json!({"agent_id":"default", "message":"Use docs", "project_working_directory_id":primary_id}))).await;
+    let chosen = request(&test.app, Method::POST, &format!("/api/chats/{chosen_chat}/console/submit"),
+        Some(json!({ "project_id": id,"agent_id":"default", "message":"Use docs", "project_working_directory_id":primary_id}))).await;
     assert_eq!(chosen.status(), StatusCode::OK);
-    wait_for_project_chat_idle(&test.state, id.as_str(), chosen_chat).await;
+    wait_for_chat_idle(&test.state, chosen_chat).await;
     let header = rua_session::WorkspaceSessionStore::new(scope.root())
         .load_chat_header(chosen_chat)
         .await
@@ -3795,16 +3763,16 @@ async fn resource_edits_reject_chat_references_stale_revisions_and_active_admiss
     let submitted = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{id}/chats/{chat_id}/console/submit"),
-        Some(json!({"agent_id":"default", "message":"Keep this folder"})),
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({ "project_id": id,"agent_id":"default", "message":"Keep this folder"})),
     )
     .await;
     assert_eq!(submitted.status(), StatusCode::OK);
-    wait_for_project_chat_idle(&test.state, id.as_str(), chat_id).await;
+    wait_for_chat_idle(&test.state, chat_id).await;
     let archived = request(
         &test.app,
         Method::PATCH,
-        &format!("/api/projects/{id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         Some(json!({"archived":true})),
     )
     .await;
@@ -4008,24 +3976,21 @@ async fn bulk_archive_includes_collaboration_skips_busy_and_retries_only_selecte
         let submitted = request(
             &test.app,
             Method::POST,
-            &format!("/api/projects/{project_id}/chats/{id}/console/submit"),
-            Some(json!({"agent_id":"default","message":"Bulk archive fixture"})),
+            &format!("/api/chats/{id}/console/submit"),
+            Some(json!({ "project_id": project_id,"agent_id":"default","message":"Bulk archive fixture"})),
         )
         .await;
         assert_eq!(submitted.status(), StatusCode::OK);
-        wait_for_project_chat_idle(&test.state, project_id.as_str(), id).await;
+        wait_for_chat_idle(&test.state, id).await;
     }
-    let address = ChatAddress::project(project_id.clone(), ids[2]);
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    let address = ChatAddress::new(ids[2]);
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let store = rua_session::WorkspaceSessionStore::new(scope.root());
     store.update_chat_header(ids[1],|header|{header.extra.insert("collaboration".into(),json!({"source":{"scope":{"kind":"project","project_id":project_id},"chat_id":ids[0]},"executor":{"kind":"agent","agent_id":"default"}}));}).await.unwrap();
-    rua_chat::ChatService::for_resolved_scope(
-        scope.root(),
-        ChatAddress::project(project_id.clone(), ids[1]),
-    )
-    .repair_projection(&ChatAddress::project(project_id.clone(), ids[1]))
-    .await
-    .unwrap();
+    rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope.root()))
+        .repair_projection(&ChatAddress::new(ids[1]))
+        .await
+        .unwrap();
     let placement =
         rua_server::services::conversation_authority_target::load_chat_authority_placement_target(
             scope.root(),
@@ -4195,18 +4160,18 @@ async fn legacy_project_chat_listing_updates_do_not_require_runtime_configuratio
         .unwrap()
         .to_owned();
     let chat_id = "00000000-0000-4000-8000-000000009930";
-    let path = format!("/api/projects/{id}/chats/{chat_id}");
+    let path = format!("/api/chats/{chat_id}");
     let submitted = request(
         &test.app,
         Method::POST,
         &format!("{path}/console/submit"),
-        Some(json!({"agent_id":"default","message":"Legacy listing"})),
+        Some(json!({"project_id":id,"agent_id":"default","message":"Legacy listing"})),
     )
     .await;
     assert_eq!(submitted.status(), StatusCode::OK);
-    wait_for_project_chat_idle(&test.state, &id, chat_id).await;
-    let address = ChatAddress::project(id, chat_id);
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address);
+    wait_for_chat_idle(&test.state, chat_id).await;
+    let address = ChatAddress::new(chat_id);
+    let scope = ChatStore::resolve(&test.state.rua_root, address);
     let store = rua_session::WorkspaceSessionStore::new(scope.root());
     let mut header = store.load_chat_header(chat_id).await.unwrap().unwrap();
     header.extra.remove("hook_configuration");
@@ -4288,14 +4253,14 @@ async fn resource_edits_allow_idle_acp_binding_but_reject_running_and_queued_wor
     let submitted = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{id}/chats/{chat_id}/console/submit"),
-        Some(json!({"agent_id":"default", "message":"Idle ACP binding"})),
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({ "project_id": id,"agent_id":"default", "message":"Idle ACP binding"})),
     )
     .await;
     assert_eq!(submitted.status(), StatusCode::OK);
-    wait_for_project_chat_idle(&test.state, id, chat_id).await;
-    let address = ChatAddress::project(id, chat_id);
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    wait_for_chat_idle(&test.state, chat_id).await;
+    let address = ChatAddress::new(chat_id);
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let store = rua_session::WorkspaceSessionStore::new(scope.root());
     store
         .update_chat_header(chat_id, |header| {
@@ -4439,18 +4404,18 @@ async fn archive_and_reopen_preserve_idle_acp_collaboration_executor() {
     let submitted = request(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/console/submit"),
-        Some(json!({"agent_id":"default", "message":"Archive preserves executor"})),
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({ "project_id": project_id,"agent_id":"default", "message":"Archive preserves executor"})),
     )
     .await;
     assert_eq!(submitted.status(), StatusCode::OK);
-    wait_for_project_chat_idle(&test.state, project_id, chat_id).await;
-    let address = ChatAddress::project(project_id, chat_id);
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    wait_for_chat_idle(&test.state, chat_id).await;
+    let address = ChatAddress::new(chat_id);
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let store = rua_session::WorkspaceSessionStore::new(scope.root());
     let binding = json!({"kind":"acp_passthrough", "runner":"claude"});
     let collaboration = json!({
-        "source": ChatAddress::project(project_id, "missing-source"),
+        "source": ChatAddress::new("missing-source"),
         "executor": {"kind":"acp", "runner":"claude"},
         "executor_agent_id":"default"
     });

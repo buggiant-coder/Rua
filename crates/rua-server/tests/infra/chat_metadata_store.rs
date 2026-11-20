@@ -14,7 +14,7 @@ use tempfile::TempDir;
 const CHAT_ID: &str = "00000000-0000-0000-0000-000000009951";
 
 fn address() -> rua_core::ChatAddress {
-    rua_core::ChatAddress::agent("default", CHAT_ID)
+    rua_core::ChatAddress::new(CHAT_ID)
 }
 
 #[tokio::test]
@@ -358,8 +358,8 @@ async fn acp_binding_preserves_explicit_authority_placement() {
 #[tokio::test]
 async fn project_metadata_keeps_execution_agent_separate_from_chat_ownership() {
     let tmp = TempDir::new().expect("tempdir");
-    let project_root = tmp.path().join("projects/project-a");
-    let address = rua_core::ChatAddress::project("project-a", CHAT_ID);
+    let project_root = tmp.path().join("chats");
+    let address = rua_core::ChatAddress::new(CHAT_ID);
     let placement = ConversationAuthorityPlacement {
         device_id: "resource-device".to_string(),
         authority_epoch:
@@ -371,6 +371,21 @@ async fn project_metadata_keeps_execution_agent_separate_from_chat_ownership() {
         base_manifest_hash: format!("sha256:{}", "6".repeat(64)),
     };
 
+    let mut existing = ChatSessionHeader::new(ChatMetadata {
+        chat_id: CHAT_ID.into(),
+        agent_id: "execution-agent".into(),
+        title: "Project".into(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        last_activity_at: chrono::Utc::now().to_rfc3339(),
+        pinned: false,
+        archived: false,
+        preview: None,
+    });
+    existing.project_id = Some("project-a".into());
+    WorkspaceSessionStore::new(&project_root)
+        .save_chat_header(&existing)
+        .await
+        .unwrap();
     update_authority_placement(None, &project_root, &address, placement)
         .await
         .expect("Project placement");
@@ -395,8 +410,5 @@ async fn project_metadata_keeps_execution_agent_separate_from_chat_ownership() {
         .expect("load header")
         .expect("header");
     assert_eq!(header.agent_id, "execution-agent");
-    assert_eq!(
-        address.project_id().map(ToString::to_string).as_deref(),
-        Some("project-a")
-    );
+    assert_eq!(header.project_id.as_deref(), Some("project-a"));
 }

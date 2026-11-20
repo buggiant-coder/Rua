@@ -17,26 +17,11 @@ use rua_sync::merge_store::MergeStore;
 use rua_sync::sidecar::RecordState;
 use rua_sync::sync_registry::{DomainSyncAdapter, RegistryApplyStatus, SyncRegistry};
 
-fn agent_chat(agent_id: &str, chat_id: &str) -> ChatAddress {
-    ChatAddress::agent(agent_id, chat_id)
-}
-
 #[test]
-fn evergreen_record_ids_encode_scope_and_keep_equal_chat_ids_distinct() {
-    let agent = ChatAddress::agent("agent-a", "shared-chat");
-    let project = ChatAddress::project("project-a", "shared-chat");
-
+fn evergreen_snapshot_key_joins_chat_id_and_record_name() {
     assert_eq!(
-        file_record_id(&agent, "session"),
-        "agent/agent-a/shared-chat/session"
-    );
-    assert_eq!(
-        file_record_id(&project, "session"),
-        "project/project-a/shared-chat/session"
-    );
-    assert_ne!(
-        file_record_id(&agent, "session"),
-        file_record_id(&project, "session")
+        file_record_id(&ChatAddress::new("shared-chat"), "session"),
+        "chats/shared-chat/session"
     );
 }
 
@@ -45,11 +30,11 @@ async fn scoped_round_trip_preserves_unified_chat_fields_and_compact_assignment(
     let source = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
     let addresses = [
-        ChatAddress::agent("agent-a", "chat-unified-agent"),
-        ChatAddress::project("project-a", "chat-unified-project"),
+        (ChatAddress::new("chat-unified-agent"), None),
+        (ChatAddress::new("chat-unified-project"), Some("photos")),
     ];
-    for address in &addresses {
-        let scope = rua_core::ChatScopeStore::resolve(source.path(), address.clone());
+    for (address, project_id) in &addresses {
+        let scope = rua_core::ChatStore::resolve(source.path(), address.clone());
         let store = WorkspaceSessionStore::new(scope.root());
         let mut header = ChatSessionHeader::new(ChatMetadata {
             chat_id: address.chat_id().to_string(),
@@ -61,13 +46,10 @@ async fn scoped_round_trip_preserves_unified_chat_fields_and_compact_assignment(
             archived: false,
             preview: None,
         });
+        header.project_id = project_id.map(str::to_owned);
         header.extra.insert(
             "chat_policy".to_string(),
-            serde_json::to_value(rua_chat::ChatPolicy::for_scope(address.scope())).unwrap(),
-        );
-        header.extra.insert(
-            "selected_agent_id".to_string(),
-            serde_json::json!("agent-a"),
+            serde_json::to_value(rua_chat::ChatPolicy::for_project(*project_id)).unwrap(),
         );
         header.extra.insert(
             "future_field".to_string(),
@@ -75,11 +57,7 @@ async fn scoped_round_trip_preserves_unified_chat_fields_and_compact_assignment(
         );
         store.save_chat_header(&header).await.unwrap();
         let running_config = rua_config::ChatRunningConfig {
-            max_iters: if address.project_id().is_some() {
-                41
-            } else {
-                31
-            },
+            max_iters: if project_id.is_some() { 41 } else { 31 },
             ..Default::default()
         };
         header.extra.insert(
@@ -137,7 +115,7 @@ async fn scoped_round_trip_preserves_unified_chat_fields_and_compact_assignment(
 
     let source_adapter = EvergreenChatSyncAdapter::new(source.path().to_path_buf(), "device-a");
     let changes = source_adapter.export_records().await.unwrap();
-    for address in &addresses {
+    for (address, _) in &addresses {
         assert!(changes
             .iter()
             .any(|change| change.record_id == file_record_id(address, "session")));
@@ -159,20 +137,22 @@ async fn scoped_round_trip_preserves_unified_chat_fields_and_compact_assignment(
         registry.apply_change(change, &merge_store).await.unwrap();
     }
 
-    for address in &addresses {
-        let scope = rua_core::ChatScopeStore::resolve(target.path(), address.clone());
+    for (address, project_id) in &addresses {
+        let scope = rua_core::ChatStore::resolve(target.path(), address.clone());
         let store = WorkspaceSessionStore::new(scope.root());
         let header = store
             .load_chat_header(address.chat_id().as_str())
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(header.extra["selected_agent_id"], "agent-a");
+        assert_eq!(header.agent_id, "agent-a");
+        assert_eq!(header.project_id.as_deref(), *project_id);
         assert_eq!(
             header.extra["chat_policy"]["authority_placement"],
-            match address.scope() {
-                rua_core::ChatScope::Agent { .. } => "selectable",
-                rua_core::ChatScope::Project { .. } => "resource_bound",
+            if project_id.is_some() {
+                "resource_bound"
+            } else {
+                "selectable"
             }
         );
         assert_eq!(header.extra["future_field"]["preserve"], true);
@@ -183,11 +163,7 @@ async fn scoped_round_trip_preserves_unified_chat_fields_and_compact_assignment(
                 .unwrap()
                 .unwrap()
                 .max_iters,
-            if address.project_id().is_some() {
-                41
-            } else {
-                31
-            }
+            if project_id.is_some() { 41 } else { 31 }
         );
         let messages = store
             .read_turn_messages(address.chat_id().as_str(), "turn-1")
@@ -205,8 +181,8 @@ async fn scoped_round_trip_preserves_unified_chat_fields_and_compact_assignment(
 async fn complete_chat_configuration_roundtrip_preserves_head_and_snapshot() {
     let source = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();
-    let address = ChatAddress::agent("snapshot-agent", "snapshot-chat");
-    let scope = rua_core::ChatScopeStore::resolve(source.path(), address.clone());
+    let address = ChatAddress::new("snapshot-chat");
+    let scope = rua_core::ChatStore::resolve(source.path(), address.clone());
     let store = WorkspaceSessionStore::new(scope.root());
     let mut header = ChatSessionHeader::new(ChatMetadata {
         chat_id: address.chat_id().to_string(),
@@ -243,7 +219,7 @@ async fn complete_chat_configuration_roundtrip_preserves_head_and_snapshot() {
     for change in &changes {
         registry.apply_change(change, &merge_store).await.unwrap();
     }
-    let scope = rua_core::ChatScopeStore::resolve(target.path(), address.clone());
+    let scope = rua_core::ChatStore::resolve(target.path(), address.clone());
     let restored = WorkspaceSessionStore::new(scope.root());
     assert_eq!(
         restored
@@ -291,8 +267,8 @@ fn hlc(wall_ms: u64) -> HlcTimestamp {
     }
 }
 
-fn workspace_dir(data_dir: &std::path::Path, agent_id: &str) -> std::path::PathBuf {
-    data_dir.join("workspaces").join(agent_id)
+fn workspace_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.join("chats")
 }
 
 fn conversation_message(
@@ -317,12 +293,8 @@ async fn create_history_replacement_record(
     chat_id: &str,
     rejected: bool,
 ) -> HistoryReplacementRecord {
-    create_history_replacement_record_for_address(
-        workspace,
-        &agent_chat("default", chat_id),
-        rejected,
-    )
-    .await
+    create_history_replacement_record_for_address(workspace, &ChatAddress::new(chat_id), rejected)
+        .await
 }
 
 async fn create_history_replacement_record_for_address(
@@ -442,7 +414,7 @@ async fn create_history_replacement_record_for_address(
 #[tokio::test]
 async fn export_reads_directory_backed_evergreen_chat_files() {
     let data = tempfile::tempdir().unwrap();
-    let workspace = workspace_dir(data.path(), "default");
+    let workspace = workspace_dir(data.path());
     let chat_dir = workspace.join("sessions").join("chat-a");
     std::fs::create_dir_all(chat_dir.join("messages")).unwrap();
     std::fs::create_dir_all(chat_dir.join("checkpoints")).unwrap();
@@ -518,21 +490,21 @@ async fn export_reads_directory_backed_evergreen_chat_files() {
         .map(|record| record.record_id.as_str())
         .collect();
 
-    assert!(ids.contains(&"agent/default/chat-a/session"));
-    assert!(ids.contains(&"agent/default/chat-a/configuration_head"));
-    assert!(ids.contains(&"agent/default/chat-a/projection_exclusions"));
-    assert!(ids.contains(&"agent/default/chat-a/turn_index"));
-    assert!(ids.contains(&"agent/default/chat-a/messages/000000000000.jsonl"));
-    assert!(ids.contains(&"agent/default/chat-a/checkpoints/cp1.json"));
+    assert!(ids.contains(&"chats/chat-a/session"));
+    assert!(ids.contains(&"chats/chat-a/configuration_head"));
+    assert!(ids.contains(&"chats/chat-a/projection_exclusions"));
+    assert!(ids.contains(&"chats/chat-a/turn_index"));
+    assert!(ids.contains(&"chats/chat-a/messages/000000000000.jsonl"));
+    assert!(ids.contains(&"chats/chat-a/checkpoints/cp1.json"));
     assert!(
-        !ids.contains(&"agent/default/chat-a/projection_cache/pc1.json"),
+        !ids.contains(&"chats/chat-a/projection_cache/pc1.json"),
         "derived projection cache records must not be exported"
     );
     assert!(
         ids.iter().all(|record_id| !record_id.contains("/tasks/")),
         "Device-local Task records and Attempt data must not be exported"
     );
-    assert!(ids.contains(&"agent/default/chat-a/prompt_state"));
+    assert!(ids.contains(&"chats/chat-a/prompt_state"));
     assert!(records
         .iter()
         .all(|record| record.domain == EVERGREEN_CHAT_DOMAIN));
@@ -541,7 +513,7 @@ async fn export_reads_directory_backed_evergreen_chat_files() {
 #[tokio::test]
 async fn export_includes_durable_runtime_note_but_not_pending_queue() {
     let data = tempfile::tempdir().unwrap();
-    let workspace = workspace_dir(data.path(), "default");
+    let workspace = workspace_dir(data.path());
     let store = WorkspaceSessionStore::new(&workspace);
     store
         .save_chat_header(&ChatSessionHeader::new(ChatMetadata {
@@ -618,7 +590,7 @@ async fn export_includes_durable_runtime_note_but_not_pending_queue() {
 #[tokio::test]
 async fn export_and_inbound_apply_roundtrip_ready_and_rejected_history_replacements() {
     let source_data = tempfile::tempdir().unwrap();
-    let source_workspace = workspace_dir(source_data.path(), "default");
+    let source_workspace = workspace_dir(source_data.path());
     let ready = create_history_replacement_record(&source_workspace, "chat-ready", false).await;
     let rejected =
         create_history_replacement_record(&source_workspace, "chat-rejected", true).await;
@@ -636,11 +608,11 @@ async fn export_and_inbound_apply_roundtrip_ready_and_rejected_history_replaceme
         EvergreenChatSyncAdapter::new(source_data.path().to_path_buf(), "device-a");
     let exported = source_adapter.export_records().await.unwrap();
     let ready_record_id = format!(
-        "agent/default/chat-ready/history_replacements/{}.json",
+        "chats/chat-ready/history_replacements/{}.json",
         ready.record_id
     );
     let rejected_record_id = format!(
-        "agent/default/chat-rejected/history_replacements/{}.json",
+        "chats/chat-rejected/history_replacements/{}.json",
         rejected.record_id
     );
     assert!(exported
@@ -670,7 +642,7 @@ async fn export_and_inbound_apply_roundtrip_ready_and_rejected_history_replaceme
         registry.apply_change(change, &merge_store).await.unwrap();
     }
 
-    let target_store = WorkspaceSessionStore::new(workspace_dir(target_data.path(), "default"));
+    let target_store = WorkspaceSessionStore::new(workspace_dir(target_data.path()));
     assert_eq!(
         target_store
             .load_history_replacement("chat-ready", &ready.record_id)
@@ -690,23 +662,11 @@ async fn export_and_inbound_apply_roundtrip_ready_and_rejected_history_replaceme
 #[tokio::test]
 async fn project_history_replacement_roundtrips_with_project_scope() {
     let source_data = tempfile::tempdir().unwrap();
-    let project_address = ChatAddress::project("project-a", "chat-project");
-    let source_project = source_data.path().join("projects").join("project-a");
+    let project_address = ChatAddress::new("chat-project");
+    let source_project = workspace_dir(source_data.path());
     let record =
         create_history_replacement_record_for_address(&source_project, &project_address, false)
             .await;
-    let publication_error = EvergreenChatSyncAdapter::snapshot_changes_for_chat(
-        &source_project,
-        &agent_chat("default", "chat-project"),
-        "device-a",
-        hlc(1),
-    )
-    .expect_err("Project history replacement must not publish under an Agent namespace");
-    assert!(
-        matches!(publication_error, rua_sync::SyncError::InvalidPayload(_)),
-        "namespace mismatch must be a permanent invalid payload: {publication_error}"
-    );
-    assert!(publication_error.is_permanent());
     let relative = format!("history_replacements/{}.json", record.record_id);
     let source_adapter =
         EvergreenChatSyncAdapter::new(source_data.path().to_path_buf(), "device-a");
@@ -720,9 +680,9 @@ async fn project_history_replacement_roundtrips_with_project_scope() {
         change.payload["chat_address"],
         serde_json::to_value(&project_address).unwrap()
     );
-    assert!(exported
-        .iter()
-        .all(|change| !change.record_id.starts_with("agent/default/chat-project/")));
+    assert!(exported.iter().all(|change| !change
+        .record_id
+        .starts_with("project/project-a/chat-project/")));
 
     let target_data = tempfile::tempdir().unwrap();
     let merge_dir = tempfile::tempdir().unwrap();
@@ -738,7 +698,7 @@ async fn project_history_replacement_roundtrips_with_project_scope() {
     let result = registry.apply_change(change, &merge_store).await.unwrap();
 
     assert_eq!(result.status, RegistryApplyStatus::Applied);
-    let target_project = target_data.path().join("projects").join("project-a");
+    let target_project = workspace_dir(target_data.path());
     let target_record_path = WorkspaceSessionStore::new(&target_project)
         .history_replacement_path("chat-project", &record.record_id);
     assert_eq!(
@@ -749,7 +709,9 @@ async fn project_history_replacement_roundtrips_with_project_scope() {
         record
     );
     assert!(
-        !workspace_dir(target_data.path(), "default")
+        !target_data
+            .path()
+            .join("workspaces/default")
             .join("sessions")
             .join("chat-project")
             .join(&relative)
@@ -761,7 +723,7 @@ async fn project_history_replacement_roundtrips_with_project_scope() {
 #[tokio::test]
 async fn inbound_rejects_tampered_or_noncanonical_history_replacement_records() {
     let source_data = tempfile::tempdir().unwrap();
-    let source_workspace = workspace_dir(source_data.path(), "default");
+    let source_workspace = workspace_dir(source_data.path());
     let record = create_history_replacement_record(&source_workspace, "chat-tampered", false).await;
     let source_adapter =
         EvergreenChatSyncAdapter::new(source_data.path().to_path_buf(), "device-a");
@@ -773,7 +735,7 @@ async fn inbound_rejects_tampered_or_noncanonical_history_replacement_records() 
         .find(|change| {
             change.record_id
                 == format!(
-                    "agent/default/chat-tampered/history_replacements/{}.json",
+                    "chats/chat-tampered/history_replacements/{}.json",
                     record.record_id
                 )
         })
@@ -798,7 +760,7 @@ async fn inbound_rejects_tampered_or_noncanonical_history_replacement_records() 
         matches!(error, rua_sync::SyncError::InvalidPayload(_)),
         "tampered replacement must be classified as a permanent invalid payload: {error}"
     );
-    assert!(!workspace_dir(target_data.path(), "default")
+    assert!(!workspace_dir(target_data.path())
         .join("sessions")
         .join("chat-tampered")
         .join("history_replacements")
@@ -807,7 +769,7 @@ async fn inbound_rejects_tampered_or_noncanonical_history_replacement_records() 
 
     let invalid_path = EvergreenChatSyncAdapter::file_change(
         "op-invalid-history-replacement-path",
-        &agent_chat("default", "chat-tampered"),
+        &ChatAddress::new("chat-tampered"),
         "history_replacements/not-a-record.json",
         serde_json::to_value(&record).unwrap(),
         "device-a",
@@ -822,7 +784,7 @@ async fn inbound_rejects_tampered_or_noncanonical_history_replacement_records() 
 #[tokio::test]
 async fn inbound_consumes_superseded_history_replacement_format_without_materializing_it() {
     let source_data = tempfile::tempdir().unwrap();
-    let source_workspace = workspace_dir(source_data.path(), "default");
+    let source_workspace = workspace_dir(source_data.path());
     let record = create_history_replacement_record(&source_workspace, "chat-legacy", false).await;
     let mut payload = serde_json::to_value(&record).unwrap();
     payload["format_version"] = serde_json::json!(1);
@@ -834,7 +796,7 @@ async fn inbound_consumes_superseded_history_replacement_format_without_material
         .remove("chat_address");
     let change = EvergreenChatSyncAdapter::file_change(
         "op-legacy-history-replacement",
-        &agent_chat("default", "chat-legacy"),
+        &ChatAddress::new("chat-legacy"),
         format!("history_replacements/{}.json", record.record_id),
         payload,
         "device-a",
@@ -856,7 +818,7 @@ async fn inbound_consumes_superseded_history_replacement_format_without_material
     assert_eq!(first.status, RegistryApplyStatus::Applied);
     let second = registry.apply_change(&change, &merge_store).await.unwrap();
     assert_eq!(second.status, RegistryApplyStatus::AlreadyApplied);
-    assert!(!workspace_dir(target_data.path(), "default")
+    assert!(!workspace_dir(target_data.path())
         .join("sessions")
         .join("chat-legacy")
         .join("history_replacements")
@@ -867,7 +829,7 @@ async fn inbound_consumes_superseded_history_replacement_format_without_material
 #[tokio::test]
 async fn outbound_skips_superseded_history_replacement_versions() {
     let source_data = tempfile::tempdir().unwrap();
-    let source_workspace = workspace_dir(source_data.path(), "default");
+    let source_workspace = workspace_dir(source_data.path());
     let record =
         create_history_replacement_record(&source_workspace, "chat-old-prompt", false).await;
     let record_path = WorkspaceSessionStore::new(&source_workspace)
@@ -881,7 +843,7 @@ async fn outbound_skips_superseded_history_replacement_versions() {
         .await
         .unwrap();
     let record_id = format!(
-        "agent/default/chat-old-prompt/history_replacements/{}.json",
+        "chats/chat-old-prompt/history_replacements/{}.json",
         record.record_id
     );
     assert!(
@@ -893,7 +855,7 @@ async fn outbound_skips_superseded_history_replacement_versions() {
 #[tokio::test]
 async fn history_replacement_tombstone_exports_and_deletes_remote_record() {
     let source_data = tempfile::tempdir().unwrap();
-    let source_workspace = workspace_dir(source_data.path(), "default");
+    let source_workspace = workspace_dir(source_data.path());
     let record = create_history_replacement_record(&source_workspace, "chat-deleted", false).await;
     let source_store = WorkspaceSessionStore::new(&source_workspace);
     let record_path = source_store.history_replacement_path("chat-deleted", &record.record_id);
@@ -917,7 +879,7 @@ async fn history_replacement_tombstone_exports_and_deletes_remote_record() {
         .find(|change| {
             change.record_id
                 == format!(
-                    "agent/default/chat-deleted/history_replacements/{}.json",
+                    "chats/chat-deleted/history_replacements/{}.json",
                     record.record_id
                 )
         })
@@ -928,7 +890,7 @@ async fn history_replacement_tombstone_exports_and_deletes_remote_record() {
     );
 
     let target_data = tempfile::tempdir().unwrap();
-    let target_workspace = workspace_dir(target_data.path(), "default");
+    let target_workspace = workspace_dir(target_data.path());
     let target_record =
         create_history_replacement_record(&target_workspace, "chat-deleted", false).await;
     assert_eq!(target_record.record_id, record.record_id);
@@ -961,7 +923,7 @@ async fn inbound_writes_evergreen_files_without_legacy_flat_session() {
 
     let change = EvergreenChatSyncAdapter::file_change(
         "op-evergreen-session",
-        &agent_chat("default", "chat-a"),
+        &ChatAddress::new("chat-a"),
         "session",
         serde_json::json!({"id": "chat-a", "title": "Remote"}),
         "device-a",
@@ -971,7 +933,7 @@ async fn inbound_writes_evergreen_files_without_legacy_flat_session() {
     let result = registry.apply_change(&change, &merge_store).await.unwrap();
 
     assert_eq!(result.status, RegistryApplyStatus::Applied);
-    let header_path = workspace_dir(data.path(), "default")
+    let header_path = workspace_dir(data.path())
         .join("sessions")
         .join("chat-a")
         .join("session.json");
@@ -979,7 +941,7 @@ async fn inbound_writes_evergreen_files_without_legacy_flat_session() {
         serde_json::from_str(&std::fs::read_to_string(header_path).unwrap()).unwrap();
     assert_eq!(header["title"], "Remote");
     assert!(
-        !workspace_dir(data.path(), "default")
+        !workspace_dir(data.path())
             .join("sessions")
             .join("default_chat-a.json")
             .exists(),
@@ -1006,12 +968,12 @@ async fn project_tombstone_rejects_later_evergreen_snapshot() {
     ));
     let mut registry = SyncRegistry::new();
     registry.register(adapter).unwrap();
-    let address = ChatAddress::project("deleted-project", "chat-a");
+    let address = ChatAddress::new("chat-a");
     let change = EvergreenChatSyncAdapter::file_change(
         "late-project-session",
         &address,
         "session",
-        serde_json::json!({"chat_id": "chat-a"}),
+        serde_json::json!({"chat_id": "chat-a", "project_id": "deleted-project"}),
         "device-a",
         hlc(500),
     );
@@ -1026,11 +988,11 @@ async fn project_tombstone_rejects_later_evergreen_snapshot() {
     );
     assert!(!data
         .path()
-        .join("projects/deleted-project/sessions/chat-a/session.json")
+        .join("chats/sessions/chat-a/session.json")
         .exists());
     assert_eq!(
         merge_store
-            .get_record_cursor("evergreen_chat:project/deleted-project/chat-a/session")
+            .get_record_cursor("evergreen_chat:chats/chat-a/session")
             .unwrap()
             .unwrap()
             .state,
@@ -1052,7 +1014,7 @@ async fn inbound_writes_prompt_state_as_evergreen_chat_file() {
 
     let change = EvergreenChatSyncAdapter::file_change(
         "op-evergreen-prompt-state",
-        &agent_chat("default", "chat-a"),
+        &ChatAddress::new("chat-a"),
         "prompt_state",
         serde_json::json!({"mode": "agent", "files": [{"id": "prompt-1"}]}),
         "device-a",
@@ -1062,7 +1024,7 @@ async fn inbound_writes_prompt_state_as_evergreen_chat_file() {
     let result = registry.apply_change(&change, &merge_store).await.unwrap();
 
     assert_eq!(result.status, RegistryApplyStatus::Applied);
-    let prompt_state_path = workspace_dir(data.path(), "default")
+    let prompt_state_path = workspace_dir(data.path())
         .join("prompt-state")
         .join("chat-a.json");
     let prompt_state: serde_json::Value =
@@ -1076,7 +1038,7 @@ async fn inbound_message_log_unions_local_and_remote_entries() {
     let data = tempfile::tempdir().unwrap();
     let merge_dir = tempfile::tempdir().unwrap();
     let merge_store = MergeStore::open(merge_dir.path()).unwrap();
-    let message_path = workspace_dir(data.path(), "default")
+    let message_path = workspace_dir(data.path())
         .join("sessions")
         .join("chat-a")
         .join("messages")
@@ -1096,7 +1058,7 @@ async fn inbound_message_log_unions_local_and_remote_entries() {
 
     let change = EvergreenChatSyncAdapter::file_change(
         "op-evergreen-messages",
-        &agent_chat("default", "chat-a"),
+        &ChatAddress::new("chat-a"),
         "messages/000000000000.jsonl",
         serde_json::Value::String(
             r#"{"message_id":"remote","sequence":2,"role":"assistant"}
@@ -1119,7 +1081,7 @@ async fn inbound_file_delete_removes_evergreen_file() {
     let data = tempfile::tempdir().unwrap();
     let merge_dir = tempfile::tempdir().unwrap();
     let merge_store = MergeStore::open(merge_dir.path()).unwrap();
-    let header_path = workspace_dir(data.path(), "default")
+    let header_path = workspace_dir(data.path())
         .join("sessions")
         .join("chat-a")
         .join("session.json");
@@ -1137,7 +1099,7 @@ async fn inbound_file_delete_removes_evergreen_file() {
 
     let change = EvergreenChatSyncAdapter::delete_change(
         "op-evergreen-delete",
-        &agent_chat("default", "chat-a"),
+        &ChatAddress::new("chat-a"),
         "session",
         "device-a",
         hlc(200),
@@ -1163,7 +1125,7 @@ async fn stale_file_delete_does_not_remove_newer_evergreen_file() {
 
     let newer = EvergreenChatSyncAdapter::file_change(
         "op-evergreen-newer-session",
-        &agent_chat("default", "chat-a"),
+        &ChatAddress::new("chat-a"),
         "session",
         serde_json::json!({"id": "chat-a", "title": "Fresh"}),
         "device-a",
@@ -1173,7 +1135,7 @@ async fn stale_file_delete_does_not_remove_newer_evergreen_file() {
 
     let stale_delete = EvergreenChatSyncAdapter::delete_change(
         "op-evergreen-stale-delete",
-        &agent_chat("default", "chat-a"),
+        &ChatAddress::new("chat-a"),
         "session",
         "device-a",
         hlc(200),
@@ -1184,7 +1146,7 @@ async fn stale_file_delete_does_not_remove_newer_evergreen_file() {
         .unwrap();
 
     assert_eq!(result.status, RegistryApplyStatus::Skipped);
-    let header_path = workspace_dir(data.path(), "default")
+    let header_path = workspace_dir(data.path())
         .join("sessions")
         .join("chat-a")
         .join("session.json");
@@ -1207,7 +1169,7 @@ async fn stale_session_snapshot_does_not_rollback_newer_header() {
 
     let newer = EvergreenChatSyncAdapter::file_change(
         "op-evergreen-session-newer",
-        &agent_chat("default", "chat-a"),
+        &ChatAddress::new("chat-a"),
         "session",
         serde_json::json!({"id": "chat-a", "title": "Fresh"}),
         "device-a",
@@ -1217,7 +1179,7 @@ async fn stale_session_snapshot_does_not_rollback_newer_header() {
 
     let stale = EvergreenChatSyncAdapter::file_change(
         "op-evergreen-session-stale",
-        &agent_chat("default", "chat-a"),
+        &ChatAddress::new("chat-a"),
         "session",
         serde_json::json!({"id": "chat-a", "title": "Old"}),
         "device-a",
@@ -1226,7 +1188,7 @@ async fn stale_session_snapshot_does_not_rollback_newer_header() {
     let result = registry.apply_change(&stale, &merge_store).await.unwrap();
 
     assert_eq!(result.status, RegistryApplyStatus::Skipped);
-    let header_path = workspace_dir(data.path(), "default")
+    let header_path = workspace_dir(data.path())
         .join("sessions")
         .join("chat-a")
         .join("session.json");
@@ -1241,8 +1203,8 @@ async fn delayed_session_publication_preserves_confirmed_authority_epoch() {
     let merge_dir = tempfile::tempdir().unwrap();
     let merge = MergeStore::open(merge_dir.path()).unwrap();
     let adapter = EvergreenChatSyncAdapter::new(data.path().into(), "desktop");
-    let address = agent_chat("default", "handoff");
-    let workspace = workspace_dir(data.path(), "default");
+    let address = ChatAddress::new("handoff");
+    let workspace = workspace_dir(data.path());
     let store = WorkspaceSessionStore::new(&workspace);
     let confirmed = serde_json::json!({"device_id":"desktop", "authority_epoch":hlc(200).to_sortable_string(), "base_manifest_hash":"confirmed"});
     let mut header = ChatSessionHeader::new(ChatMetadata {
@@ -1323,7 +1285,7 @@ async fn older_message_log_still_unions_new_entries() {
     let data = tempfile::tempdir().unwrap();
     let merge_dir = tempfile::tempdir().unwrap();
     let merge_store = MergeStore::open(merge_dir.path()).unwrap();
-    let message_path = workspace_dir(data.path(), "default")
+    let message_path = workspace_dir(data.path())
         .join("sessions")
         .join("chat-a")
         .join("messages")
@@ -1337,7 +1299,7 @@ async fn older_message_log_still_unions_new_entries() {
 
     let newer = EvergreenChatSyncAdapter::file_change(
         "op-evergreen-message-newer",
-        &agent_chat("default", "chat-a"),
+        &ChatAddress::new("chat-a"),
         "messages/000000000000.jsonl",
         serde_json::Value::String(
             r#"{"message_id":"newer","sequence":2,"role":"assistant"}
@@ -1351,7 +1313,7 @@ async fn older_message_log_still_unions_new_entries() {
 
     let older = EvergreenChatSyncAdapter::file_change(
         "op-evergreen-message-older",
-        &agent_chat("default", "chat-a"),
+        &ChatAddress::new("chat-a"),
         "messages/000000000000.jsonl",
         serde_json::Value::String(
             r#"{"message_id":"older","sequence":1,"role":"user"}
@@ -1383,7 +1345,7 @@ async fn inbound_projection_cache_record_is_ignored_and_does_not_poison_inbox() 
 
     let change = EvergreenChatSyncAdapter::file_change(
         "op-evergreen-projection-cache",
-        &agent_chat("default", "chat-a"),
+        &ChatAddress::new("chat-a"),
         "projection_cache/cache.json",
         serde_json::json!({"estimated_tokens": 1234}),
         "device-a",
@@ -1395,7 +1357,7 @@ async fn inbound_projection_cache_record_is_ignored_and_does_not_poison_inbox() 
     assert_eq!(result.status, RegistryApplyStatus::Applied);
     assert!(merge_store.has_applied_op(&change.op_id).unwrap());
     assert!(
-        !workspace_dir(data.path(), "default")
+        !workspace_dir(data.path())
             .join("sessions")
             .join("chat-a")
             .join("projection_cache")
@@ -1408,7 +1370,7 @@ async fn inbound_projection_cache_record_is_ignored_and_does_not_poison_inbox() 
 #[test]
 fn snapshot_changes_use_v4_domain_and_stable_record_ids() {
     let data = tempfile::tempdir().unwrap();
-    let workspace = workspace_dir(data.path(), "default");
+    let workspace = workspace_dir(data.path());
     let chat_dir = workspace.join("sessions").join("chat-a");
     std::fs::create_dir_all(&chat_dir).unwrap();
     rua_config::atomic_write_json(
@@ -1422,21 +1384,21 @@ fn snapshot_changes_use_v4_domain_and_stable_record_ids() {
 
     let changes = EvergreenChatSyncAdapter::snapshot_changes_for_chat(
         &workspace,
-        &agent_chat("default", "chat-a"),
+        &ChatAddress::new("chat-a"),
         "device-a",
         hlc(1),
     )
     .unwrap();
     assert_eq!(changes.len(), 1);
     assert_eq!(changes[0].domain, EVERGREEN_CHAT_DOMAIN);
-    assert_eq!(changes[0].record_id, "agent/default/chat-a/session");
+    assert_eq!(changes[0].record_id, "chats/chat-a/session");
     assert_eq!(changes[0].kind, EVERGREEN_CHAT_KIND_FILE_SNAPSHOT);
 }
 
 #[test]
 fn snapshot_changes_include_prompt_state_without_session_directory() {
     let data = tempfile::tempdir().unwrap();
-    let workspace = workspace_dir(data.path(), "default");
+    let workspace = workspace_dir(data.path());
     rua_config::atomic_write_json(
         &workspace.join("prompt-state").join("chat-a.json"),
         &serde_json::json!({"mode": "code"}),
@@ -1449,20 +1411,20 @@ fn snapshot_changes_include_prompt_state_without_session_directory() {
 
     let changes = EvergreenChatSyncAdapter::snapshot_changes_for_chat(
         &workspace,
-        &agent_chat("default", "chat-a"),
+        &ChatAddress::new("chat-a"),
         "device-a",
         hlc(1),
     )
     .unwrap();
     assert_eq!(changes.len(), 1);
-    assert_eq!(changes[0].record_id, "agent/default/chat-a/prompt_state");
+    assert_eq!(changes[0].record_id, "chats/chat-a/prompt_state");
     assert_eq!(changes[0].payload["mode"], "code");
 }
 
 #[tokio::test]
 async fn mid_turn_checkpoint_snapshot_contains_pointer_and_source_history() {
     let data = tempfile::tempdir().unwrap();
-    let workspace = workspace_dir(data.path(), "default");
+    let workspace = workspace_dir(data.path());
     let chat_id = "chat-mid-turn";
     let store = WorkspaceSessionStore::new(&workspace);
     store

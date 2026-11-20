@@ -14,7 +14,7 @@ describe("taskApi", () => {
   it("scopes list and detail routes by agent and chat", async () => {
     vi.mocked(request).mockResolvedValue([]);
 
-    const target = { scope: "agent" as const, agentId: "agent/a" };
+    const target = { agentId: "agent/a" };
     await taskApi.listTasks(target, "chat/b", {
       state: "running",
       limit: 20,
@@ -23,17 +23,17 @@ describe("taskApi", () => {
 
     expect(request).toHaveBeenNthCalledWith(
       1,
-      "/agents/agent%2Fa/chats/chat%2Fb/tasks?state=running&limit=20",
+      "/chats/chat%2Fb/tasks?state=running&limit=20",
     );
     expect(request).toHaveBeenNthCalledWith(
       2,
-      "/agents/agent%2Fa/chats/chat%2Fb/tasks/task%2Fc",
+      "/chats/chat%2Fb/tasks/task%2Fc",
     );
   });
 
   it("uses the canonical cancel, retry, result, and activity routes", async () => {
     vi.mocked(request).mockResolvedValue({});
-    const target = { scope: "agent" as const, agentId: "agent" };
+    const target = { agentId: "agent" };
 
     await taskApi.cancelTask(target, "chat", "task");
     await taskApi.retryTask(target, "chat", "task", "agent");
@@ -41,20 +41,16 @@ describe("taskApi", () => {
 
     expect(request).toHaveBeenNthCalledWith(
       1,
-      "/agents/agent/chats/chat/tasks/task/cancel",
+      "/chats/chat/tasks/task/cancel",
       { method: "POST" },
     );
-    expect(request).toHaveBeenNthCalledWith(
-      2,
-      "/agents/agent/chats/chat/tasks/task/retry",
-      { method: "POST" },
-    );
-    expect(request).toHaveBeenNthCalledWith(
-      3,
-      "/agents/agent/chats/chat/tasks/task/result",
-    );
+    expect(request).toHaveBeenNthCalledWith(2, "/chats/chat/tasks/task/retry", {
+      method: "POST",
+      body: JSON.stringify({ authorization_agent_id: "agent" }),
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "/chats/chat/tasks/task/result");
     expect(taskApi.activityPath(target, "chat")).toBe(
-      "/agents/agent/chats/chat/tasks/activity",
+      "/chats/chat/tasks/activity",
     );
   });
 
@@ -72,22 +68,19 @@ describe("taskApi", () => {
     await taskApi.retryTask(target, "chat/b", "task/c", "agent-b");
     await taskApi.getFullResult(target, "chat/b", "task/c");
 
-    expect(request).toHaveBeenNthCalledWith(
-      1,
-      "/projects/project%2Fa/chats/chat%2Fb/tasks",
-    );
+    expect(request).toHaveBeenNthCalledWith(1, "/chats/chat%2Fb/tasks");
     expect(request).toHaveBeenNthCalledWith(
       2,
-      "/projects/project%2Fa/chats/chat%2Fb/tasks/task%2Fc",
+      "/chats/chat%2Fb/tasks/task%2Fc",
     );
     expect(request).toHaveBeenNthCalledWith(
       3,
-      "/projects/project%2Fa/chats/chat%2Fb/tasks/task%2Fc/cancel",
+      "/chats/chat%2Fb/tasks/task%2Fc/cancel",
       { method: "POST" },
     );
     expect(request).toHaveBeenNthCalledWith(
       4,
-      "/projects/project%2Fa/chats/chat%2Fb/tasks/task%2Fc/retry",
+      "/chats/chat%2Fb/tasks/task%2Fc/retry",
       {
         method: "POST",
         body: JSON.stringify({ authorization_agent_id: "agent-b" }),
@@ -95,10 +88,10 @@ describe("taskApi", () => {
     );
     expect(request).toHaveBeenNthCalledWith(
       5,
-      "/projects/project%2Fa/chats/chat%2Fb/tasks/task%2Fc/result",
+      "/chats/chat%2Fb/tasks/task%2Fc/result",
     );
     expect(taskApi.activityPath(target, "chat/b")).toBe(
-      "/projects/project%2Fa/chats/chat%2Fb/tasks/activity",
+      "/chats/chat%2Fb/tasks/activity",
     );
   });
 });

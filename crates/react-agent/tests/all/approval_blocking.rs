@@ -258,10 +258,7 @@ impl AgentHook for BlockingAuthorityHook {
         let request = self
             .authority
             .create_request(ApprovalRequestInput {
-                owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::agent(
-                    &self.agent_id,
-                    &self.chat_id,
-                )),
+                owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new(&self.chat_id)),
                 agent_id: self.agent_id.clone(),
                 turn_id: self.chat_id.clone(),
                 tool_call_id: call.id.clone(),
@@ -288,7 +285,7 @@ impl AgentHook for BlockingAuthorityHook {
     ) -> ApprovalResult {
         let snapshot = self
             .authority
-            .snapshot_at(&rua_core::ChatAddress::agent(&self.agent_id, &self.chat_id))
+            .snapshot_at(&rua_core::ChatAddress::new(&self.chat_id))
             .await;
         let request = snapshot
             .pending

@@ -1,3 +1,4 @@
+import { addressFromChatPath } from "@/pages/Chat/conversationAddress";
 import {
   useCallback,
   useEffect,
@@ -41,6 +42,10 @@ import ProjectArchiveDialog from "@/pages/Projects/ProjectArchiveDialog";
 import ProjectEditDialog from "@/pages/Projects/ProjectEditDialog";
 import { ProjectShellDrawer } from "@/pages/Projects/ProjectChat/ProjectShellControls";
 import CreateProjectDialog from "@/pages/Projects/CreateProjectDialog";
+import {
+  readDraftChatContext,
+  type ChatContext,
+} from "@/pages/Chat/chatContext";
 import type { ChatSearchResult } from "@/api/types";
 import type { ProjectDescriptor } from "@/api/types/project";
 import {
@@ -86,9 +91,14 @@ function readExpanded(pathname: string): string[] {
   try {
     const raw = localStorage.getItem(EXPANDED_KEY);
     if (raw === null) {
-      const current = addressFromPath(pathname);
+      const current = addressFromChatPath(pathname);
       return current
-        ? ["independent", scopeKey(scopeFromAddress(current))]
+        ? [
+            "independent",
+            scopeKey(
+              scopeFromContext(readDraftChatContext(current.chatId), "default"),
+            ),
+          ]
         : ["independent"];
     }
     const stored: unknown = JSON.parse(raw);
@@ -100,32 +110,13 @@ function readExpanded(pathname: string): string[] {
   }
 }
 
-function addressFromPath(pathname: string): ConversationAddress | null {
-  const match = /^\/(agents|projects)\/([^/]+)\/chats\/([^/]+)\/?$/.exec(
-    pathname,
-  );
-  if (!match) return null;
-  try {
-    return match[1] === "agents"
-      ? {
-          scope: "agent",
-          agentId: decodeURIComponent(match[2]),
-          chatId: decodeURIComponent(match[3]),
-        }
-      : {
-          scope: "project",
-          projectId: decodeURIComponent(match[2]),
-          chatId: decodeURIComponent(match[3]),
-        };
-  } catch {
-    return null;
-  }
-}
-
-function scopeFromAddress(address: ConversationAddress): NavigationScope {
-  return address.scope === "agent"
-    ? { kind: "agent", id: address.agentId }
-    : { kind: "project", id: address.projectId };
+function scopeFromContext(
+  context: ChatContext | null,
+  selectedAgent: string,
+): NavigationScope {
+  return context?.projectId
+    ? { kind: "project", id: context.projectId }
+    : { kind: "agent", id: context?.agentId ?? selectedAgent };
 }
 
 async function managementPath(scope: NavigationScope): Promise<string> {
@@ -211,35 +202,67 @@ export default function ConversationNavigation({
     clickedRow.current = null;
   };
   const previousPath = useRef(location.pathname);
-  const current = addressFromPath(location.pathname);
+  const current = addressFromChatPath(location.pathname);
   const currentAddressRef = useRef(current);
   currentAddressRef.current = current;
   useEffect(() => {
-    currentAddressRef.current = addressFromPath(location.pathname);
+    currentAddressRef.current = addressFromChatPath(location.pathname);
     return () => {
       currentAddressRef.current = null;
     };
   }, [location.pathname]);
   const getCurrentAddress = () => currentAddressRef.current;
-  const currentScope: NavigationScope = current
-    ? scopeFromAddress(current)
-    : { kind: "agent", id: selectedAgent };
+  const [headerContext, setHeaderContext] = useState<{
+    chatId: string;
+    context: ChatContext;
+  } | null>(null);
+  const currentChatId = current?.chatId;
+  const draftContext = currentChatId
+    ? readDraftChatContext(currentChatId)
+    : null;
+  const currentContext =
+    headerContext?.chatId === currentChatId
+      ? headerContext?.context ?? null
+      : draftContext;
+  const currentIsDraft = Boolean(
+    draftContext &&
+      currentChatId &&
+      isDraftConversation(
+        draftContext.projectId
+          ? `project:${draftContext.projectId}`
+          : draftContext.agentId,
+        currentChatId,
+      ),
+  );
+  useEffect(() => {
+    if (!currentChatId || currentIsDraft) return;
+    let disposed = false;
+    void chatApi
+      .getMetadata(currentChatId)
+      .then((chat) => {
+        if (!disposed && chat.agent_id)
+          setHeaderContext({
+            chatId: currentChatId,
+            context: { agentId: chat.agent_id, projectId: chat.project_id },
+          });
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+    };
+  }, [currentChatId, currentIsDraft]);
+  const currentScope = scopeFromContext(currentContext, selectedAgent);
   const currentKey = scopeKey(currentScope);
   const currentPath = current ? conversationPath(current) : null;
-  const lastRevealedPath = useRef(currentPath);
+  const lastRevealedPath = useRef<string | null>(null);
   const projectAgent = useSyncExternalStore(
     subscribeProjectNavigationAgent,
     getProjectNavigationAgent,
   );
   const independentAgentId =
-    current?.scope === "agent"
-      ? current.agentId
-      : current?.scope === "project"
-      ? projectAgent?.projectId === current.projectId &&
-        projectAgent.chatId === current.chatId
-        ? projectAgent.agentId
-        : null
-      : selectedAgent;
+    current && projectAgent?.chatId === current.chatId
+      ? projectAgent.agentId
+      : currentContext?.agentId ?? selectedAgent;
   const [displayedIndependentAgentId, setDisplayedIndependentAgentId] =
     useState(independentAgentId);
   useLayoutEffect(() => {
@@ -305,8 +328,7 @@ export default function ConversationNavigation({
     void ensureCatalogLoaded().catch(() => {});
     void loadProjects();
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
-    const unsubscribe = subscribeConversationNavigation((address) => {
-      if (address && address.scope !== "project") return;
+    const unsubscribe = subscribeConversationNavigation(() => {
       if (refreshTimer !== undefined) clearTimeout(refreshTimer);
       refreshTimer = setTimeout(() => {
         void loadProjects();
@@ -364,7 +386,12 @@ export default function ConversationNavigation({
   }, [location.pathname]);
 
   useEffect(() => {
-    if (!currentPath || currentPath === lastRevealedPath.current) return;
+    if (
+      !currentContext ||
+      !currentPath ||
+      currentPath === lastRevealedPath.current
+    )
+      return;
     lastRevealedPath.current = currentPath;
     setExpanded((keys) =>
       Array.from(
@@ -375,7 +402,7 @@ export default function ConversationNavigation({
         ]),
       ),
     );
-  }, [currentKey, currentPath]);
+  }, [currentKey, currentPath, currentContext]);
 
   useEffect(() => {
     try {
@@ -542,7 +569,9 @@ export default function ConversationNavigation({
       scope={scope}
       name={name}
       open={open}
-      current={current}
+      current={
+        currentContext && currentKey === scopeKey(scope) ? current : null
+      }
       getCurrentAddress={getCurrentAddress}
       onToggle={() => toggle(scopeKey(scope))}
       onNew={() => newChat(scope)}
@@ -731,7 +760,12 @@ export default function ConversationNavigation({
                     name={independentAgent?.name || independentAgentId || ""}
                     open={independentOpen}
                     hideHeader
-                    current={current}
+                    current={
+                      currentContext &&
+                      currentKey === `agent:${displayedIndependentAgentId}`
+                        ? current
+                        : null
+                    }
                     getCurrentAddress={getCurrentAddress}
                     onToggle={() => {}}
                     onNew={() => independentScope && newChat(independentScope)}
@@ -1042,10 +1076,7 @@ export default function ConversationNavigation({
               ),
             );
             setProjectAction(null);
-            if (
-              current?.scope === "project" &&
-              current.projectId === updated.project_id
-            )
+            if (currentContext?.projectId === updated.project_id)
               onNavigate("/projects?overview=1");
           }}
         />
@@ -1151,7 +1182,6 @@ function ConversationGroup({
   }, [loaded, error, onReady]);
   const currentOutsideList =
     current &&
-    scopeKey(scopeFromAddress(current)) === scopeKey(scope) &&
     !isDraftConversation(
       scope.kind === "agent" ? scope.id : `project:${scope.id}`,
       current.chatId,

@@ -330,7 +330,7 @@ async fn bridge_uses_chat_snapshot_and_recognizes_exact_approved_invocation() {
         .await
         .unwrap()
         .remove(0);
-    let address = rua_core::ChatAddress::agent("agent", "chat");
+    let address = rua_core::ChatAddress::new("chat");
     let mut config = rua_config::types::security::SecurityConfig::default();
     config.tool_guard.approval_mode = "ask_first".into();
     let mut ctx = rua_core::tool::ToolContext {

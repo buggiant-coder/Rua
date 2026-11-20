@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
 use agent_types::conversation_message_identity::{
@@ -17,12 +16,11 @@ use rua_session::{
     ChatMetadata, ChatSessionHeader, MessageLogEntry, NewConversationMessage, NewConversationTurn,
     TurnIndexRecord, TurnLifecycle, WorkspaceSessionStore,
 };
-use rua_workspace::WorkspaceRuntime;
 use serde::{Deserialize, Serialize};
 
 use crate::endpoints::dto::ChatModelDto;
 use crate::errors::ApiError;
-use crate::extractors::AgentExtractorContext;
+use crate::extractors::ChatPath;
 use crate::services::chat_device_activity::{
     apply_chat_created, copy_chat_activity_to_header_extra, device_id_from_sync_device,
     ChatDeviceActivityUpdate,
@@ -49,6 +47,10 @@ use crate::sync_publication::{publish_sync_fact, SyncPublicationFact};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatSpecDto {
+    #[serde(default)]
+    pub agent_id: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
     pub id: String,
     pub name: String,
     pub user_id: String,
@@ -100,33 +102,23 @@ fn collaboration_from_meta(meta: &serde_json::Value) -> Option<CollaborationChat
     })
 }
 
-async fn publish_chat_index_upsert(
-    state: &AppState,
-    agent_id: &str,
-    chat_id: &str,
-    chat: serde_json::Value,
-) {
+async fn publish_chat_index_upsert(state: &AppState, chat_id: &str, chat: serde_json::Value) {
     let _ = publish_sync_fact(
         state,
         SyncPublicationFact::ChatIndexUpserted {
-            address: rua_core::ChatAddress::agent(agent_id, chat_id),
+            address: rua_core::ChatAddress::new(chat_id),
             chat,
         },
     )
     .await;
 }
 
-async fn publish_evergreen_chat_snapshot(
-    state: &AppState,
-    ws_dir: &Path,
-    agent_id: &str,
-    chat_id: &str,
-) {
+async fn publish_evergreen_chat_snapshot(state: &AppState, ws_dir: &Path, chat_id: &str) {
     let _ = publish_sync_fact(
         state,
         SyncPublicationFact::StableConversationState {
             scope_root: ws_dir.to_path_buf(),
-            address: rua_core::ChatAddress::agent(agent_id, chat_id),
+            address: rua_core::ChatAddress::new(chat_id),
         },
     )
     .await;
@@ -237,6 +229,10 @@ async fn normalize_chat_model_thinking(state: &AppState, model: &mut ChatModelDt
 #[derive(Debug, Deserialize)]
 struct ListChatsParams {
     #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
     user_id: Option<String>,
     #[serde(default)]
     channel: Option<String>,
@@ -280,6 +276,10 @@ pub(crate) struct ChatHistoryParams {
 
 #[derive(Debug, Deserialize)]
 struct CreateChatBody {
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    project_id: Option<String>,
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -394,6 +394,8 @@ pub struct DurableConversationCoverageDto {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatHistoryDto {
+    pub agent_id: String,
+    pub project_id: Option<String>,
     pub messages: Vec<serde_json::Value>,
     pub model: Option<ChatModelDto>,
     #[serde(default)]
@@ -434,85 +436,44 @@ struct BranchActionResponse {
     chat: ChatSpecDto,
 }
 
-pub fn root_router() -> Router<AppState> {
+pub fn router() -> Router<AppState> {
     Router::new()
         .route("/chats", get(list_chats_root).post(create_chat_root))
         .route("/chats/pin-order", put(update_pin_order_root))
         .route("/chats/batch-delete", post(batch_delete_root))
-        .route("/chats/{id}/rollback", post(rollback_chat_root))
-        .route("/chats/{id}/branch", post(branch_chat_root))
+        .route("/chats/{chatId}/rollback", post(rollback_chat_agent))
         .route(
-            "/chats/{id}/acp-history-preview",
-            post(persist_acp_history_preview_root),
-        )
-        .route(
-            "/chats/{id}/authority-placement",
-            put(update_authority_placement_root),
-        )
-        .route(
-            "/chats/{id}",
-            get(get_chat_root)
-                .put(update_chat_root)
-                .delete(delete_chat_root),
-        )
-}
-
-pub fn agent_scoped_router() -> Router<AppState> {
-    Router::new()
-        .route(
-            "/agents/{agentId}/chats",
-            get(list_chats_agent).post(create_chat_agent),
-        )
-        .route(
-            "/agents/{agentId}/chats/pin-order",
-            put(update_pin_order_agent),
-        )
-        .route(
-            "/agents/{agentId}/chats/batch-delete",
-            post(batch_delete_agent),
-        )
-        .route(
-            "/agents/{agentId}/chats/{id}/rollback",
-            post(rollback_chat_agent),
-        )
-        .route(
-            "/agents/{agentId}/chats/{id}/projection-exclusions",
+            "/chats/{chatId}/projection-exclusions",
             get(get_projection_exclusions_agent).put(put_projection_exclusions_agent),
         )
+        .route("/chats/{chatId}/branch", post(branch_chat_agent))
         .route(
-            "/agents/{agentId}/chats/{id}/branch",
-            post(branch_chat_agent),
-        )
-        .route(
-            "/agents/{agentId}/chats/{id}/acp-history-preview",
+            "/chats/{chatId}/acp-history-preview",
             post(persist_acp_history_preview_agent),
         )
         .route(
-            "/agents/{agentId}/chats/{id}/authority-placement",
+            "/chats/{chatId}/authority-placement",
             put(update_authority_placement_agent),
         )
         .route(
-            "/agents/{agentId}/chats/{id}/running-config",
+            "/chats/{chatId}/running-config",
             get(get_chat_running_config_agent).put(put_chat_running_config_agent),
         )
+        .route("/chats/{chatId}/metadata", get(get_chat_metadata_agent))
         .route(
-            "/agents/{agentId}/chats/{id}/metadata",
-            get(get_chat_metadata_agent),
-        )
-        .route(
-            "/agents/{agentId}/chats/{id}/configuration",
+            "/chats/{chatId}/configuration",
             get(preview_chat_configuration_agent).put(apply_chat_configuration_agent),
         )
         .route(
-            "/agents/{agentId}/chats/{id}/queue/{inputId}",
+            "/chats/{chatId}/queue/{inputId}",
             patch(edit_queued_input_agent).delete(delete_queued_input_agent),
         )
         .route(
-            "/agents/{agentId}/chats/{id}/queue/{inputId}/send-now",
+            "/chats/{chatId}/queue/{inputId}/send-now",
             post(send_now_queued_input_agent),
         )
         .route(
-            "/agents/{agentId}/chats/{id}",
+            "/chats/{chatId}",
             get(get_chat_agent)
                 .put(update_chat_agent)
                 .delete(delete_chat_agent),
@@ -544,7 +505,7 @@ pub(crate) async fn dispatch_agent_chat_control(
         ConversationControlDeviceCommand {
             command_id: format!("chat-running-config-{}", uuid::Uuid::new_v4()),
             agent_id: agent_id.to_string(),
-            address: rua_core::ChatAddress::agent(agent_id, chat_id),
+            address: rua_core::ChatAddress::new(chat_id),
             source_device_id,
             target_device_id: placement.device_id,
             authority_epoch: placement.authority_epoch,
@@ -563,7 +524,7 @@ pub(crate) struct ChatConfigurationApply {
 
 async fn preview_chat_configuration_agent(
     State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
+    ChatPath((agent_id, chat_id)): ChatPath<(String, String)>,
 ) -> Response {
     chat_configuration_agent(
         &state,
@@ -576,7 +537,7 @@ async fn preview_chat_configuration_agent(
 
 async fn apply_chat_configuration_agent(
     State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
+    ChatPath((agent_id, chat_id)): ChatPath<(String, String)>,
     Json(body): Json<ChatConfigurationApply>,
 ) -> Response {
     chat_configuration_agent(
@@ -597,12 +558,14 @@ async fn chat_configuration_agent(
     chat_id: &str,
     action: ConversationControlDeviceAction,
 ) -> Response {
-    let runtime = match runtime_for_agent(state, agent_id).await {
-        Ok(runtime) => runtime,
-        Err(error) => return error.into_response(),
-    };
-    match dispatch_agent_chat_control(state, agent_id, &runtime.workspace_dir(), chat_id, action)
-        .await
+    match dispatch_agent_chat_control(
+        state,
+        agent_id,
+        state.chat_workspace().as_path(),
+        chat_id,
+        action,
+    )
+    .await
     {
         Ok(ConversationControlDeviceResponse::Configuration { configuration }) => {
             Json(configuration).into_response()
@@ -616,16 +579,12 @@ async fn chat_configuration_agent(
 
 async fn get_chat_running_config_agent(
     State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
+    ChatPath((agent_id, chat_id)): ChatPath<(String, String)>,
 ) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(runtime) => runtime,
-        Err(error) => return error.into_response(),
-    };
     match dispatch_agent_chat_control(
         &state,
         &agent_id,
-        &runtime.workspace_dir(),
+        state.chat_workspace().as_path(),
         &chat_id,
         ConversationControlDeviceAction::ViewRunningConfig,
     )
@@ -641,17 +600,13 @@ async fn get_chat_running_config_agent(
 
 async fn put_chat_running_config_agent(
     State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
+    ChatPath((agent_id, chat_id)): ChatPath<(String, String)>,
     Json(running): Json<serde_json::Value>,
 ) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(runtime) => runtime,
-        Err(error) => return error.into_response(),
-    };
     match dispatch_agent_chat_control(
         &state,
         &agent_id,
-        &runtime.workspace_dir(),
+        state.chat_workspace().as_path(),
         &chat_id,
         ConversationControlDeviceAction::UpdateRunningConfig { running },
     )
@@ -668,85 +623,66 @@ async fn put_chat_running_config_agent(
 
 async fn list_chats_root(
     State(state): State<AppState>,
-    AgentExtractorContext { agent_id, runtime }: AgentExtractorContext,
     Query(params): Query<ListChatsParams>,
 ) -> Response {
-    list_chats_core(&state, &agent_id, &runtime.workspace_dir(), params).await
+    list_chats_core(&state, state.chat_workspace().as_path(), params).await
 }
 
 async fn create_chat_root(
     State(state): State<AppState>,
-    AgentExtractorContext { .. }: AgentExtractorContext,
     Json(body): Json<CreateChatBody>,
 ) -> Response {
     create_chat_core(body, &state).await
 }
 
-async fn get_chat_root(
+async fn update_pin_order_root(
     State(state): State<AppState>,
-    AgentExtractorContext { agent_id, runtime }: AgentExtractorContext,
+    Json(items): Json<Vec<PinOrderItem>>,
+) -> Response {
+    update_pin_order_core(state.chat_workspace().as_path(), items, &state).await
+}
+
+async fn batch_delete_root(
+    State(state): State<AppState>,
+    Json(ids): Json<Vec<String>>,
+) -> Response {
+    batch_delete_core(state.chat_workspace().as_path(), ids, &state).await
+}
+
+async fn get_chat_metadata_agent(
+    State(state): State<AppState>,
+    AxumPath(chat_id): AxumPath<String>,
+) -> Response {
+    get_chat_metadata_core(state.chat_workspace().as_path(), &chat_id).await
+}
+
+async fn get_chat_agent(
+    State(state): State<AppState>,
     AxumPath(chat_id): AxumPath<String>,
     Query(params): Query<ChatHistoryParams>,
 ) -> Response {
-    let address = rua_core::ChatAddress::agent(&agent_id, &chat_id);
-    get_chat_core(&state, &address, &runtime.workspace_dir(), &chat_id, params).await
+    if let Err(error) = crate::services::console_chat::resolve_chat_id(&chat_id) {
+        return ApiError::BadRequest(error).into_response();
+    }
+    let address = rua_core::ChatAddress::new(&chat_id);
+    get_chat_core(
+        &state,
+        &address,
+        state.chat_workspace().as_path(),
+        &chat_id,
+        params,
+    )
+    .await
 }
 
-async fn update_chat_root(
+async fn update_chat_agent(
     State(state): State<AppState>,
-    AgentExtractorContext { agent_id, runtime }: AgentExtractorContext,
-    AxumPath(chat_id): AxumPath<String>,
+    ChatPath((agent_id, chat_id)): ChatPath<(String, String)>,
     Json(body): Json<ChatUpdateBody>,
 ) -> Response {
-    update_chat_core(&agent_id, &runtime.workspace_dir(), &chat_id, body, &state).await
-}
-
-async fn update_authority_placement_root(
-    State(state): State<AppState>,
-    AgentExtractorContext { agent_id, runtime }: AgentExtractorContext,
-    AxumPath(chat_id): AxumPath<String>,
-    Json(body): Json<ConversationAuthorityPlacementUpdateBody>,
-) -> Response {
-    update_authority_placement_core(&agent_id, &runtime.workspace_dir(), &chat_id, body, &state)
-        .await
-}
-
-async fn delete_chat_root(
-    State(state): State<AppState>,
-    AgentExtractorContext { agent_id, runtime }: AgentExtractorContext,
-    AxumPath(chat_id): AxumPath<String>,
-) -> Response {
-    delete_chat_core(&agent_id, &runtime.workspace_dir(), &chat_id, &state).await
-}
-
-async fn rollback_chat_root(
-    State(state): State<AppState>,
-    AgentExtractorContext { agent_id, runtime }: AgentExtractorContext,
-    AxumPath(chat_id): AxumPath<String>,
-    Json(body): Json<BranchActionBody>,
-) -> Response {
-    rollback_chat_core(&agent_id, &runtime.workspace_dir(), &chat_id, body, &state).await
-}
-
-async fn branch_chat_root(
-    State(state): State<AppState>,
-    AgentExtractorContext { agent_id, runtime }: AgentExtractorContext,
-    AxumPath(chat_id): AxumPath<String>,
-    Json(body): Json<BranchActionBody>,
-) -> Response {
-    branch_chat_core(&agent_id, &runtime.workspace_dir(), &chat_id, body, &state).await
-}
-
-async fn persist_acp_history_preview_root(
-    State(state): State<AppState>,
-    AgentExtractorContext { agent_id, runtime }: AgentExtractorContext,
-    AxumPath(chat_id): AxumPath<String>,
-    Json(body): Json<AcpHistoryPreviewBody>,
-) -> Response {
-    persist_acp_history_preview_core(
-        &rua_core::ChatAddress::agent(&agent_id, &chat_id),
+    update_chat_core(
         &agent_id,
-        &runtime.workspace_dir(),
+        state.chat_workspace().as_path(),
         &chat_id,
         body,
         &state,
@@ -754,115 +690,34 @@ async fn persist_acp_history_preview_root(
     .await
 }
 
-async fn update_pin_order_root(
-    State(state): State<AppState>,
-    AgentExtractorContext { agent_id, runtime }: AgentExtractorContext,
-    Json(items): Json<Vec<PinOrderItem>>,
-) -> Response {
-    update_pin_order_core(&agent_id, &runtime.workspace_dir(), items, &state).await
-}
-
-async fn batch_delete_root(
-    State(state): State<AppState>,
-    AgentExtractorContext { agent_id, runtime }: AgentExtractorContext,
-    Json(ids): Json<Vec<String>>,
-) -> Response {
-    batch_delete_core(&agent_id, &runtime.workspace_dir(), ids, &state).await
-}
-
-async fn list_chats_agent(
-    State(state): State<AppState>,
-    AxumPath(agent_id): AxumPath<String>,
-    Query(params): Query<ListChatsParams>,
-) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
-    list_chats_core(&state, &agent_id, &runtime.workspace_dir(), params).await
-}
-
-async fn create_chat_agent(
-    State(state): State<AppState>,
-    AxumPath(agent_id): AxumPath<String>,
-    Json(body): Json<CreateChatBody>,
-) -> Response {
-    match state.agent_service.get_agent(&agent_id).await {
-        Ok(Some(_)) => create_chat_core(body, &state).await,
-        Ok(None) => ApiError::NotFound(format!("Agent not found: {agent_id}")).into_response(),
-        Err(error) => ApiError::Internal(error.to_string()).into_response(),
-    }
-}
-
-async fn get_chat_metadata_agent(
-    State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
-) -> Response {
-    let agent = match state.agent_service.get_agent(&agent_id).await {
-        Ok(Some(agent)) => agent,
-        Ok(None) => {
-            return ApiError::NotFound(format!("Agent '{agent_id}' not found")).into_response()
-        }
-        Err(error) => return ApiError::from(error).into_response(),
-    };
-    get_chat_metadata_core(Path::new(&agent.workspace_dir), &chat_id).await
-}
-
-async fn get_chat_agent(
-    State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
-    Query(params): Query<ChatHistoryParams>,
-) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
-    let address = rua_core::ChatAddress::agent(&agent_id, &chat_id);
-    get_chat_core(&state, &address, &runtime.workspace_dir(), &chat_id, params).await
-}
-
-async fn update_chat_agent(
-    State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
-    Json(body): Json<ChatUpdateBody>,
-) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
-    update_chat_core(&agent_id, &runtime.workspace_dir(), &chat_id, body, &state).await
-}
-
 async fn update_authority_placement_agent(
     State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
+    ChatPath((agent_id, chat_id)): ChatPath<(String, String)>,
     Json(body): Json<ConversationAuthorityPlacementUpdateBody>,
 ) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
-    update_authority_placement_core(&agent_id, &runtime.workspace_dir(), &chat_id, body, &state)
-        .await
+    update_authority_placement_core(
+        &agent_id,
+        state.chat_workspace().as_path(),
+        &chat_id,
+        body,
+        &state,
+    )
+    .await
 }
 
 async fn edit_queued_input_agent(
     State(state): State<AppState>,
-    AxumPath((agent_id, chat_id, input_id)): AxumPath<(String, String, String)>,
+    ChatPath((agent_id, chat_id, input_id)): ChatPath<(String, String, String)>,
     Json(body): Json<QueueInputEditBody>,
 ) -> Response {
     if body.message.trim().is_empty() {
         return ApiError::BadRequest("message cannot be empty".to_string()).into_response();
     }
 
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
     match remote_conversation_control_if_needed(
         &state,
         &agent_id,
-        &runtime.workspace_dir(),
+        state.chat_workspace().as_path(),
         &chat_id,
         ConversationControlDeviceAction::EditQueuedInput {
             input_id: input_id.clone(),
@@ -889,7 +744,7 @@ async fn edit_queued_input_agent(
     let entry = match state
         .conversation_authority
         .edit_queued_input(
-            &rua_core::ChatAddress::agent(&agent_id, &chat_id),
+            &rua_core::ChatAddress::new(&chat_id),
             &input_id,
             &body.message,
         )
@@ -900,11 +755,17 @@ async fn edit_queued_input_agent(
             return ApiError::Conflict("queued input is not editable".to_string()).into_response();
         }
     };
-    let control =
-        match control_view_for_chat(&state, &agent_id, &runtime.workspace_dir(), &chat_id).await {
-            Ok(control) => control,
-            Err(e) => return e.into_response(),
-        };
+    let control = match control_view_for_chat(
+        &state,
+        &agent_id,
+        state.chat_workspace().as_path(),
+        &chat_id,
+    )
+    .await
+    {
+        Ok(control) => control,
+        Err(e) => return e.into_response(),
+    };
 
     (
         StatusCode::OK,
@@ -915,16 +776,12 @@ async fn edit_queued_input_agent(
 
 async fn delete_queued_input_agent(
     State(state): State<AppState>,
-    AxumPath((agent_id, chat_id, input_id)): AxumPath<(String, String, String)>,
+    ChatPath((agent_id, chat_id, input_id)): ChatPath<(String, String, String)>,
 ) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
     match remote_conversation_control_if_needed(
         &state,
         &agent_id,
-        &runtime.workspace_dir(),
+        state.chat_workspace().as_path(),
         &chat_id,
         ConversationControlDeviceAction::DeleteQueuedInput {
             input_id: input_id.clone(),
@@ -955,10 +812,7 @@ async fn delete_queued_input_agent(
     }
     let deleted = match state
         .conversation_authority
-        .delete_queued_input(
-            &rua_core::ChatAddress::agent(&agent_id, &chat_id),
-            &input_id,
-        )
+        .delete_queued_input(&rua_core::ChatAddress::new(&chat_id), &input_id)
         .await
     {
         Some(entry) => entry,
@@ -966,11 +820,17 @@ async fn delete_queued_input_agent(
             return ApiError::Conflict("queued input is not editable".to_string()).into_response();
         }
     };
-    let control =
-        match control_view_for_chat(&state, &agent_id, &runtime.workspace_dir(), &chat_id).await {
-            Ok(control) => control,
-            Err(e) => return e.into_response(),
-        };
+    let control = match control_view_for_chat(
+        &state,
+        &agent_id,
+        state.chat_workspace().as_path(),
+        &chat_id,
+    )
+    .await
+    {
+        Ok(control) => control,
+        Err(e) => return e.into_response(),
+    };
 
     (
         StatusCode::OK,
@@ -984,17 +844,13 @@ async fn delete_queued_input_agent(
 
 async fn send_now_queued_input_agent(
     State(state): State<AppState>,
-    AxumPath((agent_id, chat_id, input_id)): AxumPath<(String, String, String)>,
+    ChatPath((agent_id, chat_id, input_id)): ChatPath<(String, String, String)>,
     Json(body): Json<QueueInputSendNowBody>,
 ) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
     match remote_conversation_control_if_needed(
         &state,
         &agent_id,
-        &runtime.workspace_dir(),
+        state.chat_workspace().as_path(),
         &chat_id,
         ConversationControlDeviceAction::SendNow {
             input_id: input_id.clone(),
@@ -1040,11 +896,17 @@ async fn send_now_queued_input_agent(
         Ok(entry) => entry,
         Err(detail) => return ApiError::Conflict(detail).into_response(),
     };
-    let control =
-        match control_view_for_chat(&state, &agent_id, &runtime.workspace_dir(), &chat_id).await {
-            Ok(control) => control,
-            Err(e) => return e.into_response(),
-        };
+    let control = match control_view_for_chat(
+        &state,
+        &agent_id,
+        state.chat_workspace().as_path(),
+        &chat_id,
+    )
+    .await
+    {
+        Ok(control) => control,
+        Err(e) => return e.into_response(),
+    };
     (
         StatusCode::OK,
         Json(QueueInputSendNowResponse {
@@ -1056,30 +918,75 @@ async fn send_now_queued_input_agent(
         .into_response()
 }
 
+async fn clean_deleted_session(state: &AppState, chat_id: &str) -> Result<(), ApiError> {
+    let address = rua_core::ChatAddress::new(chat_id);
+    let intents =
+        crate::services::chat_deletion::ChatDeleteIntentStore::from_rua_root(&state.rua_root);
+    if intents
+        .load(&address)
+        .map_err(ApiError::Internal)?
+        .is_none()
+    {
+        return Ok(());
+    }
+    let gate = state.conversation_authority.transition_gate(&address);
+    let _transition = gate.lock().await;
+    let workspace = state.chat_workspace();
+    let root = workspace.as_path();
+    let store = WorkspaceSessionStore::new(root);
+    if store.load_chat_header(chat_id).await?.is_none()
+        && chat_index::get(root, chat_id)
+            .await
+            .map_err(ApiError::Internal)?
+            .is_none()
+    {
+        store.delete_chat_storage_by_chat_id(chat_id).await?;
+    }
+    Ok(())
+}
+
 async fn delete_chat_agent(
     State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
+    AxumPath(chat_id): AxumPath<String>,
+    query: Query<super::projects::ProjectChatDeleteQuery>,
 ) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
-    delete_chat_core(&agent_id, &runtime.workspace_dir(), &chat_id, &state).await
+    let context =
+        match crate::services::chat_context::load_chat_context(&state.rua_root, &chat_id).await {
+            Ok(Some(context)) => context,
+            Ok(None) => {
+                if let Err(error) = clean_deleted_session(&state, &chat_id).await {
+                    return error.into_response();
+                }
+                return ApiError::NotFound(format!("Chat not found: {chat_id}")).into_response();
+            }
+            Err(error) => return error.into_response(),
+        };
+    if let Some(project_id) = context.project_id {
+        return super::projects::delete_project_chat(
+            State(state),
+            AxumPath((project_id, chat_id)),
+            query,
+        )
+        .await;
+    }
+    delete_chat_core(
+        &context.agent_id,
+        state.chat_workspace().as_path(),
+        &chat_id,
+        &state,
+    )
+    .await
 }
 
 async fn persist_acp_history_preview_agent(
     State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
+    ChatPath((agent_id, chat_id)): ChatPath<(String, String)>,
     Json(body): Json<AcpHistoryPreviewBody>,
 ) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
     persist_acp_history_preview_core(
-        &rua_core::ChatAddress::agent(&agent_id, &chat_id),
+        &rua_core::ChatAddress::new(&chat_id),
         &agent_id,
-        &runtime.workspace_dir(),
+        state.chat_workspace().as_path(),
         &chat_id,
         body,
         &state,
@@ -1089,28 +996,27 @@ async fn persist_acp_history_preview_agent(
 
 async fn rollback_chat_agent(
     State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
+    ChatPath((agent_id, chat_id)): ChatPath<(String, String)>,
     Json(body): Json<BranchActionBody>,
 ) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
-    rollback_chat_core(&agent_id, &runtime.workspace_dir(), &chat_id, body, &state).await
+    rollback_chat_core(
+        &agent_id,
+        state.chat_workspace().as_path(),
+        &chat_id,
+        body,
+        &state,
+    )
+    .await
 }
 
 async fn get_projection_exclusions_agent(
     State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
+    ChatPath((agent_id, chat_id)): ChatPath<(String, String)>,
 ) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(runtime) => runtime,
-        Err(error) => return error.into_response(),
-    };
     match dispatch_agent_chat_control(
         &state,
         &agent_id,
-        &runtime.workspace_dir(),
+        state.chat_workspace().as_path(),
         &chat_id,
         ConversationControlDeviceAction::ViewProjectionExclusions,
     )
@@ -1127,17 +1033,13 @@ async fn get_projection_exclusions_agent(
 
 async fn put_projection_exclusions_agent(
     State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
+    ChatPath((agent_id, chat_id)): ChatPath<(String, String)>,
     Json(body): Json<ProjectionExclusionsDto>,
 ) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(runtime) => runtime,
-        Err(error) => return error.into_response(),
-    };
     match dispatch_agent_chat_control(
         &state,
         &agent_id,
-        &runtime.workspace_dir(),
+        state.chat_workspace().as_path(),
         &chat_id,
         ConversationControlDeviceAction::UpdateProjectionExclusions {
             message_ids: body.message_ids,
@@ -1156,49 +1058,13 @@ async fn put_projection_exclusions_agent(
 
 async fn branch_chat_agent(
     State(state): State<AppState>,
-    AxumPath((agent_id, chat_id)): AxumPath<(String, String)>,
+    AxumPath(chat_id): AxumPath<String>,
     Json(body): Json<BranchActionBody>,
 ) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
-    branch_chat_core(&agent_id, &runtime.workspace_dir(), &chat_id, body, &state).await
-}
-
-async fn update_pin_order_agent(
-    State(state): State<AppState>,
-    AxumPath(agent_id): AxumPath<String>,
-    Json(items): Json<Vec<PinOrderItem>>,
-) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
-    update_pin_order_core(&agent_id, &runtime.workspace_dir(), items, &state).await
-}
-
-async fn batch_delete_agent(
-    State(state): State<AppState>,
-    AxumPath(agent_id): AxumPath<String>,
-    Json(ids): Json<Vec<String>>,
-) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
-    batch_delete_core(&agent_id, &runtime.workspace_dir(), ids, &state).await
-}
-
-async fn runtime_for_agent(
-    state: &AppState,
-    agent_id: &str,
-) -> Result<Arc<WorkspaceRuntime>, ApiError> {
-    state
-        .registry
-        .get_or_create(agent_id)
-        .await
-        .map_err(|e| ApiError::Unavailable(format!("workspace for '{agent_id}' unavailable: {e}")))
+    if let Err(error) = crate::services::console_chat::resolve_chat_id(&chat_id) {
+        return ApiError::BadRequest(error).into_response();
+    }
+    branch_chat_core(state.chat_workspace().as_path(), &chat_id, body, &state).await
 }
 
 pub(crate) fn chat_to_index_entry(chat: &ChatSpecDto) -> chat_index::ChatIndexEntry {
@@ -1212,6 +1078,8 @@ pub(crate) fn chat_to_index_entry(chat: &ChatSpecDto) -> chat_index::ChatIndexEn
             rua_core::CHAT_COLLABORATION_MODE_META_KEY.to_string(),
             serde_json::json!(chat.collaboration_mode),
         );
+    meta["agent_id"] = serde_json::json!(chat.agent_id);
+    meta["project_id"] = serde_json::json!(chat.project_id);
     chat_index::ChatIndexEntry {
         id: chat.id.clone(),
         name: chat.name.clone(),
@@ -1277,6 +1145,17 @@ pub(crate) fn chat_from_index_entry(entry: chat_index::ChatIndexEntry) -> ChatSp
         .unwrap_or_default();
     let collaboration = collaboration_from_meta(&entry.meta);
     ChatSpecDto {
+        agent_id: entry
+            .meta
+            .get("agent_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        project_id: entry
+            .meta
+            .get("project_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
         id: entry.id,
         name: entry.name,
         user_id: entry.user_id,
@@ -1309,6 +1188,8 @@ pub(crate) async fn chat_spec_from_common_chat(
                 id: chat_id.to_string(),
             })?,
     );
+    spec.agent_id = chat.selected_agent_id().unwrap_or_default().to_string();
+    spec.project_id = chat.project_id().map(str::to_string);
     spec.model = chat
         .model()
         .cloned()
@@ -1329,6 +1210,17 @@ fn chat_from_metadata_record(record: ChatMetadataRecord) -> ChatSpecDto {
         .unwrap_or_default();
     let collaboration = collaboration_from_meta(&record.meta);
     ChatSpecDto {
+        agent_id: record
+            .meta
+            .get("agent_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        project_id: record
+            .meta
+            .get("project_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
         id: record.id,
         name: record.name,
         user_id: record.user_id,
@@ -1386,7 +1278,7 @@ async fn control_view_for_chat(
             ConversationControlDeviceCommand {
                 command_id: format!("control-view-{}", uuid::Uuid::new_v4()),
                 agent_id: agent_id.to_string(),
-                address: rua_core::ChatAddress::agent(agent_id, chat_id),
+                address: rua_core::ChatAddress::new(chat_id),
                 source_device_id: local_device_id,
                 target_device_id: placement.device_id,
                 authority_epoch: placement.authority_epoch,
@@ -1415,7 +1307,7 @@ async fn control_view_for_chat(
     }
     Ok(state
         .conversation_authority
-        .control_view(&rua_core::ChatAddress::agent(agent_id, chat_id), &meta)
+        .control_view(&rua_core::ChatAddress::new(chat_id), &meta)
         .await)
 }
 
@@ -1453,7 +1345,7 @@ async fn remote_conversation_control_if_needed(
         ConversationControlDeviceCommand {
             command_id: format!("conversation-control-{}", uuid::Uuid::new_v4()),
             agent_id: agent_id.to_string(),
-            address: rua_core::ChatAddress::agent(agent_id, chat_id),
+            address: rua_core::ChatAddress::new(chat_id),
             source_device_id: local_device_id,
             target_device_id: placement.device_id,
             authority_epoch: placement.authority_epoch,
@@ -1473,7 +1365,7 @@ pub(crate) async fn populate_collaboration_source_availability(
         let Some(collaboration) = chat.collaboration.as_mut() else {
             continue;
         };
-        let scope = rua_core::ChatScopeStore::resolve(rua_root, collaboration.source.clone());
+        let scope = rua_core::ChatStore::resolve(rua_root, collaboration.source.clone());
         collaboration.source_available = Some(
             WorkspaceSessionStore::new(scope.root())
                 .load_chat_header(collaboration.source.chat_id().as_str())
@@ -1485,12 +1377,7 @@ pub(crate) async fn populate_collaboration_source_availability(
     Ok(())
 }
 
-async fn list_chats_core(
-    state: &AppState,
-    agent_id: &str,
-    ws_dir: &Path,
-    params: ListChatsParams,
-) -> Response {
+async fn list_chats_core(state: &AppState, ws_dir: &Path, params: ListChatsParams) -> Response {
     tracing::info!(
         target: "diag.session",
         offset = ?params.offset,
@@ -1503,26 +1390,24 @@ async fn list_chats_core(
 
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
-    let address = rua_core::ChatAddress::agent(agent_id, "00000000-0000-4000-8000-000000000000");
-    let page = match rua_chat::ChatService::for_resolved_scope(ws_dir, address.clone())
-        .list(
-            &address,
-            rua_chat::ChatListQuery {
-                user_id: params.user_id,
-                channel: params.channel,
-                search: params.search,
-                tag: params.tag,
-                conversation_view: params.view,
-                source_chat_id: params.source_chat_id,
-                executor: params.executor,
-                status: params.status,
-                sort_by: params.sort_by,
-                sort_order: params.sort_order,
-                offset,
-                limit,
-                archived: params.archived,
-            },
-        )
+    let page = match rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(ws_dir))
+        .list(rua_chat::ChatListQuery {
+            agent_id: params.agent_id,
+            project_id: params.project_id,
+            user_id: params.user_id,
+            channel: params.channel,
+            search: params.search,
+            tag: params.tag,
+            conversation_view: params.view,
+            source_chat_id: params.source_chat_id,
+            executor: params.executor,
+            status: params.status,
+            sort_by: params.sort_by,
+            sort_order: params.sort_order,
+            offset,
+            limit,
+            archived: params.archived,
+        })
         .await
     {
         Ok(page) => page,
@@ -1554,6 +1439,17 @@ async fn list_chats_core(
 async fn create_chat_core(body: CreateChatBody, state: &AppState) -> Response {
     let now = Utc::now();
     let chat_id = uuid::Uuid::new_v4().to_string();
+    let context = match crate::services::chat_context::resolve_submission_context(
+        state,
+        &chat_id,
+        body.agent_id.as_deref(),
+        body.project_id.as_deref(),
+    )
+    .await
+    {
+        Ok(context) => context,
+        Err(error) => return error.into_response(),
+    };
     let mut meta = body.meta.unwrap_or(serde_json::json!({}));
     let mut model = body.model;
     if let Some(ref mut model) = model {
@@ -1592,6 +1488,8 @@ async fn create_chat_core(body: CreateChatBody, state: &AppState) -> Response {
     };
     apply_chat_created(&mut meta, &device_activity);
     let chat = ChatSpecDto {
+        agent_id: context.agent_id,
+        project_id: context.project_id,
         id: chat_id.clone(),
         name: body.name.unwrap_or_else(|| "New Chat".to_string()),
         user_id: body.user_id.unwrap_or_else(|| "default".to_string()),
@@ -1623,6 +1521,7 @@ pub(crate) fn chat_session_header(chat: &ChatSpecDto, agent_id: &str) -> ChatSes
         archived: chat.archived,
         preview: None,
     });
+    header.project_id = chat.project_id.clone();
     header.tag = chat.tag;
     copy_chat_activity_to_header_extra(&chat.meta, &mut header.extra);
     for key in [
@@ -1640,26 +1539,8 @@ pub(crate) fn chat_session_header(chat: &ChatSpecDto, agent_id: &str) -> ChatSes
         rua_core::CHAT_COLLABORATION_MODE_META_KEY.to_string(),
         serde_json::json!(chat.collaboration_mode),
     );
-    rua_chat::apply_agent_scope_defaults(&mut header, agent_id);
+    rua_chat::apply_chat_defaults(&mut header);
     header
-}
-
-fn new_chat_authority_placement(
-    address: &rua_core::ChatAddress,
-    device_id: String,
-) -> Result<ConversationAuthorityPlacement, ApiError> {
-    let base_manifest_hash =
-        crate::services::conversation_manifest::initial_conversation_manifest_hash(address)
-            .map_err(ApiError::from)?;
-    let placement = ConversationAuthorityPlacement {
-        authority_epoch: ConversationAuthorityEpoch::next_for_device(&device_id, None),
-        device_id,
-        base_manifest_hash,
-    };
-    placement
-        .validate()
-        .map_err(|error| ApiError::BadRequest(error.to_string()))?;
-    Ok(placement)
 }
 
 pub(crate) async fn persist_acp_history_preview_core(
@@ -1705,6 +1586,8 @@ pub(crate) async fn persist_acp_history_preview_core(
     let mut chat = match chat_index::get(ws_dir, chat_id).await {
         Ok(Some(entry)) => chat_from_index_entry(entry),
         Ok(None) => ChatSpecDto {
+            agent_id: agent_id.to_string(),
+            project_id: None,
             id: chat_id.to_string(),
             name: "New Chat".to_string(),
             user_id: "default".to_string(),
@@ -1852,6 +1735,24 @@ pub(crate) async fn get_chat_core(
     chat_id: &str,
     params: ChatHistoryParams,
 ) -> Response {
+    let chat_service = rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(ws_dir));
+    let page = match chat_service
+        .read_history(
+            address,
+            rua_chat::ChatHistoryQuery {
+                before_turn_ordinal: params.before_turn_ordinal,
+                turn_limit: params.turn_limit,
+                around_turn_id: params.around_turn_id,
+            },
+        )
+        .await
+    {
+        Ok(Some(page)) => page,
+        Ok(None) => {
+            return ApiError::NotFound(format!("Chat not found: {chat_id}")).into_response()
+        }
+        Err(error) => return ApiError::from(error).into_response(),
+    };
     let indexed_chat = match get_chat_index_entry(ws_dir, chat_id).await {
         Ok(Some(entry)) => Some(chat_from_index_entry(entry)),
         Ok(None) => None,
@@ -1859,144 +1760,73 @@ pub(crate) async fn get_chat_core(
             return ApiError::Internal(format!("Failed to get chat index: {e}")).into_response();
         }
     };
-    let chat_service = rua_chat::ChatService::for_resolved_scope(ws_dir, address.clone());
-    let current_chat = match chat_service.load(address).await {
-        Ok(chat) => chat,
-        Err(error) => return ApiError::from(error).into_response(),
-    };
-    let (messages, model, title, oldest_turn_ordinal, newest_turn_ordinal, has_more_before) =
-        if let Some(current_chat) = current_chat.as_ref() {
-            match chat_service
-                .read_history(
-                    address,
-                    rua_chat::ChatHistoryQuery {
-                        before_turn_ordinal: params.before_turn_ordinal,
-                        turn_limit: params.turn_limit,
-                        around_turn_id: params.around_turn_id.clone(),
-                    },
-                )
-                .await
-            {
-                Ok(Some(page)) => {
-                    let header_model = page
-                        .chat
-                        .model()
-                        .cloned()
-                        .and_then(|model| serde_json::from_value(model).ok());
-                    let index_name = indexed_chat
-                        .as_ref()
-                        .map(|chat| chat.name.as_str())
-                        .unwrap_or("");
-                    let title = chat_history_title(page.chat.title(), index_name, chat_id);
-                    let mut messages =
-                        extract_messages_from_message_log(&page.messages, &page.turns);
-                    if page.includes_latest_turn {
-                        if let Some(pending) = pending_action_message_from_header(&page.header) {
-                            messages.push(pending);
-                        }
-                    }
-                    (
-                        messages,
-                        header_model,
-                        title,
-                        page.oldest_turn_ordinal,
-                        page.newest_turn_ordinal,
-                        page.has_more_before,
-                    )
-                }
-                Ok(None) => (
-                    Vec::new(),
-                    None,
-                    non_empty_string(current_chat.title().to_string()),
-                    None,
-                    None,
-                    false,
-                ),
-                Err(error) => return ApiError::from(error).into_response(),
-            }
-        } else {
-            (
-                vec![],
-                default_chat_model_slot(state).await,
-                None,
-                None,
-                None,
-                false,
-            )
-        };
+    let current_chat = &page.chat;
+    let header = &page.header;
+    let model = current_chat
+        .model()
+        .cloned()
+        .and_then(|model| serde_json::from_value(model).ok());
+    let index_name = indexed_chat
+        .as_ref()
+        .map(|chat| chat.name.as_str())
+        .unwrap_or("");
+    let title = chat_history_title(current_chat.title(), index_name, chat_id);
+    let mut messages = extract_messages_from_message_log(&page.messages, &page.turns);
+    if page.includes_latest_turn {
+        if let Some(pending) = pending_action_message_from_header(header) {
+            messages.push(pending);
+        }
+    }
 
     let mut meta = match indexed_chat.as_ref() {
         Some(chat) => chat.meta.clone(),
-        None if address.agent_id().is_some() => {
-            let Some(local_device_id) = device_id_from_sync_device(&state.sync_device) else {
-                return ApiError::Internal("local Device identity is unavailable".to_string())
-                    .into_response();
-            };
-            let placement = match new_chat_authority_placement(address, local_device_id) {
-                Ok(placement) => placement,
-                Err(error) => return error.into_response(),
-            };
-            serde_json::json!({
-                CHAT_AUTHORITY_PLACEMENT_META_KEY: placement,
-            })
-        }
         None => serde_json::json!({}),
     };
-    if let Some(current_chat) = current_chat.as_ref() {
-        if let Some(extra) = meta.as_object_mut() {
-            sync_chat_model_to_header_extra(&model, extra);
-        }
-        meta["chat_policy"] =
-            serde_json::to_value(current_chat.policy()).expect("Chat Policy is serializable");
-        if let Some(selected_agent_id) = current_chat.selected_agent_id() {
-            meta["selected_agent_id"] = serde_json::json!(selected_agent_id);
-        }
-        if let Some(authority_placement) = current_chat.authority_placement() {
-            meta[CHAT_AUTHORITY_PLACEMENT_META_KEY] = authority_placement.clone();
-        }
-        if let Some(thinking) = current_chat.thinking() {
-            meta["thinking"] = thinking.clone();
-        }
-        if let Some(harness_configuration) = current_chat.harness_configuration() {
-            meta["harness_configuration"] = harness_configuration.clone();
-        }
+    if let Some(extra) = meta.as_object_mut() {
+        sync_chat_model_to_header_extra(&model, extra);
     }
-    if let Some(header) = match WorkspaceSessionStore::new(ws_dir)
-        .load_chat_header(chat_id)
-        .await
+    meta["chat_policy"] =
+        serde_json::to_value(current_chat.policy()).expect("Chat Policy is serializable");
+    if let Some(selected_agent_id) = current_chat.selected_agent_id() {
+        meta["selected_agent_id"] = serde_json::json!(selected_agent_id);
+    }
+    if let Some(authority_placement) = current_chat.authority_placement() {
+        meta[CHAT_AUTHORITY_PLACEMENT_META_KEY] = authority_placement.clone();
+    }
+    if let Some(thinking) = current_chat.thinking() {
+        meta["thinking"] = thinking.clone();
+    }
+    if let Some(harness_configuration) = current_chat.harness_configuration() {
+        meta["harness_configuration"] = harness_configuration.clone();
+    }
+    if let Some(configuration) = header
+        .extra
+        .get(crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY)
     {
-        Ok(header) => header,
-        Err(error) => return ApiError::from(error).into_response(),
-    } {
-        if let Some(configuration) = header
-            .extra
-            .get(crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY)
-        {
-            meta[crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY] =
-                configuration.clone();
-        }
-        if let Some(mut collaboration) =
-            collaboration_from_meta(&serde_json::Value::Object(header.extra.clone()))
-        {
-            let source_scope =
-                rua_core::ChatScopeStore::resolve(&state.rua_root, collaboration.source.clone());
-            collaboration.source_available = Some(
-                match WorkspaceSessionStore::new(source_scope.root())
-                    .load_chat_header(collaboration.source.chat_id().as_str())
-                    .await
-                {
-                    Ok(header) => header.is_some(),
-                    Err(error) => return ApiError::from(error).into_response(),
-                },
-            );
-            meta["collaboration"] =
-                serde_json::to_value(collaboration).expect("collaboration relation serializes");
-        }
+        meta[crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY] =
+            configuration.clone();
     }
-    if let Some(project_id) = address.project_id() {
+    if let Some(mut collaboration) =
+        collaboration_from_meta(&serde_json::Value::Object(header.extra.clone()))
+    {
+        let source_scope =
+            rua_core::ChatStore::resolve(&state.rua_root, collaboration.source.clone());
+        collaboration.source_available = Some(
+            match WorkspaceSessionStore::new(source_scope.root())
+                .load_chat_header(collaboration.source.chat_id().as_str())
+                .await
+            {
+                Ok(header) => header.is_some(),
+                Err(error) => return ApiError::from(error).into_response(),
+            },
+        );
+        meta["collaboration"] =
+            serde_json::to_value(collaboration).expect("collaboration relation serializes");
+    }
+    if let Some(project_id) = current_chat.project_id() {
         if let Ok(agent_state) = state
             .conversation_input_intake
-            .project_chat_agent_state(project_id, chat_id)
+            .project_chat_agent_state(&rua_core::ProjectId::new(project_id), chat_id)
             .await
         {
             if let Ok(agent_state_value) = serde_json::to_value(&agent_state) {
@@ -2022,13 +1852,15 @@ pub(crate) async fn get_chat_core(
         };
 
     let history = ChatHistoryDto {
+        agent_id: header.agent_id.clone(),
+        project_id: header.project_id.clone(),
         messages,
         model,
         meta,
         title,
-        oldest_turn_ordinal,
-        newest_turn_ordinal,
-        has_more_before,
+        oldest_turn_ordinal: page.oldest_turn_ordinal,
+        newest_turn_ordinal: page.newest_turn_ordinal,
+        has_more_before: page.has_more_before,
         durable_coverage,
     };
 
@@ -2726,7 +2558,7 @@ async fn update_chat_core(
             Err(error) => return error.into_response(),
         }
     }
-    let configuration_address = rua_core::ChatAddress::agent(agent_id, chat_id);
+    let configuration_address = rua_core::ChatAddress::new(chat_id);
     let configuration_gate = state
         .conversation_authority
         .transition_gate(&configuration_address);
@@ -2738,8 +2570,8 @@ async fn update_chat_core(
     if let (Some(turn_id), Some(selected_variant_id)) =
         (body.turn_id.as_deref(), body.selected_variant_id.as_deref())
     {
-        let address = rua_core::ChatAddress::agent(agent_id, chat_id);
-        match rua_chat::ChatService::for_resolved_scope(ws_dir, address.clone())
+        let address = rua_core::ChatAddress::new(chat_id);
+        match rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(ws_dir))
             .select_variant(&address, turn_id, selected_variant_id)
             .await
         {
@@ -2759,8 +2591,8 @@ async fn update_chat_core(
     let mut listing_persisted_by_common_chat = false;
     if body.name.is_some() || body.pinned.is_some() || body.tag.is_some() || body.archived.is_some()
     {
-        let address = rua_core::ChatAddress::agent(agent_id, chat_id);
-        match rua_chat::ChatService::for_resolved_scope(ws_dir, address.clone())
+        let address = rua_core::ChatAddress::new(chat_id);
+        match rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(ws_dir))
             .update_listing(
                 &address,
                 rua_chat::ChatListUpdate {
@@ -2888,8 +2720,8 @@ async fn update_chat_core(
 
     if non_model_update_requested || !model_update_requested || !model_persisted_by_authority {
         let updated_val = serde_json::to_value(&updated).unwrap_or_default();
-        publish_chat_index_upsert(state, agent_id, chat_id, updated_val).await;
-        publish_evergreen_chat_snapshot(state, ws_dir, agent_id, chat_id).await;
+        publish_chat_index_upsert(state, chat_id, updated_val).await;
+        publish_evergreen_chat_snapshot(state, ws_dir, chat_id).await;
     }
 
     (StatusCode::OK, Json(updated)).into_response()
@@ -2906,9 +2738,23 @@ async fn update_authority_placement_core(
     if next_device_id.is_empty() {
         return ApiError::BadRequest("device_id is required".to_string()).into_response();
     }
+    let address = rua_core::ChatAddress::new(chat_id);
+    let service = rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(ws_dir));
+    match service.policy(&address).await {
+        Ok(policy)
+            if policy.authority_placement == rua_chat::AuthorityPlacementPolicy::ResourceBound =>
+        {
+            return ApiError::Conflict(
+                "Chat authority placement is bound to its Project resource Device".into(),
+            )
+            .into_response();
+        }
+        Ok(_) => {}
+        Err(error) => return ApiError::from(error).into_response(),
+    }
     if state
         .conversation_authority
-        .active_turn(&rua_core::ChatAddress::agent(agent_id, chat_id))
+        .active_turn(&address)
         .await
         .is_some()
     {
@@ -2954,7 +2800,6 @@ async fn update_authority_placement_core(
             Err(error) => ApiError::Internal(error.to_string()).into_response(),
         };
     }
-    let address = rua_core::ChatAddress::agent(agent_id, chat_id);
     let required_manifest = match authority_switch_manifest(ws_dir, &address).await {
         Ok(manifest) => manifest,
         Err(error) => return error.into_response(),
@@ -2985,7 +2830,7 @@ async fn update_authority_placement_core(
             &ConversationAuthorityAdoptDeviceCommand {
                 command_id: format!("authority-adopt-{}", uuid::Uuid::new_v4()),
                 agent_id: agent_id.to_string(),
-                address: rua_core::ChatAddress::agent(agent_id, chat_id),
+                address: rua_core::ChatAddress::new(chat_id),
                 source_device_id: local_device_id.clone(),
                 authority_source_device_id: current.device_id.clone(),
                 target_device_id: next_device_id.to_string(),
@@ -3035,7 +2880,7 @@ async fn update_authority_placement_core(
             .conversation_authority
             .apply_confirmed_authority_placement(
                 ws_dir,
-                &rua_core::ChatAddress::agent(agent_id, chat_id),
+                &rua_core::ChatAddress::new(chat_id),
                 target,
             )
             .await
@@ -3045,7 +2890,7 @@ async fn update_authority_placement_core(
             .switch_authority(
                 Some(state),
                 ws_dir,
-                &rua_core::ChatAddress::agent(agent_id, chat_id),
+                &rua_core::ChatAddress::new(chat_id),
                 target,
             )
             .await
@@ -3198,7 +3043,6 @@ async fn rollback_chat_core(
 }
 
 async fn branch_chat_core(
-    agent_id: &str,
     ws_dir: &Path,
     chat_id: &str,
     body: BranchActionBody,
@@ -3218,8 +3062,8 @@ async fn branch_chat_core(
         }
     }
 
-    let address = rua_core::ChatAddress::agent(agent_id, chat_id);
-    let chat_service = rua_chat::ChatService::for_resolved_scope(ws_dir, address.clone());
+    let address = rua_core::ChatAddress::new(chat_id);
+    let chat_service = rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(ws_dir));
     if let Err(error) = chat_service
         .resolve_history_boundary(&address, &body.before_turn_id)
         .await
@@ -3239,8 +3083,8 @@ async fn branch_chat_core(
         Err(error) => return ApiError::from(error).into_response(),
     };
     let chat_val = serde_json::to_value(&branch_chat).unwrap_or_default();
-    publish_chat_index_upsert(state, agent_id, &branch_chat.id, chat_val).await;
-    publish_evergreen_chat_snapshot(state, ws_dir, agent_id, &branch_chat.id).await;
+    publish_chat_index_upsert(state, &branch_chat.id, chat_val).await;
+    publish_evergreen_chat_snapshot(state, ws_dir, &branch_chat.id).await;
 
     (
         StatusCode::OK,
@@ -3321,7 +3165,7 @@ async fn cleanup_chat_runtime_state(
     agent_id: &str,
     chat_id: &str,
 ) -> Result<(), ApiError> {
-    let owner = rua_task::TaskOwner::new(agent_id, chat_id);
+    let owner = rua_task::TaskOwner::new(chat_id);
     let removed_tasks = state
         .task_runtime
         .remove_owner(&owner)
@@ -3362,7 +3206,7 @@ async fn cleanup_chat_runtime_state(
     let cleared_approvals = state
         .security
         .approval_authority()
-        .clear_by_address(&rua_core::ChatAddress::agent(agent_id, chat_id))
+        .clear_by_address(&rua_core::ChatAddress::new(chat_id))
         .await;
     tracing::info!(
         target: "diag.session",
@@ -3447,7 +3291,7 @@ pub(crate) async fn delete_chat_core(
         return ApiError::NotFound(format!("Chat '{chat_id}' not found")).into_response();
     }
 
-    let address = rua_core::ChatAddress::agent(agent_id, &chat.id);
+    let address = rua_core::ChatAddress::new(&chat.id);
     if let Err(error) =
         crate::services::chat_deletion::ChatDeletionCoordinator::from_rua_root(&state.rua_root)
             .commit_intent(&address)
@@ -3459,14 +3303,8 @@ pub(crate) async fn delete_chat_core(
         return error.into_response();
     }
     let deleting = std::collections::BTreeSet::from([chat.id.clone()]);
-    if let Err(error) = crate::services::chat_storage::prepare_chat_deletion(
-        state,
-        ws_dir,
-        rua_core::ChatScope::agent(agent_id),
-        agent_id.to_string(),
-        &deleting,
-    )
-    .await
+    if let Err(error) =
+        crate::services::chat_storage::prepare_chat_deletion(state, ws_dir, &deleting).await
     {
         return chat_deletion_preparation_error(error).into_response();
     }
@@ -3503,7 +3341,6 @@ pub(crate) async fn delete_chat_core(
 }
 
 async fn update_pin_order_core(
-    agent_id: &str,
     ws_dir: &Path,
     items: Vec<PinOrderItem>,
     state: &AppState,
@@ -3523,7 +3360,7 @@ async fn update_pin_order_core(
         if let Ok(Some(entry)) = chat_index::get(ws_dir, &item.0).await {
             let chat = chat_from_index_entry(entry);
             let chat_val = serde_json::to_value(&chat).unwrap_or_default();
-            publish_chat_index_upsert(state, agent_id, &chat.id, chat_val).await;
+            publish_chat_index_upsert(state, &chat.id, chat_val).await;
         }
     }
 
@@ -3531,7 +3368,6 @@ async fn update_pin_order_core(
 }
 
 pub(crate) async fn batch_delete_core(
-    agent_id: &str,
     ws_dir: &Path,
     ids: Vec<String>,
     state: &AppState,
@@ -3555,28 +3391,49 @@ pub(crate) async fn batch_delete_core(
         ))
         .into_response();
     }
+    let mut ordinary = Vec::new();
+    for chat in existing {
+        let context =
+            match crate::services::chat_context::load_chat_context(&state.rua_root, &chat.id).await
+            {
+                Ok(Some(context)) => context,
+                Ok(None) => {
+                    return ApiError::NotFound(format!("Chat not found: {}", chat.id))
+                        .into_response()
+                }
+                Err(error) => return error.into_response(),
+            };
+        if let Some(project_id) = context.project_id {
+            if let Err(error) = super::projects::delete_project_chat_via_authority(
+                state,
+                rua_core::ProjectId::new(project_id),
+                chat.id,
+            )
+            .await
+            {
+                return ApiError::Conflict(error.to_string()).into_response();
+            }
+        } else {
+            ordinary.push((chat, context.agent_id));
+        }
+    }
+    let existing = ordinary;
     let deleting = existing
         .iter()
-        .map(|chat| chat.id.clone())
+        .map(|(chat, _)| chat.id.clone())
         .collect::<std::collections::BTreeSet<_>>();
 
-    for chat in &existing {
+    for (chat, agent_id) in &existing {
         if let Err(error) = cleanup_chat_runtime_state(state, agent_id, &chat.id).await {
             return error.into_response();
         }
     }
-    if let Err(error) = crate::services::chat_storage::prepare_chat_deletion(
-        state,
-        ws_dir,
-        rua_core::ChatScope::agent(agent_id),
-        agent_id.to_string(),
-        &deleting,
-    )
-    .await
+    if let Err(error) =
+        crate::services::chat_storage::prepare_chat_deletion(state, ws_dir, &deleting).await
     {
         return chat_deletion_preparation_error(error).into_response();
     }
-    for chat in &existing {
+    for (chat, _) in &existing {
         if let Err(e) = WorkspaceSessionStore::new(ws_dir)
             .delete_chat_storage_by_chat_id(&chat.id)
             .await
@@ -3585,9 +3442,10 @@ pub(crate) async fn batch_delete_core(
         }
     }
 
-    if let Err(e) = chat_index::delete_many(ws_dir, existing.iter().map(|c| c.id.clone()).collect())
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to delete chat index rows: {e}")))
+    if let Err(e) =
+        chat_index::delete_many(ws_dir, existing.iter().map(|(c, _)| c.id.clone()).collect())
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to delete chat index rows: {e}")))
     {
         return e.into_response();
     }

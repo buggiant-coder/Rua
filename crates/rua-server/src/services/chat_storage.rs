@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use rua_core::{ChatAddress, ChatScope};
+use rua_core::ChatAddress;
 use rua_session::{chat_index::ChatIndexRecord, WorkspaceSessionStore};
 use serde::Serialize;
 
@@ -76,14 +76,11 @@ impl std::fmt::Display for ChatDeletionPreparationError {
 pub async fn prepare_chat_deletion(
     state: &crate::state::AppState,
     scope_root: &Path,
-    scope: ChatScope,
-    owner_name: String,
     deleting_chat_ids: &BTreeSet<String>,
 ) -> Result<PreparedChatDeletion, ChatDeletionPreparationError> {
-    let snapshot =
-        scan_scope_for_deletion(scope_root, scope.clone(), owner_name, deleting_chat_ids)
-            .await
-            .map_err(ChatDeletionPreparationError::Failed)?;
+    let snapshot = scan_scope_for_deletion(scope_root, deleting_chat_ids)
+        .await
+        .map_err(ChatDeletionPreparationError::Failed)?;
     for chat_id in deleting_chat_ids {
         let entry = snapshot
             .entries
@@ -100,20 +97,11 @@ pub async fn prepare_chat_deletion(
     }
 
     let (removable_media, _) = removable_media(&snapshot, deleting_chat_ids);
-    let media_owner = match &scope {
-        ChatScope::Agent { agent_id, .. } => {
-            rua_sync::media_adapter::MediaOwner::Agent(agent_id.to_string())
-        }
-        ChatScope::Project { project_id, .. } => {
-            rua_sync::media_adapter::MediaOwner::Project(project_id.to_string())
-        }
-    };
     for media_id in &removable_media {
         ensure_delete_publication(
             crate::sync_publication::publish_sync_fact(
                 state,
                 crate::sync_publication::SyncPublicationFact::MediaDeleted {
-                    owner: media_owner.clone(),
                     media_id: media_id.clone(),
                 },
             )
@@ -127,7 +115,7 @@ pub async fn prepare_chat_deletion(
                 state,
                 crate::sync_publication::SyncPublicationFact::ChatDeleted {
                     scope_root: scope_root.to_path_buf(),
-                    address: ChatAddress::new(scope.clone(), chat_id.clone()),
+                    address: ChatAddress::new(chat_id.clone()),
                 },
             )
             .await,
@@ -140,28 +128,20 @@ pub async fn prepare_chat_deletion(
     Ok(PreparedChatDeletion { snapshot, cleanup })
 }
 
-pub async fn scan_scope(
-    scope_root: &Path,
-    scope: ChatScope,
-    owner_name: String,
-) -> Result<ScopeStorageSnapshot, String> {
-    scan_scope_selected(scope_root, scope, owner_name, None).await
+pub async fn scan_scope(scope_root: &Path) -> Result<ScopeStorageSnapshot, String> {
+    scan_scope_selected(scope_root, None).await
 }
 
 /// Measures only deleted Chats; other histories are read only to protect shared media.
 pub async fn scan_scope_for_deletion(
     scope_root: &Path,
-    scope: ChatScope,
-    owner_name: String,
     deleting_chat_ids: &BTreeSet<String>,
 ) -> Result<ScopeStorageSnapshot, String> {
-    scan_scope_selected(scope_root, scope, owner_name, Some(deleting_chat_ids)).await
+    scan_scope_selected(scope_root, Some(deleting_chat_ids)).await
 }
 
 async fn scan_scope_selected(
     scope_root: &Path,
-    scope: ChatScope,
-    owner_name: String,
     deleting_chat_ids: Option<&BTreeSet<String>>,
 ) -> Result<ScopeStorageSnapshot, String> {
     let (records, other_records): (Vec<_>, Vec<_>) =
@@ -176,7 +156,7 @@ async fn scan_scope_selected(
 
     let mut measured = Vec::with_capacity(records.len());
     for record in records {
-        let address = ChatAddress::new(scope.clone(), record.id.clone());
+        let address = ChatAddress::new(record.id.clone());
         let refs = collect_chat_references(&store, &record).await?;
         for media_id in &refs.media_ids {
             media_references
@@ -185,7 +165,21 @@ async fn scan_scope_selected(
                 .insert(record.id.clone());
         }
         let sizes = measure_chat(scope_root, &store, &record, &refs)?;
-        measured.push((record, address, refs, sizes));
+        let header = store
+            .load_chat_header(&record.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Chat header missing: {}", record.id))?;
+        let (kind, id) = match header.project_id {
+            Some(project_id) => ("project", project_id),
+            None => ("agent", header.agent_id),
+        };
+        let owner = StorageChatOwner {
+            kind: kind.into(),
+            name: id.clone(),
+            id,
+        };
+        measured.push((record, address, refs, sizes, owner));
     }
 
     if !media_references.is_empty() {
@@ -199,7 +193,7 @@ async fn scan_scope_selected(
         }
     }
 
-    for (record, address, refs, sizes) in measured {
+    for (record, address, refs, sizes, owner) in measured {
         let attributed_bytes = sizes.total_bytes();
         let shared_media_bytes = refs
             .media_ids
@@ -215,11 +209,7 @@ async fn scan_scope_selected(
         let reclaimable_bytes = attributed_bytes.saturating_sub(shared_media_bytes);
         entries.push(ChatStorageEntry {
             address,
-            owner: StorageChatOwner {
-                kind: scope.kind().to_string(),
-                id: scope.owner_id().to_string(),
-                name: owner_name.clone(),
-            },
+            owner,
             name: record.name.clone(),
             pinned: record.pinned,
             updated_at: record.updated_at,

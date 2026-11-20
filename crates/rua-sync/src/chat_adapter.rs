@@ -3,7 +3,7 @@ use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
 use rand::RngCore;
-use rua_core::{ChatAddress, ChatScope, ChatScopeStore};
+use rua_core::{ChatAddress, ChatStore};
 use rua_session::chat_index::{self, ChatIndexRecord};
 
 use crate::hlc::HlcTimestamp;
@@ -72,19 +72,21 @@ impl ChatIndexSyncAdapter {
     }
 
     fn scope_root(&self, address: &ChatAddress) -> PathBuf {
-        ChatScopeStore::resolve(&self.data_dir, address.clone())
+        ChatStore::resolve(&self.data_dir, address.clone())
             .root()
             .to_path_buf()
     }
 
-    fn chat_index_path(&self, address: &ChatAddress) -> PathBuf {
-        self.scope_root(address).join("chat-index.sqlite")
-    }
-
-    fn project_is_deleted(&self, address: &ChatAddress) -> bool {
-        address.project_id().is_some_and(|project_id| {
-            rua_project::project_tombstone_exists(&self.data_dir.join("projects"), project_id)
-        })
+    fn project_is_deleted(&self, payload: &serde_json::Value) -> bool {
+        payload
+            .pointer("/meta/project_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|project_id| {
+                rua_project::project_tombstone_exists(
+                    &self.data_dir.join("projects"),
+                    &rua_core::ProjectId::new(project_id),
+                )
+            })
     }
 
     fn export_hlc(path: &std::path::Path, device_id: &str) -> HlcTimestamp {
@@ -120,21 +122,40 @@ impl ChatIndexSyncAdapter {
         if merge_store.resolve_lww(&cursor_id, change.hlc, false)? == LwwDecision::Skip {
             return Ok(ApplyOutcome::Skipped);
         }
-        if self.project_is_deleted(address) {
-            chat_index::delete_sync(&self.scope_root(address), address.chat_id().as_str())
-                .map_err(SyncError::Store)?;
-            return Ok(ApplyOutcome::Applied {
-                cursor: tombstone_cursor(change.hlc, None),
-            });
+        if change
+            .payload
+            .get("id")
+            .is_some_and(|id| id.as_str() != Some(address.chat_id().as_str()))
+        {
+            return Err(SyncError::InvalidPayload(
+                "Chat Index record ID differs from its address".into(),
+            ));
         }
-
         let scope_root = self.scope_root(address);
         let mut incoming = change.payload.clone();
         if let Some(local) = chat_index::get_sync(&scope_root, address.chat_id().as_str())
             .map_err(SyncError::Store)?
             .map(chat_index_record_to_json)
         {
+            if local
+                .pointer("/meta/project_id")
+                .and_then(serde_json::Value::as_str)
+                != incoming
+                    .pointer("/meta/project_id")
+                    .and_then(serde_json::Value::as_str)
+            {
+                return Err(SyncError::InvalidPayload(
+                    "Chat Project membership is immutable".into(),
+                ));
+            }
             preserve_newer_authority_placement(&local, &mut incoming);
+        }
+        if self.project_is_deleted(&incoming) {
+            chat_index::delete_sync(&scope_root, address.chat_id().as_str())
+                .map_err(SyncError::Store)?;
+            return Ok(ApplyOutcome::Applied {
+                cursor: tombstone_cursor(change.hlc, None),
+            });
         }
         let record = chat_index_record_from_json(address.chat_id().as_str(), &incoming)?;
         chat_index::upsert_sync(&scope_root, &record).map_err(SyncError::Store)?;
@@ -168,43 +189,22 @@ impl DomainSyncAdapter for ChatIndexSyncAdapter {
     }
 
     async fn export_records(&self) -> SyncResult<Vec<SyncChange>> {
+        let workspace = rua_core::RuaRoot::new(&self.data_dir).chat_workspace();
         let mut changes = Vec::new();
-        for (scope_kind, roots) in [
-            ("agent", self.data_dir.join("workspaces")),
-            ("project", self.data_dir.join("projects")),
-        ] {
-            if !roots.is_dir() {
-                continue;
-            }
-            for entry in std::fs::read_dir(&roots)? {
-                let entry = entry?;
-                if !entry.path().is_dir() {
+        if workspace.as_path().is_dir() {
+            for chat in chat_index::list_all_sync(workspace.as_path()).map_err(SyncError::Store)? {
+                let address = ChatAddress::new(chat.id.clone());
+                let payload = chat_index_record_to_json(chat);
+                if self.project_is_deleted(&payload) {
                     continue;
                 }
-                let Some(owner_id) = entry.file_name().to_str().map(ToOwned::to_owned) else {
-                    continue;
-                };
-                if scope_kind == "project"
-                    && rua_project::project_tombstone_exists(
-                        &self.data_dir.join("projects"),
-                        &rua_core::ProjectId::new(owner_id.clone()),
-                    )
-                {
-                    continue;
-                }
-                let scope = ChatScope::from_kind_and_owner(scope_kind, owner_id)
-                    .expect("known Chat Scope kind");
-                let scope_address = ChatAddress::new(scope.clone(), "__scope_export__");
-                let chat_index_path = self.chat_index_path(&scope_address);
-                for chat in chat_index::list_all_sync(&entry.path()).map_err(SyncError::Store)? {
-                    changes.push(Self::index_change(
-                        Self::new_op_id(),
-                        ChatAddress::new(scope.clone(), chat.id.clone()),
-                        chat_index_record_to_json(chat),
-                        self.device_id.clone(),
-                        Self::export_hlc(&chat_index_path, &self.device_id),
-                    ));
-                }
+                changes.push(Self::index_change(
+                    Self::new_op_id(),
+                    address,
+                    payload,
+                    self.device_id.clone(),
+                    Self::export_hlc(&workspace.chat_index_path(), &self.device_id),
+                ));
             }
         }
         changes.sort_by(|left, right| left.record_id.cmp(&right.record_id));
@@ -235,41 +235,15 @@ impl DomainSyncAdapter for ChatIndexSyncAdapter {
 }
 
 pub fn index_record_id(address: &ChatAddress) -> String {
-    format!(
-        "{}/{}/chats/{}",
-        address.scope().kind(),
-        address.scope().owner_id(),
-        address.chat_id()
-    )
+    format!("chats/{}", address.chat_id())
 }
 
 pub fn parse_chat_record_id(record_id: &str) -> SyncResult<ChatAddress> {
-    let mut parts = record_id.split('/');
-    let scope_kind = parts
-        .next()
-        .filter(|value| *value == "agent" || *value == "project")
-        .ok_or_else(|| SyncError::Store(format!("invalid Chat Index record id: {record_id}")))?;
-    let owner_id = parts
-        .next()
+    let chat_id = record_id
+        .strip_prefix("chats/")
         .filter(|value| valid_component(value))
         .ok_or_else(|| SyncError::Store(format!("invalid Chat Index record id: {record_id}")))?;
-    if parts.next() != Some("chats") {
-        return Err(SyncError::Store(format!(
-            "invalid Chat Index record id: {record_id}"
-        )));
-    }
-    let chat_id = parts
-        .next()
-        .filter(|value| valid_component(value))
-        .ok_or_else(|| SyncError::Store(format!("invalid Chat Index record id: {record_id}")))?;
-    if parts.next().is_some() {
-        return Err(SyncError::Store(format!(
-            "invalid Chat Index record id: {record_id}"
-        )));
-    }
-    let scope = ChatScope::from_kind_and_owner(scope_kind, owner_id)
-        .ok_or_else(|| SyncError::Store(format!("invalid Chat Index record id: {record_id}")))?;
-    Ok(ChatAddress::new(scope, chat_id))
+    Ok(ChatAddress::new(chat_id))
 }
 
 fn valid_component(value: &str) -> bool {

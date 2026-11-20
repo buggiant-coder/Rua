@@ -1,4 +1,4 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
@@ -41,27 +41,6 @@ pub struct MediaFilePayload {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MediaOwner {
-    Agent(String),
-    Project(String),
-}
-
-impl MediaOwner {
-    fn kind(&self) -> &'static str {
-        match self {
-            Self::Agent(_) => "agent",
-            Self::Project(_) => "project",
-        }
-    }
-
-    fn id(&self) -> &str {
-        match self {
-            Self::Agent(id) | Self::Project(id) => id,
-        }
-    }
-}
-
 pub struct MediaSyncAdapter {
     data_dir: PathBuf,
     device_id: String,
@@ -93,15 +72,13 @@ impl MediaSyncAdapter {
         self
     }
 
-    pub fn record_id(owner: &MediaOwner, media_id: &str) -> SyncResult<String> {
-        validate_path_part(owner.id())?;
+    pub fn record_id(media_id: &str) -> SyncResult<String> {
         validate_media_id(media_id)?;
-        Ok(format!("{}/{}/{}", owner.kind(), owner.id(), media_id))
+        Ok(media_id.to_owned())
     }
 
     pub fn delete_change(
         op_id: impl Into<String>,
-        owner: &MediaOwner,
         media_id: &str,
         device_id: impl Into<String>,
         hlc: HlcTimestamp,
@@ -109,7 +86,7 @@ impl MediaSyncAdapter {
         SyncChange::new(
             op_id,
             MEDIA_DOMAIN,
-            Self::record_id(owner, media_id).expect("validated Media owner and id"),
+            Self::record_id(media_id).expect("validated Media id"),
             MEDIA_KIND_DELETE,
             device_id,
             hlc,
@@ -125,33 +102,30 @@ impl MediaSyncAdapter {
 
     pub async fn snapshot_change_for_file(
         &self,
-        owner: &MediaOwner,
         media_id: &str,
         op_id: impl Into<String>,
         device_id: impl Into<String>,
         hlc: HlcTimestamp,
     ) -> SyncResult<SyncChange> {
-        let path = self.media_file_path(owner, media_id)?;
-        self.snapshot_change_for_media_path(owner, media_id, &path, op_id, device_id, hlc)
+        let path = self.media_file_path(media_id)?;
+        self.snapshot_change_for_media_path(media_id, &path, op_id, device_id, hlc)
             .await
     }
 
     pub async fn snapshot_change_for_media_path(
         &self,
-        owner: &MediaOwner,
         media_id: &str,
         path: &Path,
         op_id: impl Into<String>,
         device_id: impl Into<String>,
         hlc: HlcTimestamp,
     ) -> SyncResult<SyncChange> {
-        validate_path_part(owner.id())?;
         validate_media_id(media_id)?;
         let payload = self.payload_from_path(media_id, path).await?;
         Ok(SyncChange::new(
             op_id,
             MEDIA_DOMAIN,
-            Self::record_id(owner, media_id)?,
+            Self::record_id(media_id)?,
             MEDIA_KIND_UPSERT,
             device_id,
             hlc,
@@ -159,16 +133,10 @@ impl MediaSyncAdapter {
         ))
     }
 
-    fn media_file_path(&self, owner: &MediaOwner, media_id: &str) -> SyncResult<PathBuf> {
-        validate_path_part(owner.id())?;
+    fn media_file_path(&self, media_id: &str) -> SyncResult<PathBuf> {
         validate_media_id(media_id)?;
         let root = RuaRoot::new(self.data_dir.clone());
-        let workspace = match owner {
-            MediaOwner::Agent(id) => root.agent_workspace(id),
-            MediaOwner::Project(id) => root.project_workspace(id),
-        }
-        .map_err(|error| SyncError::Store(error.to_string()))?;
-        Ok(workspace.media_dir().join(media_id))
+        Ok(root.chat_workspace().media_dir().join(media_id))
     }
 
     async fn payload_from_path(&self, media_id: &str, path: &Path) -> SyncResult<MediaFilePayload> {
@@ -227,58 +195,35 @@ impl DomainSyncAdapter for MediaSyncAdapter {
 
     async fn export_records(&self) -> SyncResult<Vec<SyncChange>> {
         let mut changes = Vec::new();
-        for (kind, roots) in [
-            ("agent", self.data_dir.join("workspaces")),
-            ("project", self.data_dir.join("projects")),
-        ] {
-            if !roots.is_dir() {
+        let media_dir = RuaRoot::new(&self.data_dir).chat_workspace().media_dir();
+        let files = match std::fs::read_dir(media_dir) {
+            Ok(files) => files,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(changes),
+            Err(error) => return Err(error.into()),
+        };
+        for file in files {
+            let file = file?;
+            if !file.file_type()?.is_file() {
                 continue;
             }
-            for workspace in std::fs::read_dir(roots)? {
-                let workspace = workspace?;
-                if !workspace.path().is_dir() {
-                    continue;
-                }
-                let Some(owner_id) = workspace.file_name().to_str().map(ToOwned::to_owned) else {
-                    continue;
-                };
-                if validate_path_part(&owner_id).is_err() {
-                    continue;
-                }
-                let owner = if kind == "agent" {
-                    MediaOwner::Agent(owner_id)
-                } else {
-                    MediaOwner::Project(owner_id)
-                };
-                let media_dir = workspace.path().join("media");
-                if !media_dir.is_dir() {
-                    continue;
-                }
-                for file in std::fs::read_dir(&media_dir)? {
-                    let file = file?;
-                    let path = file.path();
-                    if !path.is_file() {
-                        continue;
-                    }
-                    let Some(media_id) = file.file_name().to_str().map(ToOwned::to_owned) else {
-                        continue;
-                    };
-                    if validate_media_id(&media_id).is_err() {
-                        continue;
-                    }
-                    let change = self
-                        .snapshot_change_for_media_path(
-                            &owner,
-                            &media_id,
-                            &path,
-                            Self::new_op_id(),
-                            self.device_id.clone(),
-                            Self::export_hlc(&path, &self.device_id),
-                        )
-                        .await?;
-                    changes.push(change);
-                }
+            let name = file.file_name();
+            let Some(media_id) = name.to_str() else {
+                continue;
+            };
+            if validate_media_id(media_id).is_err() {
+                continue;
             }
+            let path = file.path();
+            changes.push(
+                self.snapshot_change_for_media_path(
+                    media_id,
+                    &path,
+                    Self::new_op_id(),
+                    &self.device_id,
+                    Self::export_hlc(&path, &self.device_id),
+                )
+                .await?,
+            );
         }
         changes.sort_by(|a, b| a.record_id.cmp(&b.record_id));
         Ok(changes)
@@ -296,7 +241,7 @@ impl DomainSyncAdapter for MediaSyncAdapter {
             )));
         }
 
-        let (owner, media_id) = parse_record_id(&change.record_id)?;
+        let media_id = parse_record_id(&change.record_id)?;
         let cursor_id = sync_cursor_record_id(MEDIA_DOMAIN, &change.record_id);
         let is_delete = change.kind == MEDIA_KIND_DELETE;
         let decision = merge_store.resolve_lww(&cursor_id, change.hlc, is_delete)?;
@@ -311,7 +256,7 @@ impl DomainSyncAdapter for MediaSyncAdapter {
             }
         }
 
-        let path = self.media_file_path(&owner, media_id)?;
+        let path = self.media_file_path(media_id)?;
         if is_delete {
             remove_file_if_exists(&path)?;
             remove_file_if_exists(&blobhash_sidecar_path(&path))?;
@@ -385,66 +330,15 @@ impl DomainSyncAdapter for MediaSyncAdapter {
     }
 }
 
-pub fn parse_record_id(record_id: &str) -> SyncResult<(MediaOwner, &str)> {
-    let mut parts = record_id.split('/');
-    let Some(owner_kind) = parts.next() else {
-        return Err(SyncError::Store(
-            "media record id missing owner kind".to_string(),
-        ));
-    };
-    let Some(owner_id) = parts.next() else {
-        return Err(SyncError::Store(
-            "media record id missing owner id".to_string(),
-        ));
-    };
-    let Some(media_id) = parts.next() else {
-        return Err(SyncError::Store(
-            "media record id missing Media id".to_string(),
-        ));
-    };
-    if parts.next().is_some() {
-        return Err(SyncError::Store(format!(
-            "invalid media record id: {record_id}"
-        )));
-    }
-    validate_path_part(owner_id)?;
-    validate_media_id(media_id)?;
-    let owner = match owner_kind {
-        "agent" => MediaOwner::Agent(owner_id.to_string()),
-        "project" => MediaOwner::Project(owner_id.to_string()),
-        _ => {
-            return Err(SyncError::Store(format!(
-                "invalid Media owner kind: {owner_kind}"
-            )))
-        }
-    };
-    Ok((owner, media_id))
+pub fn parse_record_id(record_id: &str) -> SyncResult<&str> {
+    validate_media_id(record_id)?;
+    Ok(record_id)
 }
 
 fn validate_media_id(media_id: &str) -> SyncResult<()> {
     uuid::Uuid::parse_str(media_id)
         .map(|_| ())
         .map_err(|_| SyncError::Store(format!("invalid Media id: {media_id}")))
-}
-
-fn validate_path_part(part: &str) -> SyncResult<()> {
-    if part.is_empty() {
-        return Err(SyncError::Store(
-            "path segment must not be empty".to_string(),
-        ));
-    }
-    let path = Path::new(part);
-    if path.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        )
-    }) || part.contains('/')
-        || part.contains('\\')
-    {
-        return Err(SyncError::Store(format!("invalid path segment: {part}")));
-    }
-    Ok(())
 }
 
 fn remove_file_if_exists(path: &Path) -> SyncResult<()> {

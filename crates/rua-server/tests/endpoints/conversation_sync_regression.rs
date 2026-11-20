@@ -135,8 +135,8 @@ fn build_app() -> (Router, TempDir) {
     );
 
     let app = Router::new()
-        .merge(endpoints::chats::root_router())
-        .merge(endpoints::console::agent_scoped_router())
+        .merge(endpoints::chats::router())
+        .merge(endpoints::console::router())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             agent_context_middleware,
@@ -182,8 +182,8 @@ fn build_sync_enabled_app() -> (Router, AppState, TempDir) {
     );
 
     let app = Router::new()
-        .merge(endpoints::chats::root_router())
-        .merge(endpoints::console::agent_scoped_router())
+        .merge(endpoints::chats::router())
+        .merge(endpoints::console::router())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             agent_context_middleware,
@@ -222,7 +222,7 @@ async fn materialize_local_chat(state: &AppState, tmp: &TempDir, chat_id: &str, 
         .as_ref()
         .map(|device| hex::encode(device.device_id_short()))
         .expect("local device id");
-    let address = ChatAddress::agent("default", chat_id);
+    let address = ChatAddress::new(chat_id);
     let base_manifest_hash =
         rua_server::services::conversation_manifest::initial_conversation_manifest_hash(&address)
             .expect("initial manifest hash");
@@ -554,8 +554,9 @@ async fn console_submit_updates_chat_device_activity_metadata_when_sync_enabled(
     let configuration = state
         .product_hooks
         .resolve_complete_chat_configuration(
-            &ChatAddress::agent("default", chat_id),
+            &ChatAddress::new(chat_id),
             rua_server::services::product_hooks::ChatConfigurationMaterialization {
+                project_id: None,
                 selected_agent_id: "default".into(),
                 running_config: Default::default(),
                 security_config: Default::default(),
@@ -1016,8 +1017,9 @@ async fn runtime_failure_terminal_fact_emits_evergreen_v4_when_sync_enabled() {
     let configuration = state
         .product_hooks
         .resolve_complete_chat_configuration(
-            &ChatAddress::agent("default", chat_id),
+            &ChatAddress::new(chat_id),
             rua_server::services::product_hooks::ChatConfigurationMaterialization {
+                project_id: None,
                 selected_agent_id: "default".into(),
                 running_config: Default::default(),
                 security_config: Default::default(),
@@ -1324,7 +1326,7 @@ async fn complete_model_call_publishes_active_turn_and_advances_watermark() {
         "a complete Model Call Boundary must publish while the Turn remains active; got {changes:#?}"
     );
 
-    let address = ChatAddress::agent("default", chat_id);
+    let address = ChatAddress::new(chat_id);
     let manifest = rua_server::services::conversation_manifest::load_conversation_manifest(
         &runtime.workspace_dir(),
         &address,
@@ -1479,7 +1481,7 @@ async fn delete_chat_sync_disabled() {
     let chats = json.as_array().unwrap();
     assert!(chats.is_empty());
 
-    let address = rua_core::chat::ChatAddress::agent("default", chat_id);
+    let address = rua_core::chat::ChatAddress::new(chat_id);
     let intent =
         rua_server::services::chat_deletion::ChatDeleteIntentStore::from_rua_root(tmp.path())
             .load(&address)
@@ -1552,7 +1554,7 @@ async fn delete_chat_rejects_pinned_chat_without_creating_intent() {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CONFLICT);
 
-    let address = rua_core::chat::ChatAddress::agent("default", chat_id);
+    let address = rua_core::chat::ChatAddress::new(chat_id);
     assert!(
         rua_server::services::chat_deletion::ChatDeleteIntentStore::from_rua_root(tmp.path())
             .load(&address)

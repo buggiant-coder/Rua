@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { lastProjectChatPath, rememberChatRoute } from "./lastChatRoute";
+import { lastChatPath, rememberChatRoute } from "./lastChatRoute";
 
 describe("lastChatRoute", () => {
   beforeEach(() => {
@@ -7,23 +7,23 @@ describe("lastChatRoute", () => {
   });
 
   it("restores the last Project Chat path", () => {
-    rememberChatRoute("/projects/project-1/chats/chat-2");
+    rememberChatRoute("/chats/chat-2");
 
-    expect(lastProjectChatPath()).toBe("/projects/project-1/chats/chat-2");
+    expect(lastChatPath()).toBe("/chats/chat-2");
   });
 
-  it("stops restoring Project Chat after a regular Chat is opened", () => {
-    rememberChatRoute("/projects/project-1/chats/chat-2");
-    rememberChatRoute("/agents/default/chats/chat-3");
+  it("restores the most recently opened Chat", () => {
+    rememberChatRoute("/chats/chat-2");
+    rememberChatRoute("/chats/chat-3");
 
-    expect(lastProjectChatPath()).toBeNull();
+    expect(lastChatPath()).toBe("/chats/chat-3");
   });
 
   it("ignores routes outside Chat and Project Chat", () => {
-    rememberChatRoute("/projects/project-1/chats/chat-2");
+    rememberChatRoute("/chats/chat-2");
     rememberChatRoute("/settings");
 
-    expect(lastProjectChatPath()).toBe("/projects/project-1/chats/chat-2");
+    expect(lastChatPath()).toBe("/chats/chat-2");
   });
 
   it("ignores malformed stored routes", () => {
@@ -32,6 +32,6 @@ describe("lastChatRoute", () => {
       JSON.stringify({ version: 1, kind: "project-chat", path: "/settings" }),
     );
 
-    expect(lastProjectChatPath()).toBeNull();
+    expect(lastChatPath()).toBeNull();
   });
 });

@@ -27,12 +27,12 @@ fn project(test: &TestApp) -> (ProjectId, std::path::PathBuf, std::path::PathBuf
 async fn rebind_missing_directory_preserves_existing_chat_and_rejects_stale_edits() {
     use super::support::{json as response_json, request};
     use axum::http::{Method, StatusCode};
-    use rua_core::{ChatAddress, ChatScopeStore};
+    use rua_core::{ChatAddress, ChatStore};
     use rua_session::{ChatMetadata, ChatSessionHeader, WorkspaceSessionStore};
     let test = build_app();
     let (id, first, second) = project(&test);
-    let address = ChatAddress::project(id.clone(), "00000000-0000-4000-8000-000000000591");
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    let address = ChatAddress::new("00000000-0000-4000-8000-000000000591");
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let store = WorkspaceSessionStore::new(scope.root());
     let mut header = ChatSessionHeader::new(ChatMetadata {
         chat_id: address.chat_id().to_string(),
@@ -47,6 +47,7 @@ async fn rebind_missing_directory_preserves_existing_chat_and_rejects_stale_edit
     header
         .extra
         .insert("project_working_directory_id".into(), json!("initial"));
+    header.project_id = Some(id.to_string());
     store.save_chat_header(&header).await.unwrap();
     rua_session::chat_index::insert(
         scope.root(),

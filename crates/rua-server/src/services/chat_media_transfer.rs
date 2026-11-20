@@ -35,6 +35,11 @@ impl ChatMediaTransferRegistry {
         if uploads.contains_key(&upload.operation_id) {
             return Err("Media transfer operation already exists".to_string());
         }
+        if uploads.values().any(|active| {
+            active.media_dir == upload.media_dir && active.media_id == upload.media_id
+        }) {
+            return Err("Media already has a pending upload".into());
+        }
         uploads.insert(upload.operation_id.clone(), upload);
         Ok(())
     }

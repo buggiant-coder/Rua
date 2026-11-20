@@ -30,7 +30,7 @@ async fn enforce_authority_movement_policy(
     workspace_dir: &std::path::Path,
     address: &ChatAddress,
 ) -> Result<(), ChatMetadataStoreError> {
-    let policy = rua_chat::ChatService::for_resolved_scope(workspace_dir, address.clone())
+    let policy = rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(workspace_dir))
         .policy(address)
         .await
         .map_err(ChatMetadataStoreError::Session)?;
@@ -341,8 +341,7 @@ impl ConversationAuthority {
         state: &AppState,
         address: &ChatAddress,
     ) -> Result<ConversationAuthorityPlacement, ChatMetadataStoreError> {
-        let scope_root =
-            rua_core::chat_store::ChatScopeStore::resolve(&state.rua_root, address.clone());
+        let scope_root = rua_core::chat_store::ChatStore::resolve(&state.rua_root, address.clone());
         if let Some(placement) =
             crate::services::conversation_authority_target::load_optional_chat_authority_placement(
                 scope_root.root(),
@@ -360,18 +359,19 @@ impl ConversationAuthority {
                         "local Device identity is unavailable".to_string(),
                     )
                 })?;
-        let target_device_id = match address.scope() {
-            rua_core::ChatScope::Agent { .. } => local_device_id,
-            rua_core::ChatScope::Project { project_id, .. } => {
+        let header = rua_session::WorkspaceSessionStore::new(scope_root.root())
+            .load_chat_header(address.chat_id().as_str())
+            .await
+            .map_err(|error| ChatMetadataStoreError::Internal(error.to_string()))?;
+        let target_device_id = match header.and_then(|header| header.project_id) {
+            None => local_device_id,
+            Some(id) => {
                 state
                     .project_catalog
-                    .get(&rua_core::ProjectId::new(project_id.as_str()))
+                    .get(&rua_core::ProjectId::new(&id))
                     .map_err(|error| ChatMetadataStoreError::Internal(error.to_string()))?
                     .ok_or_else(|| {
-                        ChatMetadataStoreError::Internal(format!(
-                            "Project '{}' not found",
-                            project_id.as_str()
-                        ))
+                        ChatMetadataStoreError::Internal(format!("Project '{id}' not found"))
                     })?
                     .resource_device_id
             }
@@ -1375,17 +1375,17 @@ impl ConversationAuthority {
                 _ = cancellation.cancelled() => {},
                 _ = async {
                     if let (Some(runtime), Some(configuration)) =
-                        (terminal_observer_runtime, frozen_configuration)
+                        (terminal_observer_runtime, frozen_configuration.as_ref())
                     {
                         let diagnostics = runtime
-                            .observe_frozen(&observed_terminal, &configuration, cancellation.clone())
+                            .observe_frozen(&observed_terminal, configuration, cancellation.clone())
                             .await;
                         product_hooks
-                            .record_terminal_observer_diagnostics(&observed_terminal, &diagnostics)
+                            .record_terminal_observer_diagnostics(&observed_terminal, &configuration.selected_agent_id, &diagnostics)
                             .await;
                     }
                     if let Some(notifier) = chat_completion_notifier {
-                        notifier.notify(&observed_terminal).await;
+                        notifier.notify(&observed_terminal, frozen_configuration.as_ref().map(|configuration| configuration.selected_agent_id.as_str())).await;
                     }
                 } => {},
             }
@@ -1401,67 +1401,83 @@ impl ConversationAuthority {
         self.active_turns.read().await.get(address).cloned()
     }
 
-    /// Every Chat Address this authority currently holds an Active Turn for,
-    /// limited to one Agent when `agent_id` is given.
-    ///
-    /// This is the real enumeration an Agent shutdown needs: it reads the same
-    /// map the turn lifecycle mutates, so it cannot drift from a mirrored count.
-    /// A Project-Scoped Chat is owned by the Project, not by the Agent executing
-    /// its turns, so it is never attributed to an Agent here.
     pub async fn active_turn_addresses(&self, agent_id: Option<&str>) -> Vec<ChatAddress> {
-        let active_turns = self.active_turns.read().await;
-        let mut addresses: Vec<ChatAddress> = active_turns
-            .keys()
-            .filter(|address| match agent_id {
-                None => true,
-                Some(agent) => address
-                    .agent_id()
-                    .is_some_and(|owner| owner.as_str() == agent),
-            })
-            .cloned()
-            .collect();
-        addresses.sort_by_key(ChatAddress::identity_key);
-        addresses
-    }
-
-    /// Every Chat Address holding queued input for one Agent, in stable order.
-    ///
-    /// Queued input is real Agent work even with no Active Turn, so a shutdown
-    /// that only looked at turns would leave a submission able to start later.
-    pub async fn queued_input_addresses(&self, agent_id: &str) -> Vec<ChatAddress> {
-        let queue = self.queue.read().await;
-        let mut addresses: Vec<ChatAddress> = queue
-            .iter()
-            .filter(|(address, entries)| {
-                address
-                    .agent_id()
-                    .is_some_and(|owner| owner.as_str() == agent_id)
-                    && !entries.is_empty()
-            })
-            .map(|(address, _)| address.clone())
-            .collect();
-        addresses.sort_by_key(ChatAddress::identity_key);
-        addresses
-    }
-
-    /// Queued inputs the authority holds for one Agent.
-    pub async fn queued_input_count(&self, agent_id: &str) -> usize {
-        self.queued_input_addresses(agent_id).await.len()
-    }
-
-    /// Accounts for the queued input the authority holds for one Agent.
-    pub async fn outstanding_queued_input(&self, agent_id: &str) -> usize {
-        self.queue
+        let turns = self
+            .active_turns
             .read()
             .await
             .iter()
-            .filter(|(address, _)| {
-                address
-                    .agent_id()
-                    .is_some_and(|owner| owner.as_str() == agent_id)
-            })
-            .map(|(_, entries)| entries.len())
+            .map(|(address, turn)| (address.clone(), turn.turn_id.clone()))
+            .collect::<Vec<_>>();
+        let mut addresses = Vec::new();
+        for (address, turn_id) in turns {
+            if let Some(agent) = agent_id {
+                if self
+                    .product_hooks
+                    .frozen_turn_configuration(&address, &turn_id)
+                    .await
+                    .is_none_or(|config| config.selected_agent_id != agent)
+                {
+                    continue;
+                }
+            }
+            addresses.push(address);
+        }
+        addresses.sort_by_key(ChatAddress::identity_key);
+        addresses
+    }
+
+    async fn queued_work_for_agent(&self, agent_id: &str) -> Vec<(ChatAddress, usize)> {
+        let queued = self
+            .queue
+            .read()
+            .await
+            .iter()
+            .filter(|(_, entries)| !entries.is_empty())
+            .map(|(address, entries)| (address.clone(), entries.len()))
+            .collect::<Vec<_>>();
+        let mut work = Vec::new();
+        for (address, count) in queued {
+            if self
+                .product_hooks
+                .chat_configuration(&address)
+                .await
+                .is_some_and(|configuration| configuration.selected_agent_id == agent_id)
+            {
+                work.push((address, count));
+            }
+        }
+        work
+    }
+
+    pub async fn queued_input_addresses(&self, agent_id: &str) -> Vec<ChatAddress> {
+        let mut addresses = self
+            .queued_work_for_agent(agent_id)
+            .await
+            .into_iter()
+            .map(|(address, _)| address)
+            .collect::<Vec<_>>();
+        addresses.sort_by_key(ChatAddress::identity_key);
+        addresses
+    }
+
+    pub async fn queued_input_count(&self, agent_id: &str) -> usize {
+        self.queued_work_for_agent(agent_id).await.len()
+    }
+
+    pub async fn outstanding_queued_input(&self, agent_id: &str) -> usize {
+        self.queued_work_for_agent(agent_id)
+            .await
+            .into_iter()
+            .map(|(_, count)| count)
             .sum()
+    }
+
+    async fn selected_agent_draining(&self, address: &ChatAddress) -> bool {
+        match self.product_hooks.chat_configuration(address).await {
+            Some(configuration) => self.is_draining(&configuration.selected_agent_id).await,
+            None => false,
+        }
     }
 
     pub async fn accept_submission(
@@ -1592,15 +1608,6 @@ impl ConversationAuthority {
         if self.draining_chats.read().await.contains(&address) {
             return Err("Chat execution is shutting down and cannot accept new input".to_string());
         }
-        if let Some(agent_id) = address.agent_id() {
-            if self.is_draining(agent_id.as_str()).await {
-                return Err(format!(
-                    "Agent '{}' is shutting down and cannot accept new input",
-                    agent_id.as_str()
-                ));
-            }
-        }
-
         let background_result = pending
             .extra
             .get(crate::services::background_work::BACKGROUND_RESULT_KEY)
@@ -1641,11 +1648,6 @@ impl ConversationAuthority {
                 return Err(
                     "Selected Agent is shutting down and cannot accept new input".to_string(),
                 );
-            }
-            if let Some(agent_id) = address.agent_id() {
-                if configuration.selected_agent_id != agent_id.as_str() {
-                    return Err("Chat configuration belongs to a different Agent".to_string());
-                }
             }
         }
 
@@ -1756,10 +1758,7 @@ impl ConversationAuthority {
         // and the producer still has to finish through the normal tail so the
         // Turn and its stream are not left dangling.
         let draining = self.draining_chats.read().await.contains(address)
-            || match address.agent_id() {
-                Some(agent_id) => self.is_draining(agent_id.as_str()).await,
-                None => false,
-            };
+            || self.selected_agent_draining(address).await;
         if let Some(mut next) = self.pop_next_input_state(address).await {
             if !draining || next.pending.extra.contains_key("turn_id") {
                 self.set_queued_count_from_queue(address).await;
@@ -1825,10 +1824,7 @@ impl ConversationAuthority {
         let gate = self.transition_gate_at(address);
         let _transition = gate.lock().await;
         if self.draining_chats.read().await.contains(address)
-            || match address.agent_id() {
-                Some(agent) => self.is_draining(agent.as_str()).await,
-                None => false,
-            }
+            || self.selected_agent_draining(address).await
         {
             return None;
         }
@@ -2584,8 +2580,11 @@ impl ConversationAuthority {
         let acp_binding = meta.get(CHAT_ACP_BINDING_META_KEY).cloned();
         let acp_active = chat_acp_binding_active(meta);
         let active_turn_present = active_turn.is_some();
-        let authority_resource_bound = rua_chat::ChatPolicy::from_metadata(address.scope(), meta)
-            .authority_placement
+        let authority_resource_bound = rua_chat::ChatPolicy::from_metadata(
+            meta.get("project_id").and_then(serde_json::Value::as_str),
+            meta,
+        )
+        .authority_placement
             == rua_chat::AuthorityPlacementPolicy::ResourceBound;
         let authority_device_id = placement_projection
             .as_ref()
@@ -2755,21 +2754,12 @@ fn conversation_control_payload(
     reason: &str,
     control: ConversationControlView,
 ) -> String {
-    match address.agent_id() {
-        Some(agent_id) => serde_json::json!({
-            "type": "conversation_control",
-            "agent_id": agent_id,
-            "chat_id": address.chat_id(),
-            "reason": reason,
-            "control": control,
-        }),
-        None => serde_json::json!({
-            "type": "conversation_control",
-            "address": address,
-            "reason": reason,
-            "control": control,
-        }),
-    }
+    serde_json::json!({
+        "type": "conversation_control",
+        "address": address,
+        "reason": reason,
+        "control": control,
+    })
     .to_string()
 }
 
@@ -2782,24 +2772,7 @@ fn conversation_history_mutation_payload(
         "type".to_string(),
         serde_json::Value::String("conversation_history_mutated".to_string()),
     );
-    match address.agent_id() {
-        Some(agent_id) => {
-            payload.insert(
-                "agent_id".to_string(),
-                serde_json::Value::String(agent_id.to_string()),
-            );
-            payload.insert(
-                "chat_id".to_string(),
-                serde_json::Value::String(address.chat_id().to_string()),
-            );
-        }
-        None => {
-            payload.insert(
-                "address".to_string(),
-                serde_json::to_value(address).expect("Chat Address is serializable"),
-            );
-        }
-    }
+    payload.insert("address".to_string(), serde_json::json!(address));
     serde_json::Value::Object(payload).to_string()
 }
 
@@ -2808,23 +2781,13 @@ fn authority_redirect_payload(
     placement: ConversationAuthorityPlacement,
     superseded_input_ids: Vec<String>,
 ) -> String {
-    match address.agent_id() {
-        Some(agent_id) => serde_json::json!({
-            "type": "authority_redirect",
-            "agent_id": agent_id,
-            "chat_id": address.chat_id(),
-            "reason": "authority_changed",
-            "placement": placement,
-            "superseded_input_ids": superseded_input_ids,
-        }),
-        None => serde_json::json!({
-            "type": "authority_redirect",
-            "address": address,
-            "reason": "authority_changed",
-            "placement": placement,
-            "superseded_input_ids": superseded_input_ids,
-        }),
-    }
+    serde_json::json!({
+        "type": "authority_redirect",
+        "address": address,
+        "reason": "authority_changed",
+        "placement": placement,
+        "superseded_input_ids": superseded_input_ids,
+    })
     .to_string()
 }
 

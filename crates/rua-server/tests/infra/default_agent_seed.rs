@@ -40,7 +40,8 @@ fn seeds_agent_json_and_config_when_missing() {
         "agent_order must contain 'default'"
     );
 
-    for sub in &["sessions", "skills", "prompts"] {
+    assert!(!data_dir.join("workspaces/default/sessions").exists());
+    for sub in &["skills", "prompts"] {
         assert!(
             data_dir.join("workspaces/default").join(sub).is_dir(),
             "workspaces/default/{sub} not created"

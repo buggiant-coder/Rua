@@ -1730,7 +1730,7 @@ impl SyncTransferBulkHandler {
             .chat_media_root
             .as_deref()
             .ok_or_else(|| "Chat Media read is unavailable".to_string())?;
-        let scope = rua_core::chat_store::ChatScopeStore::resolve(rua_root, address.clone());
+        let scope = rua_core::chat_store::ChatStore::resolve(rua_root, address.clone());
         let placement =
             crate::services::conversation_authority_target::load_optional_chat_authority_placement(
                 scope.root(),

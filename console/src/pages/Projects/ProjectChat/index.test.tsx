@@ -36,7 +36,8 @@ import {
   rememberProjectChat,
   setProjectLastSelectedAgent,
 } from "../projectChatNavigation";
-import ProjectChatPage, { loader } from "./index";
+import ProjectChatPage from "./index";
+import { loader } from "../../Chat/route";
 import { ModalProvider, ToastProvider } from "@/ui";
 import { useAgentStore } from "@/stores/agentStore";
 import {
@@ -47,6 +48,7 @@ import {
 import { getProjectNavigationAgent } from "@/layouts/conversationNavigationAgent";
 
 const {
+  historyApiMock,
   agentsApiMock,
   conversationApiMock,
   projectChatsApiMock,
@@ -58,6 +60,7 @@ const {
   taskDrawerProps,
   exportConversationMock,
 } = vi.hoisted(() => ({
+  historyApiMock: { getChat: vi.fn() },
   agentsApiMock: {
     listAgents: vi.fn(),
     getAgentRunningConfig: vi.fn(),
@@ -119,6 +122,7 @@ vi.mock("react-i18next", async () => {
   };
 });
 
+vi.mock("@/api/modules/chat", () => ({ chatApi: historyApiMock }));
 vi.mock("@/api/modules/agents", () => ({
   agentsApi: agentsApiMock,
 }));
@@ -357,29 +361,31 @@ describe("ProjectChat loader", () => {
     projectsApiMock.list.mockResolvedValue([project]);
   });
 
-  it("treats empty history for a complete remote address as Lazy Chat", async () => {
-    const emptyHistory = { messages: [], meta: {} };
-    projectChatsApiMock.getChat.mockResolvedValue(emptyHistory);
+  it("uses a saved empty Chat’s header to resolve its Agent and Project", async () => {
+    const emptyHistory = {
+      agent_id: "code",
+      project_id: "project-1",
+      messages: [],
+      meta: {},
+    };
+    historyApiMock.getChat.mockResolvedValue(emptyHistory);
 
     await expect(
       loader({
-        params: { projectId: "project-1", chatId: "chat-after-restart" },
-        request: new Request(
-          "http://localhost/projects/project-1/chats/chat-after-restart",
-        ),
+        params: { chatId: "chat-after-restart" },
+        request: new Request("http://localhost/chats/chat-after-restart"),
         context: {},
       }),
     ).resolves.toMatchObject({
       project,
       chatId: "chat-after-restart",
-      initialHistory: emptyHistory,
-      unmaterialized: true,
+      history: emptyHistory,
+      agentId: "code",
+      unmaterialized: false,
     });
-    expect(projectChatsApiMock.getChat).toHaveBeenCalledWith(
-      "project-1",
-      "chat-after-restart",
-      { turnLimit: 1 },
-    );
+    expect(historyApiMock.getChat).toHaveBeenCalledWith("chat-after-restart", {
+      turnLimit: 20,
+    });
   });
 
   it("keeps a local draft lazy without loading remote history", async () => {
@@ -388,19 +394,17 @@ describe("ProjectChat loader", () => {
 
     await expect(
       loader({
-        params: { projectId: "project-1", chatId: "chat-local-draft" },
-        request: new Request(
-          "http://localhost/projects/project-1/chats/chat-local-draft",
-        ),
+        params: { chatId: "chat-local-draft" },
+        request: new Request("http://localhost/chats/chat-local-draft"),
         context: {},
       }),
     ).resolves.toMatchObject({
       project,
       chatId: "chat-local-draft",
-      initialHistory: null,
+      history: null,
       unmaterialized: true,
     });
-    expect(projectChatsApiMock.getChat).not.toHaveBeenCalled();
+    expect(historyApiMock.getChat).not.toHaveBeenCalled();
   });
 });
 
@@ -587,12 +591,8 @@ describe("ProjectChatPage", () => {
     expect(deviceChip).toHaveAttribute("aria-disabled", "true");
     fireEvent.click(deviceChip);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-    expect(surfaceProps.current?.address).toEqual({
-      scope: "project",
-      projectId: "project-1",
-      chatId: "chat-1",
-    });
-    expect(surfaceProps.current?.projectExecutionAgentId).toBe("default");
+    expect(surfaceProps.current?.address).toEqual({ chatId: "chat-1" });
+    expect(surfaceProps.current?.executionAgentId).toBe("default");
     expect(surfaceProps.current?.unmaterialized).toBe(true);
     expect(surfaceProps.current?.draftKey).toBe("project:project-1:chat-1");
     expect(surfaceProps.current?.activityWake).toBeNull();
@@ -623,8 +623,7 @@ describe("ProjectChatPage", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(acpEnterDialogProps.current).toMatchObject({
       agentId: "default",
-      target: { scope: "project", projectId: "project-1" },
-      discoveryTarget: { scope: "agent", agentId: "default" },
+      target: { projectId: "project-1" },
       chatId: "chat-1",
       targetDeviceId: "resource-device",
     });
@@ -653,7 +652,7 @@ describe("ProjectChatPage", () => {
     expect(chatOptionsModalProps.current).toMatchObject({
       chatId: "chat-lazy-options",
       selectedAgent: "default",
-      target: { scope: "project", projectId: "project-1" },
+      target: { projectId: "project-1" },
     });
   });
 
@@ -668,7 +667,7 @@ describe("ProjectChatPage", () => {
     expect(chatOptionsModalProps.current).toMatchObject({
       chatId: "chat-materialized-options",
       selectedAgent: "default",
-      target: { scope: "project", projectId: "project-1" },
+      target: { projectId: "project-1" },
     });
   });
 
@@ -696,18 +695,14 @@ describe("ProjectChatPage", () => {
         );
       } else {
         act(() => {
-          expect(
-            requestNewConversation({
-              scope: "project",
-              projectId: "project-1",
-              chatId: "chat-existing",
-            }),
-          ).toBe(true);
+          expect(requestNewConversation({ chatId: "chat-existing" })).toBe(
+            true,
+          );
         });
       }
       await waitFor(() =>
         expect(screen.getByTestId("location")).toHaveTextContent(
-          "/projects/project-1/chats/chat-new-from-header",
+          "/chats/chat-new-from-header",
         ),
       );
       expect(
@@ -729,7 +724,7 @@ describe("ProjectChatPage", () => {
       );
       await waitFor(() =>
         expect(screen.getByTestId("location")).toHaveTextContent(
-          "/projects/project-1/chats/chat-new-from-header",
+          "/chats/chat-new-from-header",
         ),
       );
       expect(
@@ -846,12 +841,8 @@ describe("ProjectChatPage", () => {
     expect(drafts.load(projectChatDraftKey(project.project_id, "chat-3"))).toBe(
       "",
     );
-    expect(surfaceProps.current?.address).toEqual({
-      scope: "project",
-      projectId: "project-1",
-      chatId: "chat-3",
-    });
-    expect(surfaceProps.current?.projectExecutionAgentId).toBe("default");
+    expect(surfaceProps.current?.address).toEqual({ chatId: "chat-3" });
+    expect(surfaceProps.current?.executionAgentId).toBe("default");
     expect(surfaceProps.current?.unmaterialized).toBe(false);
   });
 
@@ -1024,7 +1015,7 @@ describe("ProjectChatPage", () => {
         screen.getByRole("button", { name: "Project Chat Agent" }),
       ).toHaveTextContent("Code Agent"),
     );
-    expect(surfaceProps.current?.projectExecutionAgentId).toBe("code");
+    expect(surfaceProps.current?.executionAgentId).toBe("code");
 
     act(() => {
       (
@@ -1053,7 +1044,7 @@ describe("ProjectChatPage", () => {
     expect(
       screen.getByRole("button", { name: "Project Chat Agent" }),
     ).toHaveTextContent("Code Agent");
-    expect(surfaceProps.current?.projectExecutionAgentId).toBe("code");
+    expect(surfaceProps.current?.executionAgentId).toBe("code");
   });
 
   it("keeps an unavailable durable selection without falling back", async () => {
@@ -1077,11 +1068,9 @@ describe("ProjectChatPage", () => {
       "Select an available Agent before submitting",
     );
     expect(surfaceProps.current?.address).toEqual({
-      scope: "project",
-      projectId: "project-1",
       chatId: "chat-unavailable-agent",
     });
-    expect(surfaceProps.current?.projectExecutionAgentId).toBe("deleted-agent");
+    expect(surfaceProps.current?.executionAgentId).toBe("deleted-agent");
   });
 
   it("keeps the Project selector independent from the ordinary Agent selection", async () => {
@@ -1138,11 +1127,9 @@ describe("ProjectChatPage", () => {
 
     expect(await screen.findByText("Default Agent")).toBeVisible();
     expect(surfaceProps.current?.address).toEqual({
-      scope: "project",
-      projectId: "project-1",
       chatId: "chat-invalid-hint",
     });
-    expect(surfaceProps.current?.projectExecutionAgentId).toBe("default");
+    expect(surfaceProps.current?.executionAgentId).toBe("default");
   });
 
   it("keeps right drawers mutually exclusive without replacing the conversation", async () => {
@@ -1281,7 +1268,6 @@ describe("ProjectChatPage", () => {
     await waitFor(() =>
       expect(exportConversationMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          scope: "project",
           projectId: "project-1",
         }),
         "chat-export",
@@ -1305,7 +1291,6 @@ describe("ProjectChatPage", () => {
       agentId: "default",
       chatId: "chat-tasks",
       target: {
-        scope: "project",
         projectId: "project-1",
       },
     });
@@ -1389,7 +1374,6 @@ describe("ProjectChatPage", () => {
       await waitFor(() =>
         expect(conversationApiMock.exitAcp).toHaveBeenCalledWith(
           {
-            scope: "project",
             projectId: "project-1",
           },
           "chat-acp",
@@ -1667,7 +1651,7 @@ describe("ProjectChatPage", () => {
     );
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/projects/project-1/chats/chat-recent",
+        "/chats/chat-recent",
       ),
     );
     expect(lastProjectChatId("project-1")).toBe("chat-recent");
@@ -1688,46 +1672,34 @@ describe("ProjectChatPage", () => {
         chatId: "chat-only",
         initialHistory: { ...materializedHistory("code"), model },
       },
-      "/projects/project-1/chats/chat-only",
+      "/chats/chat-only",
     );
     await waitFor(() =>
-      expect(surfaceProps.current?.projectExecutionAgentId).toBe("code"),
+      expect(surfaceProps.current?.executionAgentId).toBe("code"),
     );
     act(() => {
-      expect(
-        publishConversationDeleted(
-          { scope: "agent", agentId: "project-1", chatId: "chat-only" },
-          [],
-        ),
-      ).toBe(false);
-      expect(
-        publishConversationDeleted(
-          { scope: "project", projectId: "project-2", chatId: "chat-only" },
-          [],
-        ),
-      ).toBe(false);
-      expect(
-        publishConversationDeleted(
-          { scope: "project", projectId: "project-1", chatId: "other-chat" },
-          [],
-        ),
-      ).toBe(false);
+      expect(publishConversationDeleted({ chatId: "different-chat" }, [])).toBe(
+        false,
+      );
+      expect(publishConversationDeleted({ chatId: "another-chat" }, [])).toBe(
+        false,
+      );
+      expect(publishConversationDeleted({ chatId: "other-chat" }, [])).toBe(
+        false,
+      );
     });
     expect(screen.getByTestId("location")).toHaveTextContent(
-      "/projects/project-1/chats/chat-only",
+      "/chats/chat-only",
     );
     drafts.save(projectChatDraftKey("project-1", "chat-only"), "deleted draft");
     act(() => {
-      expect(
-        publishConversationDeleted(
-          { scope: "project", projectId: "project-1", chatId: "chat-only" },
-          [],
-        ),
-      ).toBe(true);
+      expect(publishConversationDeleted({ chatId: "chat-only" }, [])).toBe(
+        true,
+      );
     });
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/projects/project-1/chats/chat-inherited-after-sidebar-delete",
+        "/chats/chat-inherited-after-sidebar-delete",
       ),
     );
     expect(screen.getByTestId("location")).toHaveAttribute(
@@ -1778,7 +1750,7 @@ describe("ProjectChatPage", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/projects/project-1/chats/chat-lazy-after-delete",
+        "/chats/chat-lazy-after-delete",
       ),
     );
     expect(lastProjectChatId("project-1")).toBeNull();
@@ -1868,11 +1840,7 @@ describe("ProjectChatPage", () => {
       act(() => onHistoryChange({ messages: [], status: "idle" }));
       expect(listener).not.toHaveBeenCalled();
       fireEvent.click(screen.getByRole("button", { name: "Accept" }));
-      expect(listener).toHaveBeenLastCalledWith({
-        scope: "project",
-        projectId: "project-1",
-        chatId: "new-chat",
-      });
+      expect(listener).toHaveBeenLastCalledWith({ chatId: "new-chat" }, false);
       const materialized = {
         ...materializedHistory(),
         title: "First question",
@@ -1910,7 +1878,7 @@ describe("ProjectChatPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Standalone chats" }));
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/agents/default/chats/current-agent-chat",
+        "/chats/current-agent-chat",
       ),
     );
     expect(useAgentStore.getState().selectedAgent).toBe("agent-independent");
@@ -1924,14 +1892,14 @@ describe("ProjectChatPage", () => {
         chatId: "project-chat",
         initialHistory: materializedHistory(),
       },
-      "/projects/project-1/chats/project-chat?conversations=1&keep=yes#latest",
+      "/chats/project-chat?conversations=1&keep=yes#latest",
     );
     expect(await screen.findByRole("dialog")).toHaveTextContent(
       "Project Chats",
     );
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/projects/project-1/chats/project-chat?keep=yes#latest",
+        "/chats/project-chat?keep=yes#latest",
       ),
     );
   });
@@ -1956,66 +1924,43 @@ describe("ProjectChatPage", () => {
     fireEvent.click(await screen.findByRole("button", { name: /codex/ }));
 
     await waitFor(() =>
-      expect(screen.getByTestId("location")).toHaveTextContent(
-        "/projects/project-2/chats/chat-2",
-      ),
+      expect(screen.getByTestId("location")).toHaveTextContent("/chats/chat-2"),
     );
     expect(projectChatsApiMock.getChat).not.toHaveBeenCalled();
   });
 
-  it("validates a materialized deep link before returning loader data", async () => {
-    projectChatsApiMock.getChat.mockResolvedValue({
-      messages: [{ role: "user" }],
-      meta: {},
+  it("resolves a saved deep link from its Chat ID and persisted header", async () => {
+    historyApiMock.getChat.mockResolvedValue({
+      agent_id: "code",
+      project_id: "project-1",
+      messages: [{ id: "m1", role: "user" }],
     });
-
-    const data = await loader({
-      params: { projectId: "project-1", chatId: "chat-saved" },
-      request: new Request(
-        "http://localhost/projects/project-1/chats/chat-saved",
-      ),
-    } as never);
-
-    expect(projectChatsApiMock.getChat).toHaveBeenCalledWith(
-      "project-1",
-      "chat-saved",
-      { turnLimit: 1 },
-    );
-    expect(data.initialHistory?.messages).toHaveLength(1);
+    const data = await loader({ params: { chatId: "chat-saved" } } as never);
+    expect(historyApiMock.getChat).toHaveBeenCalledWith("chat-saved", {
+      turnLimit: 20,
+    });
+    expect(data.agentId).toBe("code");
+    expect(data.history?.messages).toHaveLength(1);
+    expect(data.project?.project_id).toBe("project-1");
   });
 
-  it("keeps a cross-Device empty address as Lazy Chat", async () => {
-    setProjectLastSelectedAgent("project-1", "default");
-    projectChatsApiMock.getChat.mockResolvedValue({ messages: [], meta: {} });
-
-    const data = await loader({
-      params: { projectId: "project-1", chatId: "chat-remote" },
-      request: new Request(
-        "http://localhost/projects/project-1/chats/chat-remote",
-      ),
-    } as never);
-    expect(data.initialHistory).toEqual({ messages: [], meta: {} });
-    expect(data.unmaterialized).toBe(true);
-    expect(lastProjectChatId("project-1")).toBeNull();
-
-    renderPage(data);
-    expect(await screen.findByText("Default Agent")).toBeVisible();
-    expect(surfaceProps.current?.unmaterialized).toBe(true);
+  it("resolves a saved independent Chat without looking up a Project", async () => {
+    historyApiMock.getChat.mockResolvedValue({
+      agent_id: "author",
+      project_id: null,
+      messages: [],
+    });
+    const data = await loader({ params: { chatId: "independent" } } as never);
+    expect(data.unmaterialized).toBe(false);
+    expect(data.agentId).toBe("author");
+    expect(projectsApiMock.get).not.toHaveBeenCalled();
   });
 
-  it("rejects a wrong-owner deep link before mounting the conversation", async () => {
-    projectChatsApiMock.getChat.mockRejectedValue(
-      new Error("Project Chat belongs to Project project-2"),
-    );
-
+  it("surfaces an unknown deep link without inventing a draft", async () => {
+    historyApiMock.getChat.mockRejectedValue(new Error("Chat not found"));
     await expect(
-      loader({
-        params: { projectId: "project-1", chatId: "chat-wrong-owner" },
-        request: new Request(
-          "http://localhost/projects/project-1/chats/chat-wrong-owner",
-        ),
-      } as never),
-    ).rejects.toThrow("belongs to Project project-2");
+      loader({ params: { chatId: "missing" } } as never),
+    ).rejects.toThrow("Chat not found");
   });
 });
 

@@ -357,8 +357,7 @@ async fn runtime_automatically_reaps_unknown_input_executor_before_new_observati
             ("device_id".into(), json!("fixture-device")),
             (
                 "security_chat_address".into(),
-                serde_json::to_value(rua_core::ChatAddress::agent("default", "recovery-test"))
-                    .unwrap(),
+                serde_json::to_value(rua_core::ChatAddress::new("recovery-test")).unwrap(),
             ),
             ("scope".into(), json!("agent")),
             ("agent_id".into(), json!("default")),

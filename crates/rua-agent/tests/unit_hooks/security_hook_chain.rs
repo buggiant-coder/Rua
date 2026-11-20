@@ -191,7 +191,7 @@ async fn wait_for_approval_denies_when_session_is_missing() {
 async fn wait_for_approval_blocks_without_using_ask_user_store() {
     let security = make_test_security();
     let runtime_session_id = "runtime-session-1";
-    let address = rua_core::ChatAddress::agent("agent-1", "chat-1");
+    let address = rua_core::ChatAddress::new("chat-1");
     let security_hook = SecurityAgentHook::new(Arc::clone(&security), true)
         .with_agent_id("agent-1")
         .with_session_id(runtime_session_id)
@@ -241,7 +241,7 @@ async fn wait_for_approval_blocks_without_using_ask_user_store() {
 #[tokio::test]
 async fn wait_for_approval_run_once_does_not_create_reuse_rule() {
     let security = make_test_security();
-    let address = rua_core::ChatAddress::agent("agent-1", "chat-1");
+    let address = rua_core::ChatAddress::new("chat-1");
     let security_hook = SecurityAgentHook::new(Arc::clone(&security), true)
         .with_agent_id("agent-1")
         .with_session_id("runtime-session-1")

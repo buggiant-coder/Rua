@@ -181,7 +181,7 @@ async fn runtime_routes_input_by_owner_and_current_attempt() {
         release: Notify::new(),
     });
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(
             TaskSpec {
@@ -213,7 +213,7 @@ async fn runtime_routes_input_by_owner_and_current_attempt() {
     );
     assert!(runtime
         .send_input(
-            &TaskOwner::new("agent-a", "another-chat"),
+            &TaskOwner::new("another-chat"),
             &task_id,
             TaskInputSubmission::new(
                 "wrong-owner",
@@ -308,7 +308,7 @@ async fn retry_routes_input_only_to_the_current_attempt_session() {
         release_second: Notify::new(),
     });
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(
             TaskSpec {
@@ -511,7 +511,7 @@ async fn watcher_is_prospective_idempotent_and_unwatch_stops_delivery() {
         release: Notify::new(),
     });
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(
             TaskSpec {
@@ -682,7 +682,7 @@ async fn failed_watcher_reattaches_from_retry_attempt_start() {
         release_second: Notify::new(),
     });
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(
             TaskSpec {
@@ -844,7 +844,7 @@ async fn watcher_coalesces_dense_output_and_waits_for_consumption_before_next_wa
         release: Notify::new(),
     });
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(
             TaskSpec {
@@ -955,7 +955,7 @@ async fn watcher_advances_only_after_notification_sink_accepts_batch() {
         release: Notify::new(),
     });
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let task_id = runtime
         .create(
             TaskSpec {

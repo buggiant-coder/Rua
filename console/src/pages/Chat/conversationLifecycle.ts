@@ -1,3 +1,4 @@
+import { clearDraftChatContext } from "./chatContext";
 import type { ModelSlot } from "@/api/types";
 
 const LAST_CHAT_PREFIX = "rua_last_chat_id_";
@@ -218,6 +219,7 @@ export function clearDraftConversation(
   if (!scope) return;
   const previous = loadDraftConversationId(scope);
   if (previous && (!conversationId || previous === conversationId)) {
+    clearDraftChatContext(previous);
     saveDraftConversationDevice(scope, previous, null);
     markDraftCreationStarted(scope, previous, false);
   }

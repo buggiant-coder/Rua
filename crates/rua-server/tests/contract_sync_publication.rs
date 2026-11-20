@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::StreamExt;
 use iroh_docs::store::Query;
-use rua_core::{ChatAddress, ChatScopeStore, ProjectId};
+use rua_core::{ChatAddress, ChatStore, ProjectId};
 use rua_server::sync_publication::{
     publish_project_permanently_deleted, publish_sync_fact, publish_sync_fact_with_runtime,
     PublicationStatus, SyncPublicationFact, SyncPublicationRuntime,
@@ -99,7 +99,7 @@ async fn seed_task_chat(state: &AppState, data_dir: &std::path::Path, chat_id: &
             "base_manifest_hash": format!("sha256:{}", "0".repeat(64))
         }),
     );
-    rua_chat::apply_agent_scope_defaults(&mut header, "default");
+    rua_chat::apply_chat_defaults(&mut header);
     store
         .save_chat_header(&header)
         .await
@@ -221,7 +221,7 @@ async fn terminal_task_runtime_note_is_published_as_evergreen_chat_state() {
     state
         .task_runtime
         .register_runner(Arc::new(ImmediateTaskRunner));
-    let owner = rua_task::TaskOwner::new("default", chat_id);
+    let owner = rua_task::TaskOwner::new(chat_id);
     let task_id = state
         .task_runtime
         .create(
@@ -302,8 +302,8 @@ async fn terminal_task_runtime_note_is_published_as_evergreen_chat_state() {
 async fn permanent_project_delete_publishes_chat_and_project_tombstones_in_one_batch() {
     let (state, _tmp) = build_state(true, true);
     let project_id = ProjectId::new("project-delete-publication");
-    let address = ChatAddress::project(project_id.clone(), "chat-delete-publication");
-    let scope_root = ChatScopeStore::resolve(&state.rua_root, address.clone())
+    let address = ChatAddress::new("chat-delete-publication");
+    let scope_root = ChatStore::resolve(&state.rua_root, address.clone())
         .root()
         .to_path_buf();
     let chat_dir = scope_root.join("sessions").join(address.chat_id().as_str());
@@ -1305,7 +1305,7 @@ async fn stable_conversation_fact_publishes_evergreen_snapshots_when_bound() {
         &state,
         SyncPublicationFact::StableConversationState {
             scope_root: workspace_dir,
-            address: rua_core::ChatAddress::agent("default", chat_id),
+            address: rua_core::ChatAddress::new(chat_id),
         },
     )
     .await;
@@ -1357,7 +1357,7 @@ async fn publication_seam_preserves_large_daily_change_sets() {
         &state,
         SyncPublicationFact::StableConversationState {
             scope_root: workspace_dir,
-            address: rua_core::ChatAddress::agent("default", chat_id),
+            address: rua_core::ChatAddress::new(chat_id),
         },
     )
     .await;

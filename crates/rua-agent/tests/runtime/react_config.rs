@@ -1922,7 +1922,7 @@ async fn browser_chat_acceptance(with_computer: bool) {
         .insert("device_id".into(), serde_json::json!("local-device"));
     req.metadata.insert(
         "security_chat_address".into(),
-        serde_json::to_value(rua_core::ChatAddress::agent("agent", "max-iters-session")).unwrap(),
+        serde_json::to_value(rua_core::ChatAddress::new("max-iters-session")).unwrap(),
     );
     req.metadata.insert(
         rua_agent::runtime::CHAT_TOOL_ALLOWLIST_METADATA_KEY.into(),
@@ -2169,7 +2169,7 @@ async fn bundled_computer_normal_chat_consumes_observation_and_projects_action_i
         .insert("device_id".into(), json!("local-device"));
     req.metadata.insert(
         "security_chat_address".into(),
-        serde_json::to_value(rua_core::ChatAddress::agent("agent", "max-iters-session")).unwrap(),
+        serde_json::to_value(rua_core::ChatAddress::new("max-iters-session")).unwrap(),
     );
     req.metadata.insert(
         rua_agent::runtime::CHAT_TOOL_ALLOWLIST_METADATA_KEY.into(),

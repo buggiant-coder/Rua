@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use rua_core::{ChatAddress, ChatScope, Result, RuaError};
+use rua_core::{ChatAddress, Result, RuaError};
 use rua_session::WorkspaceSessionStore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -77,26 +77,7 @@ impl ConversationManifest {
 
     pub fn hash(&self) -> Result<String> {
         let mut payload = serde_json::Map::new();
-        match self.address.scope() {
-            ChatScope::Agent { agent_id, .. } => {
-                payload.insert(
-                    "agent_id".to_string(),
-                    serde_json::Value::String(agent_id.to_string()),
-                );
-                payload.insert(
-                    "chat_id".to_string(),
-                    serde_json::Value::String(self.address.chat_id().to_string()),
-                );
-            }
-            ChatScope::Project { .. } => {
-                payload.insert(
-                    "address".to_string(),
-                    serde_json::to_value(&self.address).map_err(|error| RuaError::Io {
-                        message: format!("failed to serialize conversation address: {error}"),
-                    })?,
-                );
-            }
-        }
+        payload.insert("chat_id".into(), self.address.chat_id().to_string().into());
         payload.insert("latest_turn".to_string(), self.latest_turn.into());
         payload.insert("latest_sequence".to_string(), self.latest_sequence.into());
         payload.insert("turn_count".to_string(), self.turn_count.into());
@@ -132,11 +113,7 @@ pub async fn load_conversation_manifest(
     let Some(header) = store.load_chat_header(chat_id).await? else {
         return Ok(None);
     };
-    if header.chat_id != chat_id
-        || address
-            .agent_id()
-            .is_some_and(|agent_id| header.agent_id != agent_id.as_str())
-    {
+    if header.chat_id != chat_id {
         return Err(RuaError::Io {
             message: format!("conversation header identity does not match Chat Address {address}"),
         });

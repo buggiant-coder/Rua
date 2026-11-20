@@ -18,10 +18,10 @@ pub mod tool;
 pub mod workspace;
 
 pub use chat::{
-    AgentCollaborationMode, ChatAddress, ChatScope, ConversationActivityPosition,
+    AgentCollaborationMode, ChatAddress, ConversationActivityPosition,
     CHAT_COLLABORATION_MODE_META_KEY, TURN_COLLABORATION_MODE_OVERRIDE_KEY,
 };
-pub use chat_store::ChatScopeStore;
+pub use chat_store::ChatStore;
 pub use error::{Result, RuaError};
 pub use event::RuntimeEvent;
 pub use id::{AgentId, ChatId, MessageId, ProjectId, SessionId, ToolCallId};

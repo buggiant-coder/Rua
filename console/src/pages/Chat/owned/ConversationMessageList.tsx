@@ -43,7 +43,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { Modal, Popover, toast } from "@/ui";
 import type { ApprovalSnapshot } from "@/api/modules/console";
-import { chatApi, type ChatMediaScope } from "@/api/modules/chat";
+import { chatApi } from "@/api/modules/chat";
 import { ChatRenderBlock } from "@/components/ChatRenderBlock";
 import { RuaMarkdown } from "@/components/RuaMarkdown";
 import ImageViewer from "@/components/ImageViewer";
@@ -121,7 +121,6 @@ type ConversationMessageListProps = {
   onLoadHistoryGap?: () => Promise<void>;
   projection: ConversationProjection;
   agentId?: string;
-  mediaScope?: ChatMediaScope;
   approvalSnapshot?: ApprovalSnapshot;
   activeAcpRunner?: string | null;
   onSelectVariant?: (turnId: string, variantId: string) => Promise<void> | void;
@@ -152,7 +151,6 @@ const TAP_REVEAL_TIMEOUT_MS = 3_000;
 const EMPTY_MESSAGE_IDS = new Set<string>();
 const SearchRevealContext = createContext<ReadonlySet<string> | null>(null);
 const MarkdownMediaContext = createContext<{
-  scope?: ChatMediaScope;
   chatId?: string;
 }>({});
 const MEDIA_ID_RE =
@@ -169,15 +167,14 @@ function textFromParts(parts: ConversationContentPart[]): string {
 function partUrl(
   part: ConversationContentPart,
   agentId?: string,
-  mediaScope?: ChatMediaScope,
   chatId?: string,
 ): string | undefined {
   if (part.media_ref) {
     const mediaId = part.media_ref.startsWith("media/")
       ? part.media_ref.slice("media/".length)
       : "";
-    if (mediaScope && chatId && MEDIA_ID_RE.test(mediaId)) {
-      return chatApi.mediaUrl(mediaScope, chatId, mediaId);
+    if (chatId && MEDIA_ID_RE.test(mediaId)) {
+      return chatApi.mediaUrl(chatId, mediaId);
     }
     if (agentId) {
       return chatApi.localImagePreviewUrl(part.media_ref, agentId);
@@ -408,9 +405,8 @@ function MarkdownBlock({
   const deferredText = useDeferredValue(text);
   const media = useContext(MarkdownMediaContext);
   const resolveImageSrc = useCallback(
-    (source: string) =>
-      toMarkdownImageDisplayUrl(source, media.scope, media.chatId),
-    [media.scope, media.chatId],
+    (source: string) => toMarkdownImageDisplayUrl(source, media.chatId),
+    [media.chatId],
   );
   const content = streaming ? deferredText : text;
   if (!content) return null;
@@ -516,10 +512,7 @@ function AssistantOutputTransition({
         .join(" ")}
       style={style}
     >
-      <div
-        key={animationKey}
-        className="rua-assistant-output-transition-body"
-      >
+      <div key={animationKey} className="rua-assistant-output-transition-body">
         {children}
       </div>
     </div>
@@ -546,16 +539,14 @@ function fallbackDownloadName(label: string): string {
 function FilePart({
   part,
   agentId,
-  mediaScope,
   chatId,
 }: {
   part: ConversationContentPart;
   agentId?: string;
-  mediaScope?: ChatMediaScope;
   chatId?: string;
 }) {
   const { t } = useTranslation();
-  const url = partUrl(part, agentId, mediaScope, chatId);
+  const url = partUrl(part, agentId, chatId);
   const label =
     part.file_name ||
     part.filename ||
@@ -685,12 +676,10 @@ function ContentParts({
 function UserContentParts({
   parts,
   agentId,
-  mediaScope,
   chatId,
 }: {
   parts: ConversationContentPart[];
   agentId?: string;
-  mediaScope?: ChatMediaScope;
   chatId: string;
 }) {
   const [previewImageIndex, setPreviewImageIndex] = useState<number | null>(
@@ -730,7 +719,7 @@ function UserContentParts({
       {images.length > 0 && (
         <div className="rua-chat-user-images">
           {images.map((part, index) => {
-            const mediaUrl = partUrl(part, agentId, mediaScope, chatId);
+            const mediaUrl = partUrl(part, agentId, chatId);
             return mediaUrl ? (
               <div key={index} className="rua-chat-user-image">
                 <ImageViewer
@@ -751,7 +740,7 @@ function UserContentParts({
         </div>
       )}
       {otherMedia.map((part, index) => {
-        const mediaUrl = partUrl(part, agentId, mediaScope, chatId);
+        const mediaUrl = partUrl(part, agentId, chatId);
         return (
           <div key={index} className="rua-chat-media-grid">
             {part.type === "video" && mediaUrl && (
@@ -774,21 +763,14 @@ function UserContentParts({
                 />
               )}
             {part.type === "file" && (
-              <FilePart
-                part={part}
-                agentId={agentId}
-                mediaScope={mediaScope}
-                chatId={chatId}
-              />
+              <FilePart part={part} agentId={agentId} chatId={chatId} />
             )}
           </div>
         );
       })}
-      {previewImage && partUrl(previewImage, agentId, mediaScope, chatId) && (
+      {previewImage && partUrl(previewImage, agentId, chatId) && (
         <ImageViewer
-          src={toDisplayUrl(
-            partUrl(previewImage, agentId, mediaScope, chatId)!,
-          )}
+          src={toDisplayUrl(partUrl(previewImage, agentId, chatId)!)}
           alt={
             previewImage.file_name ||
             previewImage.filename ||
@@ -958,7 +940,6 @@ function LocalOperateCard({
 const UserBubble = memo(function UserBubble({
   item,
   agentId,
-  mediaScope,
   chatId,
   cardIndex,
   branchActionsDisabled,
@@ -969,7 +950,6 @@ const UserBubble = memo(function UserBubble({
 }: {
   item: ConversationUserMessage;
   agentId?: string;
-  mediaScope?: ChatMediaScope;
   chatId: string;
   cardIndex: number;
   branchActionsDisabled?: boolean;
@@ -1076,7 +1056,6 @@ const UserBubble = memo(function UserBubble({
           <UserContentParts
             parts={visibleContent}
             agentId={agentId}
-            mediaScope={mediaScope}
             chatId={chatId}
           />
         </div>
@@ -1216,9 +1195,7 @@ function RuntimeNoteBlock({
           <span className="rua-local-operate-card-icon">
             {isTaskTerminal ? <ListChecks size={15} /> : <Wrench size={15} />}
           </span>
-          <span className="rua-local-runtime-note-title">
-            {String(title)}
-          </span>
+          <span className="rua-local-runtime-note-title">{String(title)}</span>
           <span className="rua-local-runtime-note-status">
             {String(status)}
           </span>
@@ -3136,9 +3113,7 @@ const AssistantCard = memo(function AssistantCard({
             isInterrupted ? (
               <InterruptedTurnNotice kind={interruptedKind} />
             ) : (
-              <div className="rua-chat-empty-assistant">
-                {emptyOutputText}
-              </div>
+              <div className="rua-chat-empty-assistant">{emptyOutputText}</div>
             )
           ) : (
             <>
@@ -3265,7 +3240,6 @@ export default memo(function ConversationMessageList({
   onLoadHistoryGap,
   projection,
   agentId,
-  mediaScope,
   approvalSnapshot,
   activeAcpRunner,
   onSelectVariant,
@@ -3637,7 +3611,7 @@ export default memo(function ConversationMessageList({
   return (
     <RenderStateRoot store={viewport.viewState}>
       <MarkdownMediaContext.Provider
-        value={{ scope: mediaScope, chatId: projection.conversationId }}
+        value={{ chatId: projection.conversationId }}
       >
         <ConversationUsageContext.Provider value={conversationUsage}>
           <div
@@ -3743,7 +3717,6 @@ export default memo(function ConversationMessageList({
                               <UserBubble
                                 item={item}
                                 agentId={agentId}
-                                mediaScope={mediaScope}
                                 chatId={projection.conversationId}
                                 cardIndex={index}
                                 branchActionsDisabled={

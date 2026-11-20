@@ -11,17 +11,15 @@ use crate::streaming::ActiveStreamRegistry;
 
 pub struct StreamCancelAdapter {
     streams: Arc<ActiveStreamRegistry>,
-    agent_id: String,
     runtime_sessions: Option<Arc<ActiveSessionTracker>>,
     acp_chat_manager: Option<Arc<rua_command::AcpChatSessionManager>>,
     acp_service: Option<Arc<rua_acp::service::AcpService>>,
 }
 
 impl StreamCancelAdapter {
-    pub fn new(streams: Arc<ActiveStreamRegistry>, agent_id: impl Into<String>) -> Self {
+    pub fn new(streams: Arc<ActiveStreamRegistry>) -> Self {
         Self {
             streams,
-            agent_id: agent_id.into(),
             runtime_sessions: None,
             acp_chat_manager: None,
             acp_service: None,
@@ -57,7 +55,7 @@ impl rua_command::SessionCanceller for StreamCancelAdapter {
             }
             return self
                 .streams
-                .cancel_all_priorities(channel_id, &ChatAddress::agent(&self.agent_id, session_id))
+                .cancel_all_priorities(channel_id, &ChatAddress::new(session_id))
                 .await
                 > 0;
         }
@@ -143,7 +141,7 @@ impl ApprovalAdapter {
     }
 
     fn address(&self, session_id: &str) -> ChatAddress {
-        ChatAddress::agent(&self.agent_id, session_id)
+        ChatAddress::new(session_id)
     }
 
     async fn oldest_pending(&self, session_id: &str) -> Option<rua_security::ApprovalRequest> {

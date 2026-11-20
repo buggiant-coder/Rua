@@ -298,9 +298,7 @@ impl AcpService {
     }
 
     pub async fn permission_snapshot(&self, chat_id: &SessionId) -> AcpPermissionSnapshot {
-        self.permission_relay
-            .snapshot(&self.agent_id, chat_id.as_str())
-            .await
+        self.permission_relay.snapshot(chat_id.as_str()).await
     }
 
     pub async fn decide_permission(
@@ -310,7 +308,7 @@ impl AcpService {
         option_id: &str,
     ) -> Result<crate::permissions::AcpPermissionRequest, AcpPermissionRelayError> {
         self.permission_relay
-            .decide(&self.agent_id, chat_id.as_str(), request_id, option_id)
+            .decide(chat_id.as_str(), request_id, option_id)
             .await
     }
 
@@ -426,7 +424,7 @@ impl AcpService {
             .expect("ACP chat address hints lock poisoned")
             .get(key.chat_id.as_str())
             .cloned()
-            .unwrap_or_else(|| rua_core::ChatAddress::agent(&self.agent_id, key.chat_id.as_str()));
+            .unwrap_or_else(|| rua_core::ChatAddress::new(key.chat_id.as_str()));
         let acp_agent = AcpClientAdapter::build_acp_agent_for_runtime(
             &agent_config,
             std::path::Path::new(&session_cwd),

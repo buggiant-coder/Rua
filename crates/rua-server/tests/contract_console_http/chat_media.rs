@@ -9,7 +9,7 @@ use super::support::{
     build_app, multipart_upload, multipart_upload_with_fields, read_json, request_json,
 };
 use rua_contract::agent::AgentInputMessage;
-use rua_core::{ChatAddress, ChatScopeStore};
+use rua_core::{ChatAddress, ChatStore};
 use rua_project::ProjectCreateRequest;
 use rua_provider::config_loader::ProviderConfig;
 use rua_server::services::chat_media::ChatMediaService;
@@ -21,7 +21,7 @@ use rua_session::WorkspaceSessionStore;
 async fn staged_media_collection_preserves_materialized_chat_media() {
     let test = build_app();
     let chat_id = "00000000-0000-4000-8000-000000000114";
-    let address = ChatAddress::agent("default", chat_id);
+    let address = ChatAddress::new(chat_id);
     let staged = ChatMediaService
         .store_staged(
             &test.state.conversation_authority,
@@ -61,12 +61,56 @@ async fn staged_media_collection_preserves_materialized_chat_media() {
         .await
         .unwrap();
     test.state.wait_platform_initialization().await.unwrap();
-    let submitted = test.state.conversation_input_intake.submit_delivery("default", rua_channel::core::console::ConsoleChatRequest {
-        message: "accepted input".into(), chat_id: Some(chat_id.into()), model: None, is_reconnect: false, attachments: vec![],
-        input: Some(vec![serde_json::json!({"role":"user","content":[{"type":"file","media_ref":staged.media_ref} ]})]), messages: None, extra: Default::default(), channel_kind: None,
-    }).await;
+    let request = |id: &str| rua_channel::core::console::ConsoleChatRequest {
+        message: "accepted input".into(),
+        chat_id: Some(id.into()),
+        model: None,
+        is_reconnect: false,
+        attachments: vec![],
+        input: Some(vec![serde_json::json!({
+            "role": "user", "content": [{"type": "file", "media_ref": staged.media_ref}]
+        })]),
+        messages: None,
+        extra: Default::default(),
+        channel_kind: None,
+    };
+    let foreign_chat = Uuid::new_v4().to_string();
+    let foreign_read = test
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/chats/{foreign_chat}/media/{}",
+                    staged.media_id
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(foreign_read.status(), StatusCode::NOT_FOUND);
+    let refused = test
+        .state
+        .conversation_input_intake
+        .submit_delivery("default", request(&foreign_chat))
+        .await;
+    let rua_server::services::conversation_input_intake::ConversationInputDeliveryOutcome::Rejected { detail, .. } = refused else {
+        panic!("foreign draft accepted the staged attachment: {refused:?}")
+    };
+    assert!(detail.contains("staged for a different Chat"), "{detail}");
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
+    assert!(WorkspaceSessionStore::new(scope.root())
+        .load_chat_header(&foreign_chat)
+        .await
+        .unwrap()
+        .is_none());
+    let submitted = test
+        .state
+        .conversation_input_intake
+        .submit_delivery("default", request(chat_id))
+        .await;
     assert!(matches!(submitted, rua_server::services::conversation_input_intake::ConversationInputDeliveryOutcome::Delivered { .. }), "{submitted:?}");
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
     assert!(!scope
         .root()
         .join("media")
@@ -91,27 +135,16 @@ async fn staged_media_collection_preserves_materialized_chat_media() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_chat_media_round_trip_uses_agent_workspace_and_uuid_identity() {
+async fn draft_media_round_trip_uses_the_shared_chat_workspace() {
     let test = build_app();
     let payload = b"agent-chat-media".to_vec();
-    let address = ChatAddress::agent("default", "chat-a");
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
-    test.state
-        .conversation_authority
-        .ensure_initial_placement(&test.state, &address)
-        .await
-        .expect("materialize the Agent Chat authority state");
-    let initial_header = WorkspaceSessionStore::new(scope.root())
-        .load_chat_header(address.chat_id().as_str())
-        .await
-        .expect("read initial Agent Chat header")
-        .expect("authority initialization materializes an Agent Chat");
-    assert_eq!(initial_header.turn_index.latest_turn, 0);
-    assert_eq!(initial_header.extra["selected_agent_id"], "default");
-
-    let response = multipart_upload(
+    let chat_id = "00000000-0000-4000-8000-000000000115";
+    let address = ChatAddress::new(chat_id);
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
+    let response = multipart_upload_with_fields(
         &test.app,
-        "/api/agents/default/chats/chat-a/media",
+        &format!("/api/chats/{chat_id}/media"),
+        &[("agent_id", "default")],
         "file",
         "../private photo.png",
         payload.clone(),
@@ -127,38 +160,20 @@ async fn agent_chat_media_round_trip_uses_agent_workspace_and_uuid_identity() {
     assert_eq!(body["original_filename"], "private photo.png");
     assert_eq!(body["byte_size"], payload.len());
 
-    let local_device_id = current_sync_device_id(&test.state.sync_device).expect("local Device id");
-    let placement =
-        load_optional_chat_authority_placement(scope.root(), address.chat_id().as_str())
-            .await
-            .expect("load placement")
-            .expect("upload materializes Agent placement");
-    assert_eq!(placement.device_id, local_device_id);
-    assert!(
-        WorkspaceSessionStore::new(scope.root())
-            .load_chat_header(address.chat_id().as_str())
-            .await
-            .expect("read repaired Agent Chat header")
-            .is_some(),
-        "upload repairs the placement-only Agent Chat state"
-    );
-    assert_eq!(
-        body["authority_epoch"],
-        placement.authority_epoch.to_string()
-    );
-
-    let stored = test
-        .state
-        .rua_root
-        .join("workspaces/default/media")
-        .join(media_id);
+    assert!(body.get("authority_epoch").is_none());
+    assert!(WorkspaceSessionStore::new(scope.root())
+        .load_chat_header(chat_id)
+        .await
+        .unwrap()
+        .is_none());
+    let stored = test.state.rua_root.join("chats/media").join(media_id);
     assert_eq!(std::fs::read(&stored).expect("stored Agent media"), payload);
     assert_eq!(
         std::fs::read_dir(stored.parent().expect("media parent"))
             .expect("media entries")
             .count(),
-        2,
-        "atomic upload must leave only the Media file and MIME sidecar"
+        3,
+        "staged media includes its MIME sidecar and staging marker"
     );
 
     let response = test
@@ -167,7 +182,7 @@ async fn agent_chat_media_round_trip_uses_agent_workspace_and_uuid_identity() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
-                .uri(format!("/api/agents/default/chats/chat-a/media/{media_id}"))
+                .uri(format!("/api/chats/{chat_id}/media/{media_id}"))
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -187,7 +202,7 @@ async fn agent_chat_media_round_trip_uses_agent_workspace_and_uuid_identity() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn project_chat_media_round_trip_uses_project_workspace_only() {
+async fn project_draft_media_is_staged_until_submission() {
     let test = build_app();
     test.state
         .provider_cells
@@ -229,8 +244,8 @@ async fn project_chat_media_round_trip_uses_project_workspace_only() {
         })
         .expect("create Project");
     let project_id = created.project.project_id.to_string();
-    let address = ChatAddress::project(project_id.clone(), chat_id);
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    let address = ChatAddress::new(chat_id);
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let model = serde_json::json!({
         "provider_id": "fixture",
         "model": "project-control-model"
@@ -238,8 +253,12 @@ async fn project_chat_media_round_trip_uses_project_workspace_only() {
     let model_json = model.to_string();
     let response = multipart_upload_with_fields(
         &test.app,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/media"),
-        &[("agent_id", "default"), ("model", model_json.as_str())],
+        &format!("/api/chats/{chat_id}/media"),
+        &[
+            ("agent_id", "default"),
+            ("project_id", project_id.as_str()),
+            ("model", model_json.as_str()),
+        ],
         "file",
         "requirements.txt",
         payload.clone(),
@@ -251,13 +270,7 @@ async fn project_chat_media_round_trip_uses_project_workspace_only() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let media_id = body["media_id"].as_str().expect("media id");
     Uuid::parse_str(media_id).expect("UUID-only media id");
-    let stored = test
-        .state
-        .rua_root
-        .join("projects")
-        .join(&project_id)
-        .join("media")
-        .join(media_id);
+    let stored = test.state.rua_root.join("chats/media").join(media_id);
     assert_eq!(
         std::fs::read(stored).expect("stored Project media"),
         payload
@@ -288,9 +301,10 @@ async fn project_chat_media_round_trip_uses_project_workspace_only() {
     let submit = request_json(
         &test.app,
         Method::POST,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/console/submit"),
+        &format!("/chats/{chat_id}/console/submit"),
         serde_json::json!({
             "agent_id": "default",
+            "project_id": project_id,
             "chat_id": chat_id,
             "input": [{
                 "id": "user-media-submit",
@@ -316,7 +330,7 @@ async fn project_chat_media_round_trip_uses_project_workspace_only() {
 #[test]
 fn project_managed_media_materializes_from_the_project_workspace() {
     let rua_root = tempfile::tempdir().expect("Rua root");
-    let address = ChatAddress::project("project-1", "chat-1");
+    let address = ChatAddress::new("chat-1");
     let mut messages = vec![AgentInputMessage {
         role: "user".to_string(),
         content: vec![rua_core::ContentPart::Image {
@@ -329,9 +343,7 @@ fn project_managed_media_materializes_from_the_project_workspace() {
     ChatMediaService.materialize_message_parts(rua_root.path(), &address, &mut messages);
     let expected_path = rua_root
         .path()
-        .join("projects")
-        .join("project-1")
-        .join("media")
+        .join("chats/media")
         .join("00000000-0000-4000-8000-000000000001");
 
     assert!(matches!(
@@ -351,15 +363,15 @@ async fn scoped_media_rejects_invalid_id_and_old_console_upload_is_absent() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
-                .uri("/api/agents/default/chats/chat-a/media/not-a-uuid")
+                .uri("/api/chats/00000000-0000-4000-8000-000000000115/media/not-a-uuid")
                 .body(Body::empty())
                 .expect("request"),
         )
         .await
         .expect("invalid media request");
     assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let address = ChatAddress::agent("default", "chat-a");
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    let address = ChatAddress::new("chat-a");
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     assert!(
         load_optional_chat_authority_placement(scope.root(), address.chat_id().as_str())
             .await
@@ -382,8 +394,8 @@ async fn scoped_media_rejects_invalid_id_and_old_console_upload_is_absent() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn media_open_rejects_symlink_and_orphan_gc_preserves_references() {
     let test = build_app();
-    let address = ChatAddress::agent("default", "chat-gc");
-    let media_dir = test.state.rua_root.join("workspaces/default/media");
+    let address = ChatAddress::new("chat-gc");
+    let media_dir = test.state.rua_root.join("chats/media");
     std::fs::create_dir_all(&media_dir).expect("media dir");
     let referenced = "00000000-0000-4000-8000-000000000301";
     let orphan = "00000000-0000-4000-8000-000000000302";

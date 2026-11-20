@@ -557,8 +557,9 @@ async fn enabling_feature_backfills_existing_authority_owned_history() {
     let configuration = state
         .product_hooks
         .resolve_complete_chat_configuration(
-            &rua_core::ChatAddress::agent("default", "chat-backfill"),
+            &rua_core::ChatAddress::new("chat-backfill"),
             rua_server::services::product_hooks::ChatConfigurationMaterialization {
+                project_id: None,
                 selected_agent_id: "default".into(),
                 running_config: Default::default(),
                 security_config: Default::default(),
@@ -662,7 +663,7 @@ async fn enabling_feature_backfills_existing_authority_owned_history() {
     state
         .conversation_input_intake
         .update_authority_chat_running_config(
-            &rua_core::ChatAddress::agent("default", "chat-backfill"),
+            &rua_core::ChatAddress::new("chat-backfill"),
             "default",
             &runtime.workspace_dir(),
             serde_json::to_value(rua_config::ChatRunningConfig::from_agent_defaults(
@@ -674,7 +675,7 @@ async fn enabling_feature_backfills_existing_authority_owned_history() {
         .unwrap();
     let config = state
         .product_hooks
-        .chat_configuration(&rua_core::ChatAddress::agent("default", "chat-backfill"))
+        .chat_configuration(&rua_core::ChatAddress::new("chat-backfill"))
         .await
         .unwrap();
     assert!(
@@ -733,7 +734,7 @@ async fn new_authority_reuses_preexisting_record_without_regeneration() {
         .remove(0);
     store
         .publish_ready_history_replacement(
-            &rua_core::ChatAddress::agent("default", chat_id),
+            &rua_core::ChatAddress::new(chat_id),
             rua_session::HistoryReplacementReadyDraft {
                 record_id: block.record_id,
                 source: block.source,

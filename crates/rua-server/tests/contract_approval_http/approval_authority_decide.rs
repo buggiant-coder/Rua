@@ -85,9 +85,7 @@ async fn create_authority_request_for_command_in_chat(
         .approval_authority()
         .create_request(ApprovalRequestInput {
             agent_id: "default".into(),
-            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::agent(
-                "default", chat_id,
-            )),
+            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new(chat_id)),
             turn_id: "turn-1".into(),
             tool_call_id: tool_call_id.into(),
             tool_name: "bash".into(),
@@ -113,9 +111,7 @@ async fn create_denied_authority_request(app: &super::support::TestApp) -> Strin
         .approval_authority()
         .create_denied_request(ApprovalRequestInput {
             agent_id: "default".into(),
-            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::agent(
-                "default", "chat-1",
-            )),
+            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new("chat-1")),
             turn_id: "turn-1".into(),
             tool_call_id: "tool-call-denied".into(),
             tool_name: "bash".into(),
@@ -285,7 +281,7 @@ async fn authority_decide_allow_chat_persists_backend_matcher_rule() {
         .approval_authority()
         .find_reuse_rule_at(
             "default",
-            &rua_core::ChatAddress::agent("default", "chat-1"),
+            &rua_core::ChatAddress::new("chat-1"),
             "bash",
             &json!({ "command": "git status" }),
         )

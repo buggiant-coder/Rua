@@ -35,7 +35,6 @@ export type TaskScope =
     };
 
 export interface TaskChatAddress {
-  scope: TaskScope;
   chat_id: string;
   [key: string]: unknown;
 }

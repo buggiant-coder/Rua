@@ -3,7 +3,7 @@ use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 
-use rua_core::{ChatAddress, ChatScopeStore, RunControl};
+use rua_core::{ChatAddress, ChatStore, RunControl};
 use rua_session::WorkspaceSessionStore;
 
 use crate::services::chat_media::{ChatMediaService, MediaId, MAX_CHAT_MEDIA_BYTES};
@@ -165,7 +165,7 @@ async fn ensure_required_media_ready(
     request: &ConversationHistoryGapRequest<'_>,
     address: &ChatAddress,
 ) -> Result<(), String> {
-    let scope = ChatScopeStore::resolve(request.data_dir, address.clone());
+    let scope = ChatStore::resolve(request.data_dir, address.clone());
     let required = required_media_set(scope.root(), address)?;
     if required.is_empty() {
         return Ok(());
@@ -235,7 +235,7 @@ pub async fn verify_conversation_history_requirement(
     address: &ChatAddress,
     requirement: &ConversationManifest,
 ) -> Result<(), String> {
-    let scope_store = ChatScopeStore::resolve(data_dir, address.clone());
+    let scope_store = ChatStore::resolve(data_dir, address.clone());
     let actual = load_conversation_manifest(scope_store.root(), address)
         .await
         .map_err(|error| error.to_string())?
@@ -317,8 +317,10 @@ pub async fn ensure_conversation_history_ready(
 pub async fn ensure_conversation_history_ready_via_device_session(
     request: ConversationHistoryGapRequest<'_>,
 ) -> Result<ChatMetadataRecord, String> {
-    let address = ChatAddress::agent(request.agent_id, request.chat_id);
-    let workspace_dir = request.data_dir.join("workspaces").join(request.agent_id);
+    let address = ChatAddress::new(request.chat_id);
+    let workspace_dir = rua_core::ChatStore::resolve(request.data_dir, address.clone())
+        .root()
+        .to_path_buf();
     let store = WorkspaceSessionStore::new(&workspace_dir);
     tokio::fs::create_dir_all(store.sessions_dir())
         .await

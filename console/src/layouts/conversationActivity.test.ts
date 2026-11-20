@@ -5,6 +5,10 @@ import {
   type ConversationCompletion,
 } from "./conversationActivity";
 
+vi.mock("@/api/consoleTransport", () => ({
+  consoleFetch: (path: string, options: RequestInit) =>
+    fetch(`/api${path}`, options),
+}));
 vi.mock("@/api/authHeaders", () => ({
   buildAuthHeaders: () => ({ Authorization: "Bearer fixture" }),
 }));
@@ -14,14 +18,10 @@ vi.mock("./conversationNavigationEvents", () => ({
 }));
 
 const agent: ConversationAddress = {
-  scope: "agent",
-  agentId: "alice",
   chatId: "same-chat",
 };
 const project: ConversationAddress = {
-  scope: "project",
-  projectId: "work",
-  chatId: "same-chat",
+  chatId: "project-chat",
 };
 const completion: ConversationCompletion = {
   turn_id: "turn-one",
@@ -94,13 +94,11 @@ describe("conversation completion read state", () => {
   it("keys agent and project identities by their fully encoded canonical path", () => {
     const store = new ConversationActivityStore(localStorage, () => false);
     const encoded: ConversationAddress = {
-      scope: "agent",
-      agentId: "an/agent",
       chatId: "chat ?#",
     };
     store.applyActivity({ address: encoded, running: false, completion });
     expect(localStorage.key(0)).toBe(
-      "rua.conversation-activity.v1:/agents/an%2Fagent/chats/chat%20%3F%23",
+      "rua.conversation-activity.v1:/chats/chat%20%3F%23",
     );
     store.applyActivity({ address: agent, running: false, completion });
     store.applyActivity({ address: project, running: true });
@@ -273,16 +271,14 @@ describe("global conversation activity transport", () => {
     vi.mocked(invalidateConversationNavigation).mockClear();
     fixture.send('{"type":"snapshot","activities":[]}\n{"type":"act');
     fixture.send(
-      `ivity","address":{"scope":{"kind":"agent","agent_id":"alice"},"chat_id":"same-chat"},"running":false,"completion":${JSON.stringify(
+      `ivity","address":{"chat_id":"same-chat"},"running":false,"completion":${JSON.stringify(
         completion,
       )}}\n`,
     );
     await vi.advanceTimersByTimeAsync(0);
     expect(invalidateConversationNavigation).toHaveBeenCalledWith(agent);
     expect(
-      localStorage.getItem(
-        "rua.conversation-activity.v1:/agents/alice/chats/same-chat",
-      ),
+      localStorage.getItem("rua.conversation-activity.v1:/chats/same-chat"),
     ).toContain(completion.token);
     first();
     expect(fixture.cancel).not.toHaveBeenCalled();
@@ -356,7 +352,6 @@ describe("global conversation activity transport", () => {
       `${JSON.stringify({
         type: "activity",
         address: {
-          scope: { kind: "agent", agent_id: "alice" },
           chat_id: "same-chat",
         },
         running: false,
@@ -364,7 +359,7 @@ describe("global conversation activity transport", () => {
       })}\n`,
     );
     await vi.advanceTimersByTimeAsync(0);
-    const key = "rua.conversation-activity.v1:/agents/alice/chats/same-chat";
+    const key = "rua.conversation-activity.v1:/chats/same-chat";
     expect(JSON.parse(localStorage.getItem(key)!).readToken).toBeUndefined();
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     window.dispatchEvent(new Event("focus"));
@@ -374,4 +369,7 @@ describe("global conversation activity transport", () => {
   });
 });
 
-vi.mock("../api/consoleTransport", () => ({ consoleFetch: (path: string, options?: RequestInit) => fetch(`/api${path}`, options) }));
+vi.mock("../api/consoleTransport", () => ({
+  consoleFetch: (path: string, options?: RequestInit) =>
+    fetch(`/api${path}`, options),
+}));

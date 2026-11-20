@@ -293,9 +293,6 @@ async fn save_sidecars(
         Some(header) => header,
         None => chat_header_from_metadata_record(chat, execution_agent_id),
     };
-    if !execution_agent_id.is_empty() {
-        header.agent_id = execution_agent_id.to_string();
-    }
     sync_header_metadata(&mut header, chat);
     store.save_chat_header(&header).await?;
     save_index_and_publish(state, scope_root, address, chat).await
@@ -307,7 +304,12 @@ pub(crate) fn chat_header_from_metadata_record(
 ) -> rua_session::ChatSessionHeader {
     let mut header = rua_session::ChatSessionHeader::new(rua_session::ChatMetadata {
         chat_id: chat.id.clone(),
-        agent_id: execution_agent_id.to_string(),
+        agent_id: chat
+            .meta
+            .get("agent_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(execution_agent_id)
+            .to_string(),
         title: chat.name.clone(),
         created_at: chat.created_at.to_rfc3339(),
         last_activity_at: chat.updated_at.to_rfc3339(),
@@ -315,6 +317,11 @@ pub(crate) fn chat_header_from_metadata_record(
         archived: chat.archived,
         preview: None,
     });
+    header.project_id = chat
+        .meta
+        .get("project_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
     sync_header_metadata(&mut header, chat);
     header
 }
@@ -398,6 +405,10 @@ pub async fn materialize_targeted_chat_metadata(
             now,
         )
     })?;
+    if !preserve_existing_session {
+        meta_object(&mut chat.meta)
+            .insert("agent_id".into(), serde_json::json!(execution_agent_id));
+    }
     match parse_conversation_authority_placement(&chat.meta) {
         Ok(existing_target) if existing_target == *authority_placement => {}
         Ok(existing_target) => {
@@ -486,14 +497,11 @@ async fn write_authority_placement(
         placement.clone(),
     );
     if existing_header.is_none() {
-        let execution_agent_id = address.agent_id().map(|id| id.as_str()).unwrap_or_default();
-        let mut header = chat_header_from_metadata_record(&chat, execution_agent_id);
-        if let Some(agent_id) = address.agent_id() {
-            rua_chat::apply_agent_scope_defaults(&mut header, agent_id.as_str());
-        }
-        store.save_chat_header(&header).await?;
+        return Err(ChatMetadataStoreError::Conflict(
+            "Chat must be materialized before its authority can change".into(),
+        ));
     }
-    rua_chat::ChatService::for_resolved_scope(scope_root, address.clone())
+    rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope_root))
         .update_setting(
             address,
             rua_chat::ChatSetting::AuthorityPlacement(placement),
@@ -504,7 +512,7 @@ async fn write_authority_placement(
         .get(rua_session::collaboration::COLLABORATION_META_KEY)
         .is_some_and(serde_json::Value::is_object)
     {
-        rua_chat::ChatService::for_resolved_scope(scope_root, address.clone())
+        rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope_root))
             .repair_projection(address)
             .await?;
     }

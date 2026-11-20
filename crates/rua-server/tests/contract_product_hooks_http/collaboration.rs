@@ -1,7 +1,7 @@
 use axum::http::{Method, StatusCode};
 use rua_contract::agent::{AgentRequest, AgentRuntime, RuntimeWarmupContext};
 use rua_core::event::RuntimeEvent;
-use rua_core::{ChatAddress, ChatScopeStore};
+use rua_core::{ChatAddress, ChatStore};
 use rua_server::services::collaboration::CollaborationCaller;
 use rua_session::WorkspaceSessionStore;
 use serde_json::json;
@@ -154,10 +154,7 @@ struct BackgroundResultRunner {
 fn background_test_router(test: &TestApp) -> axum::Router {
     test.app.clone().merge(
         axum::Router::new()
-            .nest(
-                "/api",
-                rua_server::endpoints::console::agent_scoped_router(),
-            )
+            .nest("/api", rua_server::endpoints::console::router())
             .layer(axum::middleware::from_fn_with_state(
                 test.state.clone(),
                 rua_server::middleware::agent_context_middleware,
@@ -221,10 +218,7 @@ async fn assert_background_result_behind_active_source(stop_queued: bool) {
     let result = request(
         &app,
         Method::POST,
-        &format!(
-            "/api/agents/default/chats/{}/console/chat",
-            source.address.chat_id()
-        ),
+        &format!("/api/chats/{}/console/chat", source.address.chat_id()),
         Some(serde_json::json!({"message":"independent work"})),
     )
     .await;
@@ -443,7 +437,7 @@ async fn assert_background_task_continuation(stop_before_result: bool) {
         .is_none());
     assert!(requests.lock().await.is_empty());
     if stop_before_result {
-        let header = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir())
+        let header = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir())
             .load_chat_header(source.address.chat_id().as_str())
             .await
             .unwrap()
@@ -471,10 +465,7 @@ async fn assert_background_task_continuation(stop_before_result: bool) {
         let response = request(
             &app,
             Method::POST,
-            &format!(
-                "/api/agents/default/chats/{}/console/stop",
-                source.address.chat_id()
-            ),
+            &format!("/api/chats/{}/console/stop", source.address.chat_id()),
             Some(serde_json::json!({"turn_id":turn.turn_id,"authority_epoch":epoch})),
         )
         .await;
@@ -587,9 +578,9 @@ use super::support::{build_app, read_json, request, TestApp};
 
 async fn caller(test: &TestApp, name: &str) -> CollaborationCaller {
     let chat = super::support::seed_materialized_chat(test, "default", name).await;
-    let address = ChatAddress::agent("default", chat["id"].as_str().unwrap());
+    let address = ChatAddress::new(chat["id"].as_str().unwrap());
     CollaborationCaller {
-        working_dir: ChatScopeStore::resolve(&test.state.rua_root, address.clone())
+        working_dir: ChatStore::resolve(&test.state.rua_root, address.clone())
             .root()
             .to_path_buf(),
         address,
@@ -651,7 +642,7 @@ async fn collaboration_live_browser_acceptance() {
     let console = axum::Router::new()
         .nest(
             "/api",
-            rua_server::endpoints::console::agent_scoped_router()
+            rua_server::endpoints::console::router()
                 .merge(rua_server::endpoints::acp::agent_scoped_router())
                 .merge(rua_server::endpoints::acp_chat::router())
                 .merge(rua_server::endpoints::approvals::router())
@@ -875,7 +866,7 @@ async fn live_registered_tool_checks(test: &TestApp) -> serde_json::Value {
     ctx.session_id = "other-chat".into();
     ctx.metadata.insert(
         "security_chat_address".into(),
-        json!(ChatAddress::agent("default", "other-chat")),
+        json!(ChatAddress::new("other-chat")),
     );
     assert!(toolkit
         .get_executor("task_read")
@@ -919,7 +910,7 @@ async fn create_is_idempotent_isolated_and_inherits_source_environment() {
         .unwrap();
     assert_eq!(created.chat, repeated.chat);
     assert_ne!(created.chat, source.address);
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, created.chat.clone());
+    let scope = ChatStore::resolve(&test.state.rua_root, created.chat.clone());
     let store = WorkspaceSessionStore::new(scope.root());
     let header = store
         .load_chat_header(created.chat.chat_id().as_str())
@@ -976,8 +967,8 @@ async fn create_inherits_source_model_when_executor_default_is_null() {
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
     let mut source = caller(&test, "inherit-model").await;
-    let source_scope = ChatScopeStore::resolve(&test.state.rua_root, source.address.clone());
-    rua_chat::ChatService::for_resolved_scope(source_scope.root(), source.address.clone())
+    let source_scope = ChatStore::resolve(&test.state.rua_root, source.address.clone());
+    rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(source_scope.root()))
         .update_setting(
             &source.address,
             rua_chat::ChatSetting::Model(json!({"provider_id":"fixture","model":"source-model"})),
@@ -1000,7 +991,7 @@ async fn create_inherits_source_model_when_executor_default_is_null() {
         .create(source, "reviewer".into(), None, 0)
         .await
         .unwrap();
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, created.chat.clone());
+    let scope = ChatStore::resolve(&test.state.rua_root, created.chat.clone());
     let header = WorkspaceSessionStore::new(scope.root())
         .load_chat_header(created.chat.chat_id().as_str())
         .await
@@ -1013,7 +1004,7 @@ async fn create_inherits_source_model_when_executor_default_is_null() {
     let response = request(
         &test.app,
         Method::GET,
-        &format!("/api/agents/reviewer/chats/{}", created.chat.chat_id()),
+        &format!("/api/chats/{}", created.chat.chat_id()),
         None,
     )
     .await;
@@ -1037,8 +1028,8 @@ async fn create_prefers_configured_executor_model_over_source_model() {
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
     let mut source = caller(&test, "executor-model-priority").await;
-    let source_scope = ChatScopeStore::resolve(&test.state.rua_root, source.address.clone());
-    rua_chat::ChatService::for_resolved_scope(source_scope.root(), source.address.clone())
+    let source_scope = ChatStore::resolve(&test.state.rua_root, source.address.clone());
+    rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(source_scope.root()))
         .update_setting(
             &source.address,
             rua_chat::ChatSetting::Model(json!({"provider_id":"fixture","model":"source-model"})),
@@ -1060,7 +1051,7 @@ async fn create_prefers_configured_executor_model_over_source_model() {
         .create(source, "reviewer".into(), None, 0)
         .await
         .unwrap();
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, created.chat.clone());
+    let scope = ChatStore::resolve(&test.state.rua_root, created.chat.clone());
     let header = WorkspaceSessionStore::new(scope.root())
         .load_chat_header(created.chat.chat_id().as_str())
         .await
@@ -1119,7 +1110,7 @@ async fn acp_collaboration_create_fixes_runner_inherits_cwd_and_creates_no_task(
         Some("fixture-runner-session")
     );
     let store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, created.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, created.chat.clone()).root(),
     );
     let header = store
         .load_chat_header(created.chat.chat_id().as_str())
@@ -1169,7 +1160,7 @@ async fn acp_collaboration_create_fixes_runner_inherits_cwd_and_creates_no_task(
     let mut unavailable = source;
     unavailable.tool_call_id = "unavailable-runner-call".into();
     let source_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, unavailable.address.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, unavailable.address.clone()).root(),
     );
     let targets_before = source_store
         .load_collaboration_targets(unavailable.address.chat_id().as_str())
@@ -1227,7 +1218,7 @@ async fn acp_collaboration_send_and_read_use_one_chat_session_without_task_wrapp
         first_outcome.output
     );
     assert!(first_outcome.output.contains("prompt=first prompt"));
-    let first_scope = ChatScopeStore::resolve(&test.state.rua_root, first.chat.clone());
+    let first_scope = ChatStore::resolve(&test.state.rua_root, first.chat.clone());
     let first_store = WorkspaceSessionStore::new(first_scope.root());
     assert_eq!(
         first_store
@@ -1301,7 +1292,7 @@ async fn acp_collaboration_send_and_read_use_one_chat_session_without_task_wrapp
         0
     );
     let store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, first.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, first.chat.clone()).root(),
     );
     let turns = store
         .read_turn_range(first.chat.chat_id().as_str(), 1, usize::MAX)
@@ -1554,10 +1545,7 @@ async fn explicit_source_configuration_update_propagates_inheritance_without_ove
         "Agent default changes must not propagate without a source Chat apply"
     );
 
-    let path = format!(
-        "/api/agents/default/chats/{}/configuration",
-        source.address.chat_id()
-    );
+    let path = format!("/api/chats/{}/configuration", source.address.chat_id());
     let preview = read_json(request(&test.app, Method::GET, &path, None).await).await;
     assert_eq!(
         preview["candidate"]["security_config"]["tool_guard"]["approval_mode"],
@@ -1613,7 +1601,7 @@ async fn explicit_source_configuration_update_propagates_inheritance_without_ove
     );
 
     let child_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
     );
     let header = child_store
         .load_chat_header(child.chat.chat_id().as_str())
@@ -1637,10 +1625,7 @@ async fn explicit_source_configuration_update_propagates_inheritance_without_ove
         serde_json::to_value(&descriptor).unwrap(),
     );
     child_store.save_chat_header(&failed_header).await.unwrap();
-    let child_path = format!(
-        "/api/agents/default/chats/{}/configuration",
-        child.chat.chat_id()
-    );
+    let child_path = format!("/api/chats/{}/configuration", child.chat.chat_id());
     let failed_view = read_json(request(&test.app, Method::GET, &child_path, None).await).await;
     assert_eq!(failed_view["collaboration"]["status"], "failed");
     assert_eq!(
@@ -1693,7 +1678,7 @@ async fn failed_child_configuration_rejects_chat_and_task_admission_until_recove
         .await
         .unwrap();
     let child_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
     );
     let mut header = child_store
         .load_chat_header(child.chat.chat_id().as_str())
@@ -1828,7 +1813,7 @@ async fn deleting_source_preserves_ready_child_snapshot_for_direct_input() {
         .await
         .unwrap();
     WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, source.address.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, source.address.clone()).root(),
     )
     .delete_chat_storage_by_chat_id(source.address.chat_id().as_str())
     .await
@@ -1894,10 +1879,7 @@ async fn direct_child_configuration_update_preserves_inherited_security() {
         .save_and_invalidate("default", &target_default)
         .unwrap();
 
-    let path = format!(
-        "/api/agents/default/chats/{}/configuration",
-        child.chat.chat_id()
-    );
+    let path = format!("/api/chats/{}/configuration", child.chat.chat_id());
     let preview = read_json(request(&test.app, Method::GET, &path, None).await).await;
     assert_eq!(
         preview["candidate"]["security_config"],
@@ -1937,7 +1919,7 @@ async fn startup_reconciliation_interrupts_without_replay_and_redelivers_once_af
         .await
         .unwrap();
     let target_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
     );
     let request_id = uuid::Uuid::new_v4().to_string();
     target_store
@@ -1976,7 +1958,7 @@ async fn startup_reconciliation_interrupts_without_replay_and_redelivers_once_af
         .await
         .unwrap();
     let source_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, source.address.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, source.address.clone()).root(),
     );
     source_store
         .set_collaboration_wake_suppressed(source.address.chat_id().as_str(), true)
@@ -2069,7 +2051,7 @@ async fn startup_reconciliation_reuses_claimed_identity_and_skips_consumed_resul
         .await
         .unwrap();
     let target_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
     );
     let cases = [
         (
@@ -2143,7 +2125,7 @@ async fn startup_reconciliation_reuses_claimed_identity_and_skips_consumed_resul
     wait_for_source_requests(&requests, 2).await;
     assert_eq!(requests.lock().await.len(), 2);
     let source_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&restarted.rua_root, source.address.clone()).root(),
+        ChatStore::resolve(&restarted.rua_root, source.address.clone()).root(),
     );
     let observation_ids = source_store
         .read_message_range(source.address.chat_id().as_str(), 1, usize::MAX)
@@ -2179,7 +2161,7 @@ async fn startup_reconciliation_retains_result_when_source_was_deleted_without_r
         .await
         .unwrap();
     let target_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
     );
     let request_id = uuid::Uuid::new_v4().to_string();
     target_store
@@ -2206,7 +2188,7 @@ async fn startup_reconciliation_retains_result_when_source_was_deleted_without_r
         .await
         .unwrap();
     let source_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, source.address.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, source.address.clone()).root(),
     );
     source_store
         .delete_chat_storage_by_chat_id(source.address.chat_id().as_str())
@@ -2289,7 +2271,7 @@ async fn chat_lists_separate_user_and_collaboration_views_and_keep_deleted_sourc
     assert_eq!(listed["collaboration"]["executor"]["kind"], "agent");
     assert_eq!(listed["collaboration"]["source_available"], true);
 
-    let child_scope = ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone());
+    let child_scope = ChatStore::resolve(&test.state.rua_root, child.chat.clone());
     let child_store = WorkspaceSessionStore::new(child_scope.root());
     let header_before = child_store
         .load_chat_header(child.chat.chat_id().as_str())
@@ -2326,7 +2308,7 @@ async fn chat_lists_separate_user_and_collaboration_views_and_keep_deleted_sourc
         .any(|entry| entry["id"] == child.chat.chat_id().as_str()));
 
     WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, source.address.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, source.address.clone()).root(),
     )
     .delete_chat_storage_by_chat_id(source.address.chat_id().as_str())
     .await
@@ -2354,8 +2336,8 @@ async fn chat_lists_separate_user_and_collaboration_views_and_keep_deleted_sourc
 async fn chat_read_progress_summary_is_bounded_private_incremental_and_singleflight() {
     let test = build_app();
     let mut source = caller(&test, "progress-source").await;
-    let source_scope = ChatScopeStore::resolve(&test.state.rua_root, source.address.clone());
-    rua_chat::ChatService::for_resolved_scope(source_scope.root(), source.address.clone())
+    let source_scope = ChatStore::resolve(&test.state.rua_root, source.address.clone());
+    rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(source_scope.root()))
         .update_setting(
             &source.address,
             rua_chat::ChatSetting::Model(json!({"provider_id":"fixture","model":"progress-model"})),
@@ -2384,7 +2366,7 @@ async fn chat_read_progress_summary_is_bounded_private_incremental_and_singlefli
         .collaboration
         .install_progress_summarizer(summarizer.clone());
     let store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
     );
     let request_id = uuid::Uuid::new_v4().to_string();
     store
@@ -2591,7 +2573,7 @@ async fn chat_read_progress_timeout_does_not_cancel_child_and_final_result_skips
         .collaboration
         .set_progress_summary_timeout(std::time::Duration::from_millis(25));
     let store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
     );
     let request_id = uuid::Uuid::new_v4().to_string();
     let mut record = rua_session::collaboration::CollaborationRequest {
@@ -2685,7 +2667,7 @@ async fn chat_read_deadline_includes_waiting_for_authority_routing() {
         .create(source.clone(), "default".into(), None, 0)
         .await
         .unwrap();
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone());
+    let scope = ChatStore::resolve(&test.state.rua_root, child.chat.clone());
     let store = WorkspaceSessionStore::new(scope.root());
     store
         .update_chat_header(child.chat.chat_id().as_str(), |header| {
@@ -2810,7 +2792,7 @@ async fn send_yields_without_cancelling_and_deduplicates_execution() {
         1
     );
     let store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, created.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, created.chat.clone()).root(),
     );
     let persisted = store
         .load_collaboration_request(
@@ -2830,7 +2812,7 @@ async fn send_yields_without_cancelling_and_deduplicates_execution() {
     );
     assert_eq!(result.state, "running");
     let source_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, source.address.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, source.address.clone()).root(),
     );
     let source_config = source_store
         .load_configuration_snapshot(
@@ -2915,8 +2897,8 @@ async fn collaboration_first_input_preserves_custom_title() {
         .create(source.clone(), "default".into(), None, 0)
         .await
         .unwrap();
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone());
-    let service = rua_chat::ChatService::for_resolved_scope(scope.root(), child.chat.clone());
+    let scope = ChatStore::resolve(&test.state.rua_root, child.chat.clone());
+    let service = rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope.root()));
     service
         .update_listing(
             &child.chat,
@@ -2987,7 +2969,7 @@ async fn quick_send_returns_final_result_and_changed_input_is_not_reexecuted() {
     assert_eq!(reply.outcome.unwrap().output, "review complete");
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let source_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, source.address.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, source.address.clone()).root(),
     );
     assert!(source_store
         .read_message_range(source.address.chat_id().as_str(), 1, usize::MAX)
@@ -3048,7 +3030,7 @@ async fn registered_tools_create_and_send_using_trusted_call_context() {
     let create = toolkit
         .get_executor("chat_send")
         .expect("registered chat_send");
-    let task_owner = rua_task::TaskOwner::new("default", source.address.chat_id().as_str());
+    let task_owner = rua_task::TaskOwner::new(source.address.chat_id().as_str());
     assert!(test
         .state
         .task_runtime
@@ -3356,7 +3338,7 @@ async fn disabled_collaboration_executor_rejects_new_input_without_persisting_re
         .unwrap_err();
     assert!(error.contains("disabled"));
     let store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
     );
     assert!(store
         .list_collaboration_requests(child.chat.chat_id().as_str())
@@ -3571,12 +3553,7 @@ async fn task_approval_wait_is_visible_and_decision_preserves_write_boundary() {
         assert!(test
             .state
             .task_runtime
-            .set_waiting_approval(
-                &rua_task::TaskOwner::new("other", "other"),
-                task_id,
-                1,
-                false
-            )
+            .set_waiting_approval(&rua_task::TaskOwner::new("other"), task_id, 1, false)
             .await
             .is_err());
         for tool in [&TaskReadTool as &dyn Tool, &TaskListTool] {
@@ -3725,7 +3702,7 @@ async fn chat_read_waits_without_intervening_and_does_not_repeat_automatic_resul
 
     release.notify_one();
     let target_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
     );
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while requests.lock().await.len() < 2 {
@@ -3778,7 +3755,7 @@ async fn chat_read_can_claim_an_undelivered_result_once() {
         .await
         .unwrap();
     let store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
     );
     let request_id = uuid::Uuid::new_v4().to_string();
     store
@@ -3895,7 +3872,7 @@ async fn deleted_source_is_not_recreated_and_delivery_failure_is_persisted() {
         .await
         .unwrap();
     let source_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, source.address.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, source.address.clone()).root(),
     );
     source_store
         .delete_chat_storage_by_chat_id(source.address.chat_id().as_str())
@@ -3904,7 +3881,7 @@ async fn deleted_source_is_not_recreated_and_delivery_failure_is_persisted() {
 
     release.notify_one();
     let target_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
     );
     let failed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
@@ -4061,7 +4038,7 @@ async fn chat_stop_is_conditional_and_stale_retry_does_not_stop_next_turn() {
     assert_eq!(stopped.status, CollaborationStopStatus::StopRequested);
     assert!(
         !WorkspaceSessionStore::new(
-            ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
+            ChatStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
         )
         .load_collaboration_wake_state(child.chat.chat_id().as_str())
         .await
@@ -4070,7 +4047,7 @@ async fn chat_stop_is_conditional_and_stale_retry_does_not_stop_next_turn() {
     );
     release.notify_waiters();
     let target_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
     );
     let cancelled = target_store
         .load_collaboration_request(
@@ -4228,7 +4205,7 @@ async fn source_user_stop_preserves_late_result_wake_without_stopping_child() {
     assert_eq!(running.items[0].chat, child.chat);
 
     let source_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, source.address.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, source.address.clone()).root(),
     );
     test.state.conversation_authority.start_active_turn(
         rua_server::services::conversation_authority::ConversationActiveTurnStart {
@@ -4256,7 +4233,7 @@ async fn source_user_stop_preserves_late_result_wake_without_stopping_child() {
         .is_some());
     release.notify_one();
     let target_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
     );
     let completed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
@@ -4362,7 +4339,7 @@ async fn busy_collaboration_sends_interject_and_retry_is_idempotent() {
         }))
         .await;
     let source_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, source.address.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, source.address.clone()).root(),
     );
     source_store
         .set_collaboration_wake_suppressed(source.address.chat_id().as_str(), true)
@@ -4443,7 +4420,7 @@ async fn busy_collaboration_sends_interject_and_retry_is_idempotent() {
     assert_eq!(retry.request_id, third.request_id);
     assert_eq!(retry.input_id, third.input_id);
     let persisted = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
     )
     .list_collaboration_requests(child.chat.chat_id().as_str())
     .await
@@ -4468,7 +4445,7 @@ async fn busy_collaboration_sends_interject_and_retry_is_idempotent() {
     release.notify_waiters();
 
     let target_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, child.chat.clone()).root(),
     );
     let (old, new) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
@@ -4586,7 +4563,7 @@ async fn explicit_resume_batches_all_deferred_results_into_one_source_turn() {
             extra: Default::default(),
         };
         let store = WorkspaceSessionStore::new(
-            ChatScopeStore::resolve(&test.state.rua_root, target.clone()).root(),
+            ChatStore::resolve(&test.state.rua_root, target.clone()).root(),
         );
         store.save_collaboration_request(&record).await.unwrap();
         persisted.push((store, target, request_id));
@@ -4619,7 +4596,7 @@ async fn explicit_resume_batches_all_deferred_results_into_one_source_turn() {
     assert_eq!(observation_ids[0], observation_ids[1]);
 
     let source_store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, source.address.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, source.address.clone()).root(),
     );
     let notes = source_store
         .read_message_range(source.address.chat_id().as_str(), 1, usize::MAX)
@@ -4813,7 +4790,7 @@ async fn create_preserves_chat_reference_when_first_submission_fails() {
         .is_some_and(|error| error.contains("must not be empty")));
     assert!(reply.request_id.is_none());
     let store = WorkspaceSessionStore::new(
-        ChatScopeStore::resolve(&test.state.rua_root, reply.chat.clone()).root(),
+        ChatStore::resolve(&test.state.rua_root, reply.chat.clone()).root(),
     );
     assert!(store
         .load_chat_header(reply.chat.chat_id().as_str())
@@ -4846,7 +4823,7 @@ async fn project_collaboration_keeps_resource_root_and_rejects_archived_project(
         .await
         .unwrap();
     let template = caller(&test, "project-template").await;
-    let original_scope = ChatScopeStore::resolve(&test.state.rua_root, template.address.clone());
+    let original_scope = ChatStore::resolve(&test.state.rua_root, template.address.clone());
     let mut header = WorkspaceSessionStore::new(original_scope.root())
         .load_chat_header(template.address.chat_id().as_str())
         .await
@@ -4873,17 +4850,14 @@ async fn project_collaboration_keeps_resource_root_and_rejects_archived_project(
         .get(&project.project_id)
         .unwrap()
         .unwrap();
-    let address =
-        ChatAddress::project(project.project_id.clone(), uuid::Uuid::new_v4().to_string());
+    let address = ChatAddress::new(uuid::Uuid::new_v4().to_string());
     header.chat_id = address.chat_id().to_string();
     header.metadata.chat_id = header.chat_id.clone();
-    header
-        .extra
-        .insert("project_id".into(), json!(project.project_id));
+    header.project_id = Some(project.project_id.to_string());
     header
         .extra
         .insert("selected_agent_id".into(), json!("default"));
-    let scope = ChatScopeStore::resolve(&test.state.rua_root, address.clone());
+    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     WorkspaceSessionStore::new(scope.root())
         .save_chat_header(&header)
         .await
@@ -4899,7 +4873,16 @@ async fn project_collaboration_keeps_resource_root_and_rejects_archived_project(
         .create(source.clone(), "default".into(), None, 0)
         .await
         .unwrap();
-    assert_eq!(child.chat.project_id(), Some(&project.project_id));
+    assert_eq!(
+        WorkspaceSessionStore::new(scope.root())
+            .load_chat_header(child.chat.chat_id().as_str())
+            .await
+            .unwrap()
+            .unwrap()
+            .project_id
+            .as_deref(),
+        Some(project.project_id.as_str())
+    );
     rua_config::atomic_write_json(
         &resource.path().join("task-resource.json"),
         &json!({"scope":"project task resource"}),
@@ -4926,7 +4909,7 @@ async fn project_collaboration_keeps_resource_root_and_rejects_archived_project(
             .extra["project_working_directory_id"],
         json!(rua_project::INITIAL_PROJECT_DIRECTORY_ID)
     );
-    let task_scope = ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone());
+    let task_scope = ChatStore::resolve(&test.state.rua_root, child.chat.clone());
     let task_store = WorkspaceSessionStore::new(task_scope.root());
     task_store
         .update_chat_header(child.chat.chat_id().as_str(), |header| {
@@ -4994,7 +4977,7 @@ async fn project_collaboration_keeps_resource_root_and_rejects_archived_project(
         requests.lock().await[0].working_dir.as_deref(),
         Some(binding.primary_root())
     );
-    let child_scope = ChatScopeStore::resolve(&test.state.rua_root, child.chat.clone());
+    let child_scope = ChatStore::resolve(&test.state.rua_root, child.chat.clone());
     let child_store = WorkspaceSessionStore::new(child_scope.root());
     assert_eq!(
         child_store

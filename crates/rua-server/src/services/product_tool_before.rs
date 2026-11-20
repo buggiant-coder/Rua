@@ -2,9 +2,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::product_hook_execution::HandlerResourceScope;
 use async_trait::async_trait;
 use react_agent::{ToolBeforeBoundary, ToolBeforeFailure, ToolBeforeInvocation, ToolBeforeOutcome};
-use rua_core::{ChatAddress, ChatScope};
+use rua_core::ChatAddress;
 use tokio_util::sync::CancellationToken;
 
 use crate::services::product_hook_execution::{
@@ -126,7 +127,8 @@ impl ProductToolBeforeInvoker for HandlerExecutorProductInvoker {
         let (owner_namespace, _) = definition_id
             .rsplit_once('/')
             .ok_or_else(|| "invalid Definition identity".to_string())?;
-        let scope = scope_for_owner(owner_namespace, invocation)?;
+        let address = chat_address(invocation)?;
+        let scope = HandlerResourceScope::for_owner(owner_namespace, &address)?;
         let resource_id = format!("{}:{}", scope.kind(), scope.owner_id());
         let working_directory = requirement
             .working_directory
@@ -164,7 +166,7 @@ impl ProductToolBeforeInvoker for HandlerExecutorProductInvoker {
                 invocation_id: format!("tool-before-{}", uuid::Uuid::new_v4()),
                 kind,
                 authority_device_id: requirement.authority_device_id.clone(),
-                chat_address: chat_address(invocation)?,
+                chat_address: address,
                 scope,
                 resource_id,
                 executable: requirement.executable.clone(),
@@ -324,20 +326,4 @@ fn chat_address(invocation: &ToolBeforeInvocation) -> Result<ChatAddress, String
         .cloned()
         .ok_or_else(|| "missing Chat Address".to_string())
         .and_then(|value| serde_json::from_value(value).map_err(|error| error.to_string()))
-}
-
-fn scope_for_owner(
-    owner_namespace: &str,
-    invocation: &ToolBeforeInvocation,
-) -> Result<ChatScope, String> {
-    if let Some(agent_id) = owner_namespace.strip_prefix("agent:") {
-        return Ok(ChatScope::agent(agent_id));
-    }
-    if let Some(project_id) = owner_namespace.strip_prefix("project:") {
-        return Ok(ChatScope::project(project_id));
-    }
-    if owner_namespace.starts_with("plugin:") {
-        return Ok(chat_address(invocation)?.scope().clone());
-    }
-    Err(format!("unsupported Handler owner: {owner_namespace}"))
 }

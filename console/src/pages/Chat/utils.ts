@@ -167,19 +167,17 @@ export function toDisplayUrl(url: string | undefined): string {
 
 export function toMarkdownImageDisplayUrl(
   source: string,
-  scope?: import("@/api/modules/chat").ChatMediaScope,
   chatId?: string,
 ): string {
   if (/^(https?:|data:|blob:)/i.test(source)) return source;
   const mediaId = source.startsWith("media/") ? source.slice(6) : "";
   if (
-    scope &&
     chatId &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
       mediaId,
     )
   ) {
-    return chatApi.mediaUrl(scope, chatId, mediaId);
+    return chatApi.mediaUrl(chatId, mediaId);
   }
   return "";
 }

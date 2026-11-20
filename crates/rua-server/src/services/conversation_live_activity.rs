@@ -47,12 +47,11 @@ struct RemoteDiscoveryStream {
 #[derive(Clone)]
 pub struct ConversationLiveActivity {
     streams: Arc<ActiveStreamRegistry>,
-    registry: Arc<dyn rua_workspace::WorkspaceRegistry>,
     sync_device: Arc<std::sync::RwLock<Option<Arc<rua_sync::identity::DeviceIdentity>>>>,
     sync_node: Arc<tokio::sync::Mutex<Option<rua_sync::endpoint::SyncNode>>>,
     device_network: Arc<crate::services::device_session_access::DeviceNetworkAccess>,
     data_dir: PathBuf,
-    project_catalog: Option<Arc<rua_project::ProjectCatalog>>,
+
     conversation_authority: Option<Arc<ConversationAuthority>>,
     history_sync_tx: Option<tokio::sync::mpsc::UnboundedSender<ConversationHistorySyncRequest>>,
     chat_activity_wake_hub: Option<Arc<ChatActivityWakeHub>>,
@@ -65,7 +64,6 @@ pub struct ConversationLiveActivity {
 impl ConversationLiveActivity {
     pub fn new(
         streams: Arc<ActiveStreamRegistry>,
-        registry: Arc<dyn rua_workspace::WorkspaceRegistry>,
         sync_device: Arc<std::sync::RwLock<Option<Arc<rua_sync::identity::DeviceIdentity>>>>,
         sync_node: Arc<tokio::sync::Mutex<Option<rua_sync::endpoint::SyncNode>>>,
         device_network: Arc<crate::services::device_session_access::DeviceNetworkAccess>,
@@ -74,12 +72,10 @@ impl ConversationLiveActivity {
         let (route_revision, _) = tokio::sync::watch::channel(0);
         Self {
             streams,
-            registry,
             sync_device,
             sync_node,
             device_network,
             data_dir,
-            project_catalog: None,
             conversation_authority: None,
             history_sync_tx: None,
             chat_activity_wake_hub: None,
@@ -92,14 +88,6 @@ impl ConversationLiveActivity {
 
     pub fn with_conversation_authority(mut self, authority: Arc<ConversationAuthority>) -> Self {
         self.conversation_authority = Some(authority);
-        self
-    }
-
-    pub fn with_project_catalog(
-        mut self,
-        project_catalog: Arc<rua_project::ProjectCatalog>,
-    ) -> Self {
-        self.project_catalog = Some(project_catalog);
         self
     }
 
@@ -149,57 +137,48 @@ impl ConversationLiveActivity {
                 None => hub.subscribe_chat(address, &BTreeMap::new()).await,
             };
             if let Some(authority) = self.conversation_authority.as_ref() {
-                if self
-                    .local_is_current_authority(execution_agent_id, address)
-                    .await
-                {
-                    if let Some(scope_root) = self.scope_root(execution_agent_id, address).await {
-                        if let Ok(Some(meta)) =
-                            crate::services::conversation_authority_target::load_chat_control_meta(
-                                &scope_root,
-                                chat_id,
-                            )
-                            .await
-                        {
-                            let control = authority.control_view(&key.address, &meta).await;
-                            let payload = hub.conversation_activity_snapshot(
-                                conversation_control_payload(address, "viewer_attached", control),
-                            );
-                            let _ = out_tx.send(Ok(payload)).await;
-                        }
+                if self.local_is_current_authority(address).await {
+                    let scope = rua_core::ChatStore::resolve(&self.data_dir, address.clone());
+                    if let Ok(Some(meta)) =
+                        crate::services::conversation_authority_target::load_chat_control_meta(
+                            scope.root(),
+                            chat_id,
+                        )
+                        .await
+                    {
+                        let control = authority.control_view(&key.address, &meta).await;
+                        let payload = hub.conversation_activity_snapshot(
+                            conversation_control_payload(address, "viewer_attached", control),
+                        );
+                        let _ = out_tx.send(Ok(payload)).await;
                     }
                 }
             }
             spawn_local_broadcast_forwarder(
                 self.clone(),
-                execution_agent_id.to_string(),
                 address.clone(),
                 subscription,
                 out_tx.clone(),
             );
         } else {
             if let Some(authority) = self.conversation_authority.as_ref() {
-                if self
-                    .local_is_current_authority(execution_agent_id, address)
-                    .await
-                {
-                    if let Some(scope_root) = self.scope_root(execution_agent_id, address).await {
-                        if let Ok(Some(meta)) =
-                            crate::services::conversation_authority_target::load_chat_control_meta(
-                                &scope_root,
-                                chat_id,
-                            )
-                            .await
-                        {
-                            let control = authority.control_view(&key.address, &meta).await;
-                            let _ = out_tx
-                                .send(Ok(conversation_control_payload(
-                                    address,
-                                    "viewer_attached",
-                                    control,
-                                )))
-                                .await;
-                        }
+                if self.local_is_current_authority(address).await {
+                    let scope = rua_core::ChatStore::resolve(&self.data_dir, address.clone());
+                    if let Ok(Some(meta)) =
+                        crate::services::conversation_authority_target::load_chat_control_meta(
+                            scope.root(),
+                            chat_id,
+                        )
+                        .await
+                    {
+                        let control = authority.control_view(&key.address, &meta).await;
+                        let _ = out_tx
+                            .send(Ok(conversation_control_payload(
+                                address,
+                                "viewer_attached",
+                                control,
+                            )))
+                            .await;
                     }
                 }
                 let rx = authority.subscribe_control_events(&key.address).await;
@@ -210,13 +189,7 @@ impl ConversationLiveActivity {
                     self.route_revision.clone(),
                 );
             }
-            spawn_local_future_forwarder(
-                self.clone(),
-                execution_agent_id.to_string(),
-                address.clone(),
-                key,
-                out_tx.clone(),
-            );
+            spawn_local_future_forwarder(self.clone(), address.clone(), key, out_tx.clone());
         }
         if let Some(wake_hub) = self.chat_activity_wake_hub.as_ref() {
             spawn_chat_wake_forwarder(
@@ -244,19 +217,13 @@ impl ConversationLiveActivity {
         ))
     }
 
-    async fn local_is_current_authority(
-        &self,
-        execution_agent_id: &str,
-        address: &ChatAddress,
-    ) -> bool {
-        let Some(scope_root) = self.scope_root(execution_agent_id, address).await else {
-            return false;
-        };
+    async fn local_is_current_authority(&self, address: &ChatAddress) -> bool {
+        let scope = rua_core::ChatStore::resolve(&self.data_dir, address.clone());
         let Some(local_device_id) = current_sync_device_id(&self.sync_device) else {
             return false;
         };
         crate::services::conversation_authority_target::load_chat_authority_placement_target(
-            &scope_root,
+            scope.root(),
             address.chat_id().as_str(),
         )
         .await
@@ -271,20 +238,11 @@ impl ConversationLiveActivity {
         position: Option<ConversationActivityPosition>,
         out_tx: &tokio::sync::mpsc::Sender<std::result::Result<String, Infallible>>,
     ) -> Option<RemoteDiscoveryStream> {
-        let workspace_dir = match self.scope_root(execution_agent_id, address).await {
-            Some(scope_root) => scope_root,
-            None => {
-                tracing::warn!(
-                    execution_agent_id,
-                    chat_address = %address,
-                    "failed to resolve workspace while discovering remote live activity"
-                );
-                return None;
-            }
-        };
+        let scope = rua_core::ChatStore::resolve(&self.data_dir, address.clone());
+        let workspace_dir = scope.root();
         let local_chat =
             match crate::services::conversation_authority_target::load_chat_control_meta(
-                &workspace_dir,
+                workspace_dir,
                 address.chat_id().as_str(),
             )
             .await
@@ -305,7 +263,7 @@ impl ConversationLiveActivity {
             Some(_) => {
                 let route = ConversationAuthorityRouter
                     .resolve_live_activity_route(ConversationLiveActivityRouteRequest {
-                        workspace_dir: Some(&workspace_dir),
+                        workspace_dir: Some(workspace_dir),
                         address,
                         local_device_id: local_device_id.as_deref(),
                     })
@@ -316,7 +274,7 @@ impl ConversationLiveActivity {
                         source_device_id,
                         target_device_id,
                         authority_epoch,
-                    } => (target_device_id, source_device_id, Some(authority_epoch)),
+                    } => (target_device_id, source_device_id, authority_epoch),
                     ConversationLiveActivityRoute::Rejected { detail, .. } => {
                         let _ = out_tx
                             .send(Ok(serde_json::json!({
@@ -330,64 +288,21 @@ impl ConversationLiveActivity {
                 }
             }
             None => {
-                let project_id = address.project_id()?;
-                let Some(project_catalog) = self.project_catalog.as_ref() else {
-                    let _ = out_tx
-                        .send(Ok(serde_json::json!({
-                            "type": "error",
-                            "message": "Project Catalog is unavailable",
-                        })
-                        .to_string()))
-                        .await;
-                    return None;
-                };
-                let project = match project_catalog.get(project_id) {
-                    Ok(Some(project)) => project,
-                    Ok(None) => {
-                        let _ = out_tx
-                            .send(Ok(serde_json::json!({
-                                "type": "error",
-                                "message": format!("Project not found: {project_id}"),
-                            })
-                            .to_string()))
-                            .await;
-                        return None;
-                    }
+                let delivery = crate::services::remote_conversation_input::RemoteConversationInputDelivery::new(
+                    Arc::clone(&self.sync_node), Arc::clone(&self.device_network), self.data_dir.clone(),
+                );
+                let pending = match delivery.read_source_pending(address).await {
+                    Ok(pending) => pending?,
                     Err(error) => {
-                        let _ = out_tx
-                            .send(Ok(serde_json::json!({
-                                "type": "error",
-                                "message": error.to_string(),
-                            })
-                            .to_string()))
-                            .await;
+                        tracing::warn!(%address, %error, "failed to read accepted remote input for live activity");
                         return None;
                     }
                 };
-                if project.lifecycle != rua_project::ProjectLifecycle::Active {
-                    let _ = out_tx
-                        .send(Ok(serde_json::json!({
-                            "type": "error",
-                            "message": "Archived Project cannot provide Chat activity",
-                        })
-                        .to_string()))
-                        .await;
-                    return None;
-                }
-                let Some(source_device_id) = local_device_id else {
-                    let _ = out_tx
-                        .send(Ok(serde_json::json!({
-                            "type": "error",
-                            "message": "local Device identity is unavailable",
-                        })
-                        .to_string()))
-                        .await;
-                    return None;
-                };
-                if project.resource_device_id == source_device_id {
-                    return None;
-                }
-                (project.resource_device_id, source_device_id, None)
+                (
+                    pending.target_device_id,
+                    local_device_id?,
+                    pending.authority_epoch,
+                )
             }
         };
         spawn_remote_history_hydration(RemoteHistoryHydrationParams {
@@ -404,7 +319,6 @@ impl ConversationLiveActivity {
         Some(RemoteDiscoveryStream {
             target_device_id: target_device_id.clone(),
             stream: active_stream_broadcast_live_stream(ActiveStreamBroadcastLiveStreamParams {
-                registry: Arc::clone(&self.registry),
                 conversation_authority: self.conversation_authority.clone(),
                 sync_device: Arc::clone(&self.sync_device),
                 sync_node: Arc::clone(&self.sync_node),
@@ -418,26 +332,11 @@ impl ConversationLiveActivity {
                 authority_epoch,
                 connect_timeout: REMOTE_LIVE_ATTACH_TIMEOUT,
                 live_activity_authorities: Some(Arc::clone(&self.authorities)),
-                workspace_dir,
+                workspace_dir: workspace_dir.to_path_buf(),
                 route_revision: self.route_revision.clone(),
             })
             .await,
         })
-    }
-
-    async fn scope_root(&self, execution_agent_id: &str, address: &ChatAddress) -> Option<PathBuf> {
-        if address.project_id().is_some() {
-            return Some(
-                rua_core::ChatScopeStore::resolve(&self.data_dir, address.clone())
-                    .root()
-                    .to_path_buf(),
-            );
-        }
-        self.registry
-            .get_or_create(execution_agent_id)
-            .await
-            .ok()
-            .map(|runtime| runtime.workspace_dir())
     }
 }
 
@@ -446,21 +345,12 @@ fn conversation_control_payload(
     reason: &str,
     control: crate::services::conversation_authority::ConversationControlView,
 ) -> String {
-    match address.agent_id() {
-        Some(agent_id) => serde_json::json!({
-            "type": "conversation_control",
-            "agent_id": agent_id,
-            "chat_id": address.chat_id(),
-            "reason": reason,
-            "control": control,
-        }),
-        None => serde_json::json!({
-            "type": "conversation_control",
-            "address": address,
-            "reason": reason,
-            "control": control,
-        }),
-    }
+    serde_json::json!({
+        "type": "conversation_control",
+        "address": address,
+        "reason": reason,
+        "control": control,
+    })
     .to_string()
 }
 
@@ -468,19 +358,11 @@ fn live_authority_redirect_payload(
     address: &ChatAddress,
     placement: &ConversationAuthorityPlacement,
 ) -> String {
-    match address.agent_id() {
-        Some(agent_id) => serde_json::json!({
-            "type": "authority_redirect",
-            "agent_id": agent_id,
-            "chat_id": address.chat_id(),
-            "placement": placement,
-        }),
-        None => serde_json::json!({
-            "type": "authority_redirect",
-            "address": address,
-            "placement": placement,
-        }),
-    }
+    serde_json::json!({
+        "type": "authority_redirect",
+        "address": address,
+        "placement": placement,
+    })
     .to_string()
 }
 
@@ -535,7 +417,6 @@ async fn send_live_payload(
 }
 
 struct ActiveStreamBroadcastLiveStreamParams {
-    registry: Arc<dyn rua_workspace::WorkspaceRegistry>,
     conversation_authority: Option<Arc<ConversationAuthority>>,
     sync_device: Arc<std::sync::RwLock<Option<Arc<rua_sync::identity::DeviceIdentity>>>>,
     sync_node: Arc<tokio::sync::Mutex<Option<rua_sync::endpoint::SyncNode>>>,
@@ -546,7 +427,7 @@ struct ActiveStreamBroadcastLiveStreamParams {
     target_device_ids: Vec<String>,
     viewer_id: String,
     conversation_activity_position: Option<ConversationActivityPosition>,
-    authority_epoch: Option<ConversationAuthorityEpoch>,
+    authority_epoch: ConversationAuthorityEpoch,
     connect_timeout: Duration,
     live_activity_authorities: Option<LiveActivityAuthorityMap>,
     workspace_dir: PathBuf,
@@ -557,7 +438,6 @@ async fn active_stream_broadcast_live_stream(
     params: ActiveStreamBroadcastLiveStreamParams,
 ) -> SseOutputStream {
     let ActiveStreamBroadcastLiveStreamParams {
-        registry,
         conversation_authority,
         sync_device,
         sync_node,
@@ -586,7 +466,7 @@ async fn active_stream_broadcast_live_stream(
         for target_device_id in target_device_ids {
             let sync_node = Arc::clone(&sync_node);
             let device_network = Arc::clone(&device_network);
-            let registry = Arc::clone(&registry);
+
             let conversation_authority = conversation_authority.clone();
             let sync_device = Arc::clone(&sync_device);
             let data_dir = data_dir.clone();
@@ -598,8 +478,6 @@ async fn active_stream_broadcast_live_stream(
             let cancel_rx = cancel_rx.clone();
             let expected_authority_epoch = authority_epoch;
             let conversation_activity_position = conversation_activity_position.clone();
-            let verified_authority_epoch =
-                Arc::new(tokio::sync::RwLock::new(expected_authority_epoch));
             let viewer = current_sync_device_id(&sync_device).map(|source_device_id| {
                 ActiveStreamBroadcastViewer {
                     source_device_id,
@@ -619,7 +497,7 @@ async fn active_stream_broadcast_live_stream(
                             conversation_activity_position,
                             collapse_replay: true,
                             initial_conversation_control: true,
-                            authority_epoch: expected_authority_epoch,
+                            authority_epoch: Some(expected_authority_epoch),
                             viewer,
                         };
                         let terminal_sync_node = Arc::clone(&sync_node);
@@ -644,61 +522,36 @@ async fn active_stream_broadcast_live_stream(
                                     Arc::clone(&terminal_device_network);
                                 let data_dir_for_terminal = terminal_data_dir.clone();
                                 let workspace_dir_for_gap = workspace_dir.clone();
-                                let redirect_registry = Arc::clone(&registry);
+
                                 let redirect_authority = conversation_authority.clone();
                                 let redirect_device_network = Arc::clone(&device_network);
                                 let redirect_sync_device = Arc::clone(&sync_device);
                                 let redirect_route_revision = route_revision.clone();
-                                let verified_authority_epoch =
-                                    Arc::clone(&verified_authority_epoch);
                                 async move {
                                     if let ActiveStreamBroadcastFrame::AuthorityRedirect {
+                                        address: redirected_address,
                                         placement,
                                         ..
                                     } = &frame
                                     {
-                                        if authority_address.project_id().is_some() {
-                                            let _ = send_live_payload(
-                                                &out_tx,
-                                                serde_json::json!({
-                                                    "type": "error",
-                                                    "message": "Project Chat authority is fixed to its resource Device",
-                                                })
-                                                .to_string(),
-                                            )
-                                            .await;
-                                            return;
-                                        }
+                                        if redirected_address != &authority_address { return; }
                                         let redirect = crate::services::device_command_bus::ConversationAuthorityRedirect {
                                             address: authority_address.clone(),
                                             placement: placement.clone(),
                                         };
-                                        let payload = live_authority_redirect_payload(
-                                            &authority_address,
-                                            placement,
-                                        );
-                                        let _ = send_live_payload(&out_tx, payload).await;
-                                        let result = match (
-                                            redirect_authority.as_ref(),
-                                            expected_authority_epoch,
-                                        ) {
-                                            (Some(authority), Some(expected_authority_epoch)) => crate::services::conversation_authority_router::verify_and_observe_authority_redirect(
-                                                &redirect_registry,
-                                                authority,
-                                                &redirect_device_network,
-                                                &redirect_sync_device,
-                                                expected_authority_epoch,
-                                                &redirect,
-                                            )
-                                            .await,
-                                            (None, _) => Err("Conversation Authority is unavailable".to_string()),
-                                            (_, None) => Err(
-                                                "Project Chat authority is fixed to its resource Device"
-                                                    .to_string(),
-                                            ),
+                                        let result = match redirect_authority.as_ref() {
+                                            Some(authority) => crate::services::conversation_authority_router::verify_and_observe_authority_redirect(
+                                                &workspace_dir_for_gap, authority, &redirect_device_network, &redirect_sync_device,
+                                                expected_authority_epoch, &redirect,
+                                            ).await,
+                                            None => Err("Conversation Authority is unavailable".to_string()),
                                         };
                                         match result {
-                                            Ok(_) => increment_route_revision(&redirect_route_revision),
+                                            Ok(placement) => {
+                                                let payload = live_authority_redirect_payload(&authority_address, &placement);
+                                                let _ = send_live_payload(&out_tx, payload).await;
+                                                increment_route_revision(&redirect_route_revision);
+                                            }
                                             Err(error) => {
                                                 let _ = send_live_payload(
                                                     &out_tx,
@@ -715,30 +568,6 @@ async fn active_stream_broadcast_live_stream(
                                         }
                                         return;
                                     }
-                                    if expected_authority_epoch.is_none() {
-                                        if let Some(authority_epoch) =
-                                            project_initial_control_authority_epoch(
-                                                &frame,
-                                                &authority_address,
-                                                &authority_device_id,
-                                            )
-                                        {
-                                            verified_authority_epoch
-                                                .write()
-                                                .await
-                                                .replace(authority_epoch);
-                                        }
-                                    }
-                                    let Some(verified_authority_epoch) =
-                                        *verified_authority_epoch.read().await
-                                    else {
-                                        tracing::warn!(
-                                            chat_address = %authority_address,
-                                            authority_device_id,
-                                            "ignored Project live activity before verified initial Control View"
-                                        );
-                                        return;
-                                    };
                                     if let ActiveStreamBroadcastFrame::Event { payload, .. } =
                                         &frame
                                     {
@@ -778,7 +607,7 @@ async fn active_stream_broadcast_live_stream(
                                             address: &authority_address,
                                             execution_agent_id: &authority_execution_agent_id,
                                             authority_device_id: Some(&authority_device_id),
-                                            expected_authority_epoch: verified_authority_epoch,
+                                            expected_authority_epoch,
                                             authorities: authorities.as_ref(),
                                         },
                                         |_| {},
@@ -842,50 +671,6 @@ async fn active_stream_broadcast_live_stream(
         })
         .fuse(),
     )
-}
-
-fn project_initial_control_authority_epoch(
-    frame: &ActiveStreamBroadcastFrame,
-    expected_address: &ChatAddress,
-    expected_device_id: &str,
-) -> Option<ConversationAuthorityEpoch> {
-    expected_address.project_id()?;
-    let ActiveStreamBroadcastFrame::Event {
-        owner,
-        authority_epoch: Some(frame_authority_epoch),
-        payload,
-        ..
-    } = frame
-    else {
-        return None;
-    };
-    if owner.as_chat_address() != Some(expected_address) {
-        return None;
-    }
-    let payload = serde_json::from_str::<serde_json::Value>(payload).ok()?;
-    if payload.get("type").and_then(serde_json::Value::as_str) != Some("conversation_control")
-        || payload.get("reason").and_then(serde_json::Value::as_str) != Some("viewer_attached")
-    {
-        return None;
-    }
-    let payload_address: ChatAddress =
-        serde_json::from_value(payload.get("address")?.clone()).ok()?;
-    if &payload_address != expected_address {
-        return None;
-    }
-    let placement = payload.get("control")?.get("placement")?;
-    if placement
-        .get("authority_device_id")
-        .and_then(serde_json::Value::as_str)
-        != Some(expected_device_id)
-    {
-        return None;
-    }
-    let control_epoch = placement
-        .get("authority_epoch")?
-        .as_str()
-        .and_then(|value| ConversationAuthorityEpoch::parse(value).ok())?;
-    (control_epoch == *frame_authority_epoch).then_some(control_epoch)
 }
 
 struct RemoteHistoryHydrationParams {
@@ -986,23 +771,13 @@ pub fn history_watermark_reached_payload(
     manifest: &ConversationManifest,
 ) -> rua_core::Result<serde_json::Value> {
     let manifest_hash = manifest.hash()?;
-    Ok(match address.agent_id() {
-        Some(agent_id) => serde_json::json!({
-            "type": "history_watermark_reached",
-            "agent_id": agent_id,
-            "chat_id": address.chat_id(),
-            "authority_device_id": authority_device_id,
-            "durable_sequence": manifest.latest_sequence,
-            "manifest_hash": manifest_hash,
-        }),
-        None => serde_json::json!({
-            "type": "history_watermark_reached",
-            "address": address,
-            "authority_device_id": authority_device_id,
-            "durable_sequence": manifest.latest_sequence,
-            "manifest_hash": manifest_hash,
-        }),
-    })
+    Ok(serde_json::json!({
+        "type": "history_watermark_reached",
+        "address": address,
+        "authority_device_id": authority_device_id,
+        "durable_sequence": manifest.latest_sequence,
+        "manifest_hash": manifest_hash,
+    }))
 }
 
 async fn fetch_remote_history_requirement(
@@ -1292,30 +1067,17 @@ async fn durable_remote_turn_terminal_payload(
         if !belongs_to_device_delivery {
             continue;
         }
-        let payload = match address.agent_id() {
-            Some(agent_id) => serde_json::json!({
-                "type": "turn_terminal",
-                "agent_id": agent_id,
-                "chat_id": address.chat_id(),
-                "turn_id": turn.turn_id,
-                "status": turn.lifecycle.status,
-                "completed_at": turn.lifecycle.assistant_completed_at,
-                "authority_device_id": authority_device_id,
-                "authority_epoch": turn.metadata.get("authority_epoch").cloned(),
-                "device_delivery_id": device_delivery_id,
-            }),
-            None => serde_json::json!({
-                "type": "turn_terminal",
-                "address": address,
-                "execution_agent_id": execution_agent_id,
-                "turn_id": turn.turn_id,
-                "status": turn.lifecycle.status,
-                "completed_at": turn.lifecycle.assistant_completed_at,
-                "authority_device_id": authority_device_id,
-                "authority_epoch": turn.metadata.get("authority_epoch").cloned(),
-                "device_delivery_id": device_delivery_id,
-            }),
-        };
+        let payload = serde_json::json!({
+            "type": "turn_terminal",
+            "address": address,
+            "execution_agent_id": execution_agent_id,
+            "turn_id": turn.turn_id,
+            "status": turn.lifecycle.status,
+            "completed_at": turn.lifecycle.assistant_completed_at,
+            "authority_device_id": authority_device_id,
+            "authority_epoch": turn.metadata.get("authority_epoch").cloned(),
+            "device_delivery_id": device_delivery_id,
+        });
         return Ok(Some(payload.to_string()));
     }
     Ok(None)
@@ -1355,7 +1117,6 @@ fn with_live_activity_keepalive(inner: SseOutputStream) -> SseOutputStream {
 
 fn spawn_local_future_forwarder(
     activity: ConversationLiveActivity,
-    execution_agent_id: String,
     address: ChatAddress,
     key: StreamKey,
     out_tx: tokio::sync::mpsc::Sender<std::result::Result<String, Infallible>>,
@@ -1367,9 +1128,7 @@ fn spawn_local_future_forwarder(
                 subscription = activity.streams.subscribe_keyed_or_wait(&key) => subscription,
             };
             for event in stream_replay_payloads(buffer) {
-                if activity
-                    .local_is_current_authority(&execution_agent_id, &address)
-                    .await
+                if activity.local_is_current_authority(&address).await
                     && !send_live_payload(&out_tx, event).await
                 {
                     return;
@@ -1383,9 +1142,7 @@ fn spawn_local_future_forwarder(
                 let Some(event) = event else {
                     break;
                 };
-                if activity
-                    .local_is_current_authority(&execution_agent_id, &address)
-                    .await
+                if activity.local_is_current_authority(&address).await
                     && !send_live_payload(&out_tx, event).await
                 {
                     return;
@@ -1397,22 +1154,13 @@ fn spawn_local_future_forwarder(
 
 fn spawn_local_broadcast_forwarder(
     activity: ConversationLiveActivity,
-    execution_agent_id: String,
     address: ChatAddress,
     subscription: ActiveStreamBroadcastSubscription,
     out_tx: tokio::sync::mpsc::Sender<std::result::Result<String, Infallible>>,
 ) {
     tokio::spawn(async move {
         let ActiveStreamBroadcastSubscription { replay, mut rx } = subscription;
-        if !forward_local_broadcast_replay(
-            &activity,
-            &execution_agent_id,
-            &address,
-            replay,
-            &out_tx,
-        )
-        .await
-        {
+        if !forward_local_broadcast_replay(&activity, &address, replay, &out_tx).await {
             return;
         }
         let Some(rx) = rx.as_mut() else {
@@ -1426,15 +1174,7 @@ fn spawn_local_broadcast_forwarder(
             let Some(frame) = frame else {
                 return;
             };
-            if !forward_local_broadcast_frame(
-                &activity,
-                &execution_agent_id,
-                &address,
-                frame,
-                &out_tx,
-            )
-            .await
-            {
+            if !forward_local_broadcast_frame(&activity, &address, frame, &out_tx).await {
                 return;
             }
         }
@@ -1443,7 +1183,6 @@ fn spawn_local_broadcast_forwarder(
 
 async fn forward_local_broadcast_replay(
     activity: &ConversationLiveActivity,
-    execution_agent_id: &str,
     address: &ChatAddress,
     replay: Vec<ActiveStreamBroadcastFrame>,
     out_tx: &tokio::sync::mpsc::Sender<std::result::Result<String, Infallible>>,
@@ -1454,16 +1193,12 @@ async fn forward_local_broadcast_replay(
             deferred_gaps.push(frame);
             continue;
         }
-        if !forward_local_broadcast_frame(activity, execution_agent_id, address, frame, out_tx)
-            .await
-        {
+        if !forward_local_broadcast_frame(activity, address, frame, out_tx).await {
             return false;
         }
     }
     for frame in deferred_gaps {
-        if !forward_local_broadcast_frame(activity, execution_agent_id, address, frame, out_tx)
-            .await
-        {
+        if !forward_local_broadcast_frame(activity, address, frame, out_tx).await {
             return false;
         }
     }
@@ -1472,15 +1207,11 @@ async fn forward_local_broadcast_replay(
 
 async fn forward_local_broadcast_frame(
     activity: &ConversationLiveActivity,
-    execution_agent_id: &str,
     address: &ChatAddress,
     frame: ActiveStreamBroadcastFrame,
     out_tx: &tokio::sync::mpsc::Sender<std::result::Result<String, Infallible>>,
 ) -> bool {
-    if !activity
-        .local_is_current_authority(execution_agent_id, address)
-        .await
-    {
+    if !activity.local_is_current_authority(address).await {
         return true;
     }
     match frame {

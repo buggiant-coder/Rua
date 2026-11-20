@@ -2362,10 +2362,7 @@ impl AgentRuntime for ReactAgentRuntime {
                                     .cloned()
                                     .and_then(|value| serde_json::from_value(value).ok())
                                     .unwrap_or_else(|| {
-                                        rua_core::ChatAddress::agent(
-                                            req.agent_id.to_string(),
-                                            req.session_id.to_string(),
-                                        )
+                                        rua_core::ChatAddress::new(req.session_id.to_string())
                                     }),
                                 user_id: req.user_id.clone(),
                                 channel,
@@ -2875,7 +2872,7 @@ impl AgentRuntime for ReactAgentRuntime {
         builder = builder.model_call_projector(Arc::new(CapabilityContextProjector {
             source: req.metadata.get(crate::hooks::SECURITY_CHAT_ADDRESS_METADATA_KEY)
                 .cloned().and_then(|value| serde_json::from_value(value).ok())
-                .unwrap_or_else(|| rua_core::ChatAddress::agent(req.agent_id.to_string(), req.session_id.to_string())),
+                .unwrap_or_else(|| rua_core::ChatAddress::new(req.session_id.to_string())),
             collaboration: self.collaboration_runtime.as_ref()
                 .and_then(|runtime| runtime.downcast_ref::<rua_tool::extended::collaboration::CollaborationRuntimeHandle>())
                 .map(|handle| Arc::clone(&handle.runtime)),

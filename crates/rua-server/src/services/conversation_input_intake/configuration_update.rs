@@ -58,10 +58,11 @@ impl<'a> ChatConfigurationUpdate<'a> {
     }
 
     pub(super) async fn update_model(&self, model: Value) -> Result<Value, String> {
-        let chat = rua_chat::ChatService::for_resolved_scope(self.scope_root, self.address.clone())
-            .update_setting(self.address, rua_chat::ChatSetting::Model(model))
-            .await
-            .map_err(|error| error.to_string())?;
+        let chat =
+            rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(self.scope_root))
+                .update_setting(self.address, rua_chat::ChatSetting::Model(model))
+                .await
+                .map_err(|error| error.to_string())?;
         let model = chat
             .model()
             .cloned()

@@ -64,7 +64,7 @@ impl ConversationSessionSeam for WorkspaceConversationSessionSeam {
         let chat_address = self
             .chat_address
             .clone()
-            .unwrap_or_else(|| rua_core::ChatAddress::agent(&self.agent_id, session_id));
+            .unwrap_or_else(|| rua_core::ChatAddress::new(session_id));
         let projection = store
             .build_effective_context_projection_for_address(
                 &chat_address,
@@ -115,7 +115,7 @@ impl ConversationSessionSeam for WorkspaceConversationSessionSeam {
         let chat_address = self
             .chat_address
             .clone()
-            .unwrap_or_else(|| rua_core::ChatAddress::agent(&self.agent_id, session_id));
+            .unwrap_or_else(|| rua_core::ChatAddress::new(session_id));
         let previous = store.load_active_summary_checkpoint(session_id).await?;
         let tail_start_sequence = previous
             .as_ref()

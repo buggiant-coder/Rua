@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use rua_core::{ChatAddress, ChatScope, ChatScopeStore, Result};
+use rua_core::{ChatAddress, ChatStore, Result, RuaRoot, WorkspaceRoot};
 use rua_session::{
     chat_index, ChatMetadata, ChatSessionHeader, MessageLogEntry, NewConversationMessage,
     NewConversationTurn, SavedConversationSearchRequest, SavedConversationSearchResult,
@@ -65,27 +65,27 @@ pub struct TurnAgentAssignment {
 }
 
 impl ChatPolicy {
-    pub fn for_scope(scope: &ChatScope) -> Self {
-        match scope {
-            ChatScope::Agent { .. } => Self {
-                agent_assignment: AgentAssignmentPolicy::Fixed,
-                resource: ResourcePolicy::None,
-                authority_placement: AuthorityPlacementPolicy::Selectable,
-            },
-            ChatScope::Project { .. } => Self {
-                agent_assignment: AgentAssignmentPolicy::Selectable,
-                resource: ResourcePolicy::ProjectBinding,
-                authority_placement: AuthorityPlacementPolicy::ResourceBound,
-            },
+    pub fn for_project(project_id: Option<&str>) -> Self {
+        let (resource, authority_placement) = match project_id {
+            Some(_) => (
+                ResourcePolicy::ProjectBinding,
+                AuthorityPlacementPolicy::ResourceBound,
+            ),
+            None => (ResourcePolicy::None, AuthorityPlacementPolicy::Selectable),
+        };
+        Self {
+            agent_assignment: AgentAssignmentPolicy::Selectable,
+            resource,
+            authority_placement,
         }
     }
 
-    pub fn from_metadata(scope: &ChatScope, metadata: &serde_json::Value) -> Self {
+    pub fn from_metadata(project_id: Option<&str>, metadata: &serde_json::Value) -> Self {
         metadata
             .get(CHAT_POLICY_KEY)
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_else(|| Self::for_scope(scope))
+            .unwrap_or_else(|| Self::for_project(project_id))
     }
 }
 
@@ -97,6 +97,7 @@ pub struct Chat {
     pinned: bool,
     tag: ChatTag,
     selected_agent_id: Option<String>,
+    project_id: Option<String>,
     model: Option<serde_json::Value>,
     thinking: Option<serde_json::Value>,
     authority_placement: Option<serde_json::Value>,
@@ -130,6 +131,10 @@ impl Chat {
 
     pub fn selected_agent_id(&self) -> Option<&str> {
         self.selected_agent_id.as_deref()
+    }
+
+    pub fn project_id(&self) -> Option<&str> {
+        self.project_id.as_deref()
     }
 
     pub fn thinking(&self) -> Option<&serde_json::Value> {
@@ -172,6 +177,8 @@ pub struct ChatHistoryQuery {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatSearchQuery {
+    pub agent_id: Option<String>,
+    pub project_id: Option<String>,
     pub query: String,
     pub offset: usize,
     pub limit: usize,
@@ -179,6 +186,8 @@ pub struct ChatSearchQuery {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChatListQuery {
+    pub agent_id: Option<String>,
+    pub project_id: Option<String>,
     pub user_id: Option<String>,
     pub channel: Option<String>,
     pub search: Option<String>,
@@ -215,38 +224,27 @@ pub struct ChatHistoryBoundary {
 
 #[derive(Debug, Clone)]
 pub struct ChatService {
-    storage: ChatStorage,
-}
-
-#[derive(Debug, Clone)]
-enum ChatStorage {
-    RuaRoot(PathBuf),
-    ResolvedScope { address: ChatAddress, root: PathBuf },
+    workspace: WorkspaceRoot,
 }
 
 impl ChatService {
     pub fn new(rua_root: impl Into<PathBuf>) -> Self {
-        Self {
-            storage: ChatStorage::RuaRoot(rua_root.into()),
-        }
+        Self::from_workspace(RuaRoot::new(rua_root).chat_workspace())
     }
 
-    pub fn for_scope_store(scope_store: ChatScopeStore) -> Self {
-        Self::for_resolved_scope(scope_store.root(), scope_store.address().clone())
+    pub fn for_store(store: ChatStore) -> Self {
+        Self::from_workspace(WorkspaceRoot::new(store.root()))
     }
 
-    pub fn for_resolved_scope(scope_root: impl Into<PathBuf>, address: ChatAddress) -> Self {
-        Self {
-            storage: ChatStorage::ResolvedScope {
-                address,
-                root: scope_root.into(),
-            },
-        }
+    /// Uses an already resolved Chat workspace or its atomic materialization
+    /// workspace. Agent prompt/configuration workspaces are not Chat storage.
+    pub fn from_workspace(workspace: WorkspaceRoot) -> Self {
+        Self { workspace }
     }
 
     pub async fn load(&self, address: &ChatAddress) -> Result<Option<Chat>> {
-        let scope_root = self.scope_root(address)?;
-        let session_store = WorkspaceSessionStore::new(&scope_root);
+        let scope_root = self.workspace.as_path();
+        let session_store = WorkspaceSessionStore::new(scope_root);
         let Some(header) = session_store
             .load_chat_header(address.chat_id().as_str())
             .await?
@@ -263,7 +261,7 @@ impl ChatService {
             .map_err(|error| rua_core::RuaError::Validation {
                 message: format!("invalid Chat Policy for {address}: {error}"),
             })?
-            .unwrap_or_else(|| ChatPolicy::for_scope(address.scope()));
+            .unwrap_or_else(|| ChatPolicy::for_project(header.project_id.as_deref()));
 
         let model = model_slot_from_header(&header);
         let thinking = model_and_thinking_from_header(&header).1.cloned();
@@ -273,11 +271,8 @@ impl ChatService {
             title: header.metadata.title,
             pinned: header.metadata.pinned,
             tag: header.tag,
-            selected_agent_id: header
-                .extra
-                .get(SELECTED_AGENT_ID_KEY)
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string),
+            selected_agent_id: (!header.agent_id.is_empty()).then_some(header.agent_id),
+            project_id: header.project_id,
             model,
             thinking,
             authority_placement: header.extra.get(AUTHORITY_PLACEMENT_KEY).cloned(),
@@ -290,7 +285,7 @@ impl ChatService {
             .load(address)
             .await?
             .map(|chat| *chat.policy())
-            .unwrap_or_else(|| ChatPolicy::for_scope(address.scope())))
+            .unwrap_or_else(|| ChatPolicy::for_project(None)))
     }
 
     pub async fn update_setting(
@@ -298,21 +293,22 @@ impl ChatService {
         address: &ChatAddress,
         setting: ChatSetting,
     ) -> Result<Chat> {
+        let updates_agent = matches!(&setting, ChatSetting::SelectedAgent(_));
         if let ChatSetting::SelectedAgent(agent_id) = &setting {
-            if let Some(fixed_agent_id) = address.agent_id() {
-                if agent_id != fixed_agent_id.as_str() {
+            if let Some(chat) = self.load(address).await? {
+                if chat.policy.agent_assignment == AgentAssignmentPolicy::Fixed
+                    && chat.selected_agent_id() != Some(agent_id.as_str())
+                {
                     return Err(rua_core::RuaError::Validation {
-                        message: format!(
-                            "Agent-Scoped Chat has fixed Agent '{}'; cannot select '{}'",
-                            fixed_agent_id.as_str(),
-                            agent_id
-                        ),
+                        message:
+                            "Chat has a fixed Agent; create a new Chat to choose another Agent"
+                                .into(),
                     });
                 }
             }
         }
-        let scope_root = self.scope_root(address)?;
-        let session_store = WorkspaceSessionStore::new(&scope_root);
+        let scope_root = self.workspace.as_path();
+        let session_store = WorkspaceSessionStore::new(scope_root);
         let (key, value) = match setting {
             ChatSetting::Policy(policy) => (
                 CHAT_POLICY_KEY,
@@ -362,13 +358,28 @@ impl ChatService {
                         );
                     }
                 }
-                header.extra.insert(key.to_string(), value);
+                if key == SELECTED_AGENT_ID_KEY {
+                    let agent_id = value.as_str().expect("selected Agent setting is a string");
+                    header.agent_id = agent_id.to_string();
+                    header.metadata.agent_id = agent_id.to_string();
+                } else {
+                    header.extra.insert(key.to_string(), value);
+                }
             })
             .await?;
         if !updated {
             return Err(rua_core::RuaError::Io {
                 message: format!("Chat Session File not found: {address}"),
             });
+        }
+        if updates_agent {
+            let header = session_store
+                .load_chat_header(address.chat_id().as_str())
+                .await?
+                .ok_or_else(|| rua_core::RuaError::Io {
+                    message: format!("Chat Session File disappeared after update: {address}"),
+                })?;
+            project_header(scope_root, &header).await?;
         }
         self.load(address)
             .await?
@@ -389,8 +400,8 @@ impl ChatService {
             });
         }
 
-        let scope_root = self.scope_root(address)?;
-        let session_store = WorkspaceSessionStore::new(&scope_root);
+        let scope_root = self.workspace.as_path();
+        let session_store = WorkspaceSessionStore::new(scope_root);
         let updated_at = Utc::now().to_rfc3339();
         let updated = session_store
             .update_chat_header(address.chat_id().as_str(), move |header| {
@@ -424,7 +435,7 @@ impl ChatService {
             .ok_or_else(|| rua_core::RuaError::Io {
                 message: format!("Chat Session File disappeared after update: {address}"),
             })?;
-        project_header(&scope_root, &header).await?;
+        project_header(scope_root, &header).await?;
         self.load(address)
             .await?
             .ok_or_else(|| rua_core::RuaError::Io {
@@ -444,8 +455,8 @@ impl ChatService {
             });
         }
 
-        let scope_root = self.scope_root(address)?;
-        let session_store = WorkspaceSessionStore::new(&scope_root);
+        let scope_root = self.workspace.as_path();
+        let session_store = WorkspaceSessionStore::new(scope_root);
         let chat_id = address.chat_id().to_string();
         let updated_at = Utc::now().to_rfc3339();
         let updated = session_store
@@ -471,7 +482,7 @@ impl ChatService {
             .ok_or_else(|| rua_core::RuaError::Io {
                 message: format!("Chat Session File disappeared after update: {address}"),
             })?;
-        project_header(&scope_root, &header).await?;
+        project_header(scope_root, &header).await?;
         self.load(address)
             .await?
             .ok_or_else(|| rua_core::RuaError::Io {
@@ -480,8 +491,8 @@ impl ChatService {
     }
 
     pub async fn repair_projection(&self, address: &ChatAddress) -> Result<Chat> {
-        let scope_root = self.scope_root(address)?;
-        let session_store = WorkspaceSessionStore::new(&scope_root);
+        let scope_root = self.workspace.as_path();
+        let session_store = WorkspaceSessionStore::new(scope_root);
         let header = session_store
             .load_chat_header(address.chat_id().as_str())
             .await?
@@ -489,7 +500,7 @@ impl ChatService {
                 resource: "Chat".to_string(),
                 id: address.to_string(),
             })?;
-        project_header(&scope_root, &header).await?;
+        project_header(scope_root, &header).await?;
         self.load(address)
             .await?
             .ok_or_else(|| rua_core::RuaError::Io {
@@ -497,21 +508,12 @@ impl ChatService {
             })
     }
 
-    pub async fn complete_agent_scope_materialization(
-        &self,
-        address: &ChatAddress,
-    ) -> Result<Chat> {
-        let agent_id = address
-            .agent_id()
-            .ok_or_else(|| rua_core::RuaError::Validation {
-                message: "Agent-Scoped Chat materialization requires Agent Scope".to_string(),
-            })?
-            .to_string();
-        let scope_root = self.scope_root(address)?;
-        let session_store = WorkspaceSessionStore::new(&scope_root);
+    pub async fn complete_materialization(&self, address: &ChatAddress) -> Result<Chat> {
+        let scope_root = self.workspace.as_path();
+        let session_store = WorkspaceSessionStore::new(scope_root);
         let updated = session_store
             .update_chat_header(address.chat_id().as_str(), move |header| {
-                apply_agent_scope_defaults(header, &agent_id);
+                apply_chat_defaults(header);
             })
             .await?;
         if !updated {
@@ -532,8 +534,8 @@ impl ChatService {
         address: &ChatAddress,
         before_turn_id: &str,
     ) -> Result<ChatHistoryBoundary> {
-        let scope_root = self.scope_root(address)?;
-        let store = WorkspaceSessionStore::new(&scope_root);
+        let scope_root = self.workspace.as_path();
+        let store = WorkspaceSessionStore::new(scope_root);
         let header = store
             .load_chat_header(address.chat_id().as_str())
             .await?
@@ -596,8 +598,8 @@ impl ChatService {
         let boundary = self
             .resolve_history_boundary(address, before_turn_id)
             .await?;
-        let scope_root = self.scope_root(address)?;
-        let store = WorkspaceSessionStore::new(&scope_root);
+        let scope_root = self.workspace.as_path();
+        let store = WorkspaceSessionStore::new(scope_root);
         let source_header = store
             .load_chat_header(address.chat_id().as_str())
             .await?
@@ -605,7 +607,7 @@ impl ChatService {
                 resource: "Chat".to_string(),
                 id: address.to_string(),
             })?;
-        let source_projection = chat_index::get(&scope_root, address.chat_id().as_str())
+        let source_projection = chat_index::get(scope_root, address.chat_id().as_str())
             .await
             .map_err(chat_index_error)?;
         let source_turns = store
@@ -615,7 +617,7 @@ impl ChatService {
 
         let now = Utc::now().to_rfc3339();
         let branch_id = uuid::Uuid::new_v4().to_string();
-        let branch_address = ChatAddress::new(address.scope().clone(), branch_id.clone());
+        let branch_address = ChatAddress::new(branch_id.clone());
         let mut branch_header = ChatSessionHeader::new(ChatMetadata {
             chat_id: branch_id.clone(),
             agent_id: source_header.agent_id.clone(),
@@ -626,6 +628,7 @@ impl ChatService {
             archived: false,
             preview: None,
         });
+        branch_header.project_id = source_header.project_id;
         branch_header.extra = source_header.extra;
         store.save_chat_header(&branch_header).await?;
 
@@ -684,14 +687,13 @@ impl ChatService {
             projection.status = "idle".to_string();
             projection.pin_order = 0;
             let projection = project_chat_header(&branch_header, Some(projection))?;
-            chat_index::upsert(&scope_root, projection)
+            chat_index::upsert(scope_root, projection)
                 .await
                 .map_err(chat_index_error)?;
         } else {
-            project_header(&scope_root, &branch_header).await?;
+            project_header(scope_root, &branch_header).await?;
         }
-        Self::for_resolved_scope(&scope_root, branch_address.clone())
-            .load(&branch_address)
+        self.load(&branch_address)
             .await?
             .ok_or_else(|| rua_core::RuaError::Io {
                 message: format!("Branched Chat disappeared after projection: {branch_address}"),
@@ -706,8 +708,8 @@ impl ChatService {
         let boundary = self
             .resolve_history_boundary(address, before_turn_id)
             .await?;
-        let scope_root = self.scope_root(address)?;
-        let store = WorkspaceSessionStore::new(&scope_root);
+        let scope_root = self.workspace.as_path();
+        let store = WorkspaceSessionStore::new(scope_root);
         let changed = match (boundary.target_turn, boundary.selected_variant_id) {
             (None, None) => {
                 store
@@ -748,7 +750,7 @@ impl ChatService {
             .ok_or_else(|| rua_core::RuaError::Io {
                 message: format!("Rolled-back Chat Session File disappeared: {address}"),
             })?;
-        project_header(&scope_root, &header).await?;
+        project_header(scope_root, &header).await?;
         self.load(address)
             .await?
             .ok_or_else(|| rua_core::RuaError::Io {
@@ -762,8 +764,8 @@ impl ChatService {
         turn_id: &str,
         selected_variant_id: &str,
     ) -> Result<Chat> {
-        let scope_root = self.scope_root(address)?;
-        let store = WorkspaceSessionStore::new(&scope_root);
+        let scope_root = self.workspace.as_path();
+        let store = WorkspaceSessionStore::new(scope_root);
         if !store
             .set_turn_selected_variant(
                 address.chat_id().as_str(),
@@ -794,7 +796,7 @@ impl ChatService {
             .ok_or_else(|| rua_core::RuaError::Io {
                 message: format!("Variant-selected Chat Session File disappeared: {address}"),
             })?;
-        project_header(&scope_root, &header).await?;
+        project_header(scope_root, &header).await?;
         self.load(address)
             .await?
             .ok_or_else(|| rua_core::RuaError::Io {
@@ -807,8 +809,8 @@ impl ChatService {
         address: &ChatAddress,
         query: ChatHistoryQuery,
     ) -> Result<Option<ChatHistoryPage>> {
-        let scope_root = self.scope_root(address)?;
-        let store = WorkspaceSessionStore::new(&scope_root);
+        let scope_root = self.workspace.as_path();
+        let store = WorkspaceSessionStore::new(scope_root);
         let Some(header) = store.load_chat_header(address.chat_id().as_str()).await? else {
             return Ok(None);
         };
@@ -902,41 +904,25 @@ impl ChatService {
         }))
     }
 
-    pub async fn search(
-        &self,
-        address: &ChatAddress,
-        query: ChatSearchQuery,
-    ) -> Result<SavedConversationSearchResult> {
-        let scope_root = self.scope_root(address)?;
-        let store = WorkspaceSessionStore::new(scope_root);
-        let request = SavedConversationSearchRequest {
-            agent_id: address
-                .agent_id()
-                .map(ToString::to_string)
-                .unwrap_or_default(),
-            query: query.query,
-            offset: query.offset,
-            limit: query.limit,
-        };
-        match address.scope() {
-            ChatScope::Agent { .. } => store.search_saved_conversations(request).await,
-            ChatScope::Project { .. } => {
-                store
-                    .search_saved_conversations_in_current_scope(request)
-                    .await
-            }
-        }
+    pub async fn search(&self, query: ChatSearchQuery) -> Result<SavedConversationSearchResult> {
+        WorkspaceSessionStore::new(self.workspace.as_path())
+            .search_saved_conversations(SavedConversationSearchRequest {
+                agent_id: query.agent_id,
+                project_id: query.project_id,
+                query: query.query,
+                offset: query.offset,
+                limit: query.limit,
+            })
+            .await
     }
 
-    pub async fn list(
-        &self,
-        address: &ChatAddress,
-        query: ChatListQuery,
-    ) -> Result<chat_index::ChatIndexPage> {
-        let scope_root = self.scope_root(address)?;
+    pub async fn list(&self, query: ChatListQuery) -> Result<chat_index::ChatIndexPage> {
+        let scope_root = self.workspace.as_path();
         chat_index::list(
-            &scope_root,
+            scope_root,
             chat_index::ChatIndexFilter {
+                agent_id: query.agent_id,
+                project_id: query.project_id,
                 user_id: query.user_id,
                 channel: query.channel,
                 search: query.search,
@@ -961,8 +947,8 @@ impl ChatService {
         address: &ChatAddress,
         turn_id: &str,
     ) -> Result<TurnAgentAssignment> {
-        let scope_root = self.scope_root(address)?;
-        let messages = WorkspaceSessionStore::new(&scope_root)
+        let scope_root = self.workspace.as_path();
+        let messages = WorkspaceSessionStore::new(scope_root)
             .read_turn_messages(address.chat_id().as_str(), turn_id)
             .await?;
         let value = messages
@@ -978,32 +964,12 @@ impl ChatService {
         })
     }
 
-    pub fn storage_root(&self, address: &ChatAddress) -> Result<PathBuf> {
-        self.scope_root(address)
+    pub fn storage_root(&self) -> &Path {
+        self.workspace.as_path()
     }
 
-    pub fn media_root(&self, address: &ChatAddress) -> Result<PathBuf> {
-        Ok(self.storage_root(address)?.join("media"))
-    }
-
-    fn scope_root(&self, address: &ChatAddress) -> Result<PathBuf> {
-        match &self.storage {
-            ChatStorage::RuaRoot(rua_root) => {
-                Ok(ChatScopeStore::resolve(rua_root, address.clone())
-                    .root()
-                    .to_path_buf())
-            }
-            ChatStorage::ResolvedScope {
-                address: bound_address,
-                root,
-            } if bound_address == address => Ok(root.clone()),
-            ChatStorage::ResolvedScope {
-                address: bound_address,
-                ..
-            } => Err(rua_core::RuaError::Validation {
-                message: format!("Chat Service is bound to {}, not {address}", bound_address),
-            }),
-        }
+    pub fn media_root(&self) -> PathBuf {
+        self.workspace.media_dir()
     }
 }
 
@@ -1113,36 +1079,15 @@ fn message_to_new_conversation_message(message: MessageLogEntry) -> NewConversat
     }
 }
 
-pub fn apply_agent_scope_defaults(header: &mut ChatSessionHeader, agent_id: &str) {
-    header.extra.insert(
-        SELECTED_AGENT_ID_KEY.to_string(),
-        serde_json::Value::String(agent_id.to_string()),
-    );
-    header.extra.insert(
-        CHAT_POLICY_KEY.to_string(),
-        serde_json::to_value(ChatPolicy {
-            agent_assignment: AgentAssignmentPolicy::Fixed,
-            resource: ResourcePolicy::None,
-            authority_placement: AuthorityPlacementPolicy::Selectable,
-        })
-        .expect("Chat Policy is serializable"),
-    );
-}
-
-pub fn apply_project_scope_defaults(header: &mut ChatSessionHeader, selected_agent_id: &str) {
-    header.extra.insert(
-        SELECTED_AGENT_ID_KEY.to_string(),
-        serde_json::Value::String(selected_agent_id.to_string()),
-    );
-    header.extra.insert(
-        CHAT_POLICY_KEY.to_string(),
-        serde_json::to_value(ChatPolicy {
-            agent_assignment: AgentAssignmentPolicy::Selectable,
-            resource: ResourcePolicy::ProjectBinding,
-            authority_placement: AuthorityPlacementPolicy::ResourceBound,
-        })
-        .expect("Chat Policy is serializable"),
-    );
+pub fn apply_chat_defaults(header: &mut ChatSessionHeader) {
+    header.metadata.agent_id = header.agent_id.clone();
+    header
+        .extra
+        .entry(CHAT_POLICY_KEY.to_string())
+        .or_insert_with(|| {
+            serde_json::to_value(ChatPolicy::for_project(header.project_id.as_deref()))
+                .expect("Chat Policy is serializable")
+        });
 }
 
 /// The model selection used by both Chat views and execution. Once a complete
@@ -1252,6 +1197,14 @@ pub fn project_chat_header(
             })?;
     meta.remove(rua_session::collaboration::COLLABORATION_META_KEY);
     meta.extend(header.extra.clone());
+    meta.insert(
+        "agent_id".into(),
+        serde_json::Value::String(header.agent_id.clone()),
+    );
+    meta.insert(
+        "project_id".into(),
+        serde_json::to_value(&header.project_id).expect("Project ID is serializable"),
+    );
     projection.meta = serde_json::Value::Object(meta);
     projection.pinned = header.metadata.pinned;
     projection.tag = header.tag;

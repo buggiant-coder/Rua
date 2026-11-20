@@ -328,10 +328,9 @@ pub async fn build_publication_changes(
             ));
             changes
         }
-        SyncPublicationFact::MediaDeleted { owner, media_id } => {
+        SyncPublicationFact::MediaDeleted { media_id } => {
             vec![MediaSyncAdapter::delete_change(
                 MediaSyncAdapter::new_op_id(),
-                &owner,
                 &media_id,
                 sync_meta.device_id,
                 sync_meta.hlc,

@@ -114,10 +114,8 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
                 "Agent runtime is shutting down and cannot execute new Tool Tasks".to_string(),
             );
         }
-        let scope = rua_core::ChatScopeStore::resolve(
-            &runtime.rua_root(),
-            request.owner.chat_address.clone(),
-        );
+        let scope =
+            rua_core::ChatStore::resolve(&runtime.rua_root(), request.owner.chat_address.clone());
         let store = rua_session::WorkspaceSessionStore::new(scope.root());
         let epoch = request
             .configuration_epoch
@@ -146,13 +144,19 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
                     .ok_or("Task configuration has no Tool selection policy")?,
             )
             .map_err(|error| format!("invalid Task capability configuration: {error}"))?;
-        let project_root = match request.owner.chat_address.project_id() {
+        let header = store
+            .load_chat_header(&chat_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("Task owning Chat is unavailable")?;
+        let project_root = match header.project_id.as_deref() {
             Some(project_id) => {
+                let project_id = rua_core::ProjectId::from(project_id);
                 let stores = rua_project::ProjectStores::open(runtime.rua_root().join("projects"))
                     .map_err(|error| error.to_string())?;
                 let binding = stores
                     .bindings
-                    .get(project_id)
+                    .get(&project_id)
                     .map_err(|error| error.to_string())?
                     .ok_or("Task Project Resource Binding is unavailable")?;
                 let directory_id = configuration.extra.get("project_working_directory_id")
@@ -237,13 +241,7 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             metadata: Default::default(),
         };
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
-        let tool_result_scope_root = match request.owner.chat_address.project_id() {
-            Some(project_id) => runtime
-                .rua_root()
-                .join("projects")
-                .join(project_id.as_str()),
-            None => runtime.workspace_dir(),
-        };
+        let tool_result_scope_root = scope.root().to_path_buf();
         let mut metadata = std::collections::HashMap::from([(
             "task_id".to_string(),
             serde_json::Value::String(request.task_id),
@@ -303,6 +301,7 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             session_id: chat_id,
             working_dir,
             tool_result_store_dir: Some(tool_result_scope_root.join("tool_call_logs")),
+            conversation_store_dir: Some(tool_result_scope_root),
             metadata,
             cancel: Some(cancel_rx),
             task_runtime: None,

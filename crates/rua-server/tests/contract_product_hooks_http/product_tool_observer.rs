@@ -87,11 +87,12 @@ async fn boundary_for(
             .await
             .unwrap();
     }
-    let address = ChatAddress::agent(agent_id, "chat-a");
+    let address = ChatAddress::new("chat-a");
     let configuration = hooks
         .resolve_complete_chat_configuration(
             &address,
             ChatConfigurationMaterialization {
+                project_id: None,
                 selected_agent_id: agent_id.to_string(),
                 running_config: Default::default(),
                 security_config: Default::default(),

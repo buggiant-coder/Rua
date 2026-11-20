@@ -438,7 +438,7 @@ async fn complete_tool_messages_are_durable_before_next_model_call() {
     let chat_id = "model-call-boundary-chat";
     let turn_id = "turn-model-call-boundary";
     let capture_dir = tempfile::tempdir().expect("capture directory");
-    let capture_address = rua_core::ChatAddress::agent("agent-1", chat_id);
+    let capture_address = rua_core::ChatAddress::new(chat_id);
     llm_multiplex::debug_capture::register_capture(
         capture_address.clone(),
         llm_multiplex::debug_capture::ActiveCapture {
@@ -1500,7 +1500,7 @@ async fn blocking_compaction_bounds_summary_input_and_preserves_recent_tail() {
     running.context_compact.context_compact_enabled = true;
     running.context_compact.blocking_compact_ratio = 0.5;
     running.context_compact.context_reserve_ratio = 0.05;
-    let project_chat_address = rua_core::ChatAddress::project("project-1", chat_id);
+    let project_chat_address = rua_core::ChatAddress::new(chat_id);
     let hook_request = AgentRequest {
         session_id: chat_id.into(),
         user_id: "user-1".to_string(),

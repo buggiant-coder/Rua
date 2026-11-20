@@ -44,7 +44,7 @@ async fn blocked_task_receipt_preserves_dependency_failure_within_budget() {
     )
     .await;
     let upstream = first["task_id"].as_str().unwrap();
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     wait_for_terminal(&runtime, &owner, upstream).await;
     let child = budgeted_receipt(&TaskCreateTool, serde_json::json!({"runner":{"type":"tool","tool_name":"LongResult","arguments":{}},"depends_on":[upstream]}), ctx.clone(), false).await;
     let task_id = child["task_id"].as_str().unwrap();
@@ -281,7 +281,7 @@ async fn task_read_reports_irrecoverable_raw_capture_limit() {
         .unwrap();
     let created: serde_json::Value = serde_json::from_str(&created.text_content()).unwrap();
     let task_id = created["task_id"].as_str().unwrap();
-    wait_for_terminal(&runtime, &TaskOwner::new("agent-a", "chat-a"), task_id).await;
+    wait_for_terminal(&runtime, &TaskOwner::new("chat-a"), task_id).await;
     let result = TaskReadTool
         .call(serde_json::json!({"task_id":task_id}), ctx)
         .await
@@ -305,7 +305,7 @@ async fn task_receipts_omit_instruction_and_list_bounds_descriptions() {
         assert!(reply.get("result").is_none());
         wait_for_terminal(
             &runtime,
-            &TaskOwner::new("agent-a", "chat-a"),
+            &TaskOwner::new("chat-a"),
             reply["task_id"].as_str().unwrap(),
         )
         .await;
@@ -369,7 +369,7 @@ async fn task_read_pages_full_tool_result_not_preview_and_rejects_wrong_task_cur
         .unwrap();
     let created: serde_json::Value = serde_json::from_str(&created.text_content()).unwrap();
     let task_id = created["task_id"].as_str().unwrap();
-    wait_for_terminal(&runtime, &TaskOwner::new("agent-a", "chat-a"), task_id).await;
+    wait_for_terminal(&runtime, &TaskOwner::new("chat-a"), task_id).await;
     let mut cursor = serde_json::Value::Null;
     let mut text = String::new();
     let archive = tempfile::tempdir().unwrap();
@@ -492,7 +492,7 @@ async fn task_read_pages_full_tool_result_not_preview_and_rejects_wrong_task_cur
         .contains("another Task"));
     wait_for_terminal(
         &runtime,
-        &TaskOwner::new("agent-a", "chat-a"),
+        &TaskOwner::new("chat-a"),
         other["task_id"].as_str().unwrap(),
     )
     .await;
@@ -703,7 +703,7 @@ impl ToolTaskExecution for RecordingExecution {
         &self,
         request: ToolTaskExecutionRequest,
     ) -> Result<agent_types::ToolResult, String> {
-        assert_eq!(request.owner.agent_id(), Some("agent-a"));
+        assert_eq!(request.authorization_agent_id, "agent-a");
         assert_eq!(request.owner.chat_id(), "chat-a");
         assert_eq!(request.tool_name, "Fixture_Read");
         assert_eq!(request.arguments["path"], "fixture.txt");
@@ -724,17 +724,16 @@ fn context(runtime: Arc<TaskRuntime>, agent_id: &str, chat_id: &str) -> ToolCont
     }
 }
 
-fn project_context(
+fn trusted_chat_context(
     runtime: Arc<TaskRuntime>,
     agent_id: &str,
-    project_id: &str,
     chat_id: &str,
     tool_use_id: &str,
 ) -> ToolContext {
     let mut ctx = context(runtime, agent_id, chat_id);
     ctx.metadata.insert(
         "security_chat_address".to_string(),
-        serde_json::to_value(rua_core::ChatAddress::project(project_id, chat_id)).unwrap(),
+        serde_json::to_value(rua_core::ChatAddress::new(chat_id)).unwrap(),
     );
     ctx.metadata.insert(
         "tool_use_id".to_string(),
@@ -807,7 +806,7 @@ async fn task_read_is_cursor_based_bounded_and_pages_terminal_output() {
         )
         .await
         .unwrap();
-    wait_for_terminal(&runtime, &TaskOwner::new("agent-a", "chat-a"), task_id).await;
+    wait_for_terminal(&runtime, &TaskOwner::new("chat-a"), task_id).await;
     let terminal = TaskReadTool
         .call(
             serde_json::json!({"task_id": task_id, "cursor": second["cursor"], "max_bytes": 8}),
@@ -942,7 +941,7 @@ async fn task_create_uses_typed_tool_runner_and_returns_immediately() {
         Some("accepted" | "waiting" | "running" | "completed")
     ));
 
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     wait_for_terminal(&runtime, &owner, task_id).await;
     let record = runtime.get(&owner, task_id).await.unwrap();
     assert_eq!(record.state, TaskState::Completed);
@@ -962,21 +961,21 @@ async fn task_create_rejects_disabled_tool_before_acceptance() {
     let result = TaskCreateTool.call(serde_json::json!({"runner": {"type": "tool", "tool_name": "bash", "arguments": {"command": "echo denied"}}}), ctx).await;
     assert!(result.is_err());
     assert!(runtime
-        .list(&TaskOwner::new("agent-a", "chat-a"), Default::default())
+        .list(&TaskOwner::new("chat-a"), Default::default())
         .await
         .unwrap()
         .is_empty());
 }
 
 #[tokio::test]
-async fn task_create_preserves_project_chat_ownership_from_tool_context() {
+async fn task_create_uses_the_chat_id_from_trusted_tool_context() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
     let execution = Arc::new(BlockingCreateExecution {
         release: Notify::new(),
     });
     runtime.register_runner(Arc::new(ToolTaskRunner::new(execution.clone())));
-    let address = rua_core::ChatAddress::project("project-a", "chat-a");
+    let address = rua_core::ChatAddress::new("owning-chat");
     let project_owner = TaskOwner::from_address(address.clone());
     let mut ctx = context(runtime.clone(), "agent-a", "chat-a");
     ctx.metadata.insert(
@@ -1002,7 +1001,7 @@ async fn task_create_preserves_project_chat_ownership_from_tool_context() {
 
     assert!(runtime.get(&project_owner, task_id).await.is_ok());
     assert!(runtime
-        .get(&TaskOwner::new("agent-a", "chat-a"), task_id)
+        .get(&TaskOwner::new("chat-a"), task_id)
         .await
         .is_err());
 
@@ -1011,7 +1010,7 @@ async fn task_create_preserves_project_chat_ownership_from_tool_context() {
 }
 
 #[tokio::test]
-async fn project_chat_agent_switch_preserves_all_task_controls_and_attempt_authorization() {
+async fn chat_agent_switch_preserves_all_task_controls_and_attempt_authorization() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
     let runner = Arc::new(ProjectControlRunner {
@@ -1019,7 +1018,7 @@ async fn project_chat_agent_switch_preserves_all_task_controls_and_attempt_autho
         started: Notify::new(),
     });
     runtime.register_runner(runner.clone());
-    let owner = TaskOwner::from_address(rua_core::ChatAddress::project("project-a", "chat-a"));
+    let owner = TaskOwner::from_address(rua_core::ChatAddress::new("chat-a"));
     let task_id = runtime
         .create(
             rua_task::TaskSpec {
@@ -1044,13 +1043,7 @@ async fn project_chat_agent_switch_preserves_all_task_controls_and_attempt_autho
     let get = TaskReadTool
         .call(
             serde_json::json!({"task_id": task_id}),
-            project_context(
-                runtime.clone(),
-                "agent-b",
-                "project-a",
-                "chat-a",
-                "get-after-switch",
-            ),
+            trusted_chat_context(runtime.clone(), "agent-b", "chat-a", "get-after-switch"),
         )
         .await
         .unwrap();
@@ -1063,13 +1056,7 @@ async fn project_chat_agent_switch_preserves_all_task_controls_and_attempt_autho
     let list = TaskListTool
         .call(
             serde_json::json!({}),
-            project_context(
-                runtime.clone(),
-                "agent-b",
-                "project-a",
-                "chat-a",
-                "list-after-switch",
-            ),
+            trusted_chat_context(runtime.clone(), "agent-b", "chat-a", "list-after-switch"),
         )
         .await
         .unwrap();
@@ -1083,10 +1070,9 @@ async fn project_chat_agent_switch_preserves_all_task_controls_and_attempt_autho
     let waiting = TaskReadTool
         .call(
             serde_json::json!({"task_id": task_id, "wait_seconds": 1}),
-            project_context(
+            trusted_chat_context(
                 runtime.clone(),
                 "agent-b",
-                "project-a",
                 "chat-a",
                 "read-wait-after-switch",
             ),
@@ -1100,13 +1086,7 @@ async fn project_chat_agent_switch_preserves_all_task_controls_and_attempt_autho
     TaskSendInputTool
         .call(
             serde_json::json!({"task_id": task_id, "text": "new direction"}),
-            project_context(
-                runtime.clone(),
-                "agent-b",
-                "project-a",
-                "chat-a",
-                "input-after-switch",
-            ),
+            trusted_chat_context(runtime.clone(), "agent-b", "chat-a", "input-after-switch"),
         )
         .await
         .unwrap();
@@ -1116,32 +1096,18 @@ async fn project_chat_agent_switch_preserves_all_task_controls_and_attempt_autho
             text: "new direction".to_string()
         }]
     );
-    for (project_id, chat_id) in [("project-b", "chat-a"), ("project-a", "chat-b")] {
-        assert!(TaskReadTool
-            .call(
-                serde_json::json!({"task_id": task_id}),
-                project_context(
-                    runtime.clone(),
-                    "agent-b",
-                    project_id,
-                    chat_id,
-                    "cross-chat-get",
-                ),
-            )
-            .await
-            .is_err());
-    }
+    assert!(TaskReadTool
+        .call(
+            serde_json::json!({"task_id": task_id}),
+            trusted_chat_context(runtime.clone(), "agent-b", "chat-b", "cross-chat-get"),
+        )
+        .await
+        .is_err());
 
     let cancelled = TaskCancelTool
         .call(
             serde_json::json!({"task_id": task_id}),
-            project_context(
-                runtime.clone(),
-                "agent-b",
-                "project-a",
-                "chat-a",
-                "cancel-after-switch",
-            ),
+            trusted_chat_context(runtime.clone(), "agent-b", "chat-a", "cancel-after-switch"),
         )
         .await
         .unwrap();
@@ -1152,10 +1118,9 @@ async fn project_chat_agent_switch_preserves_all_task_controls_and_attempt_autho
     let terminal = TaskReadTool
         .call(
             serde_json::json!({"task_id": task_id, "wait_seconds": 1}),
-            project_context(
+            trusted_chat_context(
                 runtime.clone(),
                 "agent-b",
-                "project-a",
                 "chat-a",
                 "read-terminal-after-switch",
             ),
@@ -1172,13 +1137,7 @@ async fn project_chat_agent_switch_preserves_all_task_controls_and_attempt_autho
     let retried = TaskRetryTool
         .call(
             serde_json::json!({"task_id": task_id}),
-            project_context(
-                runtime.clone(),
-                "agent-b",
-                "project-a",
-                "chat-a",
-                "retry-after-switch",
-            ),
+            trusted_chat_context(runtime.clone(), "agent-b", "chat-a", "retry-after-switch"),
         )
         .await
         .unwrap();
@@ -1192,13 +1151,7 @@ async fn project_chat_agent_switch_preserves_all_task_controls_and_attempt_autho
     TaskCancelTool
         .call(
             serde_json::json!({"task_id": task_id}),
-            project_context(
-                runtime,
-                "agent-b",
-                "project-a",
-                "chat-a",
-                "cancel-retry-after-switch",
-            ),
+            trusted_chat_context(runtime, "agent-b", "chat-a", "cancel-retry-after-switch"),
         )
         .await
         .unwrap();
@@ -1246,7 +1199,7 @@ async fn task_create_returns_before_blocking_runner_completes() {
     .unwrap();
     let created: serde_json::Value = serde_json::from_str(&created.text_content()).unwrap();
     let task_id = created["task_id"].as_str().unwrap();
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     assert!(!runtime
         .get(&owner, task_id)
         .await
@@ -1277,7 +1230,7 @@ async fn task_read_reopens_persisted_shell_observation_after_runtime_restart() {
     let created = TaskCreateTool.call(serde_json::json!({"runner":{"type":"tool","tool_name":"bash","arguments":{"command":"printf 'abcdefghijklmno'"}}}), context(runtime.clone(), "agent-a", "chat-a")).await.unwrap();
     let created: serde_json::Value = serde_json::from_str(&created.text_content()).unwrap();
     let task_id = created["task_id"].as_str().unwrap();
-    wait_for_terminal(&runtime, &TaskOwner::new("agent-a", "chat-a"), task_id).await;
+    wait_for_terminal(&runtime, &TaskOwner::new("chat-a"), task_id).await;
     let first = TaskReadTool
         .call(
             serde_json::json!({"task_id":task_id,"max_bytes":5}),
@@ -1287,7 +1240,7 @@ async fn task_read_reopens_persisted_shell_observation_after_runtime_restart() {
         .unwrap();
     let first: serde_json::Value = serde_json::from_str(&first.text_content()).unwrap();
     assert_eq!(first["output"][0]["text"], "abcde");
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let raw: serde_json::Value =
         serde_json::from_slice(&runtime.read_full_result(&owner, task_id).await.unwrap()).unwrap();
     let observation =
@@ -1444,7 +1397,7 @@ async fn shell_task_multiline_scripts_reach_the_correct_terminal_state() {
             working_dir: working_dir.path().to_path_buf(),
         },
     ))));
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     for (command, expected_state, expected_output) in [
         (
             "PATCH() { read -r line; }\ncat <<'PATCH'\npatch-body\nPATCH",
@@ -1505,7 +1458,7 @@ async fn task_send_input_drives_direct_shell_task_once_and_delivers_eof() {
             working_dir: working_dir.path().to_path_buf(),
         },
     ))));
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let created = TaskCreateTool
         .call(
             serde_json::json!({
@@ -1586,7 +1539,7 @@ async fn direct_shell_task_has_no_foreground_wait_timer() {
             working_dir: working_dir.path().to_path_buf(),
         },
     ))));
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let created = TaskCreateTool
         .call(
             serde_json::json!({
@@ -1626,7 +1579,7 @@ async fn task_send_input_rejects_closed_shell_while_task_record_is_still_running
         release_result: Notify::new(),
     });
     runtime.register_runner(Arc::new(ToolTaskRunner::new(execution.clone())));
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let created = TaskCreateTool
         .call(
             serde_json::json!({
@@ -1688,7 +1641,7 @@ async fn task_watch_reads_future_shell_lines_and_final_unterminated_suffix() {
             working_dir: working_dir.path().to_path_buf(),
         },
     ))));
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let created = TaskCreateTool
         .call(
             serde_json::json!({
@@ -1830,7 +1783,7 @@ async fn task_watch_tail_f_delivers_appended_lines_without_task_polling() {
             working_dir: working_dir.path().to_path_buf(),
         },
     ))));
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let created = TaskCreateTool
         .call(
             serde_json::json!({
@@ -1969,7 +1922,7 @@ async fn task_watch_bounds_one_unterminated_shell_record_to_batch_limit() {
             working_dir: working_dir.path().to_path_buf(),
         },
     ))));
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let created = TaskCreateTool
         .call(
             serde_json::json!({
@@ -2091,7 +2044,7 @@ async fn tool_attachments_are_externalized_when_raw_result_is_bounded() {
     config.limits.max_raw_result_bytes = 128;
     let runtime = Arc::new(TaskRuntime::open(config).unwrap());
     runtime.register_runner(Arc::new(ToolTaskRunner::new(Arc::new(AttachmentExecution))));
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
 
     let created = TaskCreateTool
         .call(
@@ -2251,10 +2204,7 @@ async fn task_get_does_not_disclose_cross_chat_records() {
         .unwrap_err();
     assert!(error.to_string().contains("not found"));
     assert!(runtime
-        .list(
-            &TaskOwner::new("agent-a", "chat-b"),
-            TaskListFilter::default()
-        )
+        .list(&TaskOwner::new("chat-b"), TaskListFilter::default())
         .await
         .unwrap()
         .is_empty());
@@ -2431,7 +2381,7 @@ async fn dropping_task_await_detaches_without_cancelling_execution() {
         .unwrap();
     let created: serde_json::Value = serde_json::from_str(&created.text_content()).unwrap();
     let task_id = created["task_id"].as_str().unwrap();
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
 
     assert!(
         tokio::time::timeout(
@@ -2566,7 +2516,7 @@ async fn task_retry_tool_keeps_task_id_and_appends_attempt() {
         .unwrap();
     let created: serde_json::Value = serde_json::from_str(&created.text_content()).unwrap();
     let task_id = created["task_id"].as_str().unwrap();
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
     let failed = runtime
         .await_terminal(&owner, task_id, Duration::from_secs(2))
         .await
@@ -2614,7 +2564,7 @@ async fn task_create_passes_dependency_result_envelopes_to_tool_runner() {
     let execution = Arc::new(DependencyRecordingExecution::default());
     runtime.register_runner(Arc::new(ToolTaskRunner::new(execution.clone())));
     let ctx = context(runtime.clone(), "agent-a", "chat-a");
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
 
     let upstream = TaskCreateTool
         .call(
@@ -2667,7 +2617,7 @@ async fn task_create_passes_dependency_result_envelopes_to_tool_runner() {
 async fn legacy_task_create_shape_and_metadata_list_fallback_are_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
-    let owner = TaskOwner::new("agent-a", "chat-a");
+    let owner = TaskOwner::new("chat-a");
 
     let create_error = TaskCreateTool
         .call(

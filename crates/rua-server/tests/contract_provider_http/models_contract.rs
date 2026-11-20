@@ -1547,8 +1547,9 @@ async fn seed_long_evergreen_chat(tmp: &tempfile::TempDir, chat_id: &str) {
     let hooks = rua_server::services::product_hooks::ProductHookService::new();
     let configuration = hooks
         .resolve_complete_chat_configuration(
-            &rua_core::ChatAddress::agent("default", chat_id),
+            &rua_core::ChatAddress::new(chat_id),
             rua_server::services::product_hooks::ChatConfigurationMaterialization {
+                project_id: None,
                 selected_agent_id: "default".into(),
                 running_config: Default::default(),
                 security_config: Default::default(),

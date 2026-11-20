@@ -658,8 +658,8 @@ pub async fn reconcile_agent_config(state: &crate::AppState, agent_id: &str) {
     let Some(context_manager) = runtime.context_manager().await else {
         return;
     };
-    let workspace_dir = runtime.workspace_dir();
-    let store = WorkspaceSessionStore::new(&workspace_dir);
+    let workspace = state.chat_workspace();
+    let store = WorkspaceSessionStore::new(workspace.as_path());
     let headers = match store.list_chat_headers(0, usize::MAX).await {
         Ok(headers) => headers,
         Err(error) => {
@@ -675,7 +675,7 @@ pub async fn reconcile_agent_config(state: &crate::AppState, agent_id: &str) {
         .into_iter()
         .filter(|header| header.agent_id == agent_id)
     {
-        let address = ChatAddress::agent(agent_id, &header.chat_id);
+        let address = ChatAddress::new(&header.chat_id);
         let configuration = match state.product_hooks.chat_configuration(&address).await {
             Some(configuration) => configuration,
             None => {
@@ -710,8 +710,8 @@ pub async fn reconcile_agent_config(state: &crate::AppState, agent_id: &str) {
         state
             .conversation_authority
             .schedule_history_replacement(HistoryReplacementJobContext {
-                workspace_dir: workspace_dir.clone(),
-                chat_address: ChatAddress::agent(agent_id, &header.chat_id),
+                workspace_dir: workspace.as_path().to_path_buf(),
+                chat_address: ChatAddress::new(&header.chat_id),
                 agent_id: agent_id.to_string(),
                 authority_device_id: placement.device_id,
                 context_manager: Arc::clone(&context_manager),

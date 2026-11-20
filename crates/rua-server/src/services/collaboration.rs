@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
-use rua_core::{ChatAddress, ChatScope, ChatScopeStore};
+use rua_core::{ChatAddress, ChatStore};
 use rua_session::collaboration::{
     CollaborationConfigurationState, CollaborationConfigurationStatus, CollaborationDeferredClaim,
     CollaborationDeliveryClaim, CollaborationDeliveryState, CollaborationDescriptor,
@@ -197,7 +197,7 @@ impl CollaborationService {
         action: crate::services::device_command_bus::CollaborationDeviceAction,
     ) -> Result<Option<crate::services::device_command_bus::CollaborationDeviceResponse>, String>
     {
-        let scope = ChatScopeStore::resolve(&self.root, route_address.clone());
+        let scope = ChatStore::resolve(&self.root, route_address.clone());
         let placement =
             crate::services::conversation_authority_target::load_optional_chat_authority_placement(
                 scope.root(),
@@ -528,150 +528,113 @@ impl CollaborationService {
     }
 
     fn store(&self, address: &ChatAddress) -> WorkspaceSessionStore {
-        WorkspaceSessionStore::new(ChatScopeStore::resolve(&self.root, address.clone()).root())
-    }
-
-    async fn workspace_roots(&self) -> Result<Vec<PathBuf>, String> {
-        let mut roots = Vec::new();
-        for parent in [self.root.join("workspaces"), self.root.join("projects")] {
-            let mut entries = match tokio::fs::read_dir(&parent).await {
-                Ok(entries) => entries,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(format!("read {}: {error}", parent.display())),
-            };
-            while let Some(entry) = entries
-                .next_entry()
-                .await
-                .map_err(|error| format!("read {} entry: {error}", parent.display()))?
-            {
-                if entry
-                    .file_type()
-                    .await
-                    .map(|kind| kind.is_dir())
-                    .unwrap_or(false)
-                {
-                    roots.push(entry.path());
-                }
-            }
-        }
-        roots.sort();
-        Ok(roots)
+        WorkspaceSessionStore::new(ChatStore::resolve(&self.root, address.clone()).root())
     }
 
     pub async fn reconcile_startup(&self) -> Result<CollaborationRecoveryReport, String> {
         let mut report = CollaborationRecoveryReport::default();
         let mut deferred_sources = HashSet::new();
-        for root in self.workspace_roots().await? {
-            let store = WorkspaceSessionStore::new(&root);
-            for header in store
-                .list_chat_headers(0, usize::MAX)
+        let workspace = rua_core::RuaRoot::new(&self.root).chat_workspace();
+        let store = WorkspaceSessionStore::new(workspace.as_path());
+        for header in store
+            .list_chat_headers(0, usize::MAX)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            if !header.extra.contains_key(COLLABORATION_META_KEY) {
+                continue;
+            }
+            let target = ChatAddress::new(&header.chat_id);
+            for persisted in store
+                .list_collaboration_requests(target.chat_id().as_str())
                 .await
                 .map_err(|error| error.to_string())?
             {
-                let Some(value) = header.extra.get(COLLABORATION_META_KEY).cloned() else {
-                    continue;
-                };
-                let descriptor: CollaborationDescriptor = serde_json::from_value(value)
-                    .map_err(|error| format!("invalid collaboration descriptor: {error}"))?;
-                let target = match descriptor.source.scope() {
-                    ChatScope::Agent { .. } => {
-                        ChatAddress::agent(&header.agent_id, header.chat_id.clone())
-                    }
-                    ChatScope::Project { project_id, .. } => {
-                        ChatAddress::project(project_id.clone(), header.chat_id.clone())
-                    }
-                };
-                for persisted in store
-                    .list_collaboration_requests(target.chat_id().as_str())
-                    .await
-                    .map_err(|error| error.to_string())?
-                {
-                    let mut record = if persisted.outcome.is_some() {
-                        persisted
+                let mut record = if persisted.outcome.is_some() {
+                    persisted
+                } else {
+                    let refreshed = self.refresh(&target, &persisted.request_id).await?;
+                    if refreshed.outcome.is_some() {
+                        report.recovered_terminal += 1;
+                        refreshed
                     } else {
-                        let refreshed = self.refresh(&target, &persisted.request_id).await?;
-                        if refreshed.outcome.is_some() {
-                            report.recovered_terminal += 1;
-                            refreshed
+                        let evidence = if refreshed.turn_id.is_some() {
+                            "The accepted collaboration Turn was interrupted by process restart; partial side effects may have occurred and execution was not replayed"
+                        } else if refreshed.input_id.is_some() {
+                            "The accepted collaboration input was interrupted before a durable Turn completed; execution was not replayed"
                         } else {
-                            let evidence = if refreshed.turn_id.is_some() {
-                                "The accepted collaboration Turn was interrupted by process restart; partial side effects may have occurred and execution was not replayed"
-                            } else if refreshed.input_id.is_some() {
-                                "The accepted collaboration input was interrupted before a durable Turn completed; execution was not replayed"
-                            } else {
-                                "The collaboration request was recorded but acceptance remained unconfirmed at process restart; execution was not replayed"
-                            };
-                            let mut interrupted = refreshed;
-                            interrupted.outcome = Some(outcome(
-                                &interrupted.request_id,
-                                "interrupted",
-                                evidence.to_string(),
-                                true,
-                            ));
-                            if interrupted.delivery == CollaborationDeliveryState::Undecided {
-                                interrupted.delivery = CollaborationDeliveryState::Deferred;
-                            }
-                            store
-                                .save_collaboration_request(&interrupted)
-                                .await
-                                .map_err(|error| error.to_string())?;
-                            let saved = store
-                                .load_collaboration_request(
-                                    target.chat_id().as_str(),
-                                    &interrupted.request_id,
-                                )
-                                .await
-                                .map_err(|error| error.to_string())?
-                                .ok_or("reconciled collaboration request disappeared")?;
-                            if saved
-                                .outcome
-                                .as_ref()
-                                .is_some_and(|result| result.status == "interrupted")
-                            {
-                                report.interrupted += 1;
-                            }
-                            saved
+                            "The collaboration request was recorded but acceptance remained unconfirmed at process restart; execution was not replayed"
+                        };
+                        let mut interrupted = refreshed;
+                        interrupted.outcome = Some(outcome(
+                            &interrupted.request_id,
+                            "interrupted",
+                            evidence.to_string(),
+                            true,
+                        ));
+                        if interrupted.delivery == CollaborationDeliveryState::Undecided {
+                            interrupted.delivery = CollaborationDeliveryState::Deferred;
                         }
-                    };
-                    if record.delivery == CollaborationDeliveryState::Undecided
-                        && record.outcome.is_some()
-                    {
-                        record = store
-                            .claim_collaboration_delivery(
-                                target.chat_id().as_str(),
-                                &record.request_id,
-                                CollaborationDeliveryClaim::Deferred,
-                            )
+                        store
+                            .save_collaboration_request(&interrupted)
                             .await
                             .map_err(|error| error.to_string())?;
-                    }
-                    if record.delivery == CollaborationDeliveryState::Deferred {
-                        let source_exists = self
-                            .store(&record.source)
-                            .load_chat_header(record.source.chat_id().as_str())
+                        let saved = store
+                            .load_collaboration_request(
+                                target.chat_id().as_str(),
+                                &interrupted.request_id,
+                            )
                             .await
                             .map_err(|error| error.to_string())?
-                            .is_some();
-                        if source_exists {
-                            deferred_sources.insert(record.source.clone());
-                        } else {
-                            match self.deliver_persisted_result(record, None).await {
-                                Ok(true) => report.redelivered += 1,
-                                Ok(false) => {}
-                                Err(error) => {
-                                    report.failed += 1;
-                                    tracing::warn!(target = %target, error = %error, "failed to retain recovered collaboration result for deleted source");
-                                }
-                            }
+                            .ok_or("reconciled collaboration request disappeared")?;
+                        if saved
+                            .outcome
+                            .as_ref()
+                            .is_some_and(|result| result.status == "interrupted")
+                        {
+                            report.interrupted += 1;
                         }
+                        saved
+                    }
+                };
+                if record.delivery == CollaborationDeliveryState::Undecided
+                    && record.outcome.is_some()
+                {
+                    record = store
+                        .claim_collaboration_delivery(
+                            target.chat_id().as_str(),
+                            &record.request_id,
+                            CollaborationDeliveryClaim::Deferred,
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                if record.delivery == CollaborationDeliveryState::Deferred {
+                    let source_exists = self
+                        .store(&record.source)
+                        .load_chat_header(record.source.chat_id().as_str())
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .is_some();
+                    if source_exists {
+                        deferred_sources.insert(record.source.clone());
                     } else {
                         match self.deliver_persisted_result(record, None).await {
                             Ok(true) => report.redelivered += 1,
                             Ok(false) => {}
                             Err(error) => {
                                 report.failed += 1;
-                                tracing::warn!(target = %target, error = %error, "failed to redeliver recovered collaboration result");
+                                tracing::warn!(target = %target, error = %error, "failed to retain recovered collaboration result for deleted source");
                             }
+                        }
+                    }
+                } else {
+                    match self.deliver_persisted_result(record, None).await {
+                        Ok(true) => report.redelivered += 1,
+                        Ok(false) => {}
+                        Err(error) => {
+                            report.failed += 1;
+                            tracing::warn!(target = %target, error = %error, "failed to redeliver recovered collaboration result");
                         }
                     }
                 }
@@ -736,11 +699,13 @@ impl CollaborationService {
         if placement.device_id != current_device_id {
             return Err("Source Chat is not authoritative on this Device".into());
         }
-        self.intake.validate_collaboration_resource(
-            &caller.address,
-            &current_device_id,
-            &caller.working_dir,
-        )?;
+        self.intake
+            .validate_collaboration_resource(
+                &caller.address,
+                &current_device_id,
+                &caller.working_dir,
+            )
+            .await?;
         Ok(configuration)
     }
 
@@ -1062,13 +1027,21 @@ impl CollaborationService {
         message: Option<String>,
         yield_seconds: u64,
     ) -> Result<CollaborationReply, String> {
-        let _resource_admission = self.intake.project_work_admission(&caller.address)?;
+        let _resource_admission = self.intake.project_work_admission(&caller.address).await?;
+        let source_header = self
+            .store(&caller.address)
+            .load_chat_header(caller.address.chat_id().as_str())
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("Source Chat is unavailable")?;
+        let project_id = source_header.project_id.as_deref();
         if matches!(
             &executor,
             rua_session::collaboration::CollaborationExecutor::Acp { .. }
         ) {
-            if let Some(project_id) = caller.address.project_id() {
-                self.intake.validate_acp_project_resources(project_id)?;
+            if let Some(project_id) = project_id {
+                self.intake
+                    .validate_acp_project_resources(&rua_core::ProjectId::new(project_id))?;
             }
         }
         let gate = self.gate(&caller.address).await;
@@ -1076,10 +1049,7 @@ impl CollaborationService {
         let source = self.caller_configuration(&caller).await?;
         let agent_id = requested_agent_id.unwrap_or_else(|| source.selected_agent_id.clone());
         let id = operation_id(&caller, "create");
-        let target = match caller.address.scope() {
-            ChatScope::Project { project_id, .. } => ChatAddress::project(project_id.clone(), &id),
-            ChatScope::Agent { .. } => ChatAddress::agent(&agent_id, &id),
-        };
+        let target = ChatAddress::new(&id);
         let store = self.store(&target);
         let mut created = false;
         if let Some(header) = store
@@ -1133,6 +1103,7 @@ impl CollaborationService {
                 .resolve_complete_chat_configuration(
                     &target,
                     ChatConfigurationMaterialization {
+                        project_id: source_header.project_id.clone(),
                         selected_agent_id: agent_id.clone(),
                         running_config: rua_config::ChatRunningConfig::from_agent_defaults(
                             &running,
@@ -1148,10 +1119,7 @@ impl CollaborationService {
                         capability_configuration: Some(
                             runtime
                                 .capability_configuration(
-                                    caller
-                                        .address
-                                        .project_id()
-                                        .map(|_| caller.working_dir.as_path()),
+                                    project_id.map(|_| caller.working_dir.as_path()),
                                 )
                                 .await
                                 .map_err(|e| e.to_string())?,
@@ -1182,16 +1150,8 @@ impl CollaborationService {
             header
                 .extra
                 .insert("selected_agent_id".into(), serde_json::json!(agent_id));
-            if let Some(project_id) = target.project_id() {
-                header
-                    .extra
-                    .insert("project_id".into(), serde_json::json!(project_id));
-                let source_scope = ChatScopeStore::resolve(&self.root, caller.address.clone());
-                let source_header = WorkspaceSessionStore::new(source_scope.root())
-                    .load_chat_header(caller.address.chat_id().as_str())
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| "Source Project Chat header is missing".to_string())?;
+            header.project_id = source_header.project_id.clone();
+            if project_id.is_some() {
                 let directory_key = super::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY;
                 let directory_id = source_header
                     .extra
@@ -1247,8 +1207,7 @@ impl CollaborationService {
                 .save_chat_header(&header)
                 .await
                 .map_err(|e| e.to_string())?;
-            let scope = ChatScopeStore::resolve(&self.root, target.clone());
-            rua_chat::ChatService::for_resolved_scope(scope.root(), target.clone())
+            rua_chat::ChatService::new(&self.root)
                 .repair_projection(&target)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -1257,7 +1216,7 @@ impl CollaborationService {
                 .await;
         }
         if let rua_session::collaboration::CollaborationExecutor::Acp { runner } = &executor {
-            let scope = ChatScopeStore::resolve(&self.root, target.clone());
+            let scope = ChatStore::resolve(&self.root, target.clone());
             if let Err(error) = self
                 .intake
                 .enter_collaboration_acp(
@@ -1449,7 +1408,7 @@ impl CollaborationService {
                 .save_collaboration_request(&record)
                 .await
                 .map_err(|e| e.to_string())?;
-            let scope = ChatScopeStore::resolve(&self.root, target.clone());
+            let scope = ChatStore::resolve(&self.root, target.clone());
             let persist_store = self.store(&target);
             let persist_scope_root = scope.root().to_path_buf();
             let mut persisted_record = record.clone();
@@ -1484,9 +1443,7 @@ impl CollaborationService {
                         collaboration_mode: serde_json::from_value(configuration.collaboration_mode).map_err(|e| e.to_string())?,
                         authority_device_id: &persist_placement.device_id, authority_epoch: persist_placement.authority_epoch,
                     }).map_err(|e| e.to_string())?.ok_or("Empty collaboration input")?;
-                    rua_chat::ChatService::for_resolved_scope(
-                        persist_scope_root, persisted_record.target.clone(),
-                    ).replace_placeholder_title(
+                    rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(persist_scope_root)).replace_placeholder_title(
                         &persisted_record.target, super::console_chat::truncate_chat_name(&pending.message),
                     ).await.map_err(|e| e.to_string())?;
                     persist_store.append_conversation_turn_for_address(&persisted_record.target, turn).await.map_err(|e| e.to_string())?;

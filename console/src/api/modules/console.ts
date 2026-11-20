@@ -28,9 +28,6 @@ export type ApprovalOwner =
   | {
       kind: "chat";
       address: {
-        scope:
-          | { kind: "agent"; agent_id: string }
-          | { kind: "project"; project_id: string };
         chat_id: string;
       };
     }

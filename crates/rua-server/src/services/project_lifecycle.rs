@@ -2,7 +2,7 @@ use crate::services::conversation_authority::ConversationAuthority;
 use crate::sync_publication::{
     publish_sync_fact_with_runtime, SyncPublicationFact, SyncPublicationRuntime,
 };
-use rua_core::{ChatAddress, ChatScopeStore, ProjectId};
+use rua_core::{ChatAddress, ProjectId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -230,28 +230,19 @@ pub(crate) async fn load_project_chats(
     if binding.resource_device_id != project.resource_device_id {
         return Err("Project Resource Binding Device does not match the Project".to_string());
     }
-    let scope_root = ChatScopeStore::resolve(
-        data_dir,
-        ChatAddress::project(project_id.clone(), "00000000-0000-4000-8000-000000000000"),
-    )
-    .root()
-    .to_path_buf();
+    let scope_root = rua_core::RuaRoot::new(data_dir)
+        .chat_workspace()
+        .as_path()
+        .to_path_buf();
     let store = rua_session::WorkspaceSessionStore::new(&scope_root);
-    let mut chats = Vec::new();
-    for chat in crate::services::chat_index::list_all(&scope_root).await? {
-        let address = ChatAddress::project(project_id.clone(), chat.id.clone());
-        let header = store
-            .load_chat_header(address.chat_id().as_str())
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| {
-                format!(
-                    "Project Chat header not found: {}",
-                    address.chat_id().as_str()
-                )
-            })?;
-        chats.push((address, header));
-    }
+    let chats = store
+        .list_chat_headers(0, usize::MAX)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|header| header.project_id.as_deref() == Some(project_id.as_str()))
+        .map(|header| (ChatAddress::new(&header.chat_id), header))
+        .collect();
     Ok((project, scope_root, chats))
 }
 

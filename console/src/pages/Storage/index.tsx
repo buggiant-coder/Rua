@@ -41,7 +41,7 @@ function beforeFor(filter: AgeFilter): string | undefined {
 }
 
 function addressKey(item: StorageChatItem): string {
-  return `${item.owner.kind}:${item.owner.id}:${item.address.chat_id}`;
+  return item.address.chat_id;
 }
 
 export default function StoragePage() {
@@ -301,7 +301,7 @@ export default function StoragePage() {
                 className={`${styles.chatCard} ${
                   selectedKeys.has(addressKey(item)) ? styles.selected : ""
                 }`}
-                key={`${item.owner.kind}:${item.owner.id}:${item.address.chat_id}`}
+                key={item.address.chat_id}
               >
                 <div className={styles.identity}>
                   <Check

@@ -58,7 +58,6 @@ interface ACPEnterDialogProps {
   agentId: string;
   target?: ConversationApiTarget;
 
-  discoveryTarget?: ConversationApiTarget;
   chatId: string | undefined;
   targetDeviceId?: string | null;
 
@@ -75,7 +74,6 @@ export default function ACPEnterDialog({
   onClose,
   agentId,
   target,
-  discoveryTarget,
   chatId,
   targetDeviceId,
   defaultCwd,
@@ -99,7 +97,10 @@ export default function ACPEnterDialog({
     () => target ?? agentConversationTarget(agentId),
     [agentId, target],
   );
-  const acpDiscoveryTarget = discoveryTarget ?? conversationTarget;
+  const acpDiscoveryTarget = useMemo(
+    () => (unmaterialized ? { agentId } : {}),
+    [unmaterialized, agentId],
+  );
 
   useEffect(() => {
     if (!open) return;

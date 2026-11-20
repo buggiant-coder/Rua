@@ -751,7 +751,7 @@ async fn debug_capture_records_preparation_and_artifact_timing_at_the_call_bound
 
     let root = tempfile::tempdir().unwrap();
     let id = uuid::Uuid::new_v4().to_string();
-    let address = rua_core::ChatAddress::project(format!("project-{id}"), format!("chat-{id}"));
+    let address = rua_core::ChatAddress::new(format!("chat-{id}"));
     debug_capture::register_capture(
         address.clone(),
         ActiveCapture {

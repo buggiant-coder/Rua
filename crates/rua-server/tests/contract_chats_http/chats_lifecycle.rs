@@ -41,7 +41,7 @@ async fn submission_already_inside_transition_gate_finishes_before_shutdown_clos
     let app = build_app();
     app.state.wait_platform_initialization().await.unwrap();
     let authority = app.state.conversation_authority.clone();
-    let address = rua_core::ChatAddress::agent("gate-race", "chat");
+    let address = rua_core::ChatAddress::new("chat");
     let key = rua_server::streaming::StreamKey::new(
         "console",
         address.clone(),
@@ -88,12 +88,12 @@ async fn submission_already_inside_transition_gate_finishes_before_shutdown_clos
 }
 
 #[tokio::test]
-async fn shutdown_rejects_agent_and_project_submissions_before_starting_a_turn() {
+async fn shutdown_rejects_submissions_for_each_closed_chat() {
     let app = build_app();
     let authority = &app.state.conversation_authority;
     for address in [
-        rua_core::ChatAddress::agent("shutdown-test", "chat"),
-        rua_core::ChatAddress::project("shutdown-project", "chat"),
+        rua_core::ChatAddress::new("chat-one"),
+        rua_core::ChatAddress::new("chat-two"),
     ] {
         authority.begin_chat_shutdown(&address).await;
         let key = rua_server::streaming::StreamKey::new(
@@ -152,21 +152,38 @@ async fn shutdown_rejects_agent_and_project_submissions_before_starting_a_turn()
     }
 }
 
-async fn seed_chats_from_json(workspace: &Path, chats: &Value) {
+async fn seed_chats_from_json(workspace: &Path, agent_id: &str, chats: &Value) {
     for chat in chats["chats"].as_array().expect("chats fixture array") {
         let id = chat["id"].as_str().expect("chat id");
         let created_at = chat_time(chat.get("created_at")).unwrap_or_else(Utc::now);
         let updated_at = chat_time(chat.get("updated_at")).unwrap_or(created_at);
+        let title = chat["name"].as_str().unwrap_or("New Chat").to_string();
+        let header = rua_session::ChatSessionHeader::new(rua_session::ChatMetadata {
+            chat_id: id.to_string(),
+            agent_id: agent_id.to_string(),
+            title: title.clone(),
+            created_at: created_at.to_rfc3339(),
+            last_activity_at: updated_at.to_rfc3339(),
+            pinned: chat["pinned"].as_bool().unwrap_or(false),
+            archived: false,
+            preview: None,
+        });
+        WorkspaceSessionStore::new(workspace)
+            .save_chat_header(&header)
+            .await
+            .unwrap();
+        let mut meta = chat.get("meta").cloned().unwrap_or_else(|| json!({}));
+        meta["agent_id"] = json!(agent_id);
         chat_index::upsert(
             workspace,
             ChatIndexEntry {
                 id: id.to_string(),
-                name: chat["name"].as_str().unwrap_or("New Chat").to_string(),
+                name: title,
                 user_id: chat["user_id"].as_str().unwrap_or("default").to_string(),
                 channel: chat["channel"].as_str().unwrap_or("console").to_string(),
                 created_at,
                 updated_at,
-                meta: chat.get("meta").cloned().unwrap_or_else(|| json!({})),
+                meta,
                 status: chat["status"].as_str().unwrap_or("idle").to_string(),
                 pinned: chat["pinned"].as_bool().unwrap_or(false),
                 pin_order: chat["pin_order"].as_i64().unwrap_or(0),
@@ -196,7 +213,7 @@ async fn create_blocking_task(
         started: tokio::sync::Notify::new(),
     });
     state.task_runtime.register_runner(runner.clone());
-    let owner = rua_task::TaskOwner::new(agent_id, chat_id);
+    let owner = rua_task::TaskOwner::new(chat_id);
     let task_id = state
         .task_runtime
         .create(
@@ -226,13 +243,7 @@ async fn existing_chat_remains_readable_after_sync_is_disabled() {
     let app = build_app();
     let agent_id = "chat_after_sync_disabled";
     create_agent(&app.app, agent_id, "Chat after sync disabled").await;
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "chat-after-sync-disabled",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "chat-after-sync-disabled").await;
     let chat_id = created["id"].as_str().expect("created chat id");
 
     let enable = request(
@@ -257,7 +268,7 @@ async fn existing_chat_remains_readable_after_sync_is_disabled() {
     let history = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         None,
     )
@@ -277,13 +288,7 @@ async fn existing_chat_history_does_not_require_local_device_identity() {
     let app = build_app();
     let agent_id = "chat_without_device_identity";
     create_agent(&app.app, agent_id, "Chat without Device identity").await;
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "Local history remains readable",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "Local history remains readable").await;
     let chat_id = created["id"].as_str().expect("created chat id");
 
     *app.state
@@ -294,7 +299,7 @@ async fn existing_chat_history_does_not_require_local_device_identity() {
     let history = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         None,
     )
@@ -472,7 +477,7 @@ async fn append_evergreen_turn_with_id(
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     WorkspaceSessionStore::new(&workspace)
         .append_conversation_turn(
             chat_id,
@@ -517,7 +522,7 @@ async fn append_in_progress_evergreen_turn_with_id(
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     WorkspaceSessionStore::new(&workspace)
         .append_conversation_turn(
             chat_id,
@@ -561,7 +566,7 @@ async fn append_test_turn(
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     let metadata = acp_runner
         .map(|runner| {
             serde_json::Map::from_iter([(
@@ -617,13 +622,7 @@ async fn user_message_branch_points_keep_content_before_that_input() {
     let app = build_app();
     let agent_id = "integ_user_message_branch_point_01";
     create_agent(&app.app, agent_id, "User message branch point agent").await;
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "User message branch points",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "User message branch points").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     append_test_turn(
         &app,
@@ -747,13 +746,12 @@ async fn user_message_branch_points_keep_content_before_that_input() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn root_chats_crud_and_agent_scoped_list_match_qwenpaw_contract() {
+async fn chat_id_crud_and_agent_filtered_list_use_the_saved_header() {
     let app = build_app();
     let agent_id = "integ_chats_01";
     create_agent(&app.app, agent_id, "Chats smoke agent").await;
 
-    let created =
-        seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Integration smoke chat").await;
+    let created = seed_materialized_chat(&app, agent_id, "Integration smoke chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     assert_eq!(created["name"], "Integration smoke chat");
     assert!(created.get("session_id").is_none());
@@ -766,7 +764,7 @@ async fn root_chats_crud_and_agent_scoped_list_match_qwenpaw_contract() {
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     let session_store = WorkspaceSessionStore::new(&workspace);
     let header = session_store
         .load_chat_header(&chat_id)
@@ -775,13 +773,14 @@ async fn root_chats_crud_and_agent_scoped_list_match_qwenpaw_contract() {
         .expect("chat create should persist directory-backed session header");
     assert_eq!(header.chat_id, chat_id);
     assert_eq!(header.agent_id, agent_id);
+    assert!(header.project_id.is_none());
     assert_eq!(header.metadata.title, "Integration smoke chat");
     assert_eq!(header.metadata.preview, None);
 
     let scoped_list = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats"),
+        &format!("/api/chats?agent_id={agent_id}"),
         None,
         None,
     )
@@ -794,12 +793,23 @@ async fn root_chats_crud_and_agent_scoped_list_match_qwenpaw_contract() {
         Method::GET,
         &format!("/api/chats/{chat_id}"),
         None,
-        Some(agent_id),
+        None,
     )
     .await;
     assert_eq!(history.status(), StatusCode::OK);
     let history_body = read_json(history).await;
+    assert_eq!(history_body["agent_id"], agent_id);
     assert!(history_body["messages"].is_array());
+    let unrelated_selectors = request(
+        &app.app,
+        Method::GET,
+        &format!("/api/chats/{chat_id}?agent_id=default&project_id=unrelated"),
+        None,
+        Some("default"),
+    )
+    .await;
+    assert_eq!(unrelated_selectors.status(), StatusCode::OK);
+    assert_eq!(read_json(unrelated_selectors).await, history_body);
     assert!(history_body.get("status").is_none());
     assert!(history_body.get("active_turn").is_none());
     assert!(history_body.get("control").is_none());
@@ -813,7 +823,7 @@ async fn root_chats_crud_and_agent_scoped_list_match_qwenpaw_contract() {
             "name": "Integration smoke chat renamed",
             "collaboration_mode": "plan"
         })),
-        Some(agent_id),
+        None,
     )
     .await;
     assert_eq!(renamed.status(), StatusCode::OK);
@@ -842,7 +852,7 @@ async fn root_chats_crud_and_agent_scoped_list_match_qwenpaw_contract() {
         Method::DELETE,
         &format!("/api/chats/{chat_id}"),
         None,
-        Some(agent_id),
+        None,
     )
     .await;
     assert_eq!(deleted.status(), StatusCode::OK);
@@ -857,8 +867,7 @@ async fn chat_model_slot_preserves_thinking_strength() {
     seed_reasoning_provider(&app).await;
     let agent_id = "chat_model_reasoning_fields";
     create_agent(&app.app, agent_id, "Chat model reasoning fields").await;
-    let created =
-        seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Reasoning Slot").await;
+    let created = seed_materialized_chat(&app, agent_id, "Reasoning Slot").await;
     let chat_id = created["id"].as_str().expect("chat id");
 
     let updated = request(
@@ -893,7 +902,7 @@ async fn chat_model_slot_preserves_thinking_strength() {
         .get_or_create(agent_id)
         .await
         .expect("agent runtime");
-    let store = WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let header = store
         .load_chat_header(chat_id)
         .await
@@ -958,8 +967,8 @@ async fn chat_options_are_snapshotted_at_creation_and_owned_by_each_chat() {
     assert_eq!(updated_defaults.status(), StatusCode::OK);
     assert_eq!(read_json(updated_defaults).await["max_iters"], 19);
 
-    let chat_a = seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Options Chat A").await;
-    let chat_b = seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Options Chat B").await;
+    let chat_a = seed_materialized_chat(&app, agent_id, "Options Chat A").await;
+    let chat_b = seed_materialized_chat(&app, agent_id, "Options Chat B").await;
     let chat_a_id = chat_a["id"].as_str().expect("Chat A id");
     let chat_b_id = chat_b["id"].as_str().expect("Chat B id");
 
@@ -987,13 +996,13 @@ async fn chat_options_are_snapshotted_at_creation_and_owned_by_each_chat() {
     assert_eq!(changed_defaults.status(), StatusCode::OK);
     assert_eq!(read_json(changed_defaults).await["max_iters"], 23);
 
-    let chat_c = seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Options Chat C").await;
+    let chat_c = seed_materialized_chat(&app, agent_id, "Options Chat C").await;
     let chat_c_id = chat_c["id"].as_str().expect("Chat C id");
 
     let chat_a_config = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_a_id}/running-config"),
+        &format!("/api/chats/{chat_a_id}/running-config"),
         None,
         None,
     )
@@ -1014,7 +1023,7 @@ async fn chat_options_are_snapshotted_at_creation_and_owned_by_each_chat() {
     let updated = request(
         &app.app,
         Method::PUT,
-        &format!("/api/agents/{agent_id}/chats/{chat_a_id}/running-config"),
+        &format!("/api/chats/{chat_a_id}/running-config"),
         Some(chat_a_config),
         None,
     )
@@ -1034,7 +1043,7 @@ async fn chat_options_are_snapshotted_at_creation_and_owned_by_each_chat() {
     let other_chat = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_b_id}/running-config"),
+        &format!("/api/chats/{chat_b_id}/running-config"),
         None,
         None,
     )
@@ -1050,7 +1059,7 @@ async fn chat_options_are_snapshotted_at_creation_and_owned_by_each_chat() {
     let new_chat = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_c_id}/running-config"),
+        &format!("/api/chats/{chat_c_id}/running-config"),
         None,
         None,
     )
@@ -1071,7 +1080,7 @@ async fn chat_options_are_snapshotted_at_creation_and_owned_by_each_chat() {
         .get_or_create(agent_id)
         .await
         .expect("agent runtime");
-    assert!(WorkspaceSessionStore::new(runtime.workspace_dir())
+    assert!(WorkspaceSessionStore::new(runtime.chat_workspace_dir())
         .configuration_head_path(chat_a_id)
         .is_file());
     assert!(std::sync::Arc::ptr_eq(&original_runtime, &runtime));
@@ -1084,7 +1093,7 @@ async fn chat_options_are_snapshotted_at_creation_and_owned_by_each_chat() {
         &runtime.react_runtime().await.unwrap()
     ));
     assert_eq!(
-        WorkspaceSessionStore::new(runtime.workspace_dir())
+        WorkspaceSessionStore::new(runtime.chat_workspace_dir())
             .load_chat_running_config(chat_a_id)
             .await
             .unwrap()
@@ -1104,8 +1113,7 @@ async fn seed_materialized_chat_without_model_uses_default_model() {
     let agent_id = "chat_create_default_model";
     create_agent(&app.app, agent_id, "Chat create active model").await;
 
-    let created =
-        seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Active Model Chat").await;
+    let created = seed_materialized_chat(&app, agent_id, "Active Model Chat").await;
     let chat_id = created["id"].as_str().expect("chat id");
 
     assert_eq!(created["model"]["provider_id"], "dashscope");
@@ -1118,7 +1126,7 @@ async fn seed_materialized_chat_without_model_uses_default_model() {
         .get_or_create(agent_id)
         .await
         .expect("agent runtime");
-    let store = WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let header = store
         .load_chat_header(chat_id)
         .await
@@ -1134,62 +1142,43 @@ async fn seed_materialized_chat_without_model_uses_default_model() {
 }
 
 #[tokio::test]
-async fn unmaterialized_chat_history_uses_default_model() {
+async fn unmaterialized_chat_has_a_draft_model_but_no_history() {
     let app = build_app();
     store_default_model(&app, "dashscope", "qwen-plus").await;
-    let agent_id = "chat_draft_default_model";
-    create_agent(&app.app, agent_id, "Chat draft active model").await;
-    let chat_id = uuid::Uuid::new_v4();
+    let draft = request(
+        &app.app,
+        Method::POST,
+        "/api/chats",
+        Some(json!({"agent_id": "default"})),
+        None,
+    )
+    .await;
+    assert_eq!(draft.status(), StatusCode::OK);
+    let draft = read_json(draft).await;
+    assert_eq!(draft["model"]["provider_id"], "dashscope");
+    assert_eq!(draft["model"]["model"], "qwen-plus");
+    assert_eq!(draft["model"]["thinking_strength"], "auto");
+    let chat_id = draft["id"].as_str().unwrap();
 
     let history = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         None,
     )
     .await;
-
-    assert_eq!(history.status(), StatusCode::OK);
-    let body = read_json(history).await;
-    assert_eq!(body["model"]["provider_id"], "dashscope");
-    assert_eq!(body["model"]["model"], "qwen-plus");
-    assert_eq!(body["model"]["thinking_strength"], "auto");
-    assert!(body["messages"].as_array().is_some_and(Vec::is_empty));
-    let local_device_id = app
-        .state
-        .sync_device
-        .read()
-        .expect("sync device lock")
-        .as_ref()
-        .map(|device| hex::encode(device.device_id_short()))
-        .expect("test Device identity");
-    assert_eq!(
-        body["meta"]["authority_placement"]["device_id"],
-        local_device_id
-    );
-    assert!(body["meta"]["authority_placement"]["authority_epoch"]
-        .as_str()
-        .is_some_and(|epoch| !epoch.is_empty()));
-    assert!(body.get("status").is_none());
-    assert!(body.get("active_turn").is_none());
-    assert!(body.get("control").is_none());
-
-    let runtime = app
-        .state
-        .registry
-        .get_or_create(agent_id)
+    assert_eq!(history.status(), StatusCode::NOT_FOUND);
+    let workspace = app.state.rua_root.join("chats");
+    assert!(WorkspaceSessionStore::new(&workspace)
+        .load_chat_header(chat_id)
         .await
-        .expect("runtime");
-    assert!(
-        rua_server::services::chat_index::get(&runtime.workspace_dir(), &chat_id.to_string())
-            .await
-            .expect("read index")
-            .is_none(),
-        "reading a draft must not materialize it"
-    );
-
-    delete_agent(&app.app, agent_id).await;
+        .unwrap()
+        .is_none());
+    assert!(chat_index::get(&workspace, chat_id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -1212,7 +1201,7 @@ async fn materializing_draft_on_selected_device_preserves_selected_model() {
     let migration = request(
         &app.app,
         Method::PUT,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/authority-placement"),
+        &format!("/api/chats/{chat_id}/authority-placement"),
         Some(json!({"device_id":local_device_id})),
         None,
     )
@@ -1244,7 +1233,7 @@ async fn materializing_draft_on_selected_device_preserves_selected_model() {
         .await;
     assert!(matches!(outcome, rua_server::services::conversation_input_intake::ConversationInputDeliveryOutcome::Delivered { .. }), "{outcome:?}");
     let runtime = app.state.registry.get(agent_id).await.unwrap();
-    let header = WorkspaceSessionStore::new(runtime.workspace_dir())
+    let header = WorkspaceSessionStore::new(runtime.chat_workspace_dir())
         .load_chat_header(&chat_id.to_string())
         .await
         .unwrap()
@@ -1263,7 +1252,7 @@ async fn materializing_draft_on_selected_device_preserves_selected_model() {
     let history = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         None,
     )
@@ -1343,8 +1332,7 @@ async fn chat_model_slot_explicit_disable_maps_to_off_strength() {
     seed_reasoning_provider(&app).await;
     let agent_id = "chat_model_reasoning_disabled";
     create_agent(&app.app, agent_id, "Chat model reasoning disabled").await;
-    let created =
-        seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Reasoning Disabled").await;
+    let created = seed_materialized_chat(&app, agent_id, "Reasoning Disabled").await;
     let chat_id = created["id"].as_str().expect("chat id");
 
     let updated = request(
@@ -1407,13 +1395,12 @@ async fn chat_model_slot_accepts_gemini_budget_range_starting_at_zero() {
         .unwrap();
     let agent_id = "chat_gemini_budget_range";
     create_agent(&app.app, agent_id, "Gemini budget range").await;
-    let path = format!("/api/agents/{agent_id}/chats");
-    let created = seed_materialized_chat(&app, &path, None, "Gemini budget").await;
+    let created = seed_materialized_chat(&app, agent_id, "Gemini budget").await;
     let chat_id = created["id"].as_str().unwrap();
     let updated = request(
         &app.app,
         Method::PUT,
-        &format!("{path}/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         Some(json!({
             "model": {"provider_id":"google","model":"gemini-2.5-flash","thinking_strength":"high"}
         })),
@@ -1434,8 +1421,7 @@ async fn chat_model_switch_resets_thinking_strength_to_auto() {
     seed_reasoning_provider(&app).await;
     let agent_id = "chat_model_reasoning_reset";
     create_agent(&app.app, agent_id, "Chat model reasoning reset").await;
-    let created =
-        seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Reasoning Reset").await;
+    let created = seed_materialized_chat(&app, agent_id, "Reasoning Reset").await;
     let chat_id = created["id"].as_str().expect("chat id");
 
     let qwen = request(
@@ -1490,20 +1476,14 @@ async fn chat_history_excludes_authority_runtime_state() {
     let app = build_app();
     let agent_id = "integ_chats_active_turn";
     create_agent(&app.app, agent_id, "Active turn").await;
-    let chat = seed_materialized_chat(
-        &app,
-        &format!("/api/agents/{agent_id}/chats"),
-        None,
-        "Active Turn Chat",
-    )
-    .await;
+    let chat = seed_materialized_chat(&app, agent_id, "Active Turn Chat").await;
     let chat_id = chat["id"].as_str().expect("chat id").to_string();
 
     let active_turn = app
         .state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent(agent_id.to_string(), chat_id.clone()),
+            address: rua_core::ChatAddress::new(chat_id.clone()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: "device-local".to_string(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -1513,7 +1493,7 @@ async fn chat_history_excludes_authority_runtime_state() {
     app.state
         .conversation_authority
         .bind_turn(ConversationTurnBinding {
-            address: rua_core::ChatAddress::agent(agent_id.to_string(), chat_id.clone()),
+            address: rua_core::ChatAddress::new(chat_id.clone()),
             turn_id: active_turn.turn_id.clone(),
             user_message_id: Some("msg-active-turn".to_string()),
         })
@@ -1523,7 +1503,7 @@ async fn chat_history_excludes_authority_runtime_state() {
     let history = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         None,
     )
@@ -1540,13 +1520,7 @@ async fn chat_history_excludes_remote_and_local_runtime_state() {
     let app = build_app();
     let agent_id = "integ_chats_remote_authority_status";
     create_agent(&app.app, agent_id, "Remote authority status").await;
-    let chat = seed_materialized_chat(
-        &app,
-        &format!("/api/agents/{agent_id}/chats"),
-        None,
-        "Remote Authority Status Chat",
-    )
-    .await;
+    let chat = seed_materialized_chat(&app, agent_id, "Remote Authority Status Chat").await;
     let chat_id = chat["id"].as_str().expect("chat id").to_string();
     let workspace_dir = app
         .state
@@ -1554,11 +1528,11 @@ async fn chat_history_excludes_remote_and_local_runtime_state() {
         .get_or_create(agent_id)
         .await
         .expect("runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     update_authority_placement(
         Some(&app.state),
         &workspace_dir,
-        &rua_core::ChatAddress::agent(agent_id, &chat_id),
+        &rua_core::ChatAddress::new(&chat_id),
         ConversationAuthorityPlacement {
             device_id: "remote-authority-device".to_string(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(2, 0, [0; 8]),
@@ -1571,7 +1545,7 @@ async fn chat_history_excludes_remote_and_local_runtime_state() {
     app.state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent(agent_id.to_string(), chat_id.clone()),
+            address: rua_core::ChatAddress::new(chat_id.clone()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: "stale-local-device".to_string(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -1582,7 +1556,7 @@ async fn chat_history_excludes_remote_and_local_runtime_state() {
     let history = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         None,
     )
@@ -1603,19 +1577,13 @@ async fn queued_input_edit_delete_routes_mutate_conversation_authority() {
     let app = build_app();
     let agent_id = "integ_chats_queue_authority_routes";
     create_agent(&app.app, agent_id, "Queue authority routes").await;
-    let chat = seed_materialized_chat(
-        &app,
-        &format!("/api/agents/{agent_id}/chats"),
-        None,
-        "Queue Authority Routes Chat",
-    )
-    .await;
+    let chat = seed_materialized_chat(&app, agent_id, "Queue Authority Routes Chat").await;
     let chat_id = chat["id"].as_str().expect("chat id").to_string();
 
     app.state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent(agent_id.to_string(), chat_id.clone()),
+            address: rua_core::ChatAddress::new(chat_id.clone()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: "device-local".to_string(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -1626,7 +1594,7 @@ async fn queued_input_edit_delete_routes_mutate_conversation_authority() {
         .state
         .conversation_authority
         .enqueue_input(
-            &rua_core::ChatAddress::agent(agent_id, &chat_id),
+            &rua_core::ChatAddress::new(&chat_id),
             pending("first queued"),
             None,
         )
@@ -1636,7 +1604,7 @@ async fn queued_input_edit_delete_routes_mutate_conversation_authority() {
         .state
         .conversation_authority
         .enqueue_input(
-            &rua_core::ChatAddress::agent(agent_id, &chat_id),
+            &rua_core::ChatAddress::new(&chat_id),
             pending("second queued"),
             None,
         )
@@ -1651,10 +1619,7 @@ async fn queued_input_edit_delete_routes_mutate_conversation_authority() {
     let edit = request(
         &app.app,
         Method::PATCH,
-        &format!(
-            "/api/agents/{agent_id}/chats/{chat_id}/queue/{}",
-            second.input_id
-        ),
+        &format!("/api/chats/{chat_id}/queue/{}", second.input_id),
         Some(json!({"message": "second edited"})),
         None,
     )
@@ -1692,10 +1657,7 @@ async fn queued_input_edit_delete_routes_mutate_conversation_authority() {
     let delete = request(
         &app.app,
         Method::DELETE,
-        &format!(
-            "/api/agents/{agent_id}/chats/{chat_id}/queue/{}",
-            first.input_id
-        ),
+        &format!("/api/chats/{chat_id}/queue/{}", first.input_id),
         None,
         None,
     )
@@ -1713,10 +1675,7 @@ async fn queued_input_edit_delete_routes_mutate_conversation_authority() {
     let missing = request(
         &app.app,
         Method::PATCH,
-        &format!(
-            "/api/agents/{agent_id}/chats/{chat_id}/queue/{}",
-            first.input_id
-        ),
+        &format!("/api/chats/{chat_id}/queue/{}", first.input_id),
         Some(json!({"message": "too late"})),
         None,
     )
@@ -1733,13 +1692,7 @@ async fn send_now_targets_authority_queue_head_without_redelivering_input() {
     let app = build_app();
     let agent_id = "send_now_authority_agent";
     create_agent(&app.app, agent_id, "Send Now authority").await;
-    let chat = seed_materialized_chat(
-        &app,
-        &format!("/api/agents/{agent_id}/chats"),
-        None,
-        "Send Now Chat",
-    )
-    .await;
+    let chat = seed_materialized_chat(&app, agent_id, "Send Now Chat").await;
     let chat_id = chat["id"].as_str().expect("chat id").to_string();
     let authority_epoch_value = chat["meta"]["authority_placement"]["authority_epoch"].clone();
     let authority_epoch =
@@ -1751,14 +1704,14 @@ async fn send_now_targets_authority_queue_head_without_redelivering_input() {
         .expect("valid authority Epoch");
     let key = rua_server::streaming::StreamKey::new(
         rua_server::services::console_chat::CONSOLE_CHANNEL_ID,
-        rua_core::ChatAddress::agent(agent_id, &chat_id),
+        rua_core::ChatAddress::new(&chat_id),
         rua_server::streaming::Priority::Normal,
     );
     let (_producer_id, cancel_rx) = app.state.streams.register_active_keyed(&key).await;
     app.state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent(agent_id.to_string(), chat_id.clone()),
+            address: rua_core::ChatAddress::new(chat_id.clone()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: rua_server::services::device_context::current_sync_device_id(
                 &app.state.sync_device,
@@ -1772,7 +1725,7 @@ async fn send_now_targets_authority_queue_head_without_redelivering_input() {
         .state
         .conversation_authority
         .enqueue_input(
-            &rua_core::ChatAddress::agent(agent_id, &chat_id),
+            &rua_core::ChatAddress::new(&chat_id),
             pending("first queued"),
             None,
         )
@@ -1782,7 +1735,7 @@ async fn send_now_targets_authority_queue_head_without_redelivering_input() {
         .state
         .conversation_authority
         .enqueue_input(
-            &rua_core::ChatAddress::agent(agent_id, &chat_id),
+            &rua_core::ChatAddress::new(&chat_id),
             pending("second queued"),
             None,
         )
@@ -1792,10 +1745,7 @@ async fn send_now_targets_authority_queue_head_without_redelivering_input() {
     let non_head = request(
         &app.app,
         Method::POST,
-        &format!(
-            "/api/agents/{agent_id}/chats/{chat_id}/queue/{}/send-now",
-            second.input_id
-        ),
+        &format!("/api/chats/{chat_id}/queue/{}/send-now", second.input_id),
         Some(json!({
             "command_id": "send-now-non-head",
             "authority_epoch": authority_epoch_value.clone()
@@ -1808,10 +1758,7 @@ async fn send_now_targets_authority_queue_head_without_redelivering_input() {
     let response = request(
         &app.app,
         Method::POST,
-        &format!(
-            "/api/agents/{agent_id}/chats/{chat_id}/queue/{}/send-now",
-            first.input_id
-        ),
+        &format!("/api/chats/{chat_id}/queue/{}/send-now", first.input_id),
         Some(json!({
             "command_id": "send-now-head",
             "authority_epoch": authority_epoch_value
@@ -1846,6 +1793,7 @@ async fn source_side_chat_create_rejects_authority_placement_metadata() {
         Method::POST,
         "/api/chats",
         Some(json!({
+            "agent_id": agent_id,
             "name": "Should not materialize source-side",
             "user_id": "user-source-side-targeted-chat",
             "channel": "console",
@@ -1879,6 +1827,7 @@ async fn chat_create_rejects_remote_initial_authority() {
         Method::POST,
         "/api/chats",
         Some(json!({
+            "agent_id": agent_id,
             "name": "Must start locally",
             "authority_device_id": "0102030405060708"
         })),
@@ -1907,18 +1856,12 @@ async fn conversation_authority_placement_endpoint_is_explicit_and_cannot_be_cle
         .map(|device| hex::encode(device.device_id_short()))
         .expect("test sync device");
 
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "Authority placement update chat",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "Authority placement update chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let set = request(
         &app.app,
         Method::PUT,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/authority-placement"),
+        &format!("/api/chats/{chat_id}/authority-placement"),
         Some(json!({"device_id": local_device_id})),
         None,
     )
@@ -1945,7 +1888,7 @@ async fn conversation_authority_placement_endpoint_is_explicit_and_cannot_be_cle
     let after_set = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         None,
     )
@@ -1960,7 +1903,7 @@ async fn conversation_authority_placement_endpoint_is_explicit_and_cannot_be_cle
     let clear = request(
         &app.app,
         Method::PUT,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/authority-placement"),
+        &format!("/api/chats/{chat_id}/authority-placement"),
         Some(json!({"device_id": null})),
         None,
     )
@@ -1970,7 +1913,7 @@ async fn conversation_authority_placement_endpoint_is_explicit_and_cannot_be_cle
     let after_clear = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         None,
     )
@@ -2002,13 +1945,7 @@ async fn manual_authority_switch_advances_hlc_without_requiring_current_authorit
         .as_ref()
         .map(|device| hex::encode(device.device_id_short()))
         .expect("test sync device");
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "Authority manual switch chat",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "Authority manual switch chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let workspace_dir = app
         .state
@@ -2016,11 +1953,11 @@ async fn manual_authority_switch_advances_hlc_without_requiring_current_authorit
         .get_or_create(agent_id)
         .await
         .expect("runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     update_authority_placement(
         Some(&app.state),
         &workspace_dir,
-        &rua_core::ChatAddress::agent(agent_id, &chat_id),
+        &rua_core::ChatAddress::new(&chat_id),
         ConversationAuthorityPlacement {
             device_id: "previous-authority-device".to_string(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(7, 0, [0; 8]),
@@ -2033,7 +1970,7 @@ async fn manual_authority_switch_advances_hlc_without_requiring_current_authorit
     let switched = request(
         &app.app,
         Method::PUT,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/authority-placement"),
+        &format!("/api/chats/{chat_id}/authority-placement"),
         Some(json!({"device_id": local_device_id})),
         None,
     )
@@ -2067,7 +2004,7 @@ async fn manual_authority_switch_advances_hlc_without_requiring_current_authorit
     let tasks = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/tasks"),
+        &format!("/api/chats/{chat_id}/tasks"),
         None,
         Some(agent_id),
     )
@@ -2092,13 +2029,8 @@ async fn manual_authority_switch_rejects_non_terminal_history_boundary() {
         .as_ref()
         .map(|device| hex::encode(device.device_id_short()))
         .expect("test sync device");
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "Authority non-terminal switch chat",
-    )
-    .await;
+    let created =
+        seed_materialized_chat(&app, agent_id, "Authority non-terminal switch chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let workspace_dir = app
         .state
@@ -2106,11 +2038,11 @@ async fn manual_authority_switch_rejects_non_terminal_history_boundary() {
         .get_or_create(agent_id)
         .await
         .expect("runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     update_authority_placement(
         Some(&app.state),
         &workspace_dir,
-        &rua_core::ChatAddress::agent(agent_id, &chat_id),
+        &rua_core::ChatAddress::new(&chat_id),
         ConversationAuthorityPlacement {
             device_id: "previous-authority-device".to_string(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(4, 0, [0; 8]),
@@ -2137,7 +2069,7 @@ async fn manual_authority_switch_rejects_non_terminal_history_boundary() {
     let rejected = request(
         &app.app,
         Method::PUT,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/authority-placement"),
+        &format!("/api/chats/{chat_id}/authority-placement"),
         Some(json!({"device_id": local_device_id})),
         None,
     )
@@ -2151,7 +2083,7 @@ async fn manual_authority_switch_rejects_non_terminal_history_boundary() {
     let history = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         None,
     )
@@ -2172,13 +2104,7 @@ async fn conversation_authority_placement_update_rejects_while_turn_is_active() 
     let app = build_app();
     let agent_id = "authority_placement_active_run_agent";
     create_agent(&app.app, agent_id, "Execution target active turn agent").await;
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "Execution target active turn chat",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "Execution target active turn chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let authority_device_id = created["meta"]["authority_placement"]["device_id"]
         .as_str()
@@ -2190,7 +2116,7 @@ async fn conversation_authority_placement_update_rejects_while_turn_is_active() 
     app.state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent(agent_id.to_string(), chat_id.clone()),
+            address: rua_core::ChatAddress::new(chat_id.clone()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: authority_device_id.clone(),
             authority_epoch,
@@ -2201,7 +2127,7 @@ async fn conversation_authority_placement_update_rejects_while_turn_is_active() 
     let rejected = request(
         &app.app,
         Method::PUT,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/authority-placement"),
+        &format!("/api/chats/{chat_id}/authority-placement"),
         Some(json!({"device_id": "device-b"})),
         None,
     )
@@ -2215,7 +2141,7 @@ async fn conversation_authority_placement_update_rejects_while_turn_is_active() 
     let history = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         None,
     )
@@ -2237,13 +2163,7 @@ async fn conversation_authority_placement_update_rejects_while_acp_binding_is_ac
     let app = build_app();
     let agent_id = "authority_placement_acp_lock_agent";
     create_agent(&app.app, agent_id, "Authority placement ACP lock agent").await;
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "Execution target ACP lock chat",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "Execution target ACP lock chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let authority_device_id = created["meta"]["authority_placement"]["device_id"]
         .as_str()
@@ -2255,11 +2175,11 @@ async fn conversation_authority_placement_update_rejects_while_acp_binding_is_ac
         .get_or_create(agent_id)
         .await
         .expect("runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     persist_acp_binding(
         Some(&app.state),
         &workspace_dir,
-        &rua_core::ChatAddress::agent(agent_id, &chat_id),
+        &rua_core::ChatAddress::new(&chat_id),
         agent_id,
         AcpBindingMetadata {
             target_device_id: Some(authority_device_id),
@@ -2274,7 +2194,7 @@ async fn conversation_authority_placement_update_rejects_while_acp_binding_is_ac
     let rejected = request(
         &app.app,
         Method::PUT,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/authority-placement"),
+        &format!("/api/chats/{chat_id}/authority-placement"),
         Some(json!({"device_id": "device-b"})),
         None,
     )
@@ -2289,7 +2209,7 @@ async fn conversation_authority_placement_update_rejects_while_acp_binding_is_ac
     let history = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         None,
     )
@@ -2306,13 +2226,7 @@ async fn chat_history_read_does_not_reconcile_in_progress_turns() {
     let agent_id = "integ_chats_readonly_in_progress_01";
     create_agent(&app.app, agent_id, "Read-only in-progress agent").await;
 
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "Read-only in-progress chat",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "Read-only in-progress chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     append_in_progress_evergreen_turn_with_id(
         &app,
@@ -2357,7 +2271,7 @@ async fn chat_history_read_does_not_reconcile_in_progress_turns() {
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     let store = WorkspaceSessionStore::new(&workspace);
     let turns = store
         .read_turn_range(&chat_id, 1, usize::MAX)
@@ -2386,7 +2300,7 @@ async fn chat_history_read_does_not_reconcile_in_progress_turns() {
         app.state
             .security
             .approval_authority()
-            .list_pending_for_address(&rua_core::ChatAddress::agent(agent_id, &chat_id))
+            .list_pending_for_address(&rua_core::ChatAddress::new(&chat_id))
             .await
             .is_empty(),
         "Chat History read must not recreate pending approval requests"
@@ -2419,8 +2333,7 @@ async fn chat_history_reads_evergreen_message_log_when_legacy_session_is_absent(
     let agent_id = "integ_chats_evergreen_history_01";
     create_agent(&app.app, agent_id, "Evergreen history agent").await;
 
-    let created =
-        seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Evergreen history chat").await;
+    let created = seed_materialized_chat(&app, agent_id, "Evergreen history chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     append_evergreen_turn(
         &app,
@@ -2486,13 +2399,7 @@ async fn chat_history_paginates_by_complete_evergreen_turns() {
     let agent_id = "integ_chats_evergreen_turn_page_01";
     create_agent(&app.app, agent_id, "Evergreen turn page agent").await;
 
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "Evergreen turn page chat",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "Evergreen turn page chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
 
     for turn in 1..=3 {
@@ -2561,20 +2468,26 @@ async fn chat_history_paginates_by_complete_evergreen_turns() {
     assert_eq!(previous_messages[1]["id"], "evergreen-page-assistant-1");
 
     let located = request(
-        &app.app, Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}?turn_limit=1&around_turn_id=evergreen-page-turn-1"),
-        None, None,
-    ).await;
+        &app.app,
+        Method::GET,
+        &format!("/api/chats/{chat_id}?turn_limit=1&around_turn_id=evergreen-page-turn-1"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(located.status(), StatusCode::OK);
     let located = read_json(located).await;
     assert_eq!(located["oldest_turn_ordinal"], 1);
     assert_eq!(located["newest_turn_ordinal"], 1);
     assert_eq!(located["messages"].as_array().unwrap().len(), 2);
     let invalid = request(
-        &app.app, Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}?before_turn_ordinal=2&around_turn_id=evergreen-page-turn-1"),
-        None, None,
-    ).await;
+        &app.app,
+        Method::GET,
+        &format!("/api/chats/{chat_id}?before_turn_ordinal=2&around_turn_id=evergreen-page-turn-1"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     delete_agent(&app.app, agent_id).await;
@@ -2586,8 +2499,7 @@ async fn chat_history_projects_pending_ask_user_as_answer_request_not_approval()
     let agent_id = "integ_chats_pending_ask_user_01";
     create_agent(&app.app, agent_id, "Pending ask_user history agent").await;
 
-    let created =
-        seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Pending ask_user chat").await;
+    let created = seed_materialized_chat(&app, agent_id, "Pending ask_user chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let workspace = app
         .state
@@ -2595,7 +2507,7 @@ async fn chat_history_projects_pending_ask_user_as_answer_request_not_approval()
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     let store = WorkspaceSessionStore::new(&workspace);
     let mut header = store
         .load_chat_header(&chat_id)
@@ -2653,13 +2565,7 @@ async fn chat_history_does_not_project_tool_approval_cards_from_header_or_author
     let agent_id = "integ_chats_pending_tool_approval_01";
     create_agent(&app.app, agent_id, "Pending tool approval history agent").await;
 
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "Pending tool approval chat",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "Pending tool approval chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let workspace = app
         .state
@@ -2667,7 +2573,7 @@ async fn chat_history_does_not_project_tool_approval_cards_from_header_or_author
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     let store = WorkspaceSessionStore::new(&workspace);
     let mut header = store
         .load_chat_header(&chat_id)
@@ -2692,9 +2598,7 @@ async fn chat_history_does_not_project_tool_approval_cards_from_header_or_author
         .security
         .approval_authority()
         .create_request(ApprovalRequestInput {
-            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::agent(
-                agent_id, &chat_id,
-            )),
+            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new(&chat_id)),
             agent_id: agent_id.into(),
             turn_id: chat_id.clone(),
             tool_call_id: "call-1".into(),
@@ -2711,9 +2615,7 @@ async fn chat_history_does_not_project_tool_approval_cards_from_header_or_author
         .security
         .approval_authority()
         .create_request(ApprovalRequestInput {
-            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::agent(
-                agent_id, &chat_id,
-            )),
+            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new(&chat_id)),
             agent_id: agent_id.into(),
             turn_id: chat_id.clone(),
             tool_call_id: "call-2".into(),
@@ -2753,9 +2655,9 @@ async fn chat_history_does_not_project_tool_approval_cards_from_header_or_author
     let snapshot = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/approvals/snapshot?chat_id={chat_id}"),
+        &format!("/api/chats/{chat_id}/approvals/snapshot"),
         None,
-        Some(agent_id),
+        None,
     )
     .await;
     assert_eq!(snapshot.status(), StatusCode::OK);
@@ -2781,8 +2683,7 @@ async fn chat_history_exposes_evergreen_turn_and_selected_variant_metadata() {
     let agent_id = "integ_chats_evergreen_variant_01";
     create_agent(&app.app, agent_id, "Evergreen variant history agent").await;
 
-    let created =
-        seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Evergreen variant chat").await;
+    let created = seed_materialized_chat(&app, agent_id, "Evergreen variant chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let workspace = app
         .state
@@ -2790,7 +2691,7 @@ async fn chat_history_exposes_evergreen_turn_and_selected_variant_metadata() {
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     WorkspaceSessionStore::new(&workspace)
         .append_conversation_turn(
             &chat_id,
@@ -2873,13 +2774,7 @@ async fn chat_history_exposes_in_progress_turn_status_for_mid_turn_records() {
     let agent_id = "integ_chats_in_progress_turn_status_01";
     create_agent(&app.app, agent_id, "In-progress turn status agent").await;
 
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "In-progress turn status chat",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "In-progress turn status chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let workspace = app
         .state
@@ -2887,7 +2782,7 @@ async fn chat_history_exposes_in_progress_turn_status_for_mid_turn_records() {
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
 
     WorkspaceSessionStore::new(&workspace)
         .append_conversation_turn(
@@ -2964,13 +2859,7 @@ async fn acp_history_preview_persists_as_independent_ui_only_turn() {
     let agent_id = "integ_chats_acp_history_preview_01";
     create_agent(&app.app, agent_id, "ACP history preview agent").await;
 
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "ACP history preview chat",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "ACP history preview chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     append_evergreen_turn(
         &app,
@@ -2998,7 +2887,7 @@ async fn acp_history_preview_persists_as_independent_ui_only_turn() {
     let response = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/acp-history-preview"),
+        &format!("/api/chats/{chat_id}/acp-history-preview"),
         Some(json!({
             "preview_id": 7,
             "text": "previous ACP transcript",
@@ -3015,7 +2904,7 @@ async fn acp_history_preview_persists_as_independent_ui_only_turn() {
     let duplicate = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}/acp-history-preview"),
+        &format!("/api/chats/{chat_id}/acp-history-preview"),
         Some(json!({
             "preview_id": 7,
             "text": "previous ACP transcript",
@@ -3031,7 +2920,7 @@ async fn acp_history_preview_persists_as_independent_ui_only_turn() {
     let history_response = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         None,
     )
@@ -3073,7 +2962,7 @@ async fn acp_history_preview_persists_as_independent_ui_only_turn() {
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     let turns = WorkspaceSessionStore::new(&workspace)
         .read_turn_range(&chat_id, 1, usize::MAX)
         .await
@@ -3097,13 +2986,7 @@ async fn chat_history_projects_evergreen_response_variants_in_place() {
     let agent_id = "integ_chats_evergreen_variants_projection_01";
     create_agent(&app.app, agent_id, "Evergreen variant projection agent").await;
 
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "Evergreen variant projection chat",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "Evergreen variant projection chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let workspace = app
         .state
@@ -3111,7 +2994,7 @@ async fn chat_history_projects_evergreen_response_variants_in_place() {
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     let store = WorkspaceSessionStore::new(&workspace);
     store
         .append_conversation_turn(
@@ -3230,7 +3113,7 @@ async fn chat_history_projects_evergreen_response_variants_in_place() {
     let selected = request(
         &app.app,
         Method::PUT,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         Some(json!({
             "turn_id": "evergreen-turn-variant-projection-1",
             "selected_variant_id": "evergreen-assistant-first"
@@ -3287,7 +3170,7 @@ async fn chat_history_projects_evergreen_response_variants_in_place() {
     let rejected = request(
         &app.app,
         Method::PUT,
-        &format!("/api/agents/{agent_id}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         Some(json!({
             "turn_id": "evergreen-turn-variant-projection-1",
             "selected_variant_id": "not-a-real-variant"
@@ -3306,13 +3189,7 @@ async fn chat_history_keeps_single_react_run_segments_in_one_response_variant() 
     let agent_id = "integ_chats_evergreen_react_segments_01";
     create_agent(&app.app, agent_id, "Evergreen ReAct segment agent").await;
 
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "Evergreen ReAct segment chat",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "Evergreen ReAct segment chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let workspace = app
         .state
@@ -3320,7 +3197,7 @@ async fn chat_history_keeps_single_react_run_segments_in_one_response_variant() 
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     let store = WorkspaceSessionStore::new(&workspace);
     store
         .append_conversation_turn(
@@ -3441,13 +3318,7 @@ async fn chat_history_preserves_fine_grained_message_ids() {
     let agent_id = "integ_chats_evergreen_split_metadata_01";
     create_agent(&app.app, agent_id, "Evergreen split metadata agent").await;
 
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "Evergreen split metadata chat",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "Evergreen split metadata chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let workspace = app
         .state
@@ -3455,7 +3326,7 @@ async fn chat_history_preserves_fine_grained_message_ids() {
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     WorkspaceSessionStore::new(&workspace)
         .append_conversation_turn(
             &chat_id,
@@ -3561,13 +3432,7 @@ async fn put_chat_updates_evergreen_selected_variant_without_legacy_session() {
     let agent_id = "integ_chats_evergreen_select_variant_01";
     create_agent(&app.app, agent_id, "Evergreen selected variant agent").await;
 
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "Evergreen selected variant chat",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "Evergreen selected variant chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let workspace = app
         .state
@@ -3575,7 +3440,7 @@ async fn put_chat_updates_evergreen_selected_variant_without_legacy_session() {
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     WorkspaceSessionStore::new(&workspace)
         .append_conversation_turn(
             &chat_id,
@@ -3689,7 +3554,7 @@ async fn chat_list_reads_sqlite_index_with_pinning_and_pagination() {
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     let now = Utc::now();
     let chats = json!({
         "version": 1,
@@ -3728,12 +3593,12 @@ async fn chat_list_reads_sqlite_index_with_pinning_and_pagination() {
             }
         ]
     });
-    seed_chats_from_json(&workspace, &chats).await;
+    seed_chats_from_json(&workspace, agent_id, &chats).await;
 
     let page = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats?offset=0&limit=1"),
+        &format!("/api/chats?agent_id={agent_id}&offset=0&limit=1"),
         None,
         None,
     )
@@ -3750,7 +3615,7 @@ async fn chat_list_reads_sqlite_index_with_pinning_and_pagination() {
     let page_from_index = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats?offset=1&limit=1"),
+        &format!("/api/chats?agent_id={agent_id}&offset=1&limit=1"),
         None,
         None,
     )
@@ -3776,18 +3641,12 @@ async fn chat_list_does_not_join_conversation_authority_runtime_state() {
     let app = build_app();
     let agent_id = "integ_chats_index_only_list_01";
     create_agent(&app.app, agent_id, "Index-only chat list agent").await;
-    let created = seed_materialized_chat(
-        &app,
-        &format!("/api/agents/{agent_id}/chats"),
-        None,
-        "Index only",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "Index only").await;
     let chat_id = created["id"].as_str().expect("chat id");
     app.state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::agent(agent_id, chat_id),
+            address: rua_core::ChatAddress::new(chat_id),
             driver: ConversationDriverKind::Rua,
             authority_device_id: "device-local".to_string(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
@@ -3798,7 +3657,7 @@ async fn chat_list_does_not_join_conversation_authority_runtime_state() {
     let response = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats?offset=0&limit=10"),
+        &format!("/api/chats?agent_id={agent_id}&offset=0&limit=10"),
         None,
         None,
     )
@@ -3814,7 +3673,7 @@ async fn chat_list_does_not_join_conversation_authority_runtime_state() {
     assert_eq!(listed["status"], "idle");
     app.state
         .conversation_authority
-        .finish_active_turn(&rua_core::ChatAddress::agent(agent_id, chat_id))
+        .finish_active_turn(&rua_core::ChatAddress::new(chat_id))
         .await;
     delete_agent(&app.app, agent_id).await;
 }
@@ -3825,13 +3684,7 @@ async fn chat_history_reads_runtime_notes_from_message_log_without_legacy_sessio
     let agent_id = "integ_chats_evergreen_runtime_notes_01";
     create_agent(&app.app, agent_id, "Evergreen runtime note agent").await;
 
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "Evergreen runtime note chat",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "Evergreen runtime note chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let workspace = app
         .state
@@ -3839,7 +3692,7 @@ async fn chat_history_reads_runtime_notes_from_message_log_without_legacy_sessio
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     let store = WorkspaceSessionStore::new(&workspace);
     store
         .append_conversation_turn(
@@ -3918,8 +3771,7 @@ async fn deleting_chat_cancels_non_terminal_background_tasks_for_chat_id() {
     let agent_id = "integ_chats_task_delete_01";
     create_agent(&app.app, agent_id, "Chat task delete agent").await;
 
-    let created =
-        seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Delete task cleanup").await;
+    let created = seed_materialized_chat(&app, agent_id, "Delete task cleanup").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let (owner, task_id) =
         create_blocking_task(&app.state, agent_id, &chat_id, "delete cleanup task").await;
@@ -3949,8 +3801,7 @@ async fn deleting_chat_removes_local_session_files() {
     let agent_id = "integ_chats_delete_files_01";
     create_agent(&app.app, agent_id, "Chat file delete agent").await;
 
-    let created =
-        seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Delete local files").await;
+    let created = seed_materialized_chat(&app, agent_id, "Delete local files").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
 
     let workspace = app
@@ -3959,7 +3810,7 @@ async fn deleting_chat_removes_local_session_files() {
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     let store = WorkspaceSessionStore::new(&workspace);
     append_evergreen_turn(
         &app,
@@ -4000,8 +3851,7 @@ async fn rollback_uses_evergreen_turn_index_without_creating_legacy_session() {
     let agent_id = "integ_chats_evergreen_rollback_01";
     create_agent(&app.app, agent_id, "Evergreen rollback agent").await;
 
-    let created =
-        seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Evergreen rollback").await;
+    let created = seed_materialized_chat(&app, agent_id, "Evergreen rollback").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let workspace = app
         .state
@@ -4009,7 +3859,7 @@ async fn rollback_uses_evergreen_turn_index_without_creating_legacy_session() {
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
 
     append_evergreen_turn_with_id(
         &app,
@@ -4151,10 +4001,7 @@ async fn rollback_uses_evergreen_turn_index_without_creating_legacy_session() {
     let replay = app
         .state
         .active_stream_broadcast_hub
-        .subscribe_chat(
-            &rua_core::ChatAddress::agent(agent_id, &chat_id),
-            &Default::default(),
-        )
+        .subscribe_chat(&rua_core::ChatAddress::new(&chat_id), &Default::default())
         .await
         .replay;
     assert!(
@@ -4241,8 +4088,7 @@ async fn rollback_and_branch_reject_while_acp_binding_is_active() {
     let app = build_app();
     let agent_id = "integ_chats_active_acp_branch_lock_01";
     create_agent(&app.app, agent_id, "Active ACP branch lock agent").await;
-    let created =
-        seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Active ACP branch lock").await;
+    let created = seed_materialized_chat(&app, agent_id, "Active ACP branch lock").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let authority_device_id = created["meta"]["authority_placement"]["device_id"]
         .as_str()
@@ -4265,11 +4111,11 @@ async fn rollback_and_branch_reject_while_acp_binding_is_active() {
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     persist_acp_binding(
         Some(&app.state),
         &workspace,
-        &rua_core::ChatAddress::agent(agent_id, &chat_id),
+        &rua_core::ChatAddress::new(&chat_id),
         agent_id,
         AcpBindingMetadata {
             target_device_id: Some(authority_device_id),
@@ -4308,13 +4154,7 @@ async fn branch_rejects_interior_acp_segment_turn_but_accepts_segment_tail() {
     let app = build_app();
     let agent_id = "integ_chats_acp_segment_branch_01";
     create_agent(&app.app, agent_id, "ACP segment branch agent").await;
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "ACP segment branch source",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "ACP segment branch source").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
 
     append_test_turn(
@@ -4445,13 +4285,7 @@ async fn branch_copies_evergreen_selected_prefix_to_new_chat_directory() {
     let agent_id = "integ_chats_evergreen_branch_01";
     create_agent(&app.app, agent_id, "Evergreen branch agent").await;
 
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "Evergreen branch source",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "Evergreen branch source").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let workspace = app
         .state
@@ -4459,12 +4293,12 @@ async fn branch_copies_evergreen_selected_prefix_to_new_chat_directory() {
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     let task_runner = Arc::new(BranchBlockingUnifiedTaskRunner {
         started: tokio::sync::Notify::new(),
     });
     app.state.task_runtime.register_runner(task_runner.clone());
-    let source_task_owner = rua_task::TaskOwner::new(agent_id, &chat_id);
+    let source_task_owner = rua_task::TaskOwner::new(&chat_id);
     let source_task_id = app
         .state
         .task_runtime
@@ -4660,7 +4494,7 @@ async fn branch_copies_evergreen_selected_prefix_to_new_chat_directory() {
     let branch_tasks = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats/{branch_chat_id}/tasks"),
+        &format!("/api/chats/{branch_chat_id}/tasks"),
         None,
         Some(agent_id),
     )
@@ -4781,13 +4615,7 @@ async fn branch_copies_runtime_notes_in_chronology_through_selected_response_bou
     let agent_id = "integ_chats_runtime_note_branch_01";
     create_agent(&app.app, agent_id, "Runtime Note branch agent").await;
 
-    let created = seed_materialized_chat(
-        &app,
-        "/api/chats",
-        Some(agent_id),
-        "Runtime Note branch source",
-    )
-    .await;
+    let created = seed_materialized_chat(&app, agent_id, "Runtime Note branch source").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let workspace = app
         .state
@@ -4795,7 +4623,7 @@ async fn branch_copies_runtime_notes_in_chronology_through_selected_response_bou
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     let store = WorkspaceSessionStore::new(&workspace);
 
     append_evergreen_turn_with_id(
@@ -5027,7 +4855,7 @@ async fn put_chat_accepts_partial_rename_but_rejects_read_only_fields() {
     let agent_id = "integ_chat_update_contract_01";
     create_agent(&app.app, agent_id, "Chat update contract agent").await;
 
-    let created = seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Old Chat").await;
+    let created = seed_materialized_chat(&app, agent_id, "Old Chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let user_id = created["user_id"].as_str().expect("user id").to_string();
     let channel = created["channel"].as_str().expect("channel").to_string();
@@ -5099,15 +4927,17 @@ async fn empty_put_touches_chat_without_overwriting_renamed_title() {
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
+    let chat_id = uuid::Uuid::new_v4().to_string();
     let stale_updated_at = Utc::now() - ChronoDuration::days(1);
     seed_chats_from_json(
         &workspace,
+        agent_id,
         &json!({
             "version": 1,
             "chats": [
                 {
-                    "id": "touch-chat",
+                    "id": chat_id,
                     "name": "User Renamed Chat",
                     "user_id": "user-touch",
                     "channel": "console",
@@ -5126,7 +4956,7 @@ async fn empty_put_touches_chat_without_overwriting_renamed_title() {
     let touched = request(
         &app.app,
         Method::PUT,
-        "/api/chats/touch-chat",
+        &format!("/api/chats/{chat_id}"),
         Some(json!({})),
         Some(agent_id),
     )
@@ -5137,7 +4967,8 @@ async fn empty_put_touches_chat_without_overwriting_renamed_title() {
     assert!(touched_body.get("session_id").is_none());
     assert_eq!(touched_body["user_id"], "user-touch");
     assert_eq!(touched_body["channel"], "console");
-    assert_eq!(touched_body["meta"], json!({"source": "fixture"}));
+    assert_eq!(touched_body["meta"]["source"], "fixture");
+    assert_eq!(touched_body["agent_id"], agent_id);
     let updated_at = chrono::DateTime::parse_from_rfc3339(
         touched_body["updated_at"]
             .as_str()
@@ -5154,7 +4985,7 @@ async fn empty_put_touches_chat_without_overwriting_renamed_title() {
         .as_array()
         .expect("chats array")
         .iter()
-        .find(|row| row["id"] == "touch-chat")
+        .find(|row| row["id"] == chat_id)
         .expect("chat still exists")
         .clone();
     assert_eq!(persisted["name"], "User Renamed Chat");
@@ -5176,8 +5007,7 @@ async fn chat_history_title_falls_back_to_index_when_header_is_placeholder_id() 
     let agent_id = "integ_chat_history_title_fallback";
     create_agent(&app.app, agent_id, "Chat history title fallback agent").await;
 
-    let created =
-        seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Synced Chat Title").await;
+    let created = seed_materialized_chat(&app, agent_id, "Synced Chat Title").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
     let workspace = app
         .state
@@ -5185,7 +5015,7 @@ async fn chat_history_title_falls_back_to_index_when_header_is_placeholder_id() 
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     let store = WorkspaceSessionStore::new(&workspace);
     let mut header = store
         .load_chat_header(&chat_id)
@@ -5219,8 +5049,8 @@ async fn root_batch_delete_returns_qwenpaw_deleted_flag() {
     let agent_id = "integ_chats_batch_01";
     create_agent(&app.app, agent_id, "Chats batch smoke agent").await;
 
-    let chat_a = seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Batch chat 1").await;
-    let chat_b = seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Batch chat 2").await;
+    let chat_a = seed_materialized_chat(&app, agent_id, "Batch chat 1").await;
+    let chat_b = seed_materialized_chat(&app, agent_id, "Batch chat 2").await;
     let chat_ids = vec![
         chat_a["id"].as_str().expect("chat a id").to_string(),
         chat_b["id"].as_str().expect("chat b id").to_string(),
@@ -5254,30 +5084,37 @@ async fn root_batch_delete_returns_qwenpaw_deleted_flag() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_scoped_create_list_batch_delete_match_qwenpaw_contract() {
+async fn agent_filtered_list_and_batch_delete_preserve_other_chats() {
     let app = build_app();
     let agent_id = "integ_scoped_chats_batch_01";
     create_agent(&app.app, agent_id, "Scoped chats batch agent").await;
-    let base = format!("/api/agents/{agent_id}");
 
-    let chat_a =
-        seed_materialized_chat(&app, &format!("{base}/chats"), None, "Scoped batch chat 1").await;
-    let chat_b =
-        seed_materialized_chat(&app, &format!("{base}/chats"), None, "Scoped batch chat 2").await;
+    let chat_a = seed_materialized_chat(&app, agent_id, "Scoped batch chat 1").await;
+    let chat_b = seed_materialized_chat(&app, agent_id, "Scoped batch chat 2").await;
+    let other = seed_materialized_chat(&app, "default", "Other agent chat").await;
+    let other_id = other["id"].as_str().unwrap().to_string();
     let chat_ids = vec![
         chat_a["id"].as_str().expect("chat a id").to_string(),
         chat_b["id"].as_str().expect("chat b id").to_string(),
     ];
 
-    let before = request(&app.app, Method::GET, &format!("{base}/chats"), None, None).await;
+    let before = request(
+        &app.app,
+        Method::GET,
+        &format!("/api/chats?agent_id={agent_id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(before.status(), StatusCode::OK);
     let before_ids = ids(&read_json(before).await);
     assert!(chat_ids.iter().all(|id| before_ids.contains(id)));
+    assert!(!before_ids.contains(&other_id));
 
     let batch = request(
         &app.app,
         Method::POST,
-        &format!("{base}/chats/batch-delete"),
+        "/api/chats/batch-delete",
         Some(json!(chat_ids)),
         None,
     )
@@ -5288,29 +5125,44 @@ async fn agent_scoped_create_list_batch_delete_match_qwenpaw_contract() {
     assert_eq!(body["success"], true);
     assert_eq!(body["deleted_count"], 2);
 
-    let after = request(&app.app, Method::GET, &format!("{base}/chats"), None, None).await;
+    let after = request(
+        &app.app,
+        Method::GET,
+        &format!("/api/chats?agent_id={agent_id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(after.status(), StatusCode::OK);
     let after_ids = ids(&read_json(after).await);
     assert!(chat_ids.iter().all(|id| !after_ids.contains(id)));
+
+    let other_history = request(
+        &app.app,
+        Method::GET,
+        &format!("/api/chats/{other_id}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(other_history.status(), StatusCode::OK);
 
     delete_agent(&app.app, agent_id).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_scoped_put_get_delete_repeat_delete_404() {
+async fn chat_id_put_get_delete_repeat_delete_404() {
     let app = build_app();
     let agent_id = "integ_scoped_chat_crud_01";
     create_agent(&app.app, agent_id, "Scoped single chat agent").await;
-    let base = format!("/api/agents/{agent_id}");
 
-    let created =
-        seed_materialized_chat(&app, &format!("{base}/chats"), None, "Scoped chat original").await;
+    let created = seed_materialized_chat(&app, agent_id, "Scoped chat original").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
 
     let renamed = request(
         &app.app,
         Method::PUT,
-        &format!("{base}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         Some(json!({ "name": "Scoped chat renamed", "tag": "yellow" })),
         None,
     )
@@ -5323,7 +5175,7 @@ async fn agent_scoped_put_get_delete_repeat_delete_404() {
     let history = request(
         &app.app,
         Method::GET,
-        &format!("{base}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         None,
     )
@@ -5335,7 +5187,14 @@ async fn agent_scoped_put_get_delete_repeat_delete_404() {
     assert!(history_body.get("active_turn").is_none());
     assert!(history_body.get("control").is_none());
 
-    let list = request(&app.app, Method::GET, &format!("{base}/chats"), None, None).await;
+    let list = request(
+        &app.app,
+        Method::GET,
+        &format!("/api/chats?agent_id={agent_id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(list.status(), StatusCode::OK);
     let chats_by_id: std::collections::HashMap<_, _> = read_json(list)
         .await
@@ -5360,7 +5219,7 @@ async fn agent_scoped_put_get_delete_repeat_delete_404() {
     let yellow_list = request(
         &app.app,
         Method::GET,
-        &format!("{base}/chats?tag=yellow"),
+        &format!("/api/chats?agent_id={agent_id}&tag=yellow"),
         None,
         None,
     )
@@ -5374,7 +5233,7 @@ async fn agent_scoped_put_get_delete_repeat_delete_404() {
     let red_list = request(
         &app.app,
         Method::GET,
-        &format!("{base}/chats?tag=red"),
+        &format!("/api/chats?agent_id={agent_id}&tag=red"),
         None,
         None,
     )
@@ -5389,7 +5248,7 @@ async fn agent_scoped_put_get_delete_repeat_delete_404() {
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     let session_store = WorkspaceSessionStore::new(&workspace);
     let header = session_store
         .load_chat_header(&chat_id)
@@ -5406,7 +5265,7 @@ async fn agent_scoped_put_get_delete_repeat_delete_404() {
     let deleted = request(
         &app.app,
         Method::DELETE,
-        &format!("{base}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         None,
     )
@@ -5420,7 +5279,7 @@ async fn agent_scoped_put_get_delete_repeat_delete_404() {
     let deleted_again = request(
         &app.app,
         Method::DELETE,
-        &format!("{base}/chats/{chat_id}"),
+        &format!("/api/chats/{chat_id}"),
         None,
         None,
     )
@@ -5441,8 +5300,8 @@ async fn pin_order_routes_return_success_and_pinned_chats_sort_first() {
     let agent_id = "integ_pin_order_agent";
     create_agent(&app.app, agent_id, "Pin order agent").await;
 
-    let chat_a = seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Pinned A").await;
-    let chat_b = seed_materialized_chat(&app, "/api/chats", Some(agent_id), "Pinned B").await;
+    let chat_a = seed_materialized_chat(&app, agent_id, "Pinned A").await;
+    let chat_b = seed_materialized_chat(&app, agent_id, "Pinned B").await;
     let chat_a_id = chat_a["id"].as_str().expect("chat a id").to_string();
     let chat_b_id = chat_b["id"].as_str().expect("chat b id").to_string();
 
@@ -5480,7 +5339,7 @@ async fn pin_order_routes_return_success_and_pinned_chats_sort_first() {
     let scoped_pin = request(
         &app.app,
         Method::PUT,
-        &format!("/api/agents/{agent_id}/chats/pin-order"),
+        "/api/chats/pin-order",
         Some(json!([
             {"id": chat_a_id, "pin_order": 30},
             {"id": chat_b_id, "pin_order": 5}
@@ -5494,7 +5353,7 @@ async fn pin_order_routes_return_success_and_pinned_chats_sort_first() {
     let scoped_list = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_id}/chats"),
+        &format!("/api/chats?agent_id={agent_id}"),
         None,
         None,
     )
@@ -5551,7 +5410,7 @@ async fn unpinned_chat_list_sorts_by_updated_at_not_created_at() {
         .get_or_create(agent_id)
         .await
         .expect("workspace runtime")
-        .workspace_dir();
+        .chat_workspace_dir();
     let now = Utc::now();
     let older_created = now - ChronoDuration::days(7);
     let newer_created = now - ChronoDuration::days(1);
@@ -5560,6 +5419,7 @@ async fn unpinned_chat_list_sorts_by_updated_at_not_created_at() {
 
     seed_chats_from_json(
         &workspace,
+        agent_id,
         &json!({
             "version": 1,
             "chats": [
@@ -5599,16 +5459,16 @@ async fn unpinned_chat_list_sorts_by_updated_at_not_created_at() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn metadata_get_returns_archived_chat_without_history_or_scope_materialization() {
+async fn metadata_get_reads_archived_chat_without_opening_history_or_agent_workspace() {
     let test = build_app();
     let agent_id = "metadata-owner";
     let other_id = "metadata-other";
     create_agent(&test.app, agent_id, "Metadata owner").await;
     create_agent(&test.app, other_id, "Metadata other").await;
     let chat_id = "00000000-0000-4000-8000-000000000913";
-    let workspace = test.state.rua_root.join("workspaces").join(agent_id);
+    let workspace = test.state.rua_root.join("chats");
     let other_workspace = test.state.rua_root.join("workspaces").join(other_id);
-    let uri = format!("/api/agents/{agent_id}/chats/{chat_id}/metadata");
+    let uri = format!("/api/chats/{chat_id}/metadata");
 
     let missing = request(&test.app, Method::GET, &uri, None, None).await;
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
@@ -5637,6 +5497,7 @@ async fn metadata_get_returns_archived_chat_without_history_or_scope_materializa
     .await
     .unwrap();
     let history_path = workspace.join("sessions").join(chat_id);
+    std::fs::create_dir_all(history_path.parent().unwrap()).unwrap();
     std::fs::write(&history_path, b"not a conversation directory").unwrap();
     let response = request(&test.app, Method::GET, &uri, None, Some("default")).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -5656,13 +5517,13 @@ async fn metadata_get_returns_archived_chat_without_history_or_scope_materializa
         let response = request(
             &test.app,
             Method::GET,
-            &format!("/api/agents/{owner}/chats/{chat_id}/metadata"),
+            &format!("/api/chats/{chat_id}/metadata?agent_id={owner}"),
             None,
             None,
         )
         .await;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        assert!(read_json(response).await["detail"].is_string());
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(read_json(response).await["id"], chat_id);
     }
     assert!(!other_workspace.join("chat-index.sqlite").exists());
     assert!(!test
@@ -5677,8 +5538,8 @@ async fn draft_creation_and_missing_update_do_not_materialize_chat() {
     let response = request(
         &app.app,
         Method::POST,
-        "/api/agents/default/chats",
-        Some(json!({"name":"draft only"})),
+        "/api/chats",
+        Some(json!({"name":"draft only","agent_id":"default"})),
         None,
     )
     .await;
@@ -5686,19 +5547,21 @@ async fn draft_creation_and_missing_update_do_not_materialize_chat() {
     let draft = read_json(response).await;
     let id = draft["id"].as_str().unwrap();
     let runtime = app.state.registry.get_or_create("default").await.unwrap();
-    let store = WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     assert!(
         store.load_chat_header(id).await.unwrap().is_none(),
         "minting a draft address must not create a Chat"
     );
-    assert!(rua_session::chat_index::get(&runtime.workspace_dir(), id)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        rua_session::chat_index::get(&runtime.chat_workspace_dir(), id)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let updated = request(
         &app.app,
         Method::PUT,
-        &format!("/api/agents/default/chats/{id}"),
+        &format!("/api/chats/{id}"),
         Some(json!({"name":"cannot create through update"})),
         None,
     )
@@ -5711,15 +5574,13 @@ async fn draft_creation_and_missing_update_do_not_materialize_chat() {
 async fn idle_chat_shutdown_does_not_persist_background_continuation_stop() {
     use rua_workspace::AgentWorkAuthority;
     let app = build_app();
-    let chat =
-        seed_materialized_chat(&app, "/api/agents/default/chats", None, "idle-shutdown").await;
-    let address = rua_core::ChatAddress::agent("default", chat["id"].as_str().unwrap());
+    let chat = seed_materialized_chat(&app, "default", "idle-shutdown").await;
+    let address = rua_core::ChatAddress::new(chat["id"].as_str().unwrap());
     let work = rua_server::services::workspace_work_lifecycle::WorkspaceWorkAuthority::new(
         app.state.conversation_authority.clone(),
         app.state.streams.clone(),
         app.state.task_runtime.clone(),
         rua_workspace::RuaRoot::new(&app.state.rua_root),
-        None,
     );
     work.begin_shutdown("default").await.unwrap();
     assert!(

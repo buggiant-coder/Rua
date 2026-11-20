@@ -12,9 +12,9 @@ pub struct TaskOwner {
 }
 
 impl TaskOwner {
-    pub fn new(agent_id: impl Into<String>, chat_id: impl Into<String>) -> Self {
+    pub fn new(chat_id: impl Into<String>) -> Self {
         Self {
-            chat_address: ChatAddress::agent(agent_id.into(), chat_id.into()),
+            chat_address: ChatAddress::new(chat_id.into()),
         }
     }
 
@@ -26,18 +26,11 @@ impl TaskOwner {
         self.chat_address.chat_id().as_str()
     }
 
-    pub fn agent_id(&self) -> Option<&str> {
-        self.chat_address.agent_id().map(|id| id.as_str())
-    }
-
     pub fn identity_key(&self) -> String {
         self.chat_address.identity_key()
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {
-        if self.chat_address.scope().owner_id().trim().is_empty() {
-            return Err("owner Scope id must not be empty".to_string());
-        }
         if self.chat_id().trim().is_empty() {
             return Err("owner chat_id must not be empty".to_string());
         }

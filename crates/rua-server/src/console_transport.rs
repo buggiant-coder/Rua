@@ -148,21 +148,11 @@ fn allowed(method: &str, path: &str) -> bool {
         ) | ("GET", ["agents", _, "approvals", "snapshot"])
             | (
                 "GET",
-                ["agents" | "projects", _, "chats", _, "console", "activity"]
-                    | [
-                        "agents" | "projects",
-                        _,
-                        "chats",
-                        _,
-                        "approvals",
-                        "snapshot"
-                    ]
-                    | ["agents" | "projects", _, "chats", _, "acp", "permissions"],
+                ["chats", _, "console", "activity"]
+                    | ["chats", _, "approvals", "snapshot"]
+                    | ["chats", _, "acp", "permissions"],
             )
-            | (
-                "POST",
-                ["agents" | "projects", _, "chats", _, "console", "live"]
-            )
+            | ("POST", ["chats", _, "console", "live"])
     )
 }
 

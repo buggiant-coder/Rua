@@ -50,7 +50,7 @@ describe("prepareChatTransition", () => {
       true,
     );
 
-    expect(getChatMock).toHaveBeenCalledWith("chat-2", "agent-a", {
+    expect(getChatMock).toHaveBeenCalledWith("chat-2", {
       turnLimit: 20,
     });
     expect(primeChatViewCacheMock).toHaveBeenCalledWith(
@@ -60,15 +60,15 @@ describe("prepareChatTransition", () => {
     );
   });
 
-  it("keeps an empty remote history lazy", async () => {
-    const history = { status: "idle", messages: [] };
+  it("does not turn an empty saved Chat into a local draft", async () => {
+    const history = { agent_id: "saved-agent", status: "idle", messages: [] };
     getChatMock.mockResolvedValue(history);
 
     await expect(prepareChatTransition("agent-a", "chat-lazy")).resolves.toBe(
       true,
     );
 
-    expect(localStorage.getItem(draftChatKey("agent-a"))).toBe("chat-lazy");
+    expect(localStorage.getItem(draftChatKey("agent-a"))).toBeNull();
     expect(primeChatViewCacheMock).toHaveBeenCalledWith(
       "agent-a",
       "chat-lazy",

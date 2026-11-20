@@ -11,9 +11,9 @@ describe("hooksApi", () => {
   it("keeps registration, defaults, Chat adoption, and Runs on distinct routes", async () => {
     await hooksApi.listDefinitions("agent/one");
     await hooksApi.updateDefault("agent/one", "owner:hook/value", true);
-    await hooksApi.getChatConfiguration("agent/one", "chat/two");
+    await hooksApi.getChatConfiguration("chat/two");
     await hooksApi.listRuns("agent/one", "chat/two");
-    await hooksApi.listContributions("agent/one", "chat/two", "turn/three");
+    await hooksApi.listContributions("chat/two", "turn/three");
     await hooksApi.preview("agent/one", { agent: [] });
     await hooksApi.listProjectDefinitions("project/one");
     await hooksApi.updateProjectDefault(
@@ -39,7 +39,7 @@ describe("hooksApi", () => {
     );
     expect(request).toHaveBeenNthCalledWith(
       3,
-      "/agents/agent%2Fone/hooks/chats/chat%2Ftwo/configuration",
+      "/chats/chat%2Ftwo/hooks/configuration",
     );
     expect(request).toHaveBeenNthCalledWith(
       4,
@@ -47,7 +47,7 @@ describe("hooksApi", () => {
     );
     expect(request).toHaveBeenNthCalledWith(
       5,
-      "/agents/agent%2Fone/hooks/contributions?chat_id=chat%2Ftwo&turn_id=turn%2Fthree",
+      "/chats/chat%2Ftwo/hooks/contributions?turn_id=turn%2Fthree",
     );
     expect(request).toHaveBeenNthCalledWith(
       6,

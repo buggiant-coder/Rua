@@ -93,13 +93,14 @@ async fn execute(
     receive: &mut mpsc::UnboundedReceiver<CapturedRequest>,
     address: &ChatAddress,
     endpoint: &str,
-    body: Value,
+    mut body: Value,
 ) -> AgentRequest {
+    body.as_object_mut()
+        .unwrap()
+        .entry("agent_id")
+        .or_insert(json!("default"));
     let router = test.app.clone();
-    let path = format!(
-        "/agents/default/chats/{}/console/{endpoint}",
-        address.chat_id()
-    );
+    let path = format!("/chats/{}/console/{endpoint}", address.chat_id());
     let response = tokio::spawn(async move {
         let response = request_json(&router, Method::POST, &path, body).await;
         let status = response.status();
@@ -163,7 +164,7 @@ async fn execute(
 async fn regenerated_http_turn_has_the_current_trusted_phone_authority() {
     let (test, mut receive) = app().await;
     let chat_id = uuid::Uuid::new_v4().to_string();
-    let address = ChatAddress::agent("default", &chat_id);
+    let address = ChatAddress::new(&chat_id);
     let first = execute(
         &test,
         &mut receive,
@@ -193,7 +194,7 @@ async fn regenerated_http_turn_has_the_current_trusted_phone_authority() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streaming_http_turn_has_the_current_trusted_phone_authority() {
     let (test, mut receive) = app().await;
-    let address = ChatAddress::agent("default", uuid::Uuid::new_v4().to_string());
+    let address = ChatAddress::new(uuid::Uuid::new_v4().to_string());
     execute(
         &test,
         &mut receive,
@@ -207,7 +208,7 @@ async fn streaming_http_turn_has_the_current_trusted_phone_authority() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn submitted_http_turn_has_the_current_trusted_phone_authority() {
     let (test, mut receive) = app().await;
-    let address = ChatAddress::agent("default", uuid::Uuid::new_v4().to_string());
+    let address = ChatAddress::new(uuid::Uuid::new_v4().to_string());
     execute(
         &test,
         &mut receive,
@@ -216,4 +217,69 @@ async fn submitted_http_turn_has_the_current_trusted_phone_authority() {
         json!({"message": "submit reply", "authority_epoch": "forged-request-epoch"}),
     )
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_submit_keeps_staged_file_executor_and_reply_after_reopen() {
+    use super::support::{multipart_upload_with_fields, read_json, request};
+    let (test, mut receive) = app().await;
+    let id = uuid::Uuid::new_v4().to_string();
+    let address = ChatAddress::new(&id);
+    let workspace = test.state.rua_root.join("chats");
+    let upload = multipart_upload_with_fields(
+        &test.app,
+        &format!("/api/chats/{id}/media"),
+        &[("agent_id", "default")],
+        "file",
+        "note.txt",
+        b"fixture".to_vec(),
+    )
+    .await;
+    let status = upload.status();
+    let upload = read_json(upload).await;
+    assert_eq!(status, StatusCode::CREATED, "{upload}");
+    assert!(upload.get("authority_epoch").is_none());
+    assert!(rua_session::WorkspaceSessionStore::new(&workspace)
+        .load_chat_header(&id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(rua_session::chat_index::get(&workspace, &id)
+        .await
+        .unwrap()
+        .is_none());
+    let media_ref = upload["media_ref"].as_str().unwrap();
+    let invocation = execute(&test, &mut receive, &address, "submit", json!({
+        "input": [{"role":"user","content":[{"type":"text","text":"Read the note"},{"type":"file","media_ref":media_ref,"name":"note.txt"}]}]
+    })).await;
+    assert_eq!(invocation.agent_id.as_str(), "default");
+
+    let state = rua_server::AppState::from_tempdir(
+        test.state.rua_root.clone(),
+        rua_server::ServerProfile::Test,
+    );
+    let reopened = rua_server::endpoints::chats::router().with_state(state);
+    let response = request(
+        &reopened,
+        Method::GET,
+        &format!("/chats/{id}?agent_id=unrelated&project_id=unrelated"),
+    )
+    .await;
+    let status = response.status();
+    let history = read_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    assert_eq!(history["agent_id"], "default");
+    assert_eq!(history["project_id"], Value::Null);
+    assert_eq!(history["model"]["model"], "test-model");
+    let turns = history["messages"].to_string();
+    assert!(
+        turns.contains("Read the note") && turns.contains("captured") && turns.contains(media_ref),
+        "{turns}"
+    );
+    let saved = rua_session::WorkspaceSessionStore::new(workspace);
+    let turn = saved.read_turn_range(&id, 1, 2).await.unwrap().remove(0);
+    assert_eq!(
+        turn.metadata[rua_chat::TURN_AGENT_ASSIGNMENT_META_KEY]["agent_id"],
+        "default"
+    );
 }

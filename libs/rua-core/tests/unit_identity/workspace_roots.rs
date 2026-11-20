@@ -1,23 +1,20 @@
-use rua_core::{ChatAddress, ChatScopeStore, RuaRoot};
+use rua_core::{ChatAddress, ChatStore, RuaRoot};
 
 #[test]
-fn chat_scope_store_uses_the_same_workspace_roots_as_rua_root() {
-    let temp = tempfile::tempdir().expect("tempdir");
+fn chat_workspace_is_independent_of_agent_and_project_workspaces() {
+    let temp = tempfile::tempdir().unwrap();
     let rua_root = RuaRoot::new(temp.path());
-    let agent = rua_root
-        .agent_workspace("agent-a")
-        .expect("Agent Workspace");
-    let project = rua_root
-        .project_workspace("project-a")
-        .expect("Project Workspace");
-
+    let chats = rua_root.chat_workspace();
+    assert_eq!(chats.as_path(), temp.path().join("chats"));
     assert_eq!(
-        ChatScopeStore::resolve(temp.path(), ChatAddress::agent("agent-a", "chat-a")).root(),
-        agent.as_path()
+        ChatStore::resolve(temp.path(), ChatAddress::new("chat-a")).root(),
+        chats.as_path()
     );
+    assert_ne!(chats, rua_root.agent_workspace("chats").unwrap());
+    assert_ne!(chats, rua_root.project_workspace("chats").unwrap());
     assert_eq!(
-        ChatScopeStore::resolve(temp.path(), ChatAddress::project("project-a", "chat-a")).root(),
-        project.as_path()
+        rua_root.agent_workspace("agent-a").unwrap().as_path(),
+        temp.path().join("workspaces/agent-a")
     );
 }
 

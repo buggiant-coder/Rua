@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use rua_core::{ChatAddress, ProjectId};
+use rua_core::ChatAddress;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
@@ -392,7 +392,6 @@ pub trait ChatScopeRuleStore: Send + Sync + std::fmt::Debug {
         rule: &ApprovalReuseRule,
     ) -> Result<(), String>;
     fn delete_chat_rules(&self, address: &ChatAddress) -> Result<(), String>;
-    fn delete_project_rules(&self, project_id: &ProjectId) -> Result<(), String>;
 }
 
 impl ApprovalAuthority {
@@ -1146,22 +1145,6 @@ impl ApprovalAuthority {
         self.reuse_rules.write().await.retain(|_, rule| {
             rule.scope != ApprovalReuseScope::Chat
                 || rule.owner.as_ref() != Some(&ApprovalOwner::chat(address.clone()))
-        });
-        Ok(())
-    }
-
-    pub async fn delete_project_rules(&self, project_id: &ProjectId) -> Result<(), String> {
-        if let Some(store) = &self.chat_rule_store {
-            store.delete_project_rules(project_id)?;
-        }
-        self.reuse_rules.write().await.retain(|_, rule| {
-            rule.scope != ApprovalReuseScope::Chat
-                || rule
-                    .owner
-                    .as_ref()
-                    .and_then(ApprovalOwner::as_chat_address)
-                    .and_then(ChatAddress::project_id)
-                    != Some(project_id)
         });
         Ok(())
     }

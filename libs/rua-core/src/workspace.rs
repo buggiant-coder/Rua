@@ -44,6 +44,10 @@ impl RuaRoot {
         self
     }
 
+    pub fn chat_workspace(&self) -> WorkspaceRoot {
+        WorkspaceRoot::new(self.rua_root.join("chats"))
+    }
+
     pub fn agent_workspace(&self, agent_id: &str) -> Result<WorkspaceRoot> {
         validate_owner_id("Agent", agent_id)?;
         Ok(WorkspaceRoot::new(

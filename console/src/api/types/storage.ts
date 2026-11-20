@@ -1,9 +1,7 @@
 export type StorageChatScope = "agent" | "project";
 export type StorageChatSort = "size_desc" | "updated_asc";
 
-export type StorageChatAddress =
-  | { scope: { kind: "agent"; agent_id: string }; chat_id: string }
-  | { scope: { kind: "project"; project_id: string }; chat_id: string };
+export type StorageChatAddress = { chat_id: string };
 
 export interface StorageChatOwner {
   kind: StorageChatScope;

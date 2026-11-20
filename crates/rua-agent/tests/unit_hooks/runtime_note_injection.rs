@@ -40,7 +40,7 @@ fn task_record_for_turn(
     TaskRecord {
         task_id: "task-1".to_string(),
         spec: TaskSpec {
-            owner: TaskOwner::new("agent-1", chat_id),
+            owner: TaskOwner::new(chat_id),
             instruction: "fixture".to_string(),
             runner: TaskRunnerSpec::Tool {
                 tool_name: "Fixture_Task".to_string(),

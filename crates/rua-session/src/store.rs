@@ -680,7 +680,10 @@ pub struct ConversationReadSpanResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SavedConversationSearchRequest {
-    pub agent_id: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
     pub query: String,
     pub offset: usize,
     pub limit: usize,
@@ -730,7 +733,11 @@ pub struct ChatSessionHeader {
     #[serde(default = "default_chat_schema_version")]
     pub schema_version: u32,
     pub chat_id: String,
+    /// The currently selected Agent; this is configuration, not Chat identity.
     pub agent_id: String,
+    /// Fixed at Chat creation and independent of the selected Agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub metadata: ChatMetadata,
     #[serde(default)]
     pub tag: ChatTag,
@@ -754,6 +761,7 @@ impl ChatSessionHeader {
             schema_version: default_chat_schema_version(),
             chat_id: metadata.chat_id.clone(),
             agent_id: metadata.agent_id.clone(),
+            project_id: None,
             metadata,
             tag: ChatTag::default(),
             active_checkpoint_id: None,
@@ -2062,13 +2070,12 @@ impl WorkspaceSessionStore {
         history_replacement_enabled: bool,
         token_estimate_divisor: f64,
     ) -> Result<ContextProjection> {
-        let header =
-            self.load_chat_header(chat_id)
-                .await?
-                .ok_or_else(|| rua_core::RuaError::Io {
-                    message: format!("chat session header not found for {chat_id}"),
-                })?;
-        let chat_address = ChatAddress::agent(header.agent_id, chat_id);
+        self.load_chat_header(chat_id)
+            .await?
+            .ok_or_else(|| rua_core::RuaError::Io {
+                message: format!("chat session header not found for {chat_id}"),
+            })?;
+        let chat_address = ChatAddress::new(chat_id);
         self.build_effective_context_projection_for_address(
             &chat_address,
             request,
@@ -2182,13 +2189,12 @@ impl WorkspaceSessionStore {
         projection: &mut ContextProjection,
         token_estimate_divisor: f64,
     ) -> Result<usize> {
-        let header =
-            self.load_chat_header(chat_id)
-                .await?
-                .ok_or_else(|| rua_core::RuaError::Io {
-                    message: format!("chat session header not found for {chat_id}"),
-                })?;
-        let chat_address = ChatAddress::agent(header.agent_id, chat_id);
+        self.load_chat_header(chat_id)
+            .await?
+            .ok_or_else(|| rua_core::RuaError::Io {
+                message: format!("chat session header not found for {chat_id}"),
+            })?;
+        let chat_address = ChatAddress::new(chat_id);
         self.apply_history_replacements_for_address(
             &chat_address,
             projection,
@@ -2250,13 +2256,12 @@ impl WorkspaceSessionStore {
         messages: &mut Vec<MessageLogEntry>,
         token_estimate_divisor: f64,
     ) -> Result<usize> {
-        let header =
-            self.load_chat_header(chat_id)
-                .await?
-                .ok_or_else(|| rua_core::RuaError::Io {
-                    message: format!("chat session header not found for {chat_id}"),
-                })?;
-        let chat_address = ChatAddress::agent(header.agent_id, chat_id);
+        self.load_chat_header(chat_id)
+            .await?
+            .ok_or_else(|| rua_core::RuaError::Io {
+                message: format!("chat session header not found for {chat_id}"),
+            })?;
+        let chat_address = ChatAddress::new(chat_id);
         self.apply_history_replacements_to_messages_for_address(
             &chat_address,
             messages,
@@ -2373,13 +2378,12 @@ impl WorkspaceSessionStore {
         chat_id: &str,
         record_id: &str,
     ) -> Result<Option<HistoryReplacementRecord>> {
-        let header =
-            self.load_chat_header(chat_id)
-                .await?
-                .ok_or_else(|| rua_core::RuaError::Io {
-                    message: format!("chat session header not found for {chat_id}"),
-                })?;
-        let expected_address = ChatAddress::agent(header.agent_id, chat_id);
+        self.load_chat_header(chat_id)
+            .await?
+            .ok_or_else(|| rua_core::RuaError::Io {
+                message: format!("chat session header not found for {chat_id}"),
+            })?;
+        let expected_address = ChatAddress::new(chat_id);
         self.load_history_replacement_for_address(&expected_address, record_id)
             .await
     }
@@ -2422,10 +2426,10 @@ impl WorkspaceSessionStore {
         &self,
         chat_id: &str,
     ) -> Result<Vec<HistoryReplacementRecord>> {
-        let Some(header) = self.load_chat_header(chat_id).await? else {
+        let Some(_) = self.load_chat_header(chat_id).await? else {
             return Ok(Vec::new());
         };
-        let chat_address = ChatAddress::agent(header.agent_id, chat_id);
+        let chat_address = ChatAddress::new(chat_id);
         self.list_history_replacement_records_for_address(&chat_address)
             .await
     }
@@ -2730,13 +2734,12 @@ impl WorkspaceSessionStore {
         &self,
         chat_id: &str,
     ) -> Result<Vec<String>> {
-        let header =
-            self.load_chat_header(chat_id)
-                .await?
-                .ok_or_else(|| rua_core::RuaError::Io {
-                    message: format!("chat session header not found for {chat_id}"),
-                })?;
-        let chat_address = ChatAddress::agent(header.agent_id, chat_id);
+        self.load_chat_header(chat_id)
+            .await?
+            .ok_or_else(|| rua_core::RuaError::Io {
+                message: format!("chat session header not found for {chat_id}"),
+            })?;
+        let chat_address = ChatAddress::new(chat_id);
         self.prune_unreachable_history_replacements_for_address(&chat_address)
             .await
     }
@@ -3312,23 +3315,6 @@ impl WorkspaceSessionStore {
         &self,
         request: SavedConversationSearchRequest,
     ) -> Result<SavedConversationSearchResult> {
-        self.search_saved_conversations_filtered(request, true)
-            .await
-    }
-
-    pub async fn search_saved_conversations_in_current_scope(
-        &self,
-        request: SavedConversationSearchRequest,
-    ) -> Result<SavedConversationSearchResult> {
-        self.search_saved_conversations_filtered(request, false)
-            .await
-    }
-
-    async fn search_saved_conversations_filtered(
-        &self,
-        request: SavedConversationSearchRequest,
-        filter_agent: bool,
-    ) -> Result<SavedConversationSearchResult> {
         let query = request.query.trim().to_lowercase();
         if query.is_empty() || request.limit == 0 {
             return Ok(SavedConversationSearchResult {
@@ -3349,8 +3335,19 @@ impl WorkspaceSessionStore {
         let mut matches = Vec::new();
         for header in headers
             .into_iter()
-            .filter(|header| !filter_agent || header.agent_id == request.agent_id)
-            .filter(|header| filter_agent || !header.metadata.archived)
+            .filter(|header| {
+                request
+                    .agent_id
+                    .as_ref()
+                    .is_none_or(|agent_id| &header.agent_id == agent_id)
+            })
+            .filter(|header| {
+                request
+                    .project_id
+                    .as_ref()
+                    .is_none_or(|project_id| header.project_id.as_ref() == Some(project_id))
+            })
+            .filter(|header| !header.metadata.archived)
             .filter(|header| {
                 !header
                     .extra
@@ -3667,13 +3664,12 @@ impl WorkspaceSessionStore {
         history_replacement_enabled: bool,
         token_estimate_divisor: f64,
     ) -> Result<Vec<ProjectionMessageGroupEstimate>> {
-        let header =
-            self.load_chat_header(chat_id)
-                .await?
-                .ok_or_else(|| rua_core::RuaError::Io {
-                    message: format!("chat session header not found for {chat_id}"),
-                })?;
-        let chat_address = ChatAddress::agent(header.agent_id, chat_id);
+        self.load_chat_header(chat_id)
+            .await?
+            .ok_or_else(|| rua_core::RuaError::Io {
+                message: format!("chat session header not found for {chat_id}"),
+            })?;
+        let chat_address = ChatAddress::new(chat_id);
         self.projection_message_group_estimates_effective_for_address(
             &chat_address,
             history_replacement_enabled,
@@ -3975,13 +3971,12 @@ impl WorkspaceSessionStore {
         history_replacement_enabled: bool,
         token_estimate_divisor: f64,
     ) -> Result<Vec<MessageLogEntry>> {
-        let header =
-            self.load_chat_header(chat_id)
-                .await?
-                .ok_or_else(|| rua_core::RuaError::Io {
-                    message: format!("chat session header not found for {chat_id}"),
-                })?;
-        let chat_address = ChatAddress::agent(header.agent_id, chat_id);
+        self.load_chat_header(chat_id)
+            .await?
+            .ok_or_else(|| rua_core::RuaError::Io {
+                message: format!("chat session header not found for {chat_id}"),
+            })?;
+        let chat_address = ChatAddress::new(chat_id);
         self.read_checkpoint_summary_source_effective_for_address(
             &chat_address,
             start_sequence,
@@ -4057,13 +4052,12 @@ impl WorkspaceSessionStore {
         chat_id: &str,
         turn: NewConversationTurn,
     ) -> Result<TurnIndexRecord> {
-        let header =
-            self.load_chat_header(chat_id)
-                .await?
-                .ok_or_else(|| rua_core::RuaError::Io {
-                    message: format!("chat session header not found for {chat_id}"),
-                })?;
-        let chat_address = ChatAddress::agent(header.agent_id, chat_id);
+        self.load_chat_header(chat_id)
+            .await?
+            .ok_or_else(|| rua_core::RuaError::Io {
+                message: format!("chat session header not found for {chat_id}"),
+            })?;
+        let chat_address = ChatAddress::new(chat_id);
         self.append_conversation_turn_for_address(&chat_address, turn)
             .await
     }

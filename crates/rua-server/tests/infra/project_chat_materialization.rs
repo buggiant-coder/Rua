@@ -1,5 +1,5 @@
 use rua_chat::{ChatService, TurnAgentAssignment, TURN_AGENT_ASSIGNMENT_META_KEY, TURN_MODEL_KEY};
-use rua_core::{ChatAddress, ChatScopeStore};
+use rua_core::{ChatAddress, ChatStore};
 use rua_security::approval_authority::{
     ApprovalAuthority, ApprovalRequestInput, ApprovalTrigger, ToolCallSnapshot,
 };
@@ -51,8 +51,8 @@ fn configuration(running_config: rua_config::ChatRunningConfig) -> ChatHookConfi
 #[tokio::test]
 async fn project_chat_draft_materializes_scoped_metadata_without_a_turn() {
     let temp = tempfile::tempdir().unwrap();
-    let address = ChatAddress::project("project-a", "chat-acp-draft");
-    let scope_root = ChatScopeStore::resolve(temp.path(), address.clone())
+    let address = ChatAddress::new("chat-acp-draft");
+    let scope_root = ChatStore::resolve(temp.path(), address.clone())
         .root()
         .to_path_buf();
     let placement = placement("resource-device");
@@ -68,6 +68,7 @@ async fn project_chat_draft_materializes_scoped_metadata_without_a_turn() {
         &selection,
         &placement,
         ProjectChatMaterializationSnapshot {
+            project_id: "project-a".into(),
             initial_model: None,
             configuration: configuration(running_config.clone()),
         },
@@ -84,7 +85,7 @@ async fn project_chat_draft_materializes_scoped_metadata_without_a_turn() {
     assert_eq!(header.agent_id, selection.agent_id);
     assert_eq!(header.turn_index.latest_turn, 0);
     assert_eq!(header.message_log.latest_sequence, 0);
-    assert_eq!(header.extra["selected_agent_id"], selection.agent_id);
+    assert_eq!(header.agent_id, selection.agent_id);
     assert_eq!(
         store
             .load_chat_running_config(address.chat_id().as_str())
@@ -115,7 +116,7 @@ async fn project_chat_draft_materializes_scoped_metadata_without_a_turn() {
         serde_json::to_value(&placement).unwrap()
     );
 
-    ChatService::for_resolved_scope(scope_root.clone(), address.clone())
+    ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope_root.clone()))
         .replace_placeholder_title(&address, "First project input")
         .await
         .unwrap();
@@ -139,6 +140,7 @@ async fn project_chat_draft_materializes_scoped_metadata_without_a_turn() {
         &selection,
         &placement,
         ProjectChatMaterializationSnapshot {
+            project_id: "project-a".into(),
             initial_model: None,
             configuration: configuration(rua_config::ChatRunningConfig::default()),
         },
@@ -257,7 +259,7 @@ async fn materialize(
     address: &ChatAddress,
     placement: &ConversationAuthorityPlacement,
 ) {
-    let scope = ChatScopeStore::resolve(data_dir, address.clone());
+    let scope = ChatStore::resolve(data_dir, address.clone());
     materialize_first_project_turn(
         scope.root(),
         address,
@@ -266,6 +268,7 @@ async fn materialize(
         &persistence_context(),
         placement,
         ProjectChatMaterializationSnapshot {
+            project_id: "project-a".into(),
             initial_model: None,
             configuration: configuration(rua_config::ChatRunningConfig::default()),
         },
@@ -277,9 +280,9 @@ async fn materialize(
 #[tokio::test]
 async fn first_project_turn_commits_complete_project_owned_storage() {
     let temp = tempfile::tempdir().unwrap();
-    let address = ChatAddress::project("project-a", "00000000-0000-4000-8000-000000000401");
+    let address = ChatAddress::new("00000000-0000-4000-8000-000000000401");
     let placement = placement("resource-device");
-    let scope = ChatScopeStore::resolve(temp.path(), address.clone());
+    let scope = ChatStore::resolve(temp.path(), address.clone());
     let mut initial_configuration = configuration(rua_config::ChatRunningConfig::default());
     initial_configuration.model = Some(serde_json::json!({"provider":"openai","model":"gpt-4.1"}));
 
@@ -291,6 +294,7 @@ async fn first_project_turn_commits_complete_project_owned_storage() {
         &persistence_context(),
         &placement,
         ProjectChatMaterializationSnapshot {
+            project_id: "project-a".into(),
             initial_model: Some(serde_json::json!({
                 "provider": "openai",
                 "model": "gpt-4.1"
@@ -376,9 +380,9 @@ async fn first_project_turn_commits_complete_project_owned_storage() {
 #[tokio::test]
 async fn project_chat_user_message_branch_points_support_empty_conversations() {
     let temp = tempfile::tempdir().unwrap();
-    let address = ChatAddress::project("project-a", "00000000-0000-4000-8000-000000000430");
+    let address = ChatAddress::new("00000000-0000-4000-8000-000000000430");
     let placement = placement("resource-device");
-    let scope = ChatScopeStore::resolve(temp.path(), address.clone());
+    let scope = ChatStore::resolve(temp.path(), address.clone());
     materialize(temp.path(), &address, &placement).await;
     let store = rua_session::WorkspaceSessionStore::new(scope.root());
     let running_config = rua_config::ChatRunningConfig {
@@ -452,7 +456,7 @@ async fn project_chat_user_message_branch_points_support_empty_conversations() {
         .await
         .unwrap();
 
-    let chat_service = ChatService::for_resolved_scope(scope.root(), address.clone());
+    let chat_service = ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope.root()));
     let before_second = chat_service
         .resolve_history_boundary(&address, "turn-second")
         .await
@@ -512,9 +516,9 @@ async fn project_chat_user_message_branch_points_support_empty_conversations() {
 #[tokio::test]
 async fn first_project_turn_records_override_without_replacing_chat_default() {
     let temp = tempfile::tempdir().unwrap();
-    let address = ChatAddress::project("project-a", "00000000-0000-4000-8000-000000000410");
+    let address = ChatAddress::new("00000000-0000-4000-8000-000000000410");
     let placement = placement("resource-device");
-    let scope = ChatScopeStore::resolve(temp.path(), address.clone());
+    let scope = ChatStore::resolve(temp.path(), address.clone());
     let mut input = first_turn_input(&placement);
     input.extra.insert(
         rua_core::TURN_COLLABORATION_MODE_OVERRIDE_KEY.to_string(),
@@ -529,6 +533,7 @@ async fn first_project_turn_records_override_without_replacing_chat_default() {
         &persistence_context(),
         &placement,
         ProjectChatMaterializationSnapshot {
+            project_id: "project-a".into(),
             initial_model: None,
             configuration: configuration(rua_config::ChatRunningConfig::default()),
         },
@@ -565,9 +570,9 @@ async fn first_project_turn_records_override_without_replacing_chat_default() {
 #[tokio::test]
 async fn later_project_first_candidate_uses_the_committed_configuration() {
     let temp = tempfile::tempdir().unwrap();
-    let address = ChatAddress::project("project-a", "00000000-0000-4000-8000-000000000411");
+    let address = ChatAddress::new("00000000-0000-4000-8000-000000000411");
     let placement = placement("resource-device");
-    let scope = ChatScopeStore::resolve(temp.path(), address.clone());
+    let scope = ChatStore::resolve(temp.path(), address.clone());
     let mut winner = configuration(rua_config::ChatRunningConfig::default());
     winner.agent_assignment = Some(assignment());
     winner.model = Some(serde_json::json!({
@@ -589,6 +594,7 @@ async fn later_project_first_candidate_uses_the_committed_configuration() {
         &persistence_context(),
         &placement,
         ProjectChatMaterializationSnapshot {
+            project_id: "project-a".into(),
             initial_model: winner.model.clone(),
             configuration: winner,
         },
@@ -607,6 +613,7 @@ async fn later_project_first_candidate_uses_the_committed_configuration() {
         &follower_context,
         &placement,
         ProjectChatMaterializationSnapshot {
+            project_id: "project-a".into(),
             initial_model: loser.model.clone(),
             configuration: loser,
         },
@@ -633,14 +640,14 @@ async fn later_project_first_candidate_uses_the_committed_configuration() {
 }
 
 #[tokio::test]
-async fn equal_chat_ids_under_different_projects_do_not_share_storage() {
+async fn chat_id_resolves_the_same_header_and_index_without_project_input() {
     let temp = tempfile::tempdir().unwrap();
     let chat_id = "00000000-0000-4000-8000-000000000402";
     let placement = placement("resource-device");
-    let first = ChatAddress::project("project-a", chat_id);
-    let second = ChatAddress::project("project-b", chat_id);
-    let first_scope = ChatScopeStore::resolve(temp.path(), first.clone());
-    let second_scope = ChatScopeStore::resolve(temp.path(), second.clone());
+    let first = ChatAddress::new(chat_id);
+    let second = ChatAddress::new(chat_id);
+    let first_scope = ChatStore::resolve(temp.path(), first.clone());
+    let second_scope = ChatStore::resolve(temp.path(), second.clone());
 
     materialize_first_project_turn(
         first_scope.root(),
@@ -650,6 +657,7 @@ async fn equal_chat_ids_under_different_projects_do_not_share_storage() {
         &persistence_context(),
         &placement,
         ProjectChatMaterializationSnapshot {
+            project_id: "project-a".into(),
             initial_model: None,
             configuration: configuration(rua_config::ChatRunningConfig::default()),
         },
@@ -666,21 +674,21 @@ async fn equal_chat_ids_under_different_projects_do_not_share_storage() {
         .load_chat_header(chat_id)
         .await
         .unwrap()
-        .is_none());
+        .is_some());
     assert!(
         rua_server::services::chat_index::get(second_scope.root(), chat_id)
             .await
             .unwrap()
-            .is_none()
+            .is_some()
     );
 }
 
 #[tokio::test]
 async fn chat_index_commit_failure_rolls_back_the_complete_staged_session() {
     let temp = tempfile::tempdir().unwrap();
-    let address = ChatAddress::project("project-a", "00000000-0000-4000-8000-000000000407");
+    let address = ChatAddress::new("00000000-0000-4000-8000-000000000407");
     let placement = placement("resource-device");
-    let scope = ChatScopeStore::resolve(temp.path(), address.clone());
+    let scope = ChatStore::resolve(temp.path(), address.clone());
     std::fs::create_dir_all(scope.chat_index_path()).unwrap();
 
     let error = materialize_first_project_turn(
@@ -691,6 +699,7 @@ async fn chat_index_commit_failure_rolls_back_the_complete_staged_session() {
         &persistence_context(),
         &placement,
         ProjectChatMaterializationSnapshot {
+            project_id: "project-a".into(),
             initial_model: None,
             configuration: configuration(rua_config::ChatRunningConfig::default()),
         },
@@ -706,12 +715,13 @@ async fn chat_index_commit_failure_rolls_back_the_complete_staged_session() {
 async fn failed_project_staging_cleans_draft_and_first_turn_without_publishing() {
     for draft in [true, false] {
         let temp = tempfile::tempdir().unwrap();
-        let address = ChatAddress::project("project-a", "failed-staging");
-        let scope = ChatScopeStore::resolve(temp.path(), address.clone());
+        let address = ChatAddress::new("failed-staging");
+        let scope = ChatStore::resolve(temp.path(), address.clone());
         let placement = placement("resource-device");
         let mut invalid = configuration(Default::default());
         invalid.epoch.clear();
         let snapshot = ProjectChatMaterializationSnapshot {
+            project_id: "project-a".into(),
             initial_model: None,
             configuration: invalid,
         };
@@ -758,8 +768,8 @@ async fn failed_project_staging_cleans_draft_and_first_turn_without_publishing()
 async fn existing_project_storage_is_preserved_by_both_creation_paths() {
     for draft in [true, false] {
         let temp = tempfile::tempdir().unwrap();
-        let address = ChatAddress::project("project-a", "existing-storage");
-        let scope = ChatScopeStore::resolve(temp.path(), address.clone());
+        let address = ChatAddress::new("existing-storage");
+        let scope = ChatStore::resolve(temp.path(), address.clone());
         let store = rua_session::WorkspaceSessionStore::new(scope.root());
         let chat_dir = store.chat_dir(address.chat_id().as_str());
         std::fs::create_dir_all(&chat_dir).unwrap();
@@ -767,6 +777,7 @@ async fn existing_project_storage_is_preserved_by_both_creation_paths() {
         std::fs::write(&sentinel, "preserve").unwrap();
         let placement = placement("resource-device");
         let snapshot = ProjectChatMaterializationSnapshot {
+            project_id: "project-a".into(),
             initial_model: None,
             configuration: configuration(Default::default()),
         };
@@ -801,12 +812,12 @@ async fn existing_project_storage_is_preserved_by_both_creation_paths() {
 async fn agent_switch_is_chat_local_and_preserves_historical_turn_assignment() {
     let temp = tempfile::tempdir().unwrap();
     let placement = placement("resource-device");
-    let running = ChatAddress::project("project-a", "00000000-0000-4000-8000-000000000408");
-    let idle = ChatAddress::project("project-a", "00000000-0000-4000-8000-000000000409");
+    let running = ChatAddress::new("00000000-0000-4000-8000-000000000408");
+    let idle = ChatAddress::new("00000000-0000-4000-8000-000000000409");
     materialize(temp.path(), &running, &placement).await;
     materialize(temp.path(), &idle, &placement).await;
-    let idle_scope = ChatScopeStore::resolve(temp.path(), idle.clone());
-    rua_chat::ChatService::for_resolved_scope(idle_scope.root(), idle.clone())
+    let idle_scope = ChatStore::resolve(temp.path(), idle.clone());
+    rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(idle_scope.root()))
         .update_setting(
             &idle,
             rua_chat::ChatSetting::Model(serde_json::json!({
@@ -830,7 +841,7 @@ async fn agent_switch_is_chat_local_and_preserves_historical_turn_assignment() {
         })
         .await;
 
-    let running_scope = ChatScopeStore::resolve(temp.path(), running.clone());
+    let running_scope = ChatStore::resolve(temp.path(), running.clone());
     let running_state = switch_project_chat_agent(
         running_scope.root(),
         &running,
@@ -862,7 +873,7 @@ async fn agent_switch_is_chat_local_and_preserves_historical_turn_assignment() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(running_header.extra["selected_agent_id"], "code");
+    assert_eq!(running_header.agent_id, "code");
 
     let state = switch_project_chat_agent(
         idle_scope.root(),
@@ -899,7 +910,7 @@ async fn agent_switch_is_chat_local_and_preserves_historical_turn_assignment() {
         header.extra[PROJECT_AGENT_SWITCH_EVENTS_META_KEY][0]["selected_agent_id"],
         "code"
     );
-    assert_eq!(header.extra["selected_agent_id"], "code");
+    assert_eq!(header.agent_id, "code");
     assert_eq!(header.extra["model"]["model"], "fixture-model");
     assert_eq!(header.extra["model"]["reasoning_effort"], "high");
     let second = switch_project_chat_agent(
@@ -935,9 +946,9 @@ async fn agent_switch_is_chat_local_and_preserves_historical_turn_assignment() {
 async fn project_agent_switch_replaces_stale_agent_hook_bindings() {
     let temp = tempfile::tempdir().unwrap();
     let placement = placement("resource-device");
-    let address = ChatAddress::project("project-a", "00000000-0000-4000-8000-000000000411");
+    let address = ChatAddress::new("00000000-0000-4000-8000-000000000411");
     materialize(temp.path(), &address, &placement).await;
-    let scope = ChatScopeStore::resolve(temp.path(), address.clone());
+    let scope = ChatStore::resolve(temp.path(), address.clone());
     let hooks = ProductHookService::new();
     hooks
         .set_agent_activation("default", NATIVE_TERMINAL_DEFINITION_ID, true)
@@ -959,6 +970,7 @@ async fn project_agent_switch_replaces_stale_agent_hook_bindings() {
         )
         .await;
     let materialization = |agent_id: &str| ChatConfigurationMaterialization {
+        project_id: Some("project-a".into()),
         selected_agent_id: agent_id.to_string(),
         running_config: Default::default(),
         security_config: Default::default(),
@@ -1040,9 +1052,9 @@ async fn project_agent_switch_replaces_stale_agent_hook_bindings() {
 async fn agent_switch_boundary_reports_every_chat_local_blocker() {
     let temp = tempfile::tempdir().unwrap();
     let placement = placement("resource-device");
-    let address = ChatAddress::project("project-a", "00000000-0000-4000-8000-000000000410");
+    let address = ChatAddress::new("00000000-0000-4000-8000-000000000410");
     materialize(temp.path(), &address, &placement).await;
-    let scope = ChatScopeStore::resolve(temp.path(), address.clone());
+    let scope = ChatStore::resolve(temp.path(), address.clone());
     let authority = rua_server::services::conversation_authority::ConversationAuthority::new();
     authority
         .start_active_turn(ConversationActiveTurnStart {
@@ -1123,8 +1135,8 @@ async fn agent_switch_boundary_reports_every_chat_local_blocker() {
 #[tokio::test]
 async fn concurrent_project_chats_keep_turn_queue_and_approval_state_isolated() {
     let placement = placement("resource-device");
-    let first = ChatAddress::project("project-concurrent", "00000000-0000-4000-8000-000000000414");
-    let second = ChatAddress::project("project-concurrent", "00000000-0000-4000-8000-000000000415");
+    let first = ChatAddress::new("00000000-0000-4000-8000-000000000414");
+    let second = ChatAddress::new("00000000-0000-4000-8000-000000000415");
     let authority = rua_server::services::conversation_authority::ConversationAuthority::new();
     for address in [&first, &second] {
         authority
@@ -1193,7 +1205,7 @@ fn persisted_project_directory_survives_primary_change_and_missing_default() {
     std::fs::create_dir(&new).unwrap();
     let resources = rua_project::ProjectResources::create(&[old.clone(), new.clone()], 1).unwrap();
     let binding = rua_project::ProjectResourceBinding {
-        project_id: "project".into(),
+        project_id: "project-a".into(),
         resource_device_id: "device".into(),
         resources,
         created_at: chrono::Utc::now(),

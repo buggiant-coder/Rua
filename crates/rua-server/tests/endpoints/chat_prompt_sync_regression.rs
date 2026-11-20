@@ -43,7 +43,7 @@ fn build_sync_enabled_app() -> (Router, AppState, TempDir) {
     );
 
     let app = Router::new()
-        .merge(endpoints::chat_prompt::root_router())
+        .merge(endpoints::chat_prompt::router())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             agent_context_middleware,
@@ -111,12 +111,27 @@ async fn collect_v4_changes(state: &AppState) -> Vec<rua_sync::opaque_replica_lo
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn put_prompt_state_emits_evergreen_chat_v4_when_sync_enabled() {
     let (app, state, _tmp) = build_sync_enabled_app();
-    let chat_id = "sync-prompt-state-chat";
+    let chat_id = "aa74834b-23b2-4084-8b8c-a98017990568";
+    let now = chrono::Utc::now().to_rfc3339();
+    let header = rua_session::ChatSessionHeader::new(rua_session::ChatMetadata {
+        chat_id: chat_id.into(),
+        agent_id: "default".into(),
+        title: "Prompt sync".into(),
+        created_at: now.clone(),
+        last_activity_at: now,
+        pinned: false,
+        archived: false,
+        preview: None,
+    });
+    rua_session::WorkspaceSessionStore::new(state.rua_root.join("chats"))
+        .save_chat_header(&header)
+        .await
+        .unwrap();
 
     let resp = app
         .oneshot(json_req(
             Method::PUT,
-            &format!("/chats/prompt-state?chat_id={chat_id}"),
+            &format!("/chats/{chat_id}/prompt-state"),
             r#"{
                 "text": "evergreen prompt-state v4 marker",
                 "files": []
@@ -131,7 +146,7 @@ async fn put_prompt_state_emits_evergreen_chat_v4_when_sync_enabled() {
         let changes = collect_v4_changes(&state).await;
         if changes.iter().any(|change| {
             change.domain == "evergreen_chat"
-                && change.record_id == format!("agent/default/{chat_id}/prompt_state")
+                && change.record_id == format!("chats/{chat_id}/prompt_state")
         }) || Instant::now() >= deadline
         {
             break changes;
@@ -140,7 +155,7 @@ async fn put_prompt_state_emits_evergreen_chat_v4_when_sync_enabled() {
     };
     let prompt_state_change = changes.iter().find(|change| {
         change.domain == "evergreen_chat"
-            && change.record_id == format!("agent/default/{chat_id}/prompt_state")
+            && change.record_id == format!("chats/{chat_id}/prompt_state")
     });
     assert!(
         prompt_state_change.is_some_and(|change| {

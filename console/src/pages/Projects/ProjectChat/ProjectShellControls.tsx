@@ -102,12 +102,8 @@ export function ProjectShellDrawer(props: ProjectShellDrawerProps) {
       }
     };
     void refresh();
-    const unsubscribe = subscribeConversationNavigation((address) => {
-      if (
-        !address ||
-        (address.scope === "project" && address.projectId === projectId)
-      )
-        void refresh();
+    const unsubscribe = subscribeConversationNavigation(() => {
+      void refresh();
     });
     return () => {
       disposed = true;

@@ -32,11 +32,7 @@ export function useSessions(
   const [page, setPage] = useState(1);
   const requestId = useRef(0);
   const invalidateNavigation = (chatId: string) => {
-    invalidateConversationNavigation(
-      projectId
-        ? { scope: "project", projectId, chatId }
-        : { scope: "agent", agentId: selectedAgent, chatId },
-    );
+    invalidateConversationNavigation(projectId ? { chatId } : { chatId });
   };
 
   const pinnedCount = useMemo(() => {

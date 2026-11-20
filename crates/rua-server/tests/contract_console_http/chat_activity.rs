@@ -95,7 +95,7 @@ async fn chat_live_requires_a_viewer_identity_without_changing_submit_requests()
     let missing_viewer = request_json(
         &test.app,
         Method::POST,
-        "/agents/default/chats/00000000-0000-4000-8000-000000000431/console/live",
+        "/chats/00000000-0000-4000-8000-000000000431/console/live",
         serde_json::json!({ "chat_id": "00000000-0000-4000-8000-000000000431" }),
     )
     .await;
@@ -104,7 +104,7 @@ async fn chat_live_requires_a_viewer_identity_without_changing_submit_requests()
     let live = request_json(
         &test.app,
         Method::POST,
-        "/agents/default/chats/00000000-0000-4000-8000-000000000431/console/live",
+        "/chats/00000000-0000-4000-8000-000000000431/console/live",
         serde_json::json!({
             "chat_id": "00000000-0000-4000-8000-000000000431",
             "viewer_id": "browser-one"
@@ -123,7 +123,7 @@ async fn chat_live_encodes_payloads_as_standard_sse_data_frames() {
     let live = request_json(
         &test.app,
         Method::POST,
-        "/agents/default/chats/00000000-0000-4000-8000-000000000431/console/live",
+        "/chats/00000000-0000-4000-8000-000000000431/console/live",
         serde_json::json!({
             "chat_id": "00000000-0000-4000-8000-000000000431",
             "viewer_id": "browser-one"
@@ -151,7 +151,7 @@ async fn chat_live_forwards_the_conversation_activity_position() {
     let live = request_json(
         &test.app,
         Method::POST,
-        "/agents/default/chats/00000000-0000-4000-8000-000000000431/console/live",
+        "/chats/00000000-0000-4000-8000-000000000431/console/live",
         serde_json::json!({
             "chat_id": "00000000-0000-4000-8000-000000000431",
             "viewer_id": "browser-one",
@@ -174,12 +174,7 @@ async fn chat_live_forwards_the_conversation_activity_position() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_activity_stream_emits_wakes_after_each_started_run() {
     let test = build_app();
-    let response = request(
-        &test.app,
-        Method::GET,
-        "/agents/default/chats/chat-one/console/activity",
-    )
-    .await;
+    let response = request(&test.app, Method::GET, "/chats/chat-one/console/activity").await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let mut body = response.into_body();
@@ -189,32 +184,32 @@ async fn chat_activity_stream_emits_wakes_after_each_started_run() {
         .active_stream_broadcast_hub
         .publish_event(
             "stream-one",
-            &ChatAddress::agent("default", "chat-one"),
+            &ChatAddress::new("chat-one"),
             "ignored token".to_string(),
         )
         .await;
     let first = next_started_wake(&mut body).await;
     assert_eq!(first["type"], "chat_live_wake");
-    assert_eq!(first["agent_id"], "default");
+    assert_eq!(first["address"], serde_json::json!({"chat_id":"chat-one"}));
     assert_eq!(first["chat_id"], "chat-one");
     assert_eq!(first["stream_id"], "stream-one");
 
     test.state
         .active_stream_broadcast_hub
-        .finish("stream-one", &ChatAddress::agent("default", "chat-one"))
+        .finish("stream-one", &ChatAddress::new("chat-one"))
         .await;
     test.state
         .active_stream_broadcast_hub
         .publish_event(
             "stream-two",
-            &ChatAddress::agent("default", "chat-two"),
+            &ChatAddress::new("chat-one"),
             "ignored token".to_string(),
         )
         .await;
     let second = next_started_wake(&mut body).await;
     assert_eq!(second["type"], "chat_live_wake");
-    assert_eq!(second["agent_id"], "default");
-    assert_eq!(second["chat_id"], "chat-two");
+    assert_eq!(second["address"], serde_json::json!({"chat_id":"chat-one"}));
+    assert_eq!(second["chat_id"], "chat-one");
     assert_eq!(second["stream_id"], "stream-two");
 }
 
@@ -224,7 +219,7 @@ async fn chat_activity_stream_forwards_gossip_wake_without_refreshing_peers() {
     let response = request(
         &test.app,
         Method::GET,
-        "/agents/default/chats/remote-chat/console/activity",
+        "/chats/remote-chat/console/activity",
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -235,7 +230,7 @@ async fn chat_activity_stream_forwards_gossip_wake_without_refreshing_peers() {
         rua_server::services::chat_activity_wake::ChatLiveWake {
             kind: "chat_live_wake".to_string(),
             version: 2,
-            address: ChatAddress::agent("default", "remote-chat"),
+            address: ChatAddress::new("remote-chat"),
             stream_id: "remote-stream".to_string(),
             phase: "started".to_string(),
             authority_device_id: "remote-device".to_string(),
@@ -266,27 +261,14 @@ async fn chat_activity_stream_forwards_gossip_wake_without_refreshing_peers() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn project_chat_activity_stream_is_scoped_to_the_complete_chat_address() {
+async fn chat_activity_stream_filters_local_and_remote_events_by_chat_id() {
     let test = build_app();
-    let repository = test.state.rua_root.join("project-chat-activity");
-    std::fs::create_dir_all(&repository).expect("project repository");
-    let project = test
-        .state
-        .project_catalog
-        .create_bound(rua_project::ProjectCreateRequest {
-            resource_device_id: "resource-device".to_string(),
-            resource_root: repository.to_string_lossy().to_string(),
-            display_name: Some("Activity Project".to_string()),
-        })
-        .expect("create Project")
-        .project;
-    let project_id = project.project_id.as_str();
     let chat_id = "00000000-0000-4000-8000-000000000201";
     let other_chat_id = "00000000-0000-4000-8000-000000000202";
     let response = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{project_id}/chats/{chat_id}/console/activity"),
+        &format!("/chats/{chat_id}/console/activity"),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -296,16 +278,8 @@ async fn project_chat_activity_stream_is_scoped_to_the_complete_chat_address() {
     test.state
         .active_stream_broadcast_hub
         .publish_event(
-            "agent-same-chat",
-            &ChatAddress::agent(project_id, chat_id),
-            "ignored token".to_string(),
-        )
-        .await;
-    test.state
-        .active_stream_broadcast_hub
-        .publish_event(
             "project-other-chat",
-            &ChatAddress::project(project_id, other_chat_id),
+            &ChatAddress::new(other_chat_id),
             "ignored token".to_string(),
         )
         .await;
@@ -313,39 +287,24 @@ async fn project_chat_activity_stream_is_scoped_to_the_complete_chat_address() {
         .active_stream_broadcast_hub
         .publish_event(
             "project-target-chat",
-            &ChatAddress::project(project_id, chat_id),
+            &ChatAddress::new(chat_id),
             "ignored token".to_string(),
         )
         .await;
 
     let wake = next_started_wake(&mut body).await;
     assert_eq!(wake["stream_id"], "project-target-chat");
-    assert_eq!(wake["project_id"], project_id);
     assert_eq!(wake["chat_id"], chat_id);
     assert_eq!(
         wake["address"],
         serde_json::json!({
-            "scope": {
-                "kind": "project",
-                "project_id": project_id,
-            },
             "chat_id": chat_id,
         })
     );
 
     for (address, stream_id) in [
-        (
-            ChatAddress::agent(project_id, chat_id),
-            "remote-agent-same-chat",
-        ),
-        (
-            ChatAddress::project(project_id, other_chat_id),
-            "remote-project-other-chat",
-        ),
-        (
-            ChatAddress::project(project_id, chat_id),
-            "remote-project-target-chat",
-        ),
+        (ChatAddress::new(other_chat_id), "remote-project-other-chat"),
+        (ChatAddress::new(chat_id), "remote-project-target-chat"),
     ] {
         test.state.chat_activity_wake_hub.publish(
             rua_server::services::chat_activity_wake::ChatLiveWake {

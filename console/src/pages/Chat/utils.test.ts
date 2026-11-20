@@ -26,16 +26,8 @@ vi.mock("../../api/modules/chat", () => ({
   chatApi: {
     filePreviewUrl: mockFilePreviewUrl,
     localImagePreviewUrl: mockLocalImagePreviewUrl,
-    mediaUrl: (
-      scope: { kind: string; agentId?: string; projectId?: string },
-      chatId: string,
-      id: string,
-    ) =>
-      `/api/${
-        scope.kind === "project"
-          ? "projects/" + scope.projectId
-          : "agents/" + scope.agentId
-      }/chats/${chatId}/media/${id}`,
+    mediaUrl: (chatId: string, id: string) =>
+      `/api/chats/${chatId}/media/${id}`,
   },
 }));
 
@@ -151,10 +143,10 @@ describe("Chat URL utilities", () => {
   it("toDisplayUrl preserves canonical API media URLs", () => {
     expect(
       toDisplayUrl(
-        "/api/projects/project-1/chats/chat-1/media/00000000-0000-4000-8000-000000000001?token=secret",
+        "/api/chats/chat-1/media/00000000-0000-4000-8000-000000000001?token=secret",
       ),
     ).toBe(
-      "/api/projects/project-1/chats/chat-1/media/00000000-0000-4000-8000-000000000001?token=secret",
+      "/api/chats/chat-1/media/00000000-0000-4000-8000-000000000001?token=secret",
     );
   });
 
@@ -172,20 +164,9 @@ describe("Chat URL utilities", () => {
     expect(toMarkdownImageDisplayUrl("/tmp/preview.png")).toBe("");
     const id = "00000000-0000-4000-8000-000000000001";
     expect(toMarkdownImageDisplayUrl(`media/${id}`)).toBe("");
-    expect(
-      toMarkdownImageDisplayUrl(
-        `media/${id}`,
-        { kind: "project", projectId: "project-1" },
-        "chat-1",
-      ),
-    ).toBe(`/api/projects/project-1/chats/chat-1/media/${id}`);
-    expect(
-      toMarkdownImageDisplayUrl(
-        `media/${id}`,
-        { kind: "agent", agentId: "agent-1" },
-        "chat-1",
-      ),
-    ).toBe(`/api/agents/agent-1/chats/chat-1/media/${id}`);
+    expect(toMarkdownImageDisplayUrl(`media/${id}`, "chat-1")).toBe(
+      `/api/chats/chat-1/media/${id}`,
+    );
   });
 });
 

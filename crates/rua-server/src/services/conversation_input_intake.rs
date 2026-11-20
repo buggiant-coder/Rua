@@ -8,7 +8,7 @@ use futures::FutureExt;
 use rua_acp::client::AcpClientAdapter;
 use rua_channel::core::console::ConsoleChatRequest;
 use rua_contract::agent::AgentInputMessage;
-use rua_core::{ChatAddress, ChatScopeStore, ProjectId};
+use rua_core::{ChatAddress, ChatStore, ProjectId};
 
 use crate::services::chat_metadata_store::{AcpBindingMetadata, ChatMetadataRecord};
 use crate::services::console_chat::{
@@ -401,11 +401,70 @@ impl ConversationInputDeliveryOutcome {
 }
 
 impl ConversationInputIntake {
-    pub(crate) fn project_work_admission(
+    pub(crate) async fn optional_chat_header(
+        &self,
+        address: &ChatAddress,
+    ) -> Result<Option<rua_session::ChatSessionHeader>, String> {
+        let root = self
+            .data_dir
+            .as_ref()
+            .ok_or("Chat runtime is unavailable")?;
+        rua_session::WorkspaceSessionStore::new(root.join("chats"))
+            .load_chat_header(address.chat_id().as_str())
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) async fn chat_header(
+        &self,
+        address: &ChatAddress,
+    ) -> Result<rua_session::ChatSessionHeader, String> {
+        self.optional_chat_header(address)
+            .await?
+            .ok_or_else(|| format!("Chat not found: {}", address.chat_id()))
+    }
+
+    async fn chat_selection(
+        &self,
+        address: &ChatAddress,
+    ) -> Result<(rua_core::AgentId, Option<rua_core::ProjectId>), String> {
+        let header = self.chat_header(address).await?;
+        Ok((
+            rua_core::AgentId::new(header.agent_id),
+            header.project_id.map(rua_core::ProjectId::new),
+        ))
+    }
+
+    pub(crate) async fn chat_project_id(
+        &self,
+        address: &ChatAddress,
+    ) -> Result<Option<rua_core::ProjectId>, String> {
+        Ok(self
+            .optional_chat_header(address)
+            .await?
+            .and_then(|header| header.project_id)
+            .map(rua_core::ProjectId::new))
+    }
+
+    pub(crate) async fn live_execution_agent(
+        &self,
+        address: &ChatAddress,
+    ) -> Result<Option<String>, String> {
+        if let Some(header) = self.optional_chat_header(address).await? {
+            return Ok(Some(header.agent_id));
+        }
+        Ok(self
+            .remote_input_delivery
+            .read_source_pending(address)
+            .await?
+            .map(|pending| pending.agent_id))
+    }
+
+    pub(crate) async fn project_work_admission(
         &self,
         address: &ChatAddress,
     ) -> Result<Option<rua_project::ProjectAdmissionGuard<'_>>, String> {
-        match address.project_id() {
+        match self.chat_project_id(address).await?.as_ref() {
             Some(project_id) => self
                 .project_catalog
                 .as_ref()
@@ -422,14 +481,14 @@ impl ConversationInputIntake {
         address: &ChatAddress,
         local_device_id: &str,
     ) -> Result<PathBuf, String> {
-        match address.scope() {
-            rua_core::ChatScope::Agent { agent_id, .. } => self
+        match self.chat_selection(address).await? {
+            (agent_id, None) => self
                 .registry
                 .get_or_create(agent_id.as_str())
                 .await
                 .map(|runtime| runtime.workspace_dir())
                 .map_err(|error| error.to_string()),
-            rua_core::ChatScope::Project { project_id, .. } => {
+            (_, Some(ref project_id)) => {
                 let catalog = self
                     .project_catalog
                     .as_ref()
@@ -617,16 +676,14 @@ impl ConversationInputIntake {
         else {
             return;
         };
-        if let Some(agent_id) = address.agent_id() {
-            if authority.is_draining(agent_id.as_str()).await {
-                return;
-            }
-        }
-        let scope = ChatScopeStore::resolve(root, address.clone());
+        let scope = ChatStore::resolve(root, address.clone());
         if let Ok(Some(header)) = rua_session::WorkspaceSessionStore::new(scope.root())
             .load_chat_header(address.chat_id().as_str())
             .await
         {
+            if authority.is_draining(&header.agent_id).await {
+                return;
+            }
             if rua_session::WorkspaceSessionStore::new(scope.root())
                 .load_collaboration_wake_state(address.chat_id().as_str())
                 .await
@@ -679,50 +736,52 @@ impl ConversationInputIntake {
         let local_device_id = current_sync_device_id(&self.sync_device)
             .ok_or_else(|| "local Device identity is unavailable".to_string())?;
         let address = notification.owner.chat_address.clone();
-        let (execution_agent_id, scope_root, working_dir) = match address.scope() {
-            rua_core::ChatScope::Agent { agent_id, .. } => {
-                let runtime = self
-                    .registry
-                    .get_or_create(agent_id.as_str())
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let root = runtime.workspace_dir();
-                (agent_id.to_string(), root.clone(), root)
-            }
-            rua_core::ChatScope::Project { project_id, .. } => {
-                let target = self
-                    .resolve_project_conversation_scope_target(&address, &local_device_id)
-                    .await?;
-                let header = rua_session::WorkspaceSessionStore::new(&target.scope_root)
-                    .load_chat_header(address.chat_id().as_str())
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| format!("Project Chat not found: {}", address.chat_id()))?;
-                let execution_agent_id =
-                    crate::services::project_chat::selection_from_header(&header)?.agent_id;
-                let bindings = self
-                    .project_bindings
-                    .as_ref()
-                    .ok_or_else(|| "Project Resource Binding Store is unavailable".to_string())?;
-                let binding = bindings
-                    .get(project_id)
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| format!("Project Resource Binding not found: {project_id}"))?;
-                self.registry
-                    .get_or_create(&execution_agent_id)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                (
-                    execution_agent_id,
-                    target.scope_root,
-                    crate::services::project_chat::working_directory(
-                        &binding,
-                        Some(&header),
-                        None,
-                    )?,
-                )
-            }
-        };
+        let (execution_agent_id, scope_root, working_dir) =
+            match self.chat_selection(&address).await? {
+                (agent_id, None) => {
+                    let runtime = self
+                        .registry
+                        .get_or_create(agent_id.as_str())
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let root = runtime.chat_workspace_dir();
+                    (agent_id.to_string(), root, runtime.workspace_dir())
+                }
+                (_, Some(ref project_id)) => {
+                    let target = self
+                        .resolve_project_conversation_scope_target(&address, &local_device_id)
+                        .await?;
+                    let header = rua_session::WorkspaceSessionStore::new(&target.scope_root)
+                        .load_chat_header(address.chat_id().as_str())
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .ok_or_else(|| format!("Project Chat not found: {}", address.chat_id()))?;
+                    let execution_agent_id =
+                        crate::services::project_chat::selection_from_header(&header)?.agent_id;
+                    let bindings = self.project_bindings.as_ref().ok_or_else(|| {
+                        "Project Resource Binding Store is unavailable".to_string()
+                    })?;
+                    let binding = bindings
+                        .get(project_id)
+                        .map_err(|error| error.to_string())?
+                        .ok_or_else(|| {
+                            format!("Project Resource Binding not found: {project_id}")
+                        })?;
+                    self.registry
+                        .get_or_create(&execution_agent_id)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    (
+                        execution_agent_id,
+                        target.scope_root,
+                        crate::services::project_chat::working_directory(
+                            &binding,
+                            Some(&header),
+                            None,
+                        )?,
+                    )
+                }
+            };
         if notification.projection == rua_task::TaskLiveOutputProjection::ActivityOnly {
             let store = rua_session::WorkspaceSessionStore::new(&scope_root);
             let note = rua_session::RuntimeNote {
@@ -827,7 +886,7 @@ impl ConversationInputIntake {
             .data_dir
             .as_ref()
             .ok_or("Conversation data directory unavailable")?;
-        let scope = ChatScopeStore::resolve(root, record.spec.owner.chat_address.clone());
+        let scope = ChatStore::resolve(root, record.spec.owner.chat_address.clone());
         let store = rua_session::WorkspaceSessionStore::new(scope.root());
         if store
             .load_collaboration_wake_state(record.spec.owner.chat_id())
@@ -897,7 +956,7 @@ impl ConversationInputIntake {
             .data_dir
             .as_ref()
             .ok_or("Conversation data directory unavailable")?;
-        let scope = ChatScopeStore::resolve(root, address.clone());
+        let scope = ChatStore::resolve(root, address.clone());
         if rua_session::WorkspaceSessionStore::new(scope.root())
             .load_collaboration_wake_state(address.chat_id().as_str())
             .await
@@ -929,10 +988,7 @@ impl ConversationInputIntake {
                 .await
                 .map_err(|e| e.to_string())?
                 .ok_or("Source Chat unavailable")?;
-            let agent_id = match address.agent_id() {
-                Some(agent_id) => agent_id.to_string(),
-                None => crate::services::project_chat::selection_from_header(&header)?.agent_id,
-            };
+            let agent_id = header.agent_id.clone();
             let response = Box::pin(crate::services::conversation_control_dispatcher::dispatch_conversation_control(self, crate::services::device_command_bus::ConversationControlDeviceCommand {
                 agent_id,
                 command_id: format!("background:{}", id), source_device_id: local_device_id,
@@ -944,13 +1000,16 @@ impl ConversationInputIntake {
                 _ => Err("Background delivery was not acknowledged by the current Authority".into()),
             };
         }
-        let (execution_agent_id, scope_root, working_dir) = match address.scope() {
-            rua_core::ChatScope::Agent { agent_id, .. } => {
+        let (execution_agent_id, scope_root, working_dir) = match self
+            .chat_selection(&address)
+            .await?
+        {
+            (agent_id, None) => {
                 let data_dir = self
                     .data_dir
                     .as_ref()
                     .ok_or("Conversation data directory is unavailable")?;
-                let root = ChatScopeStore::resolve(data_dir, address.clone())
+                let root = ChatStore::resolve(data_dir, address.clone())
                     .root()
                     .to_path_buf();
                 if rua_session::WorkspaceSessionStore::new(&root)
@@ -967,7 +1026,7 @@ impl ConversationInputIntake {
                     .map_err(|e| e.to_string())?;
                 (agent_id.to_string(), root.clone(), root)
             }
-            rua_core::ChatScope::Project { project_id, .. } => {
+            (_, Some(ref project_id)) => {
                 let target = self
                     .resolve_project_conversation_scope_target(&address, &local_device_id)
                     .await?;
@@ -1080,7 +1139,7 @@ impl ConversationInputIntake {
                 serde_json::json!(observation_id),
             );
         }
-        if address.project_id().is_some() {
+        if self.chat_project_id(&address).await?.is_some() {
             let assignment = self.resolve_project_turn_agent(&execution_agent_id).await?;
             extra.insert(
                 rua_chat::TURN_AGENT_ASSIGNMENT_META_KEY.to_string(),
@@ -1212,8 +1271,9 @@ impl ConversationInputIntake {
         address: &ChatAddress,
         local_device_id: &str,
     ) -> Result<ProjectConversationScopeTarget, String> {
-        let project_id = address
-            .project_id()
+        let project = self.chat_project_id(address).await?;
+        let project_id = project
+            .as_ref()
             .ok_or_else(|| "Project Conversation scope requires a Project id".to_string())?;
         let data_dir = self
             .data_dir
@@ -1248,7 +1308,7 @@ impl ConversationInputIntake {
             return Err("Project Resource Binding Device does not match the Project".to_string());
         }
         Ok(ProjectConversationScopeTarget {
-            scope_root: ChatScopeStore::resolve(data_dir, address.clone())
+            scope_root: ChatStore::resolve(data_dir, address.clone())
                 .root()
                 .to_path_buf(),
         })
@@ -1259,19 +1319,19 @@ impl ConversationInputIntake {
         address: &ChatAddress,
         local_device_id: &str,
     ) -> Result<InitialConversationControlTarget, String> {
-        match address.scope() {
-            rua_core::ChatScope::Agent { agent_id, .. } => {
+        match self.chat_selection(address).await? {
+            (agent_id, None) => {
                 let runtime = self
                     .registry
                     .get_or_create(agent_id.as_str())
                     .await
                     .map_err(|error| error.to_string())?;
                 Ok(InitialConversationControlTarget {
-                    scope_root: runtime.workspace_dir(),
+                    scope_root: runtime.chat_workspace_dir(),
                     project_agent_state: None,
                 })
             }
-            rua_core::ChatScope::Project { project_id, .. } => {
+            (_, Some(ref project_id)) => {
                 let project_target = self
                     .resolve_project_conversation_scope_target(address, local_device_id)
                     .await?;
@@ -1330,19 +1390,24 @@ impl ConversationInputIntake {
             detail,
         };
         let chat_id = command.chat_id();
+        let (agent_id, project_id) = self
+            .chat_selection(&command.address)
+            .await
+            .map_err(|detail| reject("chat_unavailable", detail))?;
+
         if matches!(&command.action, ConversationControlDeviceAction::Discover)
-            && command.address.project_id().is_none()
+            && project_id.as_ref().is_none()
         {
             return Err(reject(
                 "wrong_chat_scope",
                 "Conversation control discovery is available only for Project Chat".to_string(),
             ));
         }
-        let project_discovery = command.address.project_id().is_some()
+        let project_discovery = project_id.as_ref().is_some()
             && matches!(&command.action, ConversationControlDeviceAction::Discover);
         let (execution_agent_id, scope_root, working_dir, project_resource_device_id) =
-            match command.address.scope() {
-                rua_core::ChatScope::Agent { agent_id, .. } => {
+            match project_id.as_ref() {
+                None => {
                     if agent_id.as_str() != command.agent_id {
                         return Err(reject(
                             "wrong_agent_scope",
@@ -1355,10 +1420,10 @@ impl ConversationInputIntake {
                         .get_or_create(&command.agent_id)
                         .await
                         .map_err(|error| reject("workspace_unavailable", error.to_string()))?;
-                    let root = runtime.workspace_dir();
-                    (command.agent_id.clone(), root.clone(), root, None)
+                    let root = runtime.chat_workspace_dir();
+                    (agent_id.to_string(), root, runtime.workspace_dir(), None)
                 }
-                rua_core::ChatScope::Project { project_id, .. } => {
+                Some(project_id) => {
                     let data_dir = self.data_dir.as_ref().ok_or_else(|| {
                         reject(
                             "project_runtime_unavailable",
@@ -1420,7 +1485,7 @@ impl ConversationInputIntake {
                             "Project Chat authority is fixed to its resource Device".to_string(),
                         ));
                     }
-                    let scope_root = ChatScopeStore::resolve(data_dir, command.address.clone())
+                    let scope_root = ChatStore::resolve(data_dir, command.address.clone())
                         .root()
                         .to_path_buf();
                     let header = rua_session::WorkspaceSessionStore::new(&scope_root)
@@ -1494,7 +1559,7 @@ impl ConversationInputIntake {
                     },
                 });
             }
-            if command.address.project_id().is_some() {
+            if project_id.as_ref().is_some() {
                 return Err(reject(
                     "stale_authority_epoch",
                     "Project Chat control targets a stale fixed authority Epoch".to_string(),
@@ -1539,6 +1604,11 @@ impl ConversationInputIntake {
             detail,
         };
         let target = self.resolve_conversation_control_target(&command).await?;
+        let project_id = self
+            .chat_project_id(&target.address)
+            .await
+            .map_err(|detail| reject("chat_unavailable", detail))?;
+
         let authority = self.conversation_authority.as_ref().ok_or_else(|| {
             reject(
                 "conversation_authority_unavailable",
@@ -1665,7 +1735,7 @@ impl ConversationInputIntake {
                 })
             }
             ConversationControlDeviceAction::ViewResourcePolicy => {
-                if target.address.project_id().is_none() {
+                if project_id.as_ref().is_none() {
                     return Err(reject(
                         "wrong_chat_scope",
                         "Resource Policy is available only for Project Chat".to_string(),
@@ -1695,12 +1765,7 @@ impl ConversationInputIntake {
                             "Project bindings are unavailable".into(),
                         )
                     })?
-                    .get(
-                        target
-                            .address
-                            .project_id()
-                            .expect("Project scope checked above"),
-                    )
+                    .get(project_id.as_ref().expect("Project scope checked above"))
                     .map_err(|error| reject("project_resources_unavailable", error.to_string()))?
                     .ok_or_else(|| {
                         reject(
@@ -1875,9 +1940,8 @@ impl ConversationInputIntake {
                 turn_id,
                 selected_variant_id,
             } => {
-                let common_chat = rua_chat::ChatService::for_resolved_scope(
-                    &target.scope_root,
-                    target.address.clone(),
+                let common_chat = rua_chat::ChatService::from_workspace(
+                    rua_core::WorkspaceRoot::new(&target.scope_root),
                 )
                 .select_variant(&target.address, &turn_id, &selected_variant_id)
                 .await
@@ -1926,9 +1990,8 @@ impl ConversationInputIntake {
                     .map_err(|error| {
                         reject("rollback_background_suppression_failed", error.to_string())
                     })?;
-                let chat_service = rua_chat::ChatService::for_resolved_scope(
-                    &target.scope_root,
-                    target.address.clone(),
+                let chat_service = rua_chat::ChatService::from_workspace(
+                    rua_core::WorkspaceRoot::new(&target.scope_root),
                 );
                 let branch_point = chat_service
                     .resolve_history_boundary(&target.address, &before_turn_id)
@@ -2011,9 +2074,8 @@ impl ConversationInputIntake {
                 )
                 .await
                 .map_err(project_chat_mutation_error)?;
-                let chat_service = rua_chat::ChatService::for_resolved_scope(
-                    &target.scope_root,
-                    target.address.clone(),
+                let chat_service = rua_chat::ChatService::from_workspace(
+                    rua_core::WorkspaceRoot::new(&target.scope_root),
                 );
                 let branch_point = chat_service
                     .resolve_history_boundary(&target.address, &before_turn_id)
@@ -2029,14 +2091,7 @@ impl ConversationInputIntake {
                 )
                 .await
                 .map_err(project_chat_mutation_error)?;
-                let branch_address = ChatAddress::project(
-                    target
-                        .address
-                        .project_id()
-                        .expect("Project branch action requires Project Scope")
-                        .clone(),
-                    &chat.id,
-                );
+                let branch_address = ChatAddress::new(&chat.id);
                 let chat_value = serde_json::to_value(&chat)
                     .map_err(|error| reject("chat_protocol_error", error.to_string()))?;
                 self.session_sync
@@ -2237,18 +2292,18 @@ impl ConversationInputIntake {
         };
         let _resource_admission = self
             .project_work_admission(&command.address)
+            .await
             .map_err(|error| reject("project_resources_changing", error))?;
-        let draft_discovery = if command.address.agent_id().is_some()
-            && matches!(
-                &command.action,
-                AcpChatDeviceAction::ListRunners | AcpChatDeviceAction::ListSessions { .. }
-            ) {
+        let draft_discovery = if matches!(
+            &command.action,
+            AcpChatDeviceAction::ListRunners | AcpChatDeviceAction::ListSessions { .. }
+        ) {
             let runtime = self
                 .registry
                 .get_or_create(&command.agent_id)
                 .await
                 .map_err(|error| reject("workspace_unavailable", error.to_string()))?;
-            rua_session::WorkspaceSessionStore::new(runtime.workspace_dir())
+            rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir())
                 .load_chat_header(command.chat_id())
                 .await
                 .map_err(|error| reject("chat_unavailable", error.to_string()))?
@@ -2259,8 +2314,6 @@ impl ConversationInputIntake {
         if draft_discovery {
             if current_sync_device_id(&self.sync_device).as_deref()
                 != Some(command.target_device_id.as_str())
-                || command.address.agent_id().map(|id| id.as_str())
-                    != Some(command.agent_id.as_str())
             {
                 return Err(reject(
                     "invalid_discovery_target",
@@ -2352,11 +2405,16 @@ impl ConversationInputIntake {
         })?;
         handle.refresh_config();
         let chat_id = target.address.chat_id().to_string();
+        let project_id = self
+            .chat_project_id(&target.address)
+            .await
+            .map_err(|detail| reject("chat_unavailable", detail))?;
+
         if matches!(
             &command.action,
             AcpChatDeviceAction::Enter { .. } | AcpChatDeviceAction::ListSessions { .. }
         ) {
-            if let Some(project_id) = target.address.project_id() {
+            if let Some(project_id) = project_id.as_ref() {
                 let bindings = self.project_bindings.as_ref().ok_or_else(|| {
                     reject(
                         "project_binding_unavailable",
@@ -2370,9 +2428,8 @@ impl ConversationInputIntake {
                     .map_err(|error| reject("unsupported_project_resources", error))?;
             }
         }
-        let project_cwd = target
-            .address
-            .project_id()
+        let project_cwd = project_id
+            .as_ref()
             .map(|_| target.working_dir.to_string_lossy().to_string());
 
         match command.action {
@@ -2622,8 +2679,11 @@ impl ConversationInputIntake {
             return Err("Project Resource Binding Device does not match the Project".to_string());
         }
 
-        let address = ChatAddress::project(project_id.clone(), chat_id);
-        let scope_root = ChatScopeStore::resolve(data_dir, address.clone())
+        let address = ChatAddress::new(chat_id);
+        if self.chat_project_id(&address).await?.as_ref() != Some(project_id) {
+            return Err(format!("Chat not found in Project: {chat_id}"));
+        }
+        let scope_root = ChatStore::resolve(data_dir, address.clone())
             .root()
             .to_path_buf();
         if rua_session::WorkspaceSessionStore::new(&scope_root)
@@ -2690,6 +2750,7 @@ impl ConversationInputIntake {
                                 ),
                                 Some(&crate::services::project_chat::working_directory(&binding, Some(&header), None)?),
                                 crate::services::chat_configuration_capture::ChatConfigurationSelection {
+project_id: header.project_id.clone(),
 project_working_directory_id: Some(header.extra.get(crate::services::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY).and_then(serde_json::Value::as_str).unwrap_or(rua_project::INITIAL_PROJECT_DIRECTORY_ID).to_string()),
                                     model: header.extra.get("model").cloned(),
                                     thinking: header.extra.get("thinking").cloned(),
@@ -2759,10 +2820,13 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
             .data_dir
             .as_ref()
             .ok_or_else(|| "Project Chat runtime is unavailable".to_string())?;
-        let address = ChatAddress::project(project_id.clone(), chat_id);
-        let scope_root = ChatScopeStore::resolve(data_dir, address.clone())
+        let address = ChatAddress::new(chat_id);
+        let scope_root = ChatStore::resolve(data_dir, address.clone())
             .root()
             .to_path_buf();
+        if self.chat_project_id(&address).await?.as_ref() != Some(project_id) {
+            return Err(format!("Chat not found in Project: {chat_id}"));
+        }
         let selection =
             crate::services::project_chat::load_project_chat_agent_selection(&scope_root, chat_id)
                 .await?;
@@ -2827,9 +2891,9 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
         if binding.resource_device_id != project.resource_device_id {
             return Err("Resource Device mismatch".into());
         }
-        let scope_root = ChatScopeStore::resolve(
+        let scope_root = ChatStore::resolve(
             data_dir,
-            ChatAddress::project(project_id.clone(), "00000000-0000-4000-8000-000000000000"),
+            ChatAddress::new("00000000-0000-4000-8000-000000000000"),
         )
         .root()
         .to_path_buf();
@@ -2839,7 +2903,14 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
             None => crate::services::chat_index::list_all(&scope_root)
                 .await?
                 .into_iter()
-                .filter(|chat| !chat.archived)
+                .filter(|chat| {
+                    !chat.archived
+                        && chat
+                            .meta
+                            .get("project_id")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(project_id.as_str())
+                })
                 .map(|chat| chat.id)
                 .collect(),
         };
@@ -2901,7 +2972,7 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
         {
             return Err("Project is no longer active".into());
         }
-        let address = ChatAddress::project(project_id.clone(), chat_id);
+        let address = ChatAddress::new(chat_id);
         let authority = self
             .conversation_authority
             .as_ref()
@@ -2913,6 +2984,9 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
             .await
             .map_err(|error| error.to_string())?
             .ok_or("Chat no longer exists")?;
+        if header.project_id.as_deref() != Some(project_id.as_str()) {
+            return Err("Chat does not belong to this Project".into());
+        }
         if header.metadata.archived {
             return Ok(None);
         }
@@ -2998,8 +3072,11 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
             return Err("Project Resource Binding Device does not match the Project".to_string());
         }
 
-        let address = ChatAddress::project(project_id.clone(), chat_id);
-        let scope_root = ChatScopeStore::resolve(data_dir, address.clone())
+        let address = ChatAddress::new(chat_id);
+        if self.chat_project_id(&address).await?.as_ref() != Some(project_id) {
+            return Err(format!("Chat not found in Project: {chat_id}"));
+        }
+        let scope_root = ChatStore::resolve(data_dir, address.clone())
             .root()
             .to_path_buf();
         let configuration_gate = self
@@ -3113,19 +3190,26 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
             ));
         }
 
-        let address = ChatAddress::project(project_id.clone(), chat_id);
-        let scope_root = ChatScopeStore::resolve(data_dir, address.clone())
+        let address = ChatAddress::new(chat_id);
+        let scope_root = ChatStore::resolve(data_dir, address.clone())
             .root()
             .to_path_buf();
+        if self
+            .chat_project_id(&address)
+            .await
+            .map_err(ProjectChatDeleteError::Failed)?
+            .as_ref()
+            != Some(project_id)
+        {
+            return Err(ProjectChatDeleteError::NotFound(format!(
+                "Chat not found in Project: {chat_id}"
+            )));
+        }
         let deleting = BTreeSet::from([chat_id.to_string()]);
-        let storage_snapshot = crate::services::chat_storage::scan_scope_for_deletion(
-            &scope_root,
-            address.scope().clone(),
-            project.display_name.clone(),
-            &deleting,
-        )
-        .await
-        .map_err(ProjectChatDeleteError::Failed)?;
+        let storage_snapshot =
+            crate::services::chat_storage::scan_scope_for_deletion(&scope_root, &deleting)
+                .await
+                .map_err(ProjectChatDeleteError::Failed)?;
         let storage_entry = storage_snapshot
             .entries
             .iter()
@@ -3231,10 +3315,9 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
 
         let (removable_media, _) =
             crate::services::chat_storage::removable_media(&storage_snapshot, &deleting);
-        let media_owner = rua_sync::media_adapter::MediaOwner::Project(project_id.to_string());
         for media_id in &removable_media {
             self.session_sync
-                .emit_media_deleted_for_checked(media_owner.clone(), media_id)
+                .emit_media_deleted_for_checked(media_id)
                 .await
                 .map_err(ProjectChatDeleteError::Failed)?;
         }
@@ -3367,50 +3450,37 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
             .data_dir
             .as_ref()
             .ok_or_else(|| "Project Chat runtime is unavailable".to_string())?;
-        let scope_root = ChatScopeStore::resolve(
-            data_dir,
-            ChatAddress::project(project_id.clone(), "00000000-0000-4000-8000-000000000000"),
-        )
-        .root()
-        .to_path_buf();
-        let mut chat_ids = BTreeSet::new();
-        for chat in crate::services::chat_index::list_all(&scope_root).await? {
-            chat_ids.insert(chat.id);
-        }
-        let sessions_dir = scope_root.join("sessions");
-        if sessions_dir.is_dir() {
-            for entry in std::fs::read_dir(&sessions_dir).map_err(|error| error.to_string())? {
-                let entry = entry.map_err(|error| error.to_string())?;
-                if entry
-                    .file_type()
-                    .map_err(|error| error.to_string())?
-                    .is_dir()
+        let workspace = rua_core::RuaRoot::new(data_dir).chat_workspace();
+        let store = rua_session::WorkspaceSessionStore::new(workspace.as_path());
+        let mut addresses = Vec::new();
+        let sessions = workspace.sessions_dir();
+        if sessions.is_dir() {
+            let mut entries = tokio::fs::read_dir(sessions)
+                .await
+                .map_err(|e| e.to_string())?;
+            while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+                let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                if uuid::Uuid::parse_str(&id).is_err()
+                    || !entry.file_type().await.map_err(|e| e.to_string())?.is_dir()
                 {
-                    if let Some(chat_id) = entry.file_name().to_str() {
-                        chat_ids.insert(chat_id.to_string());
-                    }
+                    continue;
+                }
+                let header = store
+                    .load_chat_header(&id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if header
+                    .as_ref()
+                    .and_then(|header| header.project_id.as_deref())
+                    == Some(project_id.as_str())
+                {
+                    addresses.push(ChatAddress::new(id));
                 }
             }
         }
-        let prompt_state_dir = scope_root.join("prompt-state");
-        if prompt_state_dir.is_dir() {
-            for entry in std::fs::read_dir(&prompt_state_dir).map_err(|error| error.to_string())? {
-                let entry = entry.map_err(|error| error.to_string())?;
-                let path = entry.path();
-                if path.extension().and_then(|value| value.to_str()) == Some("json") {
-                    if let Some(chat_id) = path.file_stem().and_then(|value| value.to_str()) {
-                        chat_ids.insert(chat_id.to_string());
-                    }
-                }
-            }
-        }
-        Ok((
-            scope_root,
-            chat_ids
-                .into_iter()
-                .map(|chat_id| ChatAddress::project(project_id.clone(), chat_id))
-                .collect(),
-        ))
+        Ok((workspace.as_path().to_path_buf(), addresses))
     }
 
     pub async fn cleanup_permanently_deleted_project(
@@ -3429,7 +3499,20 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
             .ok_or_else(|| "Approval Authority is unavailable".to_string())?;
         let store = rua_session::WorkspaceSessionStore::new(scope_root);
 
+        let mut matched = Vec::new();
         for address in addresses {
+            let header = store
+                .load_chat_header(address.chat_id().as_str())
+                .await
+                .map_err(|error| error.to_string())?;
+            if header
+                .as_ref()
+                .and_then(|header| header.project_id.as_deref())
+                != Some(project_id.as_str())
+            {
+                continue;
+            }
+            matched.push(address);
             if authority.active_turn(address).await.is_some() {
                 let _ = authority
                     .request_stop(Some(self.streams.as_ref()), CONSOLE_CHANNEL_ID, address)
@@ -3470,9 +3553,7 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
         tokio::time::timeout(LOCAL_STOP_CONFIRM_TIMEOUT, async {
             loop {
                 if futures::future::join_all(
-                    addresses
-                        .iter()
-                        .map(|address| authority.active_turn(address)),
+                    matched.iter().map(|address| authority.active_turn(address)),
                 )
                 .await
                 .into_iter()
@@ -3486,18 +3567,33 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
         .await
         .map_err(|_| "timed out clearing Project runtime before Permanent Delete".to_string())?;
 
-        approvals
-            .delete_project_rules(project_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        match tokio::fs::remove_dir_all(scope_root).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.to_string()),
+        let ids = matched
+            .iter()
+            .map(|address| address.chat_id().to_string())
+            .collect();
+        let snapshot =
+            crate::services::chat_storage::scan_scope_for_deletion(scope_root, &ids).await?;
+        let (removable_media, _) = crate::services::chat_storage::removable_media(&snapshot, &ids);
+        crate::services::chat_storage::remove_local_attachments(
+            scope_root,
+            &snapshot,
+            &ids,
+            &removable_media,
+        )?;
+        for address in &matched {
+            approvals
+                .delete_chat_rules(address)
+                .await
+                .map_err(|error| error.to_string())?;
+            store
+                .delete_chat_storage_by_chat_id(address.chat_id().as_str())
+                .await
+                .map_err(|error| error.to_string())?;
+            crate::services::chat_index::delete(scope_root, address.chat_id().as_str()).await?;
         }
         Ok(ProjectPermanentDeleteResult {
             project_id: project_id.clone(),
-            deleted_chat_count: addresses.len(),
+            deleted_chat_count: matched.len(),
             changed: true,
         })
     }
@@ -3620,12 +3716,9 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
         let mut affected = 0usize;
 
         for project in catalog.list().map_err(|error| error.to_string())? {
-            let scope_root = ChatScopeStore::resolve(
+            let scope_root = ChatStore::resolve(
                 data_dir,
-                ChatAddress::project(
-                    project.project_id.clone(),
-                    "00000000-0000-4000-8000-000000000000",
-                ),
+                ChatAddress::new("00000000-0000-4000-8000-000000000000"),
             )
             .root()
             .to_path_buf();
@@ -3636,7 +3729,11 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
             loop {
                 let page = crate::services::chat_index::list(
                     &scope_root,
-                    crate::services::chat_index::ChatIndexFilter::default(),
+                    crate::services::chat_index::ChatIndexFilter {
+                        project_id: Some(project.project_id.to_string()),
+                        agent_id: Some(agent_id.to_string()),
+                        ..Default::default()
+                    },
                     offset,
                     256,
                 )
@@ -3646,7 +3743,7 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
                 }
                 let total = page.total;
                 for chat in page.entries {
-                    let address = ChatAddress::project(project.project_id.clone(), chat.id.clone());
+                    let address = ChatAddress::new(chat.id.clone());
                     let store = rua_session::WorkspaceSessionStore::new(&scope_root);
                     let Some(header) = store
                         .load_chat_header(address.chat_id().as_str())
@@ -3655,6 +3752,9 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
                     else {
                         continue;
                     };
+                    if header.project_id.as_deref() != Some(project.project_id.as_str()) {
+                        continue;
+                    }
                     let Ok(selection) =
                         crate::services::project_chat::selection_from_header(&header)
                     else {
@@ -3714,8 +3814,8 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
         Ok(affected)
     }
 
-    pub async fn request_local_stop(&self, agent_id: &str, chat_id: &str) -> bool {
-        let address = ChatAddress::agent(agent_id, chat_id);
+    pub async fn request_local_stop(&self, _agent_id: &str, chat_id: &str) -> bool {
+        let address = ChatAddress::new(chat_id);
         self.request_local_stop_for(&address).await
     }
 
@@ -3751,7 +3851,7 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
             )
             .await;
         if stopped.is_some() {
-            let scope = ChatScopeStore::resolve(
+            let scope = ChatStore::resolve(
                 self.data_dir
                     .as_ref()
                     .ok_or("Conversation data directory is unavailable")?,
@@ -3871,12 +3971,12 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
 
     pub async fn request_local_interjection(
         &self,
-        agent_id: &str,
+        _agent_id: &str,
         chat_id: &str,
     ) -> Option<ConversationActiveTurn> {
         self.conversation_authority
             .as_ref()?
-            .request_interjection(&rua_core::ChatAddress::agent(agent_id, chat_id))
+            .request_interjection(&rua_core::ChatAddress::new(chat_id))
             .await
     }
 
@@ -3889,15 +3989,12 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
             .chat_id
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let workspace_dir = match self.registry.get_or_create(agent_id).await {
-            Ok(runtime) => Some(runtime.workspace_dir()),
-            Err(error) => {
-                return ConversationInputDeliveryOutcome::Rejected {
-                    detail: format!("workspace unavailable: {error}"),
-                    target_device_id: None,
-                    failure_kind: None,
-                };
-            }
+        let Some(data_dir) = self.data_dir.as_ref() else {
+            return ConversationInputDeliveryOutcome::Rejected {
+                detail: "Chat runtime is unavailable".into(),
+                target_device_id: None,
+                failure_kind: None,
+            };
         };
         let chat_id = match resolve_chat_id(&raw_request_chat_id) {
             Ok(id) => id,
@@ -3917,46 +4014,74 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
             }
         };
 
-        let local_device_id = current_sync_device_id(&self.sync_device);
-        let address = rua_core::ChatAddress::agent(agent_id, &chat_id);
-        let first_submission = if let Some(workspace_dir) = workspace_dir.as_deref() {
-            if let Err(detail) =
-                crate::services::conversation_authority_target::validate_chat_submit_materialization(
-                    workspace_dir,
-                    &chat_id,
-                    request
-                        .extra
-                        .get("expected_authority_epoch")
-                        .and_then(serde_json::Value::as_str),
-                )
-                .await
-            {
+        let workspace = rua_core::RuaRoot::new(data_dir).chat_workspace();
+        let workspace_dir = workspace.as_path();
+        let saved = match rua_session::WorkspaceSessionStore::new(workspace_dir)
+            .load_chat_header(&raw_request_chat_id)
+            .await
+        {
+            Ok(header) => header,
+            Err(error) => {
                 return ConversationInputDeliveryOutcome::Rejected {
-                    detail,
+                    detail: error.to_string(),
                     target_device_id: None,
-                    failure_kind: Some("chat_not_ready".to_string()),
-                };
-            }
-            match crate::services::chat_index::get(workspace_dir, &chat_id).await {
-                Ok(indexed) => {
-                    indexed.is_none()
-                        && rua_session::WorkspaceSessionStore::new(workspace_dir)
-                            .load_chat_header(&chat_id)
-                            .await
-                            .ok()
-                            .flatten()
-                            .is_none()
-                }
-                Err(error) => {
-                    return ConversationInputDeliveryOutcome::Rejected {
-                        detail: format!("chat index unavailable: {error}"),
-                        target_device_id: None,
-                        failure_kind: None,
-                    };
+                    failure_kind: None,
                 }
             }
-        } else {
-            false
+        };
+        let selected_agent = saved
+            .as_ref()
+            .map(|header| header.agent_id.clone())
+            .unwrap_or_else(|| agent_id.to_string());
+        let agent_id = selected_agent.as_str();
+        let project_id = match saved.as_ref() {
+            Some(header) => header.project_id.clone(),
+            None => request
+                .extra
+                .get("project_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+        };
+        request
+            .extra
+            .insert("agent_id".into(), serde_json::json!(agent_id));
+        request
+            .extra
+            .insert("project_id".into(), serde_json::json!(project_id));
+        if let Some(project_id) = project_id {
+            return self
+                .submit_project_delivery(&rua_core::ProjectId::new(project_id), agent_id, request)
+                .await;
+        }
+        let local_device_id = current_sync_device_id(&self.sync_device);
+        let address = rua_core::ChatAddress::new(&chat_id);
+        if let Err(detail) =
+            crate::services::conversation_authority_target::validate_chat_submit_materialization(
+                workspace_dir,
+                &chat_id,
+                request
+                    .extra
+                    .get("expected_authority_epoch")
+                    .and_then(serde_json::Value::as_str),
+            )
+            .await
+        {
+            return ConversationInputDeliveryOutcome::Rejected {
+                detail,
+                target_device_id: None,
+                failure_kind: Some("chat_not_ready".into()),
+            };
+        }
+        let first_submission = match crate::services::chat_index::get(workspace_dir, &chat_id).await
+        {
+            Ok(indexed) => indexed.is_none() && saved.is_none(),
+            Err(error) => {
+                return ConversationInputDeliveryOutcome::Rejected {
+                    detail: format!("chat index unavailable: {error}"),
+                    target_device_id: None,
+                    failure_kind: None,
+                }
+            }
         };
         if first_submission {
             if let Some(authority) = self.conversation_authority.as_ref() {
@@ -4024,44 +4149,25 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
                 serde_json::json!(placement.base_manifest_hash),
             );
         }
-        let captured_assignment = if let Some(root) = workspace_dir.as_deref() {
-            let header = match rua_session::WorkspaceSessionStore::new(root)
-                .load_chat_header(&chat_id)
-                .await
-            {
-                Ok(header) => header,
-                Err(error) => {
-                    return ConversationInputDeliveryOutcome::Rejected {
-                        detail: error.to_string(),
-                        target_device_id: None,
-                        failure_kind: Some("invalid_request".to_string()),
-                    }
-                }
-            };
-            match header.and_then(|header| {
-                header
-                    .extra
-                    .get(crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY)
-                    .cloned()
-            }) {
-                Some(value) => {
-                    match crate::services::product_hooks::ChatHookConfiguration::from_persisted(
-                        value,
-                    ) {
-                        Ok(configuration) => configuration.agent_assignment,
-                        Err(error) => {
-                            return ConversationInputDeliveryOutcome::Rejected {
-                                detail: error,
-                                target_device_id: None,
-                                failure_kind: Some("invalid_request".to_string()),
-                            }
+        let captured_assignment = match saved.and_then(|header| {
+            header
+                .extra
+                .get(crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY)
+                .cloned()
+        }) {
+            Some(value) => {
+                match crate::services::product_hooks::ChatHookConfiguration::from_persisted(value) {
+                    Ok(configuration) => configuration.agent_assignment,
+                    Err(error) => {
+                        return ConversationInputDeliveryOutcome::Rejected {
+                            detail: error,
+                            target_device_id: None,
+                            failure_kind: Some("invalid_request".to_string()),
                         }
                     }
                 }
-                None => None,
             }
-        } else {
-            None
+            None => None,
         };
         let assignment = match match captured_assignment {
             Some(assignment) => Ok(assignment),
@@ -4081,21 +4187,7 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
             serde_json::to_value(assignment).expect("Turn Agent Assignment is serializable"),
         );
         if !first_submission {
-            let scope_root = workspace_dir
-                .as_deref()
-                .expect("Agent Chat workspace was resolved");
-            let scope_store =
-                match rua_core::ChatScopeStore::for_agent_workspace(scope_root, address.clone()) {
-                    Ok(scope_store) => scope_store,
-                    Err(error) => {
-                        return ConversationInputDeliveryOutcome::Rejected {
-                            detail: error.to_string(),
-                            target_device_id: None,
-                            failure_kind: None,
-                        };
-                    }
-                };
-            let chat_service = rua_chat::ChatService::for_scope_store(scope_store);
+            let chat_service = rua_chat::ChatService::from_workspace(workspace.clone());
             let chat = match chat_service.load(&address).await {
                 Ok(Some(chat)) => chat,
                 Ok(None) => {
@@ -4128,7 +4220,7 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
         }
         let route = ConversationAuthorityRouter
             .resolve_submit_route(ConversationSubmitRouteRequest {
-                workspace_dir: workspace_dir.as_deref(),
+                workspace_dir: Some(workspace_dir),
                 address: &address,
                 request: &request,
                 execution_agent_id: agent_id,
@@ -4200,6 +4292,7 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
                                     rua_config::ChatRunningConfig::from_agent_defaults(&running),
                                     None,
                                     crate::services::chat_configuration_capture::ChatConfigurationSelection {
+project_id: None,
 project_working_directory_id: None,
                                         model: initial_model.clone(),
                                         thinking: None,
@@ -4235,7 +4328,7 @@ project_working_directory_id: None,
                     agent_id,
                     request,
                     chat_id,
-                    workspace_dir,
+                    Some(workspace_dir.to_owned()),
                     AuthorityRouteTarget {
                         device_id: &authority_device_id,
                         epoch: authority_epoch,
@@ -4257,7 +4350,7 @@ project_working_directory_id: None,
                             agent_id,
                             &address,
                             &request,
-                            workspace_dir,
+                            Some(workspace_dir.to_owned()),
                             &source_device_id,
                             AuthorityRouteTarget {
                                 device_id: &target_device_id,
@@ -4274,7 +4367,7 @@ project_working_directory_id: None,
                     target_device_id: &target_device_id,
                     authority_epoch,
                     base_manifest_hash: &base_manifest_hash,
-                    workspace_dir: workspace_dir.as_deref(),
+                    workspace_dir: Some(workspace_dir),
                     materialize_conversation,
                 };
                 match self
@@ -4314,8 +4407,14 @@ project_working_directory_id: None,
         &self,
         project_id: &ProjectId,
         execution_agent_id: &str,
-        request: ConsoleChatRequest,
+        mut request: ConsoleChatRequest,
     ) -> ConversationInputDeliveryOutcome {
+        request
+            .extra
+            .insert("project_id".into(), serde_json::json!(project_id));
+        request
+            .extra
+            .insert("agent_id".into(), serde_json::json!(execution_agent_id));
         let Some(data_dir) = self.data_dir.as_ref() else {
             return ConversationInputDeliveryOutcome::Rejected {
                 detail: "Project Chat runtime is unavailable".to_string(),
@@ -4395,8 +4494,8 @@ project_working_directory_id: None,
             };
         };
 
-        let address = ChatAddress::project(project_id.clone(), &chat_id);
-        let scope_root = ChatScopeStore::resolve(data_dir, address.clone())
+        let address = ChatAddress::new(&chat_id);
+        let scope_root = ChatStore::resolve(data_dir, address.clone())
             .root()
             .to_path_buf();
         let mut selected_agent_id =
@@ -4760,17 +4859,16 @@ project_working_directory_id: None,
         let (turn_model, turn_thinking) = if first_submission {
             rua_chat::capture_turn_model_and_thinking(initial_model.as_ref(), None)
         } else {
-            let current_chat =
-                match rua_chat::ChatService::for_resolved_scope(&scope_root, address.clone())
-                    .load(&address)
-                    .await
-                {
-                    Ok(Some(chat)) => chat,
-                    Ok(None) => {
-                        return reject("Project Chat Session File is unavailable".to_string())
-                    }
-                    Err(error) => return reject(error.to_string()),
-                };
+            let current_chat = match rua_chat::ChatService::from_workspace(
+                rua_core::WorkspaceRoot::new(&scope_root),
+            )
+            .load(&address)
+            .await
+            {
+                Ok(Some(chat)) => chat,
+                Ok(None) => return reject("Project Chat Session File is unavailable".to_string()),
+                Err(error) => return reject(error.to_string()),
+            };
             rua_chat::capture_turn_model_and_thinking(current_chat.model(), current_chat.thinking())
         };
         if let Some(turn_model) = turn_model {
@@ -4844,6 +4942,7 @@ project_working_directory_id: None,
                         running,
                         Some(&working_dir),
                         crate::services::chat_configuration_capture::ChatConfigurationSelection {
+                            project_id: Some(project_id.to_string()),
                             project_working_directory_id: Some(directory_id.clone()),
                             model: initial_model.clone(),
                             thinking: request.extra.get(rua_chat::TURN_THINKING_KEY).cloned(),
@@ -4911,6 +5010,8 @@ project_working_directory_id: None,
                             &prepared,
                             &placement_for_persist,
                             crate::services::project_chat::ProjectChatMaterializationSnapshot {
+                                project_id: pending.extra.get("project_id").and_then(serde_json::Value::as_str)
+                                    .ok_or("Project identity is required for initial submission")?.to_string(),
                                 initial_model,
                                 configuration: crate::services::product_hooks::ChatHookConfiguration::from_persisted(pending.extra[crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY].clone())?,
                             },
@@ -4982,7 +5083,7 @@ project_working_directory_id: None,
             .get_or_create(agent_id)
             .await
             .map_err(|error| format!("workspace unavailable: {error}"))?;
-        let workspace_dir = runtime.workspace_dir();
+        let workspace_dir = runtime.chat_workspace_dir();
         let placement =
             crate::services::conversation_authority_target::load_chat_authority_placement_target(
                 &workspace_dir,
@@ -4990,9 +5091,9 @@ project_working_directory_id: None,
             )
             .await?;
         let target = ConversationControlTarget {
-            address: ChatAddress::agent(agent_id, chat_id),
+            address: ChatAddress::new(chat_id),
             execution_agent_id: agent_id.to_string(),
-            scope_root: runtime.workspace_dir(),
+            scope_root: runtime.chat_workspace_dir(),
             working_dir: runtime.workspace_dir(),
             placement: ConversationAuthorityPlacement {
                 device_id: placement.device_id,
@@ -5084,7 +5185,11 @@ project_working_directory_id: None,
             .as_ref()
             .ok_or_else(|| "Conversation Authority is unavailable".to_string())?;
         verify_and_observe_authority_redirect(
-            &self.registry,
+            &self
+                .data_dir
+                .as_ref()
+                .ok_or("Chat runtime unavailable")?
+                .join("chats"),
             authority,
             self.remote_input_delivery.device_network(),
             &self.sync_device,
@@ -5106,9 +5211,9 @@ project_working_directory_id: None,
             .await
             .map_err(|error| error.to_string())?;
         self.enter_authority_acp_for(
-            &ChatAddress::agent(agent_id, chat_id),
+            &ChatAddress::new(chat_id),
             agent_id,
-            &runtime.workspace_dir(),
+            &runtime.chat_workspace_dir(),
             binding,
         )
         .await
@@ -5154,14 +5259,18 @@ project_working_directory_id: None,
     fn validate_initial_acp(
         &self,
         agent_id: &str,
-        address: &ChatAddress,
+        _address: &ChatAddress,
         working_dir: &Path,
         extra: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Option<InitialAcpSelection>, String> {
         let Some(value) = extra.get(INITIAL_ACP_KEY) else {
             return Ok(None);
         };
-        if let Some(project_id) = address.project_id() {
+        let project_id = extra
+            .get("project_id")
+            .and_then(serde_json::Value::as_str)
+            .map(rua_core::ProjectId::new);
+        if let Some(project_id) = project_id.as_ref() {
             self.validate_acp_project_resources(project_id)?;
         }
         let selection: InitialAcpSelection = serde_json::from_value(value.clone())
@@ -5193,7 +5302,7 @@ project_working_directory_id: None,
         {
             return Err("initial ACP cwd and resume Session must not be empty".into());
         }
-        let cwd = if address.project_id().is_some() {
+        let cwd = if project_id.is_some() {
             working_dir
         } else {
             selection
@@ -5219,8 +5328,8 @@ project_working_directory_id: None,
         working_dir: &Path,
         runner: &str,
     ) -> Result<(), String> {
-        let _resource_admission = self.project_work_admission(address)?;
-        if let Some(project_id) = address.project_id() {
+        let _resource_admission = self.project_work_admission(address).await?;
+        if let Some(project_id) = self.chat_project_id(address).await?.as_ref() {
             self.validate_acp_project_resources(project_id)?;
         }
         let registry = self
@@ -5310,9 +5419,9 @@ project_working_directory_id: None,
             .await
             .map_err(|error| error.to_string())?;
         self.exit_authority_acp_for(
-            &ChatAddress::agent(agent_id, chat_id),
+            &ChatAddress::new(chat_id),
             agent_id,
-            &runtime.workspace_dir(),
+            &runtime.chat_workspace_dir(),
         )
         .await
     }
@@ -5363,9 +5472,9 @@ project_working_directory_id: None,
             .get_or_create(agent_id)
             .await
             .map_err(|error| error.to_string())?;
-        let scope_root = runtime.workspace_dir();
+        let scope_root = runtime.chat_workspace_dir();
         self.update_authority_chat_model_for(
-            &ChatAddress::agent(agent_id, chat_id),
+            &ChatAddress::new(chat_id),
             agent_id,
             &scope_root,
             model,
@@ -5397,7 +5506,7 @@ project_working_directory_id: None,
             .get_or_create(agent_id)
             .await
             .map_err(|error| error.to_string())?;
-        self.authority_chat_model_for(&runtime.workspace_dir(), chat_id)
+        self.authority_chat_model_for(&runtime.chat_workspace_dir(), chat_id)
             .await
     }
 
@@ -5743,7 +5852,7 @@ project_working_directory_id: None,
             .get_or_create(agent_id)
             .await
             .map_err(|error| error.to_string())?;
-        let header = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir())
+        let header = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir())
             .load_chat_header(chat_id)
             .await
             .map_err(|error| error.to_string())?
@@ -5876,13 +5985,17 @@ project_working_directory_id: None,
 
     async fn chat_configuration_materialization(
         &self,
-        address: &ChatAddress,
+        _address: &ChatAddress,
         agent_id: &str,
         header: &rua_session::ChatSessionHeader,
         running_config: rua_config::ChatRunningConfig,
     ) -> Result<crate::services::product_hooks::ChatConfigurationMaterialization, String> {
         let assignment = self.resolve_agent_turn_assignment(agent_id).await?;
-        let project_root = match address.project_id() {
+        let project_id = header
+            .project_id
+            .as_ref()
+            .map(|id| rua_core::ProjectId::new(id.clone()));
+        let project_root = match project_id.as_ref() {
             Some(project_id) => {
                 let binding = self
                     .project_bindings
@@ -5922,7 +6035,8 @@ project_working_directory_id: None,
             running_config,
             project_root.as_deref(),
             crate::services::chat_configuration_capture::ChatConfigurationSelection {
-                project_working_directory_id: address.project_id().map(|_| {
+                project_id: header.project_id.clone(),
+                project_working_directory_id: header.project_id.as_ref().map(|_| {
                     header
                         .extra
                         .get(crate::services::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY)
@@ -6116,9 +6230,9 @@ project_working_directory_id: None,
             .map_err(|error| rua_core::RuaError::Runtime {
                 message: error.to_string(),
             })?
-            .workspace_dir();
+            .chat_workspace_dir();
         self.update_authority_running_config_for(
-            &ChatAddress::agent(agent_id, chat_id),
+            &ChatAddress::new(chat_id),
             agent_id,
             &scope_root,
             running,
@@ -6204,19 +6318,19 @@ project_working_directory_id: None,
             .conversation_authority
             .as_ref()
             .ok_or_else(|| "Conversation Authority is unavailable".to_string())?;
-        let workspace_dir = runtime.workspace_dir();
+        let workspace_dir = runtime.chat_workspace_dir();
         let record = authority
             .switch_authority(
                 None,
                 &workspace_dir,
-                &rua_core::ChatAddress::agent(agent_id, chat_id),
+                &rua_core::ChatAddress::new(chat_id),
                 target,
             )
             .await
             .map_err(|error| error.to_string())?;
         self.session_sync.spawn_chat_state_publication_for(
             &workspace_dir,
-            &rua_core::ChatAddress::agent(agent_id, chat_id),
+            &rua_core::ChatAddress::new(chat_id),
             Some(record.to_json_value()),
         );
         Ok(record)
@@ -6394,7 +6508,17 @@ project_working_directory_id: None,
         route_target: AuthorityRouteTarget<'_>,
         first_submission: Option<FirstAgentSubmission>,
     ) -> ConversationInputDeliveryOutcome {
-        let address = rua_core::ChatAddress::agent(agent_id, &chat_id);
+        let working_dir = match self.registry.get_or_create(agent_id).await {
+            Ok(runtime) => runtime.workspace_dir(),
+            Err(error) => {
+                return ConversationInputDeliveryOutcome::Rejected {
+                    detail: error.to_string(),
+                    target_device_id: Some(route_target.device_id.to_string()),
+                    failure_kind: None,
+                }
+            }
+        };
+        let address = rua_core::ChatAddress::new(&chat_id);
         let key = StreamKey::new(CONSOLE_CHANNEL_ID, address.clone(), Priority::Normal);
         let Some(authority) = self.conversation_authority.as_ref() else {
             return ConversationInputDeliveryOutcome::Rejected {
@@ -6415,12 +6539,9 @@ project_working_directory_id: None,
         let mut pending =
             build_authority_pending_message(&request, route_target.device_id, route_target.epoch);
         if first_submission.is_some() {
-            if let Err(detail) = self.validate_initial_acp(
-                agent_id,
-                &address,
-                workspace_dir.as_deref().expect("Agent workspace resolved"),
-                &pending.extra,
-            ) {
+            if let Err(detail) =
+                self.validate_initial_acp(agent_id, &address, &working_dir, &pending.extra)
+            {
                 return ConversationInputDeliveryOutcome::Rejected {
                     detail,
                     target_device_id: Some(route_target.device_id.to_string()),
@@ -6531,10 +6652,10 @@ project_working_directory_id: None,
             acceptance,
             key,
             ConversationExecutionContext {
-                address: rua_core::ChatAddress::agent(agent_id, &chat_id),
+                address: rua_core::ChatAddress::new(&chat_id),
                 execution_agent_id: agent_id.to_string(),
                 scope_root: workspace_dir.clone(),
-                working_dir: workspace_dir,
+                working_dir,
             },
             truncate_chat_name(&request.message),
             false,
@@ -6543,13 +6664,13 @@ project_working_directory_id: None,
         .await
     }
 
-    pub(crate) fn validate_collaboration_resource(
+    pub(crate) async fn validate_collaboration_resource(
         &self,
         address: &ChatAddress,
         device_id: &str,
         working_dir: &Path,
     ) -> Result<(), String> {
-        if let Some(project_id) = address.project_id() {
+        if let Some(project_id) = self.chat_project_id(address).await?.as_ref() {
             let catalog = self
                 .project_catalog
                 .as_ref()
@@ -6592,12 +6713,13 @@ project_working_directory_id: None,
         mut pending: ConversationInputPayload,
         persist: ConversationSubmissionPersistCallback,
     ) -> Result<ConversationInputDeliveryOutcome, String> {
-        let _resource_admission = self.project_work_admission(&execution.address)?;
+        let _resource_admission = self.project_work_admission(&execution.address).await?;
         self.validate_collaboration_resource(
             &execution.address,
             &placement.device_id,
             &execution.working_dir,
-        )?;
+        )
+        .await?;
         let authority = self
             .conversation_authority
             .as_ref()
@@ -6682,8 +6804,9 @@ project_working_directory_id: None,
                 producer_id,
                 cancel_rx,
             } => {
-                let chat_service =
-                    rua_chat::ChatService::for_resolved_scope(scope_root.clone(), address.clone());
+                let chat_service = rua_chat::ChatService::from_workspace(
+                    rua_core::WorkspaceRoot::new(scope_root.clone()),
+                );
                 if chat_service
                     .replace_placeholder_title(&address, first_input_title)
                     .await
@@ -6818,7 +6941,23 @@ project_working_directory_id: None,
         mut request: RemoteConversationInputRequest,
         accepted_at: String,
     ) -> std::result::Result<RemoteConversationInputAck, String> {
-        let _project_admission = match request.address.project_id() {
+        let header = self.optional_chat_header(&request.address).await?;
+        let project_id = match header.as_ref() {
+            Some(header) => {
+                request.agent_id = header.agent_id.clone();
+                header.project_id.clone()
+            }
+            None => request
+                .metadata
+                .get("project_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+        }
+        .map(rua_core::ProjectId::new);
+        request
+            .metadata
+            .insert("project_id".into(), serde_json::json!(project_id));
+        let _project_admission = match project_id.as_ref() {
             Some(project_id) => Some(
                 self.project_catalog
                     .as_ref()
@@ -6835,14 +6974,14 @@ project_working_directory_id: None,
             requires_atomic_materialization,
             turn_assignment,
             initial_model,
-        ) = match request.address.scope() {
-            rua_core::ChatScope::Agent { .. } => {
+        ) = match project_id.as_ref() {
+            None => {
                 let runtime = self
                     .registry
                     .get_or_create(&request.agent_id)
                     .await
                     .map_err(|error| format!("workspace unavailable: {error}"))?;
-                let agent_workspace_dir = runtime.workspace_dir();
+                let agent_workspace_dir = runtime.chat_workspace_dir();
                 let indexed =
                     crate::services::chat_index::get(&agent_workspace_dir, request.chat_id())
                         .await?;
@@ -6907,15 +7046,15 @@ project_working_directory_id: None,
                     None
                 };
                 (
-                    agent_workspace_dir.clone(),
                     agent_workspace_dir,
+                    runtime.workspace_dir(),
                     placement,
                     first_submission,
                     assignment,
                     initial_model,
                 )
             }
-            rua_core::ChatScope::Project { project_id, .. } => {
+            Some(project_id) => {
                 let data_dir = self
                     .data_dir
                     .as_ref()
@@ -6948,7 +7087,7 @@ project_working_directory_id: None,
                     );
                 }
 
-                let scope_root = ChatScopeStore::resolve(data_dir, request.address.clone())
+                let scope_root = ChatStore::resolve(data_dir, request.address.clone())
                     .root()
                     .to_path_buf();
                 let indexed =
@@ -7075,8 +7214,8 @@ project_working_directory_id: None,
             return Err("stale conversation authority Epoch".to_string());
         }
         if let Some(acceptance) = device_delivery_acceptance_locally(&scope_root, &request).await? {
-            if request.address.project_id().is_some() {
-                rua_chat::ChatService::for_resolved_scope(&scope_root, request.address.clone())
+            if project_id.as_ref().is_some() {
+                rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(&scope_root))
                     .repair_projection(&request.address)
                     .await
                     .map_err(|error| error.to_string())?;
@@ -7114,10 +7253,9 @@ project_working_directory_id: None,
                             "turn_id".to_string(),
                             serde_json::json!(acceptance.turn_id.clone()),
                         );
-                        if request.address.project_id().is_some() {
-                            let assignment = rua_chat::ChatService::for_resolved_scope(
-                                &scope_root,
-                                request.address.clone(),
+                        if project_id.as_ref().is_some() {
+                            let assignment = rua_chat::ChatService::from_workspace(
+                                rua_core::WorkspaceRoot::new(&scope_root),
                             )
                             .load_turn_agent_assignment(&request.address, &acceptance.turn_id)
                             .await
@@ -7175,7 +7313,7 @@ project_working_directory_id: None,
                     .await,
             ));
         }
-        if request.address.project_id().is_some()
+        if project_id.as_ref().is_some()
             && crate::services::chat_index::get(&scope_root, request.chat_id())
                 .await?
                 .is_none()
@@ -7253,11 +7391,10 @@ project_working_directory_id: None,
                             self.capture_chat_configuration(
                                 assignment.clone(),
                                 rua_config::ChatRunningConfig::from_agent_defaults(&running),
-                                request
-                                    .address
-                                    .project_id()
+                                project_id.as_ref()
                                     .map(|_| working_dir.as_path()),
                                 crate::services::chat_configuration_capture::ChatConfigurationSelection {
+project_id: project_id.as_ref().map(ToString::to_string),
 project_working_directory_id: request.metadata.get(crate::services::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY).and_then(serde_json::Value::as_str).map(str::to_string),
                                     model: initial_model.clone(),
                                     thinking: None,
@@ -7292,7 +7429,7 @@ project_working_directory_id: request.metadata.get(crate::services::project_chat
                     .clone()
                     .ok_or_else(|| "Project Turn Agent Assignment is unavailable".to_string())?;
                 let placement_for_persist = placement.clone();
-                if request.address.project_id().is_some() {
+                if project_id.as_ref().is_some() {
                     Some(Box::new(
                         move |pending: ConversationInputPayload,
                               prepared|
@@ -7308,6 +7445,8 @@ project_working_directory_id: request.metadata.get(crate::services::project_chat
                                 &prepared,
                                 &placement_for_persist,
                                 crate::services::project_chat::ProjectChatMaterializationSnapshot {
+                                project_id: pending.extra.get("project_id").and_then(serde_json::Value::as_str)
+                                    .ok_or("Project identity is required for initial submission")?.to_string(),
                                     initial_model,
                                     configuration: crate::services::product_hooks::ChatHookConfiguration::from_persisted(pending.extra[crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY].clone())?,
                                 },
@@ -7509,7 +7648,11 @@ project_working_directory_id: request.metadata.get(crate::services::project_chat
         address: &ChatAddress,
         source_device_id: &str,
     ) {
-        if address.project_id().is_some() {
+        if self
+            .chat_project_id(address)
+            .await
+            .is_ok_and(|id| id.is_some())
+        {
             self.remote_input_delivery
                 .spawn_priority_sync_to_device(source_device_id);
         } else {
@@ -7862,10 +8005,8 @@ async fn find_project_chat_owner_on_target(
         if project.project_id == *requested_project_id {
             continue;
         }
-        let address = ChatAddress::project(project.project_id.clone(), chat_id);
-        let scope_root = ChatScopeStore::resolve(data_dir, address)
-            .root()
-            .to_path_buf();
+        let address = ChatAddress::new(chat_id);
+        let scope_root = ChatStore::resolve(data_dir, address).root().to_path_buf();
         if crate::services::chat_index::get(&scope_root, chat_id)
             .await?
             .is_some()

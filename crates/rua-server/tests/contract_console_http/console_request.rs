@@ -105,8 +105,9 @@ async fn submit_response_preserves_authority_control_from_facade() {
     let response = support::request_json(
         &app.app,
         Method::POST,
-        "/agents/default/chats/9b6de0e4-5a5b-4f98-9cb3-d1db20e6e1ac/console/submit",
+        "/chats/9b6de0e4-5a5b-4f98-9cb3-d1db20e6e1ac/console/submit",
         json!({
+            "agent_id": "default",
             "chat_id": "9b6de0e4-5a5b-4f98-9cb3-d1db20e6e1ac",
             "message": "remote submit"
         }),
@@ -126,7 +127,7 @@ async fn agent_chat_path_rejects_a_different_body_chat_id() {
     let response = support::request_json(
         &app.app,
         Method::POST,
-        "/agents/default/chats/00000000-0000-4000-8000-000000000411/console/submit",
+        "/chats/00000000-0000-4000-8000-000000000411/console/submit",
         json!({
             "chat_id": "00000000-0000-4000-8000-000000000412",
             "message": "wrong chat"

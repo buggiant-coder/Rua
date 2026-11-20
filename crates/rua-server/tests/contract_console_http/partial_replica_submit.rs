@@ -14,20 +14,20 @@ async fn partial_replica_http_submit_rejects_before_model_preparation() {
         let test = build_app();
         let chat_id = "00000000-0000-0000-0000-000000009981";
         let runtime = test.state.registry.get_or_create("default").await.unwrap();
-        let store = WorkspaceSessionStore::new(runtime.workspace_dir());
+        let store = WorkspaceSessionStore::new(runtime.chat_workspace_dir());
         if let Some(relative) = partial {
             let file = store.chat_dir(chat_id).join(relative);
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(file, b"{}\n").unwrap();
         }
-        let mut body = json!({"chat_id":chat_id,"message":"must not execute"});
+        let mut body = json!({"agent_id":"default","chat_id":chat_id,"message":"must not execute"});
         if partial.is_none() {
             body["expected_authority_epoch"] = json!("remote-epoch");
         }
         let response = request_json(
             &test.app,
             Method::POST,
-            &format!("/agents/default/chats/{chat_id}/console/submit"),
+            &format!("/chats/{chat_id}/console/submit"),
             body,
         )
         .await;
@@ -43,7 +43,7 @@ async fn header_without_configuration_does_not_get_local_defaults() {
     let test = build_app();
     let chat_id = "00000000-0000-0000-0000-000000009982";
     let runtime = test.state.registry.get_or_create("default").await.unwrap();
-    let store = WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let mut header = rua_session::ChatSessionHeader::new(rua_session::ChatMetadata {
         chat_id: chat_id.into(),
         agent_id: "default".into(),
@@ -64,7 +64,7 @@ async fn header_without_configuration_does_not_get_local_defaults() {
     let response = request_json(
         &test.app,
         Method::POST,
-        &format!("/agents/default/chats/{chat_id}/console/submit"),
+        &format!("/chats/{chat_id}/console/submit"),
         json!({"message":"must not execute"}),
     )
     .await;

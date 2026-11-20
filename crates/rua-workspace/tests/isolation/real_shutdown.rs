@@ -89,7 +89,7 @@ impl StubAuthority {
     }
 
     fn units(turns: usize, tasks: usize) -> Vec<WorkUnit> {
-        let chat = ChatAddress::agent("agent-under-test", "chat-1");
+        let chat = ChatAddress::new("chat-1");
         let mut units: Vec<WorkUnit> = (0..turns)
             .map(|index| WorkUnit {
                 attempt_no: None,

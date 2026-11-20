@@ -16,7 +16,6 @@ import {
   type SessionsInitialData,
 } from "./useSessions";
 import api from "../../../api";
-import { projectChatsApi } from "@/api/modules/projectChats";
 import { projectsApi } from "@/api/modules/projects";
 import type { ProjectDescriptor } from "@/api/types/project";
 import ProjectSelector from "@/components/ProjectSelector";
@@ -31,10 +30,7 @@ import { Check, ListChecks, Trash2, Upload, X } from "lucide-react";
 import { Btn, Modal, Pagination, toast, type MenuProps } from "@/ui";
 import { filterAndSortSessions } from "./components/sessionListModel";
 import { routeAgentId } from "@/routes/routeAgent";
-import {
-  agentChatPath,
-  projectChatPath,
-} from "@/pages/Chat/conversationAddress";
+import { chatPath } from "@/pages/Chat/conversationAddress";
 
 const SORT_FIELD_STORAGE_KEY = "rua.sessions.sortField";
 const SORT_ORDER_STORAGE_KEY = "rua.sessions.sortOrder";
@@ -118,7 +114,6 @@ function SessionsPage({ initialData }: SessionsPageProps) {
         setUseInitialData(false);
         setProject(nextProject);
       }}
-      agentId={selectedAgent}
     />
   );
 }
@@ -128,12 +123,10 @@ function ScopedSessionsPage({
   project,
   projects,
   onSelectProject,
-  agentId,
 }: SessionsPageProps & {
   project: ProjectDescriptor | null;
   projects: ProjectDescriptor[];
   onSelectProject: (project: ProjectDescriptor | null) => void;
-  agentId: string;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -192,12 +185,7 @@ function ScopedSessionsPage({
   };
 
   const handleOpenChat = (chatId: string) => {
-    navigateWithPageTransition(
-      navigate,
-      project
-        ? projectChatPath(project.project_id, chatId)
-        : agentChatPath(agentId, chatId),
-    );
+    navigateWithPageTransition(navigate, chatPath(chatId));
   };
 
   const handleDelete = (chatId: string) => {
@@ -260,9 +248,7 @@ function ScopedSessionsPage({
     try {
       const payload = await Promise.all(
         target.map(async (session) => {
-          const detail = project
-            ? await projectChatsApi.getChat(project.project_id, session.id)
-            : await api.getChat(session.id, agentId);
+          const detail = await api.getChat(session.id);
           return {
             ...session,
             ...detail,

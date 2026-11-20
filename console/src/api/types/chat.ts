@@ -161,6 +161,8 @@ export interface CollaborationChatRelation {
 }
 
 export interface ChatSpec {
+  agent_id?: string | null;
+  project_id?: string | null;
   id: string;
   user_id: string;
   channel: string;
@@ -185,6 +187,8 @@ export interface Message {
 }
 
 export interface ChatHistory {
+  agent_id?: string | null;
+  project_id?: string | null;
   messages: Message[];
   status?: ChatStatus;
   active_turn?: ConversationActiveTurn | null;

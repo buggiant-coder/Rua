@@ -401,7 +401,7 @@ async fn model_switch_preflight_response(
         .get_model_context_window(&body.provider_id, &body.model)
         .await?;
 
-    let workspace_dir = ctx.runtime.workspace_dir();
+    let workspace_dir = ctx.runtime.chat_workspace_dir();
     let store = WorkspaceSessionStore::new(&workspace_dir);
     let header = match store.load_chat_header(chat_id).await {
         Ok(Some(header)) => header,
@@ -605,9 +605,9 @@ async fn publish_confirmed_model_switch_checkpoint(
         .into_response());
     };
 
-    let workspace_dir = ctx.runtime.workspace_dir();
+    let workspace_dir = ctx.runtime.chat_workspace_dir();
     let store = WorkspaceSessionStore::new(&workspace_dir);
-    let chat_address = rua_core::ChatAddress::agent(&ctx.agent_id, chat_id);
+    let chat_address = rua_core::ChatAddress::new(chat_id);
     early_background_compaction_coordinator()
         .preempt_for_foreground(&early_background_compaction_key(&workspace_dir, chat_id));
     let summary_source = rua_agent::summary_checkpoint::build_summary_projection_slice(

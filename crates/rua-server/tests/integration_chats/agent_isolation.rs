@@ -15,7 +15,7 @@ fn ids(payload: &Value) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn chats_are_isolated_between_agents_for_header_and_scoped_lists() {
+async fn chat_listing_filters_the_saved_executor_without_partitioning_history() {
     let app = build_app();
     let agent_a = "integ_iso_agent_a";
     let agent_b = "integ_iso_agent_b";
@@ -55,7 +55,7 @@ async fn chats_are_isolated_between_agents_for_header_and_scoped_lists() {
     assert_eq!(list_a.status(), StatusCode::OK);
     let list_a_ids = ids(&read_json(list_a).await);
     assert!(list_a_ids.contains(&chat_a_id));
-    assert!(!list_a_ids.contains(&chat_b_id));
+    assert!(list_a_ids.contains(&chat_b_id));
 
     let list_b = request(
         &app.app,
@@ -68,12 +68,12 @@ async fn chats_are_isolated_between_agents_for_header_and_scoped_lists() {
     assert_eq!(list_b.status(), StatusCode::OK);
     let list_b_ids = ids(&read_json(list_b).await);
     assert!(list_b_ids.contains(&chat_b_id));
-    assert!(!list_b_ids.contains(&chat_a_id));
+    assert!(list_b_ids.contains(&chat_a_id));
 
     let scoped_a = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_a}/chats?user_id={shared_user}"),
+        &format!("/api/chats?user_id={shared_user}&agent_id={agent_a}"),
         None,
         None,
     )
@@ -86,7 +86,7 @@ async fn chats_are_isolated_between_agents_for_header_and_scoped_lists() {
     let scoped_b = request(
         &app.app,
         Method::GET,
-        &format!("/api/agents/{agent_b}/chats?user_id={shared_user}"),
+        &format!("/api/chats?user_id={shared_user}&agent_id={agent_b}"),
         None,
         None,
     )

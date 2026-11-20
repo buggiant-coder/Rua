@@ -67,7 +67,7 @@ async fn history_replacement_generation_uses_dedicated_tool_free_4k_request() {
         finish_reason: FinishReason::Stop,
     });
     let generator = LlmSummaryGenerator::new(model);
-    let address = rua_core::ChatAddress::agent("agent-1", "chat-1");
+    let address = rua_core::ChatAddress::new("chat-1");
     let identity =
         rua_agent::model_call_context::ModelCallIdentityContext::from_chat_address(&address);
     let request = HistoryReplacementGenerationRequest {
@@ -350,7 +350,7 @@ async fn checkpoint_publisher_passes_typed_history_through_the_real_summary_mana
     let publisher = SummaryCheckpointPublisher::new(SummaryCheckpointPublisherInput {
         store,
         chat_id: "summary-chat".into(),
-        chat_address: rua_core::ChatAddress::agent("agent", "summary-chat"),
+        chat_address: rua_core::ChatAddress::new("summary-chat"),
         agent_id: "agent".into(),
         context_manager: Some(manager),
         running_config: Arc::new(Default::default()),

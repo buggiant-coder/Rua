@@ -18,8 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { Btn, Tooltip, toast } from "@/ui";
-import { chatApi, type ChatMediaScope } from "@/api/modules/chat";
-import type { ModelSlot } from "@/api/types";
+import { chatApi, type ChatMediaUploadContext } from "@/api/modules/chat";
 import ImageViewer from "@/components/ImageViewer";
 import { useSlashCommands } from "@/hooks/useSlashCommands";
 import { toDisplayUrl } from "../utils";
@@ -60,9 +59,7 @@ type PendingComposerAttachment = {
 
 type OwnedConversationComposerProps = {
   chatId: string;
-  mediaScope: ChatMediaScope;
-  uploadAgentId?: string;
-  chatModel?: ModelSlot | null;
+  draftContext?: ChatMediaUploadContext;
   currentAuthorityEpoch?: string | null;
   disabled?: boolean;
   submitDisabled?: boolean;
@@ -242,9 +239,7 @@ function revokePreviewUrl(url?: string) {
 
 export default memo(function OwnedConversationComposer({
   chatId,
-  mediaScope,
-  uploadAgentId,
-  chatModel,
+  draftContext,
   currentAuthorityEpoch,
   disabled = false,
   submitDisabled = false,
@@ -267,7 +262,7 @@ export default memo(function OwnedConversationComposer({
   const initialDraftRef = useRef<drafts.ChatDraft | null>(null);
   if (initialDraftRef.current === null) {
     initialDraftRef.current =
-      draftKey && drafts.loadSubmitted(draftKey)
+      draftKey && drafts.loadSubmitted(`chat:${chatId}`)
         ? { text: "", attachments: [] }
         : draftKey
         ? drafts.loadDraft(draftKey)
@@ -300,18 +295,11 @@ export default memo(function OwnedConversationComposer({
     attachments.some((item) => item.marker && value.includes(item.marker));
   const canSubmit =
     !uploading && !submitting && (!!value.trim() || attachments.length > 0);
-  const uploadAttachment = async (file: File) => {
-    if (uploadAgentId || chatModel) {
-      return chatApi.uploadFile(mediaScope, chatId, file, {
-        agentId: uploadAgentId,
-        model: chatModel,
-      });
-    }
-    return chatApi.uploadFile(mediaScope, chatId, file);
-  };
+  const uploadAttachment = (file: File) =>
+    chatApi.uploadFile(chatId, file, draftContext);
   const attachmentDisplayUrl = (attachment: ComposerAttachment) =>
     attachment.storedName
-      ? chatApi.mediaUrl(mediaScope, chatId, attachment.storedName)
+      ? chatApi.mediaUrl(chatId, attachment.storedName)
       : toDisplayUrl(attachment.url);
   const showStopAction = turnActive && !canSubmit;
   const slashCommands = useSlashCommands();
@@ -375,13 +363,13 @@ export default memo(function OwnedConversationComposer({
       setAttachments([]);
       return;
     }
-    const draft = drafts.loadSubmitted(draftKey)
+    const draft = drafts.loadSubmitted(`chat:${chatId}`)
       ? { text: "", attachments: [] }
       : drafts.loadDraft(draftKey);
     valueRef.current = draft.text;
     setValue(draft.text);
     setAttachments(draft.attachments);
-  }, [draftKey]);
+  }, [chatId, draftKey]);
 
   useEffect(() => {
     if (!draftKey) return;
@@ -723,10 +711,7 @@ export default memo(function OwnedConversationComposer({
       )}
       <div className="rua-owned-composer-editor">
         {showMarkerLayer && (
-          <div
-            ref={markerLayerRef}
-            className="rua-owned-composer-marker-layer"
-          >
+          <div ref={markerLayerRef} className="rua-owned-composer-marker-layer">
             {splitTextByAttachmentMarkers(value, attachments).map(
               (part, index) =>
                 typeof part === "string" ? (

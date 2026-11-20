@@ -1,21 +1,18 @@
-use std::path::Path;
-use std::sync::Arc;
-
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use rua_workspace::WorkspaceRuntime;
 use serde::Deserialize;
 
 use crate::endpoints::dto::{ChatSearchResponse, ChatSearchResult};
 use crate::errors::ApiError;
-use crate::extractors::AgentExtractorContext;
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
 struct SearchParams {
+    agent_id: Option<String>,
+    project_id: Option<String>,
     #[serde(default)]
     q: Option<String>,
     #[serde(default)]
@@ -28,41 +25,10 @@ pub fn root_router() -> Router<AppState> {
     Router::new().route("/chats/search", get(search_root))
 }
 
-pub fn agent_scoped_router() -> Router<AppState> {
-    Router::new().route("/agents/{agentId}/chats/search", get(search_agent))
-}
-
 async fn search_root(
-    AgentExtractorContext { agent_id, runtime }: AgentExtractorContext,
-    Query(params): Query<SearchParams>,
-) -> Response {
-    search_core(&agent_id, &runtime.workspace_dir(), params).await
-}
-
-async fn search_agent(
     State(state): State<AppState>,
-    AxumPath(agent_id): AxumPath<String>,
     Query(params): Query<SearchParams>,
 ) -> Response {
-    let runtime = match runtime_for_agent(&state, &agent_id).await {
-        Ok(rt) => rt,
-        Err(e) => return e.into_response(),
-    };
-    search_core(&agent_id, &runtime.workspace_dir(), params).await
-}
-
-async fn runtime_for_agent(
-    state: &AppState,
-    agent_id: &str,
-) -> Result<Arc<WorkspaceRuntime>, ApiError> {
-    state
-        .registry
-        .get_or_create(agent_id)
-        .await
-        .map_err(|e| ApiError::Unavailable(format!("workspace for '{agent_id}' unavailable: {e}")))
-}
-
-async fn search_core(agent_id: &str, ws_dir: &Path, params: SearchParams) -> Response {
     let query = params.q.as_deref().unwrap_or("").trim().to_string();
     let offset = params.offset.unwrap_or(0) as usize;
     let limit = params.limit.unwrap_or(50).clamp(1, 200) as usize;
@@ -79,24 +45,20 @@ async fn search_core(agent_id: &str, ws_dir: &Path, params: SearchParams) -> Res
         return (StatusCode::OK, Json(resp)).into_response();
     }
 
-    let address = rua_core::ChatAddress::agent(agent_id, "00000000-0000-4000-8000-000000000000");
-    let saved = match rua_chat::ChatService::for_resolved_scope(ws_dir, address.clone())
-        .search(
-            &address,
-            rua_chat::ChatSearchQuery {
-                query,
-                offset,
-                limit,
-            },
-        )
+    let saved = match rua_chat::ChatService::new(&state.rua_root)
+        .search(rua_chat::ChatSearchQuery {
+            agent_id: params.agent_id,
+            project_id: params.project_id,
+            query,
+            offset,
+            limit,
+        })
         .await
     {
         Ok(result) => result,
         Err(e) => {
-            return ApiError::Internal(format!(
-                "Failed to search saved conversations for agent {agent_id}: {e}"
-            ))
-            .into_response();
+            return ApiError::Internal(format!("Failed to search saved conversations: {e}"))
+                .into_response();
         }
     };
     let results: Vec<ChatSearchResult> = saved

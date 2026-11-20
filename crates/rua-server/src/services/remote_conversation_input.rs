@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rua_channel::core::console::ConsoleChatRequest;
-use rua_core::{ChatAddress, ChatScopeStore};
+use rua_core::{ChatAddress, ChatStore};
 use serde::{Deserialize, Serialize};
 
 use crate::services::conversation_authority::SUBMISSION_ID_KEY;
@@ -72,6 +72,8 @@ pub struct RemoteConversationInputDeliveryOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourcePendingConversationInput {
+    pub agent_id: String,
+    pub authority_epoch: ConversationAuthorityEpoch,
     pub address: ChatAddress,
     pub submission_id: String,
     pub input_id: String,
@@ -92,6 +94,8 @@ impl SourcePendingConversationInput {
         ack: &RemoteConversationInputAck,
     ) -> Self {
         Self {
+            agent_id: request.agent_id.clone(),
+            authority_epoch: request.authority_epoch,
             address: request.address.clone(),
             submission_id: request.submission_id.clone(),
             input_id: ack.input_id.clone(),
@@ -344,7 +348,7 @@ impl RemoteConversationInputDelivery {
             .deliver_remote_conversation_input_to_target(request)
             .await?;
         let outcome = RemoteConversationInputDeliveryOutcome::accepted(request, ack.clone());
-        let scope = ChatScopeStore::resolve(&self.data_dir, request.address.clone());
+        let scope = ChatStore::resolve(&self.data_dir, request.address.clone());
         let ids: Vec<String> = request
             .media_requirements
             .iter()
@@ -377,9 +381,10 @@ impl RemoteConversationInputDelivery {
             .get("first_submission")
             .and_then(serde_json::Value::as_bool)
             == Some(true);
-        let scope = ChatScopeStore::resolve(&self.data_dir, request.address.clone());
+        let scope = ChatStore::resolve(&self.data_dir, request.address.clone());
+        let media_dir = scope.root().join("media");
         for media in &request.media_requirements {
-            let path = scope.root().join("media").join(&media.filename);
+            let path = media_dir.join(&media.filename);
             if !path.is_file() {
                 if first_submission {
                     return Err(DeviceCommandDeliveryError::Rejected {
@@ -389,6 +394,18 @@ impl RemoteConversationInputDelivery {
                 }
                 continue;
             }
+            if first_submission {
+                crate::services::first_chat_submission::validate_staged_media_address(
+                    &media_dir,
+                    &media.filename,
+                    &request.address,
+                )
+                .await
+                .map_err(|detail| DeviceCommandDeliveryError::Rejected {
+                    reason: "invalid_staged_media".into(),
+                    detail,
+                })?;
+            }
             let manager = current_session_manager(&self.device_network)
                 .await
                 .map_err(DeviceCommandDeliveryError::Connect)?;
@@ -397,6 +414,12 @@ impl RemoteConversationInputDelivery {
                 crate::services::device_command_bus::deliver_chat_media_prepare_via_session(
                     &manager,
                     &crate::services::device_command_bus::ChatMediaPrepareCommand {
+                        agent_id: request.agent_id.clone(),
+                        project_id: request
+                            .metadata
+                            .get("project_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string),
                         sha256: Some(media.sha256.clone()),
                         first_submission,
                         command_id: operation_id.clone(),
@@ -842,7 +865,7 @@ async fn device_delivery_finalized_locally(
 }
 
 fn source_pending_conversation_input_path(data_dir: &Path, address: &ChatAddress) -> PathBuf {
-    ChatScopeStore::resolve(data_dir, address.clone())
+    ChatStore::resolve(data_dir, address.clone())
         .root()
         .join("device_commands")
         .join(SOURCE_PENDING_CONVERSATION_INPUTS_DIR)

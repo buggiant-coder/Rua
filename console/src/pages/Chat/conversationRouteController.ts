@@ -13,6 +13,7 @@ export function historyProvesConversationMaterialized(
   history: ChatHistory,
 ): boolean {
   return (
+    Boolean(history.agent_id) ||
     history.messages.length > 0 ||
     history.active_turn != null ||
     Boolean(history.control?.placement?.authority_device_id) ||
@@ -37,6 +38,6 @@ export async function resolveConversationRoute({
   const history = await loadHistory();
   return {
     history,
-    unmaterialized: !historyProvesConversationMaterialized(history),
+    unmaterialized: false,
   };
 }

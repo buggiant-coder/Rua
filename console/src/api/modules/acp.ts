@@ -66,22 +66,23 @@ export const acpApi = {
     }),
 
   listChatRunners: (
-    agentId: string,
+    agentId: string | undefined,
     chatId: string,
     targetDeviceId?: string | null,
   ) => {
     const params = new URLSearchParams();
+    if (agentId) params.set("agent_id", agentId);
     if (targetDeviceId) params.set("target_device_id", targetDeviceId);
     const query = params.toString();
     return request<ACPRunnerInfo[]>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/acp/runners${query ? `?${query}` : ""}`,
+      `/chats/${encodeURIComponent(chatId)}/acp/runners${
+        query ? `?${query}` : ""
+      }`,
     );
   },
 
   listChatSessions: (
-    agentId: string,
+    agentId: string | undefined,
     chatId: string,
     runner: string,
     cwd?: string,
@@ -89,24 +90,25 @@ export const acpApi = {
   ) => {
     const params = new URLSearchParams({ runner });
     if (cwd && cwd.trim()) params.set("cwd", cwd.trim());
+    if (agentId) params.set("agent_id", agentId);
     if (targetDeviceId) params.set("target_device_id", targetDeviceId);
     return request<ACPChatSessionEntry[]>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/acp/sessions?${params.toString()}`,
+      `/chats/${encodeURIComponent(chatId)}/acp/sessions?${params.toString()}`,
     );
   },
 
-  enterChat: (agentId: string, chatId: string, body: ACPChatEnterRequest) =>
+  enterChat: (
+    _agentId: string | undefined,
+    chatId: string,
+    body: ACPChatEnterRequest,
+  ) =>
     request<ACPChatEnterResponse>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/acp/enter`,
+      `/chats/${encodeURIComponent(chatId)}/acp/enter`,
       { method: "POST", body: JSON.stringify(body) },
     ),
 
   exitChat: (
-    agentId: string,
+    _agentId: string | undefined,
     chatId: string,
     targetDeviceId?: string | null,
   ) => {
@@ -114,15 +116,15 @@ export const acpApi = {
     if (targetDeviceId) params.set("target_device_id", targetDeviceId);
     const query = params.toString();
     return request<ACPChatExitResponse>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/acp/exit${query ? `?${query}` : ""}`,
+      `/chats/${encodeURIComponent(chatId)}/acp/exit${
+        query ? `?${query}` : ""
+      }`,
       { method: "POST" },
     );
   },
 
   chatStatus: (
-    agentId: string,
+    _agentId: string | undefined,
     chatId: string,
     targetDeviceId?: string | null,
   ) => {
@@ -130,27 +132,25 @@ export const acpApi = {
     if (targetDeviceId) params.set("target_device_id", targetDeviceId);
     const query = params.toString();
     return request<ACPChatStatus>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/acp/status${query ? `?${query}` : ""}`,
+      `/chats/${encodeURIComponent(chatId)}/acp/status${
+        query ? `?${query}` : ""
+      }`,
     );
   },
 
-  getPermissionSnapshot: (agentId: string, chatId: string) =>
+  getPermissionSnapshot: (_agentId: string | undefined, chatId: string) =>
     request<ACPPermissionSnapshot>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
-        chatId,
-      )}/acp/permissions`,
+      `/chats/${encodeURIComponent(chatId)}/acp/permissions`,
     ),
 
   decidePermission: (
-    agentId: string,
+    _agentId: string | undefined,
     chatId: string,
     requestId: string,
     optionId: string,
   ) =>
     request<ACPPermissionRequest>(
-      `/agents/${encodeURIComponent(agentId)}/chats/${encodeURIComponent(
+      `/chats/${encodeURIComponent(
         chatId,
       )}/acp/permissions/${encodeURIComponent(requestId)}/decide`,
       {

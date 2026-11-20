@@ -29,6 +29,8 @@ pub struct ChatIndexRecord {
 
 #[derive(Debug, Clone, Default)]
 pub struct ChatIndexFilter {
+    pub agent_id: Option<String>,
+    pub project_id: Option<String>,
     pub user_id: Option<String>,
     pub channel: Option<String>,
     pub search: Option<String>,
@@ -316,6 +318,8 @@ pub fn list_sync(
         filter.sort_by.sql_column(),
         filter.sort_order.sql_keyword()
     );
+    let agent_id = filter.agent_id.as_deref();
+    let project_id = filter.project_id.as_deref();
     let user_id = filter.user_id.as_deref();
     let channel = filter.channel.as_deref();
     let tag = filter.tag.map(ChatTag::as_str);
@@ -351,8 +355,10 @@ pub fn list_sync(
                    OR json_extract(meta_json, '$.collaboration.executor.runner') = ?7)
               AND (?8 IS NULL OR status = ?8)
               AND (?9 IS NULL OR archived = ?9)
+              AND (?10 IS NULL OR json_extract(meta_json, '$.agent_id') = ?10)
+              AND (?11 IS NULL OR json_extract(meta_json, '$.project_id') = ?11)
             "#,
-            params![user_id, channel, search, tag, conversation_view, source_chat_id, executor, status, archived],
+            params![user_id, channel, search, tag, conversation_view, source_chat_id, executor, status, archived, agent_id, project_id],
             |row| row.get::<_, u64>(0),
         )
         .map_err(|error| format!("count Chat Index: {error}"))?;
@@ -374,6 +380,8 @@ pub fn list_sync(
                    OR json_extract(meta_json, '$.collaboration.executor.runner') = ?7)
               AND (?8 IS NULL OR status = ?8)
               AND (?9 IS NULL OR archived = ?9)
+              AND (?10 IS NULL OR json_extract(meta_json, '$.agent_id') = ?10)
+              AND (?11 IS NULL OR json_extract(meta_json, '$.project_id') = ?11)
               AND pinned != 0
             ORDER BY pin_order ASC, {selected_order}, id ASC
             "#
@@ -390,7 +398,9 @@ pub fn list_sync(
                 source_chat_id,
                 executor,
                 status,
-                archived
+                archived,
+                agent_id,
+                project_id
             ],
             row_to_record,
         )
@@ -415,9 +425,11 @@ pub fn list_sync(
                    OR json_extract(meta_json, '$.collaboration.executor.runner') = ?7)
               AND (?8 IS NULL OR status = ?8)
               AND (?9 IS NULL OR archived = ?9)
+              AND (?10 IS NULL OR json_extract(meta_json, '$.agent_id') = ?10)
+              AND (?11 IS NULL OR json_extract(meta_json, '$.project_id') = ?11)
               AND pinned = 0
             ORDER BY {selected_order}, id ASC
-            LIMIT ?10 OFFSET ?11
+            LIMIT ?12 OFFSET ?13
             "#
         ))
         .map_err(|error| format!("prepare unpinned Chat Index list: {error}"))?;
@@ -434,6 +446,8 @@ pub fn list_sync(
                     executor,
                     status,
                     archived,
+                    agent_id,
+                    project_id,
                     limit.min(i64::MAX as u64),
                     offset
                 ],

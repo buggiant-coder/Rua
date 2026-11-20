@@ -13,7 +13,7 @@ fn test_capture() -> (std::path::PathBuf, ChatAddress, Map<String, Value>) {
         .join(format!("rua-llm-debug-capture-test-{suffix}"))
         .join("llm-captures")
         .join(&capture_id);
-    let address = ChatAddress::project(format!("project-{suffix}"), format!("chat-{suffix}"));
+    let address = ChatAddress::new(format!("chat-{suffix}"));
     debug_capture::register_capture(
         address.clone(),
         ActiveCapture {
@@ -166,7 +166,7 @@ fn logical_request_records_only_model_call_identity_and_projection_status() {
 
 #[test]
 fn unregistered_chat_address_is_a_noop() {
-    let address = ChatAddress::agent("agent-1", "chat-1");
+    let address = ChatAddress::new("chat-1");
     let metadata = Map::from_iter([
         (
             CHAT_ADDRESS_METADATA_KEY.to_string(),

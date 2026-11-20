@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rua_core::{ChatAddress, ChatScopeStore};
+use rua_core::{ChatAddress, ChatStore};
 use rua_sync::chat_adapter::{
     index_record_id, ChatIndexSyncAdapter, CHAT_DOMAIN, CHAT_KIND_INDEX_DELETE,
     CHAT_KIND_INDEX_UPSERT,
@@ -10,10 +10,6 @@ use rua_sync::merge_store::MergeStore;
 use rua_sync::opaque_replica_log::SyncChange;
 use rua_sync::sidecar::RecordState;
 use rua_sync::sync_registry::{DomainSyncAdapter, RegistryApplyStatus, SyncRegistry};
-
-fn agent_chat(agent_id: &str, chat_id: &str) -> ChatAddress {
-    ChatAddress::agent(agent_id, chat_id)
-}
 
 fn hlc(wall_ms: u64) -> HlcTimestamp {
     HlcTimestamp {
@@ -40,7 +36,7 @@ fn read_index(
     data_dir: &std::path::Path,
     address: &ChatAddress,
 ) -> Option<rua_session::chat_index::ChatIndexRecord> {
-    let root = ChatScopeStore::resolve(data_dir, address.clone());
+    let root = ChatStore::resolve(data_dir, address.clone());
     rua_session::chat_index::get_sync(root.root(), address.chat_id().as_str()).unwrap()
 }
 
@@ -66,16 +62,11 @@ fn seed_index(root: &std::path::Path, chat_id: &str, name: &str) {
 }
 
 #[test]
-fn chat_record_ids_encode_scope_and_keep_equal_chat_ids_distinct() {
-    let agent = ChatAddress::agent("agent-a", "shared-chat");
-    let project = ChatAddress::project("project-a", "shared-chat");
-
-    assert_eq!(index_record_id(&agent), "agent/agent-a/chats/shared-chat");
+fn chat_record_id_is_derived_from_chat_id_alone() {
     assert_eq!(
-        index_record_id(&project),
-        "project/project-a/chats/shared-chat"
+        index_record_id(&ChatAddress::new("shared-chat")),
+        "chats/shared-chat"
     );
-    assert_ne!(index_record_id(&agent), index_record_id(&project));
 }
 
 #[tokio::test]
@@ -86,6 +77,8 @@ async fn legacy_record_ids_and_session_records_are_rejected() {
     let (registry, _) = registry_with_chat_adapter(data.path(), "device-b");
 
     for record_id in [
+        "agent/agent-a/chats/chat-a",
+        "project/project-a/chats/chat-a",
         "agent-a/chats/chat-a",
         "agent/agent-a/sessions/chat-a",
         "project/project-a/sessions/chat-a",
@@ -113,7 +106,7 @@ async fn inbound_chat_index_uses_lww_without_a_second_identity() {
     let merge_dir = tempfile::tempdir().unwrap();
     let merge_store = MergeStore::open(merge_dir.path()).unwrap();
     let (registry, _) = registry_with_chat_adapter(data.path(), "device-b");
-    let address = agent_chat("default", "c1");
+    let address = ChatAddress::new("c1");
 
     let local = ChatIndexSyncAdapter::index_change(
         "op-local-index",
@@ -149,7 +142,7 @@ async fn inbound_chat_index_uses_lww_without_a_second_identity() {
     assert_eq!(chat.user_id, "remote-user");
     assert_eq!(
         merge_store
-            .get_record_cursor("chat:agent/default/chats/c1")
+            .get_record_cursor("chat:chats/c1")
             .unwrap()
             .unwrap()
             .base_blob_hash,
@@ -158,19 +151,19 @@ async fn inbound_chat_index_uses_lww_without_a_second_identity() {
 }
 
 #[tokio::test]
-async fn agent_and_project_apply_and_tombstones_are_isolated() {
+async fn distinct_chats_keep_independent_tombstones() {
     let data = tempfile::tempdir().unwrap();
     let merge_dir = tempfile::tempdir().unwrap();
     let merge_store = MergeStore::open(merge_dir.path()).unwrap();
     let (registry, _) = registry_with_chat_adapter(data.path(), "device-b");
-    let agent = ChatAddress::agent("owner-a", "shared-chat");
-    let project = ChatAddress::project("owner-p", "shared-chat");
+    let agent = ChatAddress::new("agent-chat");
+    let project = ChatAddress::new("project-chat");
 
     for (address, name) in [(&agent, "Agent Chat"), (&project, "Project Chat")] {
         let change = ChatIndexSyncAdapter::index_change(
-            format!("op-upsert-{}", address.scope().kind()),
+            format!("op-upsert-{}", address.chat_id()),
             address.clone(),
-            serde_json::json!({ "id": "shared-chat", "name": name }),
+            serde_json::json!({ "id": address.chat_id().as_str(), "name": name }),
             "device-a",
             hlc(50),
         );
@@ -211,7 +204,7 @@ async fn agent_and_project_apply_and_tombstones_are_isolated() {
     assert_eq!(read_index(data.path(), &agent).unwrap().name, "Agent Chat");
     assert_eq!(
         merge_store
-            .get_record_cursor("chat:project/owner-p/chats/shared-chat")
+            .get_record_cursor("chat:chats/project-chat")
             .unwrap()
             .unwrap()
             .state,
@@ -225,7 +218,7 @@ async fn chat_tombstone_rejects_newer_index_upsert() {
     let merge_dir = tempfile::tempdir().unwrap();
     let merge_store = MergeStore::open(merge_dir.path()).unwrap();
     let (registry, _) = registry_with_chat_adapter(data.path(), "device-b");
-    let address = ChatAddress::agent("default", "terminal-chat");
+    let address = ChatAddress::new("terminal-chat");
 
     let delete =
         ChatIndexSyncAdapter::delete_change("delete-terminal-chat", &address, "device-a", hlc(100));
@@ -256,7 +249,7 @@ async fn chat_tombstone_rejects_newer_index_upsert() {
     assert!(read_index(data.path(), &address).is_none());
     assert_eq!(
         merge_store
-            .get_record_cursor("chat:agent/default/chats/terminal-chat")
+            .get_record_cursor("chat:chats/terminal-chat")
             .unwrap()
             .unwrap()
             .state,
@@ -278,11 +271,11 @@ async fn project_tombstone_rejects_later_chat_index_upsert() {
     let merge_dir = tempfile::tempdir().unwrap();
     let merge_store = MergeStore::open(merge_dir.path()).unwrap();
     let (registry, _) = registry_with_chat_adapter(data.path(), "device-b");
-    let address = ChatAddress::project("deleted-project", "chat-1");
+    let address = ChatAddress::new("chat-1");
     let change = ChatIndexSyncAdapter::index_change(
         "late-chat",
         address.clone(),
-        serde_json::json!({"id": "chat-1", "name": "Must not return"}),
+        serde_json::json!({"id": "chat-1", "name": "Must not return", "meta":{"project_id":"deleted-project"}}),
         "device-a",
         hlc(500),
     );
@@ -298,7 +291,7 @@ async fn project_tombstone_rejects_later_chat_index_upsert() {
     assert!(read_index(data.path(), &address).is_none());
     assert_eq!(
         merge_store
-            .get_record_cursor("chat:project/deleted-project/chats/chat-1")
+            .get_record_cursor("chat:chats/chat-1")
             .unwrap()
             .unwrap()
             .state,
@@ -312,7 +305,7 @@ async fn chat_index_sync_never_regresses_authority_epoch() {
     let merge_dir = tempfile::tempdir().unwrap();
     let merge_store = MergeStore::open(merge_dir.path()).unwrap();
     let (registry, _) = registry_with_chat_adapter(data.path(), "device-b");
-    let address = agent_chat("default", "c1");
+    let address = ChatAddress::new("c1");
     let local = ChatIndexSyncAdapter::index_change(
         "op-authority-local",
         address.clone(),
@@ -392,7 +385,7 @@ async fn stale_chat_index_delete_does_not_remove_newer_chat() {
     let merge_dir = tempfile::tempdir().unwrap();
     let merge_store = MergeStore::open(merge_dir.path()).unwrap();
     let (registry, _) = registry_with_chat_adapter(data.path(), "device-b");
-    let address = agent_chat("default", "c1");
+    let address = ChatAddress::new("c1");
     let newer = ChatIndexSyncAdapter::index_change(
         "op-newer-upsert",
         address.clone(),
@@ -423,13 +416,17 @@ async fn stale_chat_index_delete_does_not_remove_newer_chat() {
 #[tokio::test]
 async fn export_contains_agent_and_project_chat_indexes_only() {
     let data = tempfile::tempdir().unwrap();
-    let agent_root = data.path().join("workspaces/default");
-    let project_root = data.path().join("projects/project-a");
-    seed_index(&agent_root, "agent-chat", "Agent Chat");
-    seed_index(&project_root, "project-chat", "Project Chat");
-    std::fs::create_dir_all(agent_root.join("sessions")).unwrap();
+    let chats_root = data.path().join("chats");
+    seed_index(
+        &data.path().join("workspaces/default"),
+        "obsolete",
+        "Legacy",
+    );
+    seed_index(&chats_root, "agent-chat", "Agent Chat");
+    seed_index(&chats_root, "project-chat", "Project Chat");
+    std::fs::create_dir_all(chats_root.join("sessions")).unwrap();
     std::fs::write(
-        agent_root.join("sessions/legacy-session.json"),
+        chats_root.join("sessions/legacy-session.json"),
         serde_json::to_vec(&serde_json::json!({ "session_id": "legacy" })).unwrap(),
     )
     .unwrap();
@@ -445,13 +442,44 @@ async fn export_contains_agent_and_project_chat_indexes_only() {
         changes
             .iter()
             .map(|change| change.record_id.as_str())
-            .collect::<Vec<_>>(),
-        vec![
-            "agent/default/chats/agent-chat",
-            "project/project-a/chats/project-chat"
-        ]
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["chats/agent-chat", "chats/project-chat"])
     );
     assert!(changes
         .iter()
         .all(|change| change.payload.get("session_id").is_none()));
+}
+
+#[tokio::test]
+async fn conflicting_index_snapshot_cannot_move_or_overwrite_a_chat() {
+    let root = tempfile::tempdir().unwrap();
+    let ledger = tempfile::tempdir().unwrap();
+    let merge = MergeStore::open(ledger.path()).unwrap();
+    let (registry, _) = registry_with_chat_adapter(root.path(), "phone");
+    let address = ChatAddress::new("photo-chat");
+    let payload =
+        serde_json::json!({"id":"photo-chat","name":"Photos","meta":{"project_id":"photos"}});
+    let first =
+        ChatIndexSyncAdapter::index_change("create", address.clone(), payload, "desktop", hlc(10));
+    registry.apply_change(&first, &merge).await.unwrap();
+    for (i, invalid) in [
+        serde_json::json!({"id":"another-chat","meta":{"project_id":"photos"}}),
+        serde_json::json!({"id":"photo-chat","meta":{"project_id":"work"}}),
+        serde_json::json!({"id":"photo-chat","meta":{}}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let change = ChatIndexSyncAdapter::index_change(
+            format!("invalid-{i}"),
+            address.clone(),
+            invalid,
+            "phone",
+            hlc(11 + i as u64),
+        );
+        assert!(registry.apply_change(&change, &merge).await.is_err());
+        let original = read_index(root.path(), &address).unwrap();
+        assert_eq!(original.name, "Photos");
+        assert_eq!(original.meta["project_id"], "photos");
+    }
 }

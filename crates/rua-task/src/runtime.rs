@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use rua_core::ChatScopeStore;
+use rua_core::ChatStore;
 use tokio::sync::{broadcast, Mutex as AsyncMutex, Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -118,7 +118,7 @@ impl TaskRuntimeConfig {
     }
 
     pub fn task_dir(&self, owner: &TaskOwner, task_id: &str) -> PathBuf {
-        ChatScopeStore::resolve(&self.data_dir, owner.chat_address.clone())
+        ChatStore::resolve(&self.data_dir, owner.chat_address.clone())
             .root()
             .join("sessions")
             .join(owner.chat_id())
@@ -1748,7 +1748,7 @@ impl TaskRuntime {
             .lock()
             .expect("Task Runner Session registry lock poisoned")
             .retain(|_, session| session.owner != *owner);
-        let task_root = ChatScopeStore::resolve(&self.config.data_dir, owner.chat_address.clone())
+        let task_root = ChatStore::resolve(&self.config.data_dir, owner.chat_address.clone())
             .root()
             .join("sessions")
             .join(owner.chat_id())

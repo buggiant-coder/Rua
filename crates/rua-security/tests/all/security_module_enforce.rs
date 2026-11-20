@@ -232,10 +232,7 @@ async fn chat_scope_reuse_allows_matching_bash_call_only_in_same_chat() {
         .approval_authority()
         .create_request(rua_security::ApprovalRequestInput {
             agent_id: "agent-1".into(),
-            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::agent(
-                "agent-1",
-                "session-1",
-            )),
+            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new("session-1")),
             turn_id: "turn-1".into(),
             tool_call_id: "call-git-status".into(),
             tool_name: "bash".into(),
@@ -261,8 +258,8 @@ async fn chat_scope_reuse_allows_matching_bash_call_only_in_same_chat() {
         .await
         .expect("allow chat");
 
-    let same_chat_ctx = make_bash_ctx("git status")
-        .with_chat_address(rua_core::ChatAddress::agent("agent-1", "session-1"));
+    let same_chat_ctx =
+        make_bash_ctx("git status").with_chat_address(rua_core::ChatAddress::new("session-1"));
     let same_chat = module.enforce(&same_chat_ctx, &["bash".into()]).await;
     assert!(
         matches!(same_chat, SecurityVerdict::Allow),
@@ -275,7 +272,7 @@ async fn chat_scope_reuse_allows_matching_bash_call_only_in_same_chat() {
         "bash",
         serde_json::json!({"command": "git status"}),
     )
-    .with_chat_address(rua_core::ChatAddress::agent("agent-1", "session-2"));
+    .with_chat_address(rua_core::ChatAddress::new("session-2"));
     let verdict = module.enforce(&other_chat, &["bash".into()]).await;
     assert!(
         matches!(verdict, SecurityVerdict::RequiresApproval { .. }),
@@ -291,10 +288,7 @@ async fn chat_scope_reuse_survives_security_module_recreate_without_settings_vis
         .approval_authority()
         .create_request(rua_security::ApprovalRequestInput {
             agent_id: "agent-1".into(),
-            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::agent(
-                "agent-1",
-                "session-1",
-            )),
+            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new("session-1")),
             turn_id: "turn-1".into(),
             tool_call_id: "call-du".into(),
             tool_name: "bash".into(),
@@ -323,7 +317,7 @@ async fn chat_scope_reuse_survives_security_module_recreate_without_settings_vis
 
     let path = tmp
         .path()
-        .join("workspaces/agent-1/sessions/session-1/permission_rules.json");
+        .join("chats/sessions/session-1/permission_rules.json");
     let stored: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).expect("chat rules file"))
             .expect("valid chat rules json");
@@ -349,10 +343,7 @@ async fn deny_permission_rule_takes_precedence_over_chat_scope_reuse() {
         .approval_authority()
         .create_request(rua_security::ApprovalRequestInput {
             agent_id: "agent-1".into(),
-            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::agent(
-                "agent-1",
-                "session-1",
-            )),
+            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new("session-1")),
             turn_id: "turn-1".into(),
             tool_call_id: "call-git-status".into(),
             tool_name: "bash".into(),
@@ -413,10 +404,7 @@ async fn agent_scope_reuse_allows_later_chats_for_same_agent_only() {
         .approval_authority()
         .create_request(rua_security::ApprovalRequestInput {
             agent_id: "agent-1".into(),
-            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::agent(
-                "agent-1",
-                "session-1",
-            )),
+            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new("session-1")),
             turn_id: "turn-1".into(),
             tool_call_id: "call-git-status".into(),
             tool_name: "bash".into(),
@@ -475,10 +463,7 @@ async fn agent_scope_reuse_survives_security_module_recreate() {
         .approval_authority()
         .create_request(rua_security::ApprovalRequestInput {
             agent_id: "agent-1".into(),
-            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::agent(
-                "agent-1",
-                "session-1",
-            )),
+            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new("session-1")),
             turn_id: "turn-1".into(),
             tool_call_id: "call-git-status".into(),
             tool_name: "bash".into(),
@@ -547,7 +532,7 @@ async fn agent_scope_reuse_applies_in_project_chat() {
         "bash",
         serde_json::json!({"command": "git status"}),
     )
-    .with_chat_address(rua_core::ChatAddress::project("project-1", "shared-chat"));
+    .with_chat_address(rua_core::ChatAddress::new("shared-chat"));
 
     let verdict = module.enforce(&ctx, &[]).await;
 
@@ -561,7 +546,7 @@ async fn agent_scope_reuse_applies_in_project_chat() {
 async fn deleting_project_chat_rules_removes_durable_file_and_preserves_agent_rules() {
     let tmp = tempfile::tempdir().unwrap();
     let module = make_module(tmp.path());
-    let address = rua_core::ChatAddress::project("project-1", "chat-1");
+    let address = rua_core::ChatAddress::new("chat-1");
     let request = module
         .approval_authority()
         .create_request(rua_security::ApprovalRequestInput {
@@ -609,7 +594,7 @@ async fn deleting_project_chat_rules_removes_durable_file_and_preserves_agent_ru
         .expect("create Agent rule");
     let path = tmp
         .path()
-        .join("projects/project-1/sessions/chat-1/permission_rules.json");
+        .join("chats/sessions/chat-1/permission_rules.json");
     assert!(path.is_file());
 
     module
@@ -799,10 +784,7 @@ async fn hard_deny_finding_takes_precedence_over_agent_scope_reuse() {
         .approval_authority()
         .create_request(rua_security::ApprovalRequestInput {
             agent_id: "agent-1".into(),
-            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::agent(
-                "agent-1",
-                "session-1",
-            )),
+            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new("session-1")),
             turn_id: "turn-1".into(),
             tool_call_id: "call-git-status".into(),
             tool_name: "bash".into(),

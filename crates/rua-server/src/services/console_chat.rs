@@ -274,12 +274,10 @@ fn chat_model_slot_from_active_turn_detail(
 
 async fn chat_model_slot_from_conversation_authority(
     authority: Option<&Arc<ConversationAuthority>>,
-    agent_id: &str,
+    _agent_id: &str,
     chat_id: &str,
 ) -> Option<serde_json::Value> {
-    let active_turn = authority?
-        .active_turn(&ChatAddress::agent(agent_id, chat_id))
-        .await?;
+    let active_turn = authority?.active_turn(&ChatAddress::new(chat_id)).await?;
     chat_model_slot_from_active_turn_detail(active_turn.driver_detail.as_ref()?)
 }
 
@@ -661,7 +659,7 @@ async fn persist_conversation_terminal_to_session(
     }
 
     if let Some(emitter) = session_sync {
-        let address = rua_core::ChatAddress::agent(agent_id, chat_id);
+        let address = rua_core::ChatAddress::new(chat_id);
         emitter
             .emit_evergreen_chat_snapshot(workspace_dir, &address)
             .await;
@@ -912,7 +910,7 @@ fn header_has_waiting_pending_action(header: Option<&ChatSessionHeader>) -> bool
 
 async fn persist_pending_action_snapshot(
     workspace_dir: &Path,
-    agent_id: &str,
+    _agent_id: &str,
     chat_id: &str,
     pending_action: rua_config::SessionPendingActionSnapshot,
     session_sync: Option<&SessionSyncEmitter>,
@@ -931,7 +929,7 @@ async fn persist_pending_action_snapshot(
         return Err(missing_chat(chat_id));
     }
     if let Some(emitter) = session_sync {
-        let address = rua_core::ChatAddress::agent(agent_id, chat_id);
+        let address = rua_core::ChatAddress::new(chat_id);
         emitter
             .emit_evergreen_chat_snapshot(workspace_dir, &address)
             .await;
@@ -1101,11 +1099,11 @@ impl SessionSyncEmitter {
 
     pub(crate) async fn emit_chat_index_upsert_json(
         &self,
-        agent_id: &str,
+        _agent_id: &str,
         chat_id: &str,
         chat: serde_json::Value,
     ) {
-        self.emit_chat_index_upsert_for(&rua_core::ChatAddress::agent(agent_id, chat_id), chat)
+        self.emit_chat_index_upsert_for(&rua_core::ChatAddress::new(chat_id), chat)
             .await;
     }
 
@@ -1184,7 +1182,6 @@ impl SessionSyncEmitter {
 
     pub(crate) async fn emit_media_deleted_for_checked(
         &self,
-        owner: rua_sync::media_adapter::MediaOwner,
         media_id: &str,
     ) -> Result<(), String> {
         let runtime = SyncPublicationRuntime::new(
@@ -1200,7 +1197,6 @@ impl SessionSyncEmitter {
             publish_sync_fact_with_runtime(
                 &runtime,
                 SyncPublicationFact::MediaDeleted {
-                    owner,
                     media_id: media_id.to_string(),
                 },
             )
@@ -1829,7 +1825,7 @@ pub(crate) async fn materialize_targeted_chat_with_model(
     initial_model: Option<serde_json::Value>,
 ) -> std::result::Result<serde_json::Value, TargetedChatMaterializationError> {
     resolve_chat_id(chat_id).map_err(TargetedChatMaterializationError::InvalidChatId)?;
-    let address = rua_core::ChatAddress::agent(agent_id, chat_id);
+    let address = rua_core::ChatAddress::new(chat_id);
     let chat = materialize_targeted_chat_metadata(
         None,
         workspace_dir,
@@ -1841,10 +1837,12 @@ pub(crate) async fn materialize_targeted_chat_with_model(
     )
     .await?;
 
-    let scope_store =
-        rua_core::ChatScopeStore::for_agent_workspace(workspace_dir, address.clone())?;
-    rua_chat::ChatService::for_scope_store(scope_store)
-        .complete_agent_scope_materialization(&address)
+    let scope_store = rua_core::ChatStore::at_workspace(
+        rua_core::WorkspaceRoot::new(workspace_dir),
+        address.clone(),
+    );
+    rua_chat::ChatService::for_store(scope_store)
+        .complete_materialization(&address)
         .await?;
     Ok(chat.to_json_value())
 }
@@ -2224,7 +2222,7 @@ impl WorkspaceSessionPersistence {
                         chat_address: self
                             .address
                             .clone()
-                            .unwrap_or_else(|| rua_core::ChatAddress::agent(agent_id, chat_id)),
+                            .unwrap_or_else(|| rua_core::ChatAddress::new(chat_id)),
                         agent_id: agent_id.to_string(),
                         authority_device_id: self.authority_device_id.clone(),
                         context_manager: Arc::clone(context_manager),
@@ -2242,7 +2240,7 @@ impl WorkspaceSessionPersistence {
                 chat_address: self
                     .address
                     .clone()
-                    .unwrap_or_else(|| ChatAddress::agent(agent_id, chat_id)),
+                    .unwrap_or_else(|| ChatAddress::new(chat_id)),
                 context_manager: self.context_manager.clone(),
                 running_config: self.running_config.clone(),
                 model: self.checkpoint_model.clone(),
@@ -2253,7 +2251,7 @@ impl WorkspaceSessionPersistence {
                         &self
                             .address
                             .clone()
-                            .unwrap_or_else(|| ChatAddress::agent(agent_id, chat_id)),
+                            .unwrap_or_else(|| ChatAddress::new(chat_id)),
                     ),
                 ),
             })
@@ -2264,7 +2262,7 @@ impl WorkspaceSessionPersistence {
                 let address = self
                     .address
                     .clone()
-                    .unwrap_or_else(|| ChatAddress::agent(agent_id, chat_id));
+                    .unwrap_or_else(|| ChatAddress::new(chat_id));
                 emitter
                     .publish_conversation_boundary(
                         &self.workspace_dir,
@@ -3084,9 +3082,9 @@ impl ConsoleChatService {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         self.chat_stream_in_context(
             ConversationExecutionContext {
-                address: ChatAddress::agent(agent_id, chat_id),
+                address: ChatAddress::new(chat_id),
                 execution_agent_id: agent_id.to_string(),
-                scope_root: workspace_dir.clone(),
+                scope_root: runtime.chat_workspace_dir(),
                 working_dir: workspace_dir,
             },
             runtime,
@@ -3227,19 +3225,14 @@ impl ConsoleChatService {
                 .extra
                 .contains_key(rua_chat::TURN_AGENT_ASSIGNMENT_META_KEY)
             {
-                let assignment = match resolve_turn_agent_assignment(
-                    &agent_service,
-                    &agent_id,
-                    address.agent_id().is_some(),
-                )
-                .await
-                {
-                    Ok(assignment) => assignment,
-                    Err(error) => {
-                        let _ = tx.send(Err(error)).await;
-                        return;
-                    }
-                };
+                let assignment =
+                    match resolve_turn_agent_assignment(&agent_service, &agent_id, true).await {
+                        Ok(assignment) => assignment,
+                        Err(error) => {
+                            let _ = tx.send(Err(error)).await;
+                            return;
+                        }
+                    };
                 req.extra.insert(
                     rua_chat::TURN_AGENT_ASSIGNMENT_META_KEY.to_string(),
                     serde_json::to_value(assignment)
@@ -3451,7 +3444,20 @@ impl ConsoleChatService {
                     (!device_id_str.is_empty()).then_some(device_id_str.as_str()),
                     device_name_snapshot.as_deref(),
                 ));
-            let project_id = address.project_id().cloned();
+            let project_id = match rua_session::WorkspaceSessionStore::new(&scope_root)
+                .load_chat_header(address.chat_id().as_str())
+                .await
+            {
+                Ok(Some(header)) => header.project_id.map(rua_core::ProjectId::new),
+                Ok(None) => {
+                    let _ = tx.send(Err("accepted Chat header is missing".into())).await;
+                    return;
+                }
+                Err(error) => {
+                    let _ = tx.send(Err(error.to_string())).await;
+                    return;
+                }
+            };
             let project_resources = match project_id.as_ref() {
                 Some(project_id) => {
                     let binding = project_bindings
@@ -3949,10 +3955,6 @@ impl ConsoleChatService {
             metadata.insert(
                 "chat_execution".into(),
                 chat_execution_runtime_metadata(Some(&scope_root), &chat_id, &req.extra).await,
-            );
-            metadata.insert(
-                "rua_workspace_dir".into(),
-                serde_json::json!(scope_root.to_string_lossy()),
             );
             metadata.insert(
                 rua_agent::hooks::SECURITY_CHAT_ADDRESS_METADATA_KEY.into(),
@@ -4667,7 +4669,6 @@ impl ConsoleChatFacadeImpl {
     ) -> Self {
         let live_activity = ConversationLiveActivity::new(
             Arc::clone(&streams),
-            Arc::clone(&registry),
             Arc::clone(&sync_device),
             Arc::clone(&sync_node),
             Arc::clone(&device_network),
@@ -4697,14 +4698,6 @@ impl ConsoleChatFacadeImpl {
             .input_intake
             .with_conversation_authority(Arc::clone(&authority));
         self.conversation_authority = Some(authority);
-        self
-    }
-
-    pub fn with_project_catalog(
-        mut self,
-        project_catalog: Arc<rua_project::ProjectCatalog>,
-    ) -> Self {
-        self.live_activity = self.live_activity.with_project_catalog(project_catalog);
         self
     }
 
@@ -4756,11 +4749,11 @@ impl ConsoleChatFacadeImpl {
         chat_id: &str,
     ) -> ConversationControlRoute {
         let workspace_dir = match self.registry.get_or_create(agent_id).await {
-            Ok(runtime) => Some(runtime.workspace_dir()),
+            Ok(runtime) => Some(runtime.chat_workspace_dir()),
             Err(_) => None,
         };
         let local_device_id = current_sync_device_id(&self.sync_device);
-        let address = ChatAddress::agent(agent_id, chat_id);
+        let address = ChatAddress::new(chat_id);
         ConversationAuthorityRouter
             .resolve_control_route(ConversationControlRouteRequest {
                 workspace_dir: workspace_dir.as_deref(),
@@ -4803,7 +4796,7 @@ impl ConsoleChatFacade for ConsoleChatFacadeImpl {
 
         self.live_activity
             .subscribe_viewer(
-                &ChatAddress::agent(agent_id, &resolved_chat_id),
+                &ChatAddress::new(&resolved_chat_id),
                 agent_id,
                 viewer_id,
                 position,
@@ -4828,18 +4821,10 @@ impl ConsoleChatFacade for ConsoleChatFacadeImpl {
         mut request: ConsoleChatRequest,
     ) -> ConsoleSubmitOutcome {
         request.chat_id = Some(address.chat_id().to_string());
-        let outcome = match address.scope() {
-            rua_core::ChatScope::Agent { agent_id, .. } => {
-                self.input_intake
-                    .submit_delivery(agent_id.as_str(), request)
-                    .await
-            }
-            rua_core::ChatScope::Project { project_id, .. } => {
-                self.input_intake
-                    .submit_project_delivery(project_id, execution_agent_id, request)
-                    .await
-            }
-        };
+        let outcome = self
+            .input_intake
+            .submit_delivery(execution_agent_id, request)
+            .await;
         console_submit_outcome_from_delivery(outcome)
     }
 
@@ -4861,7 +4846,7 @@ impl ConsoleChatFacade for ConsoleChatFacadeImpl {
                 return ConsoleStopOutcome::local(false);
             }
         };
-        let address = ChatAddress::agent(agent_id, &resolved_chat_id);
+        let address = ChatAddress::new(&resolved_chat_id);
 
         match self
             .resolve_control_route(agent_id, &resolved_chat_id)
@@ -5405,7 +5390,7 @@ async fn start_initial_acp(
         .active_turn(address)
         .await
         .ok_or("accepted ACP Turn is missing")?;
-    let cwd = if address.project_id().is_some() {
+    let cwd = if header.project_id.is_some() {
         working_dir.to_string_lossy().to_string()
     } else {
         selection
@@ -6203,33 +6188,14 @@ fn live_terminal_status_from_control(
 }
 
 pub(crate) fn turn_terminal_payload_from_fact(fact: ConversationTurnTerminalFact) -> String {
-    match fact.address.agent_id() {
-        Some(agent_id) => turn_terminal_payload(TurnTerminalPayload {
-            chat_id: fact.address.chat_id().as_str(),
-            agent_id: agent_id.as_str(),
-            turn_id: &fact.turn_id,
-            status: &fact.status,
-            completed_at: fact.completed_at.as_deref(),
-            authority_device_id: Some(fact.authority_device_id.as_str()),
-            authority_epoch: fact.authority_epoch,
-            device_delivery_id: fact.device_delivery_id.as_deref(),
-        }),
-        None => {
-            let chat_id = fact.address.chat_id().to_string();
-            serde_json::json!({
-                "type": "turn_terminal",
-                "address": fact.address,
-                "chat_id": chat_id,
-                "turn_id": fact.turn_id,
-                "status": fact.status,
-                "completed_at": fact.completed_at,
-                "authority_device_id": fact.authority_device_id,
-                "authority_epoch": fact.authority_epoch,
-                "device_delivery_id": fact.device_delivery_id,
-            })
-            .to_string()
-        }
-    }
+    let chat_id = fact.address.chat_id().to_string();
+    serde_json::json!({
+        "type": "turn_terminal", "address": fact.address, "chat_id": chat_id,
+        "turn_id": fact.turn_id, "status": fact.status, "completed_at": fact.completed_at,
+        "authority_device_id": fact.authority_device_id, "authority_epoch": fact.authority_epoch,
+        "device_delivery_id": fact.device_delivery_id,
+    })
+    .to_string()
 }
 
 struct TurnTerminalPayload<'a> {

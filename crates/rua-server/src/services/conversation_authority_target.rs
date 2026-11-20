@@ -45,7 +45,6 @@ pub async fn resolve_submit_target(
     workspace_dir: Option<&Path>,
     chat_id: &str,
     request: &ConsoleChatRequest,
-    agent_id: &str,
     local_device_id: Option<&str>,
     acp_chat_registry: Option<&Arc<AcpChatRegistry>>,
 ) -> std::result::Result<Option<PlacementTarget>, String> {
@@ -78,7 +77,7 @@ pub async fn resolve_submit_target(
                 .map(str::to_string)
                 .or_else(|| local_device_id.map(str::to_string))
                 .ok_or_else(|| "draft target Device is unavailable".to_string())?;
-            let address = rua_core::ChatAddress::agent(agent_id, chat_id);
+            let address = rua_core::ChatAddress::new(chat_id);
             PlacementTarget {
                 authority_epoch: request
                     .extra
@@ -289,6 +288,9 @@ pub async fn load_chat_control_meta(
             header.map(|header| {
                 let model = rua_chat::model_slot_from_header(&header);
                 let mut extra = header.extra;
+                if let Some(project_id) = header.project_id {
+                    extra.insert("project_id".into(), project_id.into());
+                }
                 match model {
                     Some(model) => {
                         extra.insert("model".to_string(), model);

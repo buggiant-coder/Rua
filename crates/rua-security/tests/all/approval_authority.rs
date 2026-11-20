@@ -9,7 +9,7 @@ use serde_json::json;
 fn request(tool_call_id: &str, tool_name: &str) -> ApprovalRequestInput {
     ApprovalRequestInput {
         agent_id: "agent-1".into(),
-        owner: rua_security::ApprovalOwner::chat(ChatAddress::agent("agent-1", "chat-1")),
+        owner: rua_security::ApprovalOwner::chat(ChatAddress::new("chat-1")),
         turn_id: "turn-1".into(),
         tool_call_id: tool_call_id.into(),
         tool_name: tool_name.into(),
@@ -24,7 +24,7 @@ fn request(tool_call_id: &str, tool_name: &str) -> ApprovalRequestInput {
 fn bash_request(tool_call_id: &str, command: &str) -> ApprovalRequestInput {
     ApprovalRequestInput {
         agent_id: "agent-1".into(),
-        owner: rua_security::ApprovalOwner::chat(ChatAddress::agent("agent-1", "chat-1")),
+        owner: rua_security::ApprovalOwner::chat(ChatAddress::new("chat-1")),
         turn_id: "turn-1".into(),
         tool_call_id: tool_call_id.into(),
         tool_name: "bash".into(),
@@ -47,7 +47,7 @@ async fn snapshot_keeps_multiple_pending_requests_for_one_chat() {
     assert_ne!(bash.id, read.id);
 
     let snapshot = authority
-        .snapshot_at(&rua_core::ChatAddress::agent("agent-1", "chat-1"))
+        .snapshot_at(&rua_core::ChatAddress::new("chat-1"))
         .await;
     assert_eq!(snapshot.pending.len(), 2);
     assert_eq!(snapshot.resolved.len(), 0);
@@ -91,44 +91,45 @@ fn approval_authority_statuses_have_stable_wire_names() {
 }
 
 #[tokio::test]
-async fn snapshot_is_scoped_by_agent_and_chat() {
+async fn snapshot_includes_the_same_chat_across_agents() {
     let authority = ApprovalAuthority::new();
 
     authority.create_request(request("call-1", "bash")).await;
 
     let mut other_chat = request("call-2", "read");
-    other_chat.owner = ApprovalOwner::chat(ChatAddress::agent("agent-1", "chat-2"));
+    other_chat.owner = ApprovalOwner::chat(ChatAddress::new("chat-2"));
     authority.create_request(other_chat).await;
 
     let mut other_agent = request("call-3", "edit");
     other_agent.agent_id = "agent-2".into();
-    other_agent.owner = ApprovalOwner::chat(ChatAddress::agent("agent-2", "chat-1"));
+    other_agent.owner = ApprovalOwner::chat(ChatAddress::new("chat-1"));
     authority.create_request(other_agent).await;
 
     let snapshot = authority
-        .snapshot_at(&rua_core::ChatAddress::agent("agent-1", "chat-1"))
+        .snapshot_at(&rua_core::ChatAddress::new("chat-1"))
         .await;
-    assert_eq!(snapshot.pending.len(), 1);
-    assert_eq!(snapshot.pending[0].tool_call_id, "call-1");
+    let mut ids = snapshot
+        .pending
+        .iter()
+        .map(|r| r.tool_call_id.as_str())
+        .collect::<Vec<_>>();
+    ids.sort();
+    assert_eq!(ids, ["call-1", "call-3"]);
 }
 
 #[tokio::test]
-async fn equal_chat_ids_in_agent_and_project_scopes_do_not_share_approvals() {
+async fn distinct_chats_do_not_share_approvals() {
     let authority = ApprovalAuthority::new();
     authority
         .create_request(request("agent-call", "bash"))
         .await;
 
     let mut project_request = request("project-call", "bash");
-    project_request.owner = ApprovalOwner::chat(ChatAddress::project("project-1", "chat-1"));
+    project_request.owner = ApprovalOwner::chat(ChatAddress::new("chat-2"));
     authority.create_request(project_request).await;
 
-    let agent = authority
-        .snapshot_at(&ChatAddress::agent("agent-1", "chat-1"))
-        .await;
-    let project = authority
-        .snapshot_at(&ChatAddress::project("project-1", "chat-1"))
-        .await;
+    let agent = authority.snapshot_at(&ChatAddress::new("chat-1")).await;
+    let project = authority.snapshot_at(&ChatAddress::new("chat-2")).await;
 
     assert_eq!(agent.pending.len(), 1);
     assert_eq!(agent.pending[0].tool_call_id, "agent-call");
@@ -157,7 +158,7 @@ async fn runtime_session_approval_is_not_addressable_as_a_chat() {
 
     assert_eq!(created.owner, owner);
     assert!(authority
-        .snapshot_at(&ChatAddress::agent("agent-1", "acp-session-1"))
+        .snapshot_at(&ChatAddress::new("acp-session-1"))
         .await
         .pending
         .is_empty());
@@ -171,7 +172,7 @@ async fn runtime_session_approval_is_not_addressable_as_a_chat() {
     );
     assert_eq!(
         authority
-            .clear_by_address(&ChatAddress::agent("agent-1", "acp-session-1"))
+            .clear_by_address(&ChatAddress::new("acp-session-1"))
             .await,
         0
     );
@@ -239,7 +240,7 @@ async fn runtime_session_reuse_does_not_cross_into_chat_or_another_session() {
     assert!(authority
         .find_reuse_rule_at(
             "agent-1",
-            &ChatAddress::agent("agent-1", "acp-session-1"),
+            &ChatAddress::new("acp-session-1"),
             "bash",
             &json!({"command": "git status"}),
         )
@@ -269,7 +270,7 @@ async fn decisions_resolve_one_request_without_touching_the_other() {
     assert_eq!(approved.status, ApprovalStatus::Approved);
 
     let snapshot = authority
-        .snapshot_at(&rua_core::ChatAddress::agent("agent-1", "chat-1"))
+        .snapshot_at(&rua_core::ChatAddress::new("chat-1"))
         .await;
     assert_eq!(snapshot.pending.len(), 1);
     assert_eq!(snapshot.pending[0].id, read.id);
@@ -288,7 +289,7 @@ async fn decisions_resolve_one_request_without_touching_the_other() {
     assert_eq!(rejected.status, ApprovalStatus::Rejected);
 
     let snapshot = authority
-        .snapshot_at(&rua_core::ChatAddress::agent("agent-1", "chat-1"))
+        .snapshot_at(&rua_core::ChatAddress::new("chat-1"))
         .await;
     assert_eq!(snapshot.pending.len(), 0);
     assert_eq!(snapshot.resolved.len(), 2);
@@ -335,7 +336,7 @@ async fn cleared_chat_approval_cannot_be_approved_later() {
 
     assert_eq!(
         authority
-            .clear_by_address(&rua_core::ChatAddress::agent("agent-1", "chat-1"))
+            .clear_by_address(&rua_core::ChatAddress::new("chat-1"))
             .await,
         1
     );
@@ -361,7 +362,7 @@ async fn cleared_chat_approval_cannot_be_approved_later() {
         format!("approval request {} is Superseded, cannot decide", bash.id)
     );
     let snapshot = authority
-        .snapshot_at(&rua_core::ChatAddress::agent("agent-1", "chat-1"))
+        .snapshot_at(&rua_core::ChatAddress::new("chat-1"))
         .await;
     assert!(snapshot.pending.is_empty());
     assert_eq!(snapshot.resolved[0].status, ApprovalStatus::Superseded);
@@ -449,7 +450,7 @@ async fn bash_pattern_reuse_matches_same_command_family_without_git_status_hardc
     let matched = authority
         .find_reuse_rule_at(
             "agent-1",
-            &rua_core::ChatAddress::agent("agent-1", "chat-1"),
+            &rua_core::ChatAddress::new("chat-1"),
             "bash",
             &json!({
                 "command": "du -sh /Users/example/projects/rua/*/ 2>/dev/null | sort -rh | head -30"
@@ -490,7 +491,7 @@ async fn allow_chat_creates_reuse_rule_that_matches_only_same_chat() {
     let same_chat_rule = authority
         .find_reuse_rule_at(
             "agent-1",
-            &rua_core::ChatAddress::agent("agent-1", "chat-1"),
+            &rua_core::ChatAddress::new("chat-1"),
             "bash",
             &json!({ "command": "git status" }),
         )
@@ -505,7 +506,7 @@ async fn allow_chat_creates_reuse_rule_that_matches_only_same_chat() {
     let other_chat_rule = authority
         .find_reuse_rule_at(
             "agent-1",
-            &rua_core::ChatAddress::agent("agent-1", "chat-2"),
+            &rua_core::ChatAddress::new("chat-2"),
             "bash",
             &json!({ "command": "git status" }),
         )
@@ -516,7 +517,7 @@ async fn allow_chat_creates_reuse_rule_that_matches_only_same_chat() {
 #[tokio::test]
 async fn project_chat_reuse_follows_typed_address_after_agent_switch() {
     let authority = ApprovalAuthority::new();
-    let address = ChatAddress::project("project-1", "chat-1");
+    let address = ChatAddress::new("chat-1");
     let mut input = bash_request("call-git-status", "git status --short");
     input.owner = ApprovalOwner::chat(address.clone());
     let request = authority.create_request(input).await;
@@ -553,9 +554,9 @@ async fn project_chat_reuse_follows_typed_address_after_agent_switch() {
 }
 
 #[tokio::test]
-async fn equal_chat_uuid_in_other_scope_cannot_reuse_project_chat_rule() {
+async fn different_chat_cannot_reuse_chat_rule() {
     let authority = ApprovalAuthority::new();
-    let project_address = ChatAddress::project("project-1", "shared-chat");
+    let project_address = ChatAddress::new("shared-chat");
     let mut input = bash_request("call-git-status", "git status --short");
     input.owner = ApprovalOwner::chat(project_address.clone());
     let request = authority.create_request(input).await;
@@ -577,7 +578,7 @@ async fn equal_chat_uuid_in_other_scope_cannot_reuse_project_chat_rule() {
     assert!(authority
         .find_reuse_rule_at(
             "agent-1",
-            &ChatAddress::agent("agent-1", "shared-chat"),
+            &ChatAddress::new("another-chat"),
             "bash",
             &json!({"command": "git status"}),
         )
@@ -588,7 +589,7 @@ async fn equal_chat_uuid_in_other_scope_cannot_reuse_project_chat_rule() {
 #[tokio::test]
 async fn deleting_project_chat_rules_preserves_agent_scoped_rules() {
     let authority = ApprovalAuthority::new();
-    let address = ChatAddress::project("project-1", "chat-1");
+    let address = ChatAddress::new("chat-1");
     let mut input = bash_request("call-git-status", "git status --short");
     input.owner = ApprovalOwner::chat(address.clone());
     let request = authority.create_request(input).await;
@@ -633,10 +634,10 @@ async fn deleting_project_chat_rules_preserves_agent_scoped_rules() {
 }
 
 #[tokio::test]
-async fn deleting_project_rules_removes_only_that_projects_chat_rules() {
+async fn deleting_member_chat_rules_preserves_other_chats() {
     let authority = ApprovalAuthority::new();
-    let project_one = ChatAddress::project("project-1", "chat-1");
-    let project_two = ChatAddress::project("project-2", "chat-1");
+    let project_one = ChatAddress::new("chat-1");
+    let project_two = ChatAddress::new("chat-2");
     for (address, call_id) in [(&project_one, "call-1"), (&project_two, "call-2")] {
         let mut input = bash_request(call_id, "git status --short");
         input.owner = ApprovalOwner::chat(address.clone());
@@ -657,7 +658,7 @@ async fn deleting_project_rules_removes_only_that_projects_chat_rules() {
     }
 
     authority
-        .delete_project_rules(&rua_core::ProjectId::new("project-1"))
+        .delete_chat_rules(&project_one)
         .await
         .expect("delete Project rules");
 
@@ -668,7 +669,7 @@ async fn deleting_project_rules_removes_only_that_projects_chat_rules() {
 #[tokio::test]
 async fn archive_style_pending_clear_preserves_project_chat_rules() {
     let authority = ApprovalAuthority::new();
-    let address = ChatAddress::project("project-1", "chat-1");
+    let address = ChatAddress::new("chat-1");
     let mut reusable = bash_request("call-reusable", "git status --short");
     reusable.owner = ApprovalOwner::chat(address.clone());
     let reusable = authority.create_request(reusable).await;

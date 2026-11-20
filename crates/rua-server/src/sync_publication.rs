@@ -40,7 +40,6 @@ pub enum SyncPublicationFact {
         address: ChatAddress,
     },
     MediaDeleted {
-        owner: rua_sync::media_adapter::MediaOwner,
         media_id: String,
     },
     PromptLibraryFilesCommitted {
