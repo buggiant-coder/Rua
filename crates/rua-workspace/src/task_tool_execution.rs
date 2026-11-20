@@ -46,6 +46,18 @@ impl AgentHook for TaskToolWaitStateHook {
         prompt: &str,
         call: &ToolCall,
     ) -> react_agent::hooks::ApprovalResult {
+        self.wait_for_approval_request(None, tool_use_id, tool_name, prompt, call)
+            .await
+    }
+
+    async fn wait_for_approval_request(
+        &self,
+        request_id: Option<&str>,
+        tool_use_id: &str,
+        tool_name: &str,
+        prompt: &str,
+        call: &ToolCall,
+    ) -> react_agent::hooks::ApprovalResult {
         match self
             .runtime
             .set_waiting_approval(&self.owner, &self.task_id, self.attempt_no, true)
@@ -60,7 +72,7 @@ impl AgentHook for TaskToolWaitStateHook {
         }
         let decision = self
             .inner
-            .wait_for_approval(tool_use_id, tool_name, prompt, call)
+            .wait_for_approval_request(request_id, tool_use_id, tool_name, prompt, call)
             .await;
         match self
             .runtime

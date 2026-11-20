@@ -147,7 +147,19 @@ impl AgentHook for SecurityAgentHook {
     async fn wait_for_approval(
         &self,
         tool_use_id: &str,
-        _tool_name: &str,
+        tool_name: &str,
+        prompt: &str,
+        call: &ToolCall,
+    ) -> ApprovalResult {
+        self.wait_for_approval_request(None, tool_use_id, tool_name, prompt, call)
+            .await
+    }
+
+    async fn wait_for_approval_request(
+        &self,
+        request_id: Option<&str>,
+        tool_use_id: &str,
+        tool_name: &str,
         prompt: &str,
         call: &ToolCall,
     ) -> ApprovalResult {
@@ -175,12 +187,25 @@ impl AgentHook for SecurityAgentHook {
             .map(rua_security::ApprovalOwner::chat)
             .unwrap_or_else(|| rua_security::ApprovalOwner::runtime_session(agent_id, &session_id));
 
-        let snapshot = self
-            .security
-            .approval_authority()
+        let request_id = if let Some(id) = request_id {
+            let Some(request) = authority.request(id).await.filter(|request| {
+                request.agent_id == agent_id
+                    && request.owner == approval_owner
+                    && request.turn_id == turn_id
+                    && request.tool_call_id == call.id
+                    && tool_use_id == call.id
+                    && request.tool_name == call.name
+                    && tool_name == call.name
+                    && request.tool_call.args == call.arguments
+            }) else {
+                return ApprovalResult::Deny {
+                    reason: "Approval request does not match this tool call".into(),
+                };
+            };
+            request.id
+        } else if let Some(existing) = authority
             .snapshot_for_owner(&approval_owner)
-            .await;
-        let request_id = if let Some(existing) = snapshot
+            .await
             .pending
             .into_iter()
             .find(|request| request.tool_call_id == tool_use_id)
@@ -453,9 +478,21 @@ impl AgentHook for CompositeHook {
         prompt: &str,
         call: &ToolCall,
     ) -> ApprovalResult {
+        self.wait_for_approval_request(None, tool_use_id, tool_name, prompt, call)
+            .await
+    }
+
+    async fn wait_for_approval_request(
+        &self,
+        request_id: Option<&str>,
+        tool_use_id: &str,
+        tool_name: &str,
+        prompt: &str,
+        call: &ToolCall,
+    ) -> ApprovalResult {
         for hook in &self.hooks {
             let result = hook
-                .wait_for_approval(tool_use_id, tool_name, prompt, call)
+                .wait_for_approval_request(request_id, tool_use_id, tool_name, prompt, call)
                 .await;
             match &result {
                 ApprovalResult::Allow | ApprovalResult::AllowWithModifiedArgs { .. } => {

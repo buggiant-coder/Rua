@@ -84,6 +84,19 @@ pub trait AgentHook: Send + Sync {
         }
     }
 
+    /// Wait for the request issued for this call. Other approval channels keep their call-based flow.
+    async fn wait_for_approval_request(
+        &self,
+        _request_id: Option<&str>,
+        tool_use_id: &str,
+        tool_name: &str,
+        prompt: &str,
+        call: &ToolCall,
+    ) -> ApprovalResult {
+        self.wait_for_approval(tool_use_id, tool_name, prompt, call)
+            .await
+    }
+
     async fn record_permission_hook_decision(
         &self,
         _request_id: &str,

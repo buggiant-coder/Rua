@@ -1964,7 +1964,13 @@ async fn execute_single_tool_canonical(
                 trace.checkpoint("approval_wait_ready");
                 trace.mark("approval_wait_started");
                 let approval = hook
-                    .wait_for_approval(&call.id, &call.name, &prompt, call)
+                    .wait_for_approval_request(
+                        (!request_id.is_empty()).then_some(request_id.as_str()),
+                        &call.id,
+                        &call.name,
+                        &prompt,
+                        call,
+                    )
                     .await;
                 trace.mark("approval_wait_finished");
                 match approval {

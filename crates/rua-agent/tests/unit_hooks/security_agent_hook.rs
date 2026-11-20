@@ -170,7 +170,8 @@ async fn security_hook_ask_first_asks_for_tool_calls() {
 }
 
 #[tokio::test]
-async fn security_hook_uses_typed_project_chat_address_for_approval_ownership() {
+async fn security_hook_registers_the_chat_owner_separately_from_a_runtime_session_with_the_same_id()
+{
     let (security, _tmp) = make_test_security();
     let mut config = SecurityConfig::default();
     config.tool_guard.approval_mode = "ask_first".into();
@@ -188,12 +189,12 @@ async fn security_hook_uses_typed_project_chat_address_for_approval_ownership() 
         .unwrap();
 
     assert!(matches!(result, ToolDecision::RequiresApproval { .. }));
-    let project_snapshot = security.approval_authority().snapshot_at(&address).await;
-    assert_eq!(project_snapshot.pending.len(), 1);
-    assert_eq!(project_snapshot.pending[0].agent_id, "agent-1");
+    let chat_snapshot = security.approval_authority().snapshot_at(&address).await;
+    assert_eq!(chat_snapshot.pending.len(), 1);
+    assert_eq!(chat_snapshot.pending[0].agent_id, "agent-1");
     assert!(security
         .approval_authority()
-        .snapshot_at(&rua_core::ChatAddress::new("chat-1"))
+        .snapshot_for_runtime_session("agent-1", "chat-1")
         .await
         .pending
         .is_empty());
@@ -316,4 +317,161 @@ async fn security_hook_serializes_concurrent_guard_decisions() {
         ToolDecision::RequiresApproval { .. }
     ));
     assert!(matches!(second.unwrap(), ToolDecision::Allow));
+}
+
+async fn execute_after_early_decision(user_decision: ApprovalDecision) -> agent_types::ToolResult {
+    use react_agent::react_loop::execute_single_tool;
+    use rua_agent::hooks::CompositeHook;
+    use std::time::Duration;
+
+    // Place the waiter after the decision without relying on UI or thread timing.
+    struct Prepared(ToolDecision);
+    #[async_trait::async_trait]
+    impl AgentHook for Prepared {
+        async fn before_tool_call(
+            &self,
+            _call: &ToolCall,
+            _iteration: u32,
+        ) -> Result<ToolDecision, react_agent::AgentError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    let (security, temp) = make_test_security();
+    let mut config = SecurityConfig::default();
+    config.tool_guard.approval_mode = "ask_first".into();
+    security.config_store().save("agent", &config).unwrap();
+    let address = rua_core::ChatAddress::new("chat");
+    let guard = Arc::new(
+        SecurityAgentHook::new(security.clone(), true)
+            .with_agent_id("agent")
+            .with_session_id("chat")
+            .with_chat_address(address.clone())
+            .with_turn_id("turn"),
+    );
+    let path = temp.path().join("selected.txt");
+    std::fs::write(&path, "early approval fixture").unwrap();
+    let call = make_call_with_args("read", serde_json::json!({"file_path":path}));
+    let decision = guard.before_tool_call(&call, 0).await.unwrap();
+    let ToolDecision::RequiresApproval { ref request_id, .. } = decision else {
+        panic!("expected ask-first read")
+    };
+    security
+        .approval_authority()
+        .decide_for_authenticated_user("agent", request_id, user_decision, "test-user")
+        .await
+        .unwrap();
+    let hooks: Arc<dyn AgentHook> = Arc::new(CompositeHook::new(vec![
+        Arc::new(Prepared(decision)),
+        guard,
+    ]));
+    let toolkit = rua_agent::runtime::build_default_toolkit();
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let ctx = rua_core::tool::ToolContext {
+        agent_id: "agent".into(),
+        session_id: "chat".into(),
+        tool_result_store_dir: Some(temp.path().join("tool-results")),
+        working_dir: temp.path().into(),
+        ..Default::default()
+    };
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        execute_single_tool(
+            &call,
+            &toolkit,
+            &hooks,
+            &ctx,
+            &Default::default(),
+            0,
+            &tokio_util::sync::CancellationToken::new(),
+            Duration::ZERO,
+            &tx,
+        ),
+    )
+    .await;
+    let snapshot = security.approval_authority().snapshot_at(&address).await;
+    assert!(
+        snapshot.pending.is_empty(),
+        "another approval was created for the same call"
+    );
+    assert_eq!(snapshot.resolved.len(), 1);
+    result
+        .expect("completed approval must wake the tool")
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_decision_before_the_wait_executes_the_original_call_once() {
+    let result = execute_after_early_decision(ApprovalDecision::RunOnce {
+        decided_by: "console".into(),
+    })
+    .await;
+    assert!(!result.is_error, "{}", result.text_content());
+    assert!(result.text_content().contains("early approval fixture"));
+}
+
+#[tokio::test]
+async fn a_rejection_before_the_wait_denies_the_original_call() {
+    let result = execute_after_early_decision(ApprovalDecision::Reject {
+        decided_by: "console".into(),
+    })
+    .await;
+    assert!(result.is_error);
+    assert!(result.text_content().contains("rejected by the user"));
+    assert!(!result.text_content().contains("early approval fixture"));
+}
+
+#[tokio::test]
+async fn an_unknown_or_mismatched_approval_id_never_approves_a_call() {
+    let (security, _tmp) = make_test_security();
+    let address = rua_core::ChatAddress::new("chat");
+    let hook = SecurityAgentHook::new(security.clone(), true)
+        .with_agent_id("agent")
+        .with_session_id("chat")
+        .with_chat_address(address.clone())
+        .with_turn_id("turn");
+    let call = make_call_with_args("read", serde_json::json!({"file_path": "one.txt"}));
+    let authority = security.approval_authority();
+    let original = authority
+        .create_request(rua_security::ApprovalRequestInput {
+            agent_id: "agent".into(),
+            owner: rua_security::ApprovalOwner::chat(address.clone()),
+            turn_id: "turn".into(),
+            tool_call_id: call.id.clone(),
+            tool_name: call.name.clone(),
+            trigger: rua_security::ApprovalTrigger::approval_mode("Ask first"),
+            tool_call: rua_security::ToolCallSnapshot {
+                display: "one.txt".into(),
+                args: call.arguments.clone(),
+            },
+        })
+        .await;
+    authority
+        .decide_for_authenticated_user(
+            "agent",
+            &original.id,
+            ApprovalDecision::RunOnce {
+                decided_by: "console".into(),
+            },
+            "test-user",
+        )
+        .await
+        .unwrap();
+    let other = make_call_with_args("read", serde_json::json!({"file_path":"two.txt"}));
+    for (id, attempt) in [("missing", &call), (original.id.as_str(), &other)] {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            hook.wait_for_approval_request(
+                Some(id),
+                &attempt.id,
+                &attempt.name,
+                "Ask first",
+                attempt,
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(result, ApprovalResult::Deny { .. }));
+    }
+    assert!(authority.snapshot_at(&address).await.pending.is_empty());
 }
