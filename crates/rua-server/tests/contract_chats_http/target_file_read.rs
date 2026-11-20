@@ -118,6 +118,23 @@ async fn select_read(app: &TestApp, enabled: bool) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metadata_denies_names_protected_by_the_file_tool_before_any_file_is_opened() {
+    let f = Fixture::materialize(build_agent().await).await;
+    let parent = f.app.state.rua_root.join("test-only");
+    for (directory, expected) in [
+        ("public", Ok(())),
+        (".azure", Err(TargetReadRejection::Denied)),
+    ] {
+        let args =
+            json!({"device_id":f.device, "file_path":parent.join(directory).join("sample.txt")});
+        let request = f.request(&args);
+        assert_eq!(f.context.check_authority(&request).await, Ok(()));
+        assert_eq!(f.context.check_metadata(&request).await, expected);
+    }
+    assert!(!parent.exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn metadata_rejects_only_after_checking_the_replica_without_probing_the_file() {
     let f = Fixture::materialize(build_agent().await).await;
     let path = f.app.state.rua_root.join("metadata-only.txt");

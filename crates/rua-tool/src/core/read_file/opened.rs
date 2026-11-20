@@ -53,7 +53,7 @@ impl ReadFileTool {
         tokio::task::spawn_blocking(move || {
             let layout = RuntimeLayout::from_current_process(None);
             let workspace = WorkspaceFs::for_execution(&working_dir, layout.clone())?;
-            workspace.check_secret_dir(&public_path)?;
+            WorkspaceFs::check_secret_dir(&public_path)?;
             let resolved = workspace.resolve(&public_path)?;
             #[cfg(windows)]
             let drive_path = local_drive_path(&resolved)?;
@@ -96,7 +96,7 @@ impl ReadFileTool {
                 #[cfg(not(windows))]
                 backing_path.clone()
             };
-            workspace.check_secret_dir(&resolved_public_path)?;
+            WorkspaceFs::check_secret_dir(&resolved_public_path)?;
             Ok(OpenedRegularFile {
                 public_path,
                 resolved_public_path,

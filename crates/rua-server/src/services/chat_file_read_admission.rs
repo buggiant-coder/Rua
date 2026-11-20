@@ -100,6 +100,8 @@ impl TargetFileReadContext {
         let path = self
             .requested_path(request)
             .map_err(|_| TargetReadRejection::Denied)?;
+        rua_tool::fs::WorkspaceFs::check_secret_dir(Path::new(path))
+            .map_err(|_| TargetReadRejection::Denied)?;
         self.inspect_policy(request, &[path])
             .await
             .map(|_| ())

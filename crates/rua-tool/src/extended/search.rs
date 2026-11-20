@@ -57,20 +57,16 @@ fn result_limit_notice(tool: &str, max_results: usize, unit: &str, next_step: &s
 }
 
 #[cfg(feature = "search")]
-fn filter_search_entries(
-    walker: &mut ignore::WalkBuilder,
-    fs: &crate::fs::WorkspaceFs,
-) -> Arc<AtomicUsize> {
+fn filter_search_entries(walker: &mut ignore::WalkBuilder) -> Arc<AtomicUsize> {
     let omitted = Arc::new(AtomicUsize::new(0));
     let skipped = omitted.clone();
-    let fs = fs.clone();
     walker.filter_entry(move |entry| {
         let path = entry.path();
         if is_default_excluded(path) {
             return false;
         }
         // Tool arguments use UTF-8. A lossy filename can identify a different file.
-        if path.to_str().is_none() || fs.check_secret_dir(path).is_err() {
+        if path.to_str().is_none() || crate::fs::WorkspaceFs::check_secret_dir(path).is_err() {
             skipped.fetch_add(1, Ordering::Relaxed);
             return false;
         }
@@ -286,7 +282,7 @@ impl GrepSearchTool {
         let mut search_errors: Vec<String> = Vec::new();
         let mut search_error_count = 0usize;
 
-        let omitted = filter_search_entries(&mut walk_builder, &ctx.workspace_fs);
+        let omitted = filter_search_entries(&mut walk_builder);
         let walker = walk_builder.build();
         let mut remaining_skip = args.offset;
         let single_file_label = search_root.is_file().then(|| {
@@ -614,7 +610,7 @@ impl GlobSearchTool {
                 std::path::Path::new(&args.pattern).components().count(),
             ));
         }
-        let omitted = filter_search_entries(&mut builder, &ctx.workspace_fs);
+        let omitted = filter_search_entries(&mut builder);
         for entry in builder.build() {
             if ctx.is_cancelled() {
                 cancelled = true;

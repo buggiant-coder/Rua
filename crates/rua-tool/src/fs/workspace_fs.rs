@@ -119,7 +119,7 @@ impl WorkspaceFs {
         };
 
         if self.deny_secret_dirs {
-            self.check_secret_dir(&canonical)?;
+            Self::check_secret_dir(&canonical)?;
         }
 
         Ok(canonical)
@@ -150,7 +150,7 @@ impl WorkspaceFs {
         let target = canonical_parent.join(file_name);
 
         if self.deny_secret_dirs {
-            self.check_secret_dir(&target)?;
+            Self::check_secret_dir(&target)?;
         }
 
         Ok(target)
@@ -177,13 +177,14 @@ impl WorkspaceFs {
             normalize_path(&absolute)
         };
         if self.deny_secret_dirs {
-            self.check_secret_dir(&normalized)?;
+            Self::check_secret_dir(&normalized)?;
         }
 
         Ok(normalized)
     }
 
-    pub(crate) fn check_secret_dir(&self, path: &Path) -> Result<(), ToolError> {
+    /// Check protected directory names without resolving or opening the path.
+    pub fn check_secret_dir(path: &Path) -> Result<(), ToolError> {
         let resolved_secret_name = rua_config::dirs::resolve_secret_dir()
             .file_name()
             .map(|n| n.to_string_lossy().to_string());
