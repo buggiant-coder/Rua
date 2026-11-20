@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentStore } from "@/stores/agentStore";
+import { consoleApi } from "@/api/modules/console";
 import { devicesApi, type DeviceDto } from "@/api/modules/sync";
 import { saveDraftConversationAcp } from "../../conversationLifecycle";
 import { loadSubmitted, clearSubmitted, saveSubmitted } from "../../drafts";
@@ -812,6 +813,91 @@ describe("useConversationViewRuntime", () => {
       expect(result.current.error).toBeNull();
     },
   );
+
+  it.each([
+    {
+      status: 422,
+      detail:
+        "validation error: Chat configuration snapshot config-first is unavailable",
+      attempts: 2,
+    },
+    {
+      status: 422,
+      detail: "validation error: Invalid Chat configuration",
+      attempts: 1,
+    },
+    {
+      status: 503,
+      detail:
+        "validation error: Chat configuration snapshot config-first is unavailable",
+      attempts: 1,
+    },
+  ])(
+    "reports the real approval snapshot failure after $attempts attempt(s) for $status / $detail",
+    async ({ status, detail, attempts }) => {
+      const live = controlledSseResponse();
+      vi.stubGlobal(
+        "fetch",
+        routeFetch((url) => {
+          if (url.endsWith("/approvals/snapshot"))
+            return jsonResponse({ detail }, status);
+          if (url.endsWith("/console/live")) return live.response;
+        }),
+      );
+      consoleApiMock.getApprovalSnapshot.mockImplementation(
+        consoleApi.getApprovalSnapshot,
+      );
+      const { result } = renderHook(() =>
+        useConversationViewRuntime({
+          address: { chatId: "remote-approval" },
+          currentDeviceId: "linux",
+          authorityPlacementDeviceId: "phone",
+        }),
+      );
+      await waitFor(() => expect(result.current.error).toContain(detail), {
+        timeout: 3000,
+      });
+      expect(consoleApiMock.getApprovalSnapshot).toHaveBeenCalledTimes(
+        attempts,
+      );
+    },
+  );
+
+  it("clears a recovered approval snapshot error and keeps a history error", async () => {
+    const live = controlledSseResponse();
+    vi.stubGlobal("fetch", routeFetchWithLiveStreams(live.response));
+    const approval = deferred<never>();
+    consoleApiMock.getApprovalSnapshot.mockReturnValueOnce(approval.promise);
+    const { result } = renderHook(() =>
+      useConversationViewRuntime({ address: { chatId: "remote-approval" } }),
+    );
+    await waitFor(() => expect(result.current.history).not.toBeNull());
+    chatApiMock.getChat.mockRejectedValueOnce(
+      new Error("requested history page unavailable"),
+    );
+    await act(async () => {
+      await result.current.locateTurn("other-turn");
+    });
+    await act(async () => {
+      approval.reject(new Error("approval service offline"));
+    });
+    expect(result.current.error).toContain("approval service offline");
+    expect(result.current.error).toContain(
+      "requested history page unavailable",
+    );
+    await act(async () => {
+      live.send({
+        type: "tool_approval_request",
+        id: "approval-1",
+        call_id: "read-1",
+        tool_name: "read",
+      });
+    });
+    await waitFor(() =>
+      expect(consoleApiMock.getApprovalSnapshot).toHaveBeenCalledTimes(2),
+    );
+    expect(result.current.error).toBe("requested history page unavailable");
+  });
 
   it("still reports ACP permission failures when ACP is enabled", async () => {
     acpApiMock.getPermissionSnapshot.mockRejectedValueOnce(

@@ -7,6 +7,7 @@ import {
   type ApprovalStatus,
 } from "@/api/modules/console";
 import { conversationApi } from "@/api/modules/conversation";
+import { ApiRequestError } from "@/api/request";
 import { devicesApi } from "@/api/modules/sync";
 import { t } from "i18next";
 import type { ConversationAddress } from "../conversationAddress";
@@ -101,6 +102,7 @@ const RETAINED_COMPLETED_LIVE_RUN_LIMIT = INITIAL_CHAT_TURN_PAGE_SIZE;
 const STREAM_RENDER_INTERVAL_MS = 16;
 const CONVERSATION_LIVE_READ_IDLE_TIMEOUT_MS = 45_000;
 const CONVERSATION_LIVE_RECONNECT_DELAY_MS = 1_000;
+const APPROVAL_SNAPSHOT_RETRY_DELAY_MS = 1_000;
 
 type ActiveRegeneration = {
   turnId: string;
@@ -1364,6 +1366,9 @@ export function useConversationViewRuntime({
     useState<ContextCompactionStatus | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+  const approvalReadVersion = useRef(0);
+  const retryInitialApprovalRead = useRef<(() => void) | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [selectedVariantOverrides, setSelectedVariantOverrides] = useState<
     Record<string, string>
@@ -1691,16 +1696,35 @@ export function useConversationViewRuntime({
 
   const refreshApprovalSnapshot = useCallback(
     async (chatId: string, current: () => boolean) => {
+      const version = ++approvalReadVersion.current;
+      const isCurrentRead = () =>
+        version === approvalReadVersion.current &&
+        current() &&
+        isCurrentConversation();
       try {
         const nextApprovalSnapshot = await loadApprovalSnapshot(
           chatId,
           acpPermissionActive,
         );
-        if (!current()) return;
-        if (!isCurrentConversation()) return;
+        if (!isCurrentRead()) return;
+        retryInitialApprovalRead.current = null;
         setApprovalSnapshot(nextApprovalSnapshot);
+        setApprovalError(null);
       } catch (approvalErr) {
-        setError(
+        if (!isCurrentRead()) return;
+        if (
+          retryInitialApprovalRead.current &&
+          approvalErr instanceof ApiRequestError &&
+          approvalErr.status === 422 &&
+          /^validation error: Chat configuration snapshot \S+ is unavailable$/.test(
+            approvalErr.detail ?? "",
+          )
+        ) {
+          retryInitialApprovalRead.current();
+          return;
+        }
+        retryInitialApprovalRead.current = null;
+        setApprovalError(
           approvalErr instanceof Error
             ? approvalErr.message
             : String(approvalErr),
@@ -2626,28 +2650,27 @@ export function useConversationViewRuntime({
   ]);
 
   useEffect(() => {
+    setApprovalError(null);
     if (!conversationId || deferInitialAttach) return;
     let cancelled = false;
-    void loadApprovalSnapshot(conversationId, acpPermissionActive)
-      .then((nextApprovalSnapshot) => {
-        if (cancelled || !isCurrentConversation()) return;
-        setApprovalSnapshot(nextApprovalSnapshot);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err));
-        }
-      });
+    let retryTimer: number | undefined;
+    const current = () => !cancelled;
+    retryInitialApprovalRead.current = () => {
+      // Initial and Live reads share one retry while the configuration syncs.
+      if (retryTimer !== undefined) return;
+      retryTimer = window.setTimeout(() => {
+        if (!retryInitialApprovalRead.current) return;
+        retryInitialApprovalRead.current = null;
+        void refreshApprovalSnapshot(conversationId, current);
+      }, APPROVAL_SNAPSHOT_RETRY_DELAY_MS);
+    };
+    void refreshApprovalSnapshot(conversationId, current);
     return () => {
       cancelled = true;
+      retryInitialApprovalRead.current = null;
+      window.clearTimeout(retryTimer);
     };
-  }, [
-    conversationId,
-    acpPermissionActive,
-    reloadKey,
-    deferInitialAttach,
-    isCurrentConversation,
-  ]);
+  }, [conversationId, reloadKey, deferInitialAttach, refreshApprovalSnapshot]);
 
   useEffect(() => {
     clearCoveredCompletedStreamOverlay(history);
@@ -3211,6 +3234,7 @@ export function useConversationViewRuntime({
 
   const clearError = useCallback(() => {
     setError(null);
+    setApprovalError(null);
   }, []);
 
   const submitQueuedNow = useCallback(
@@ -3804,7 +3828,7 @@ export function useConversationViewRuntime({
         ? locatedHistory.has_more_before
         : history?.has_more_before,
     ),
-    error,
+    error: [error, approvalError].filter(Boolean).join("\n") || null,
     authorityPlacementDeviceId,
     authorityPlacementLocked,
     clearError,

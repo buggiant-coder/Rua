@@ -132,9 +132,11 @@ describe("request error path", () => {
         .mockResolvedValueOnce(response(400, { detail: "invalid provider" })),
     );
 
-    await expect(request("/models/missing/config")).rejects.toThrow(
-      'invalid provider - {"detail":"invalid provider"}',
-    );
+    await expect(request("/models/missing/config")).rejects.toMatchObject({
+      message: 'invalid provider - {"detail":"invalid provider"}',
+      detail: "invalid provider",
+      status: 400,
+    });
   });
 
   it("flattens FastAPI validation detail arrays", async () => {

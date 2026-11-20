@@ -1,5 +1,6 @@
 import { __resetConversationViewportForTests } from "../useConversationViewport";
 import { useState } from "react";
+import { consoleApi } from "@/api/modules/console";
 import type { ChatHistory } from "@/api/types";
 import {
   act,
@@ -2199,17 +2200,24 @@ describe("OwnedConversationSurface", () => {
     }
   });
 
-  it("refreshes the approval tray during reconnect without rendering approval messages as cards", async () => {
-    mockGetChat
-      .mockResolvedValueOnce({ status: "running", messages: [] })
-      .mockResolvedValue({
-        status: "idle",
-        messages: [],
-        model: configuredModel,
-      });
-    mockGetApprovalSnapshot
-      .mockResolvedValueOnce({ pending: [], resolved: [] })
-      .mockResolvedValue({
+  it.each([false, true])(
+    "shows the remote approval after an initial configuration snapshot 422 (Live arrives before configuration: %s)",
+    async (earlyEvent) => {
+      mockGetChat
+        .mockResolvedValueOnce({ status: "running", messages: [] })
+        .mockResolvedValue({
+          status: "idle",
+          messages: [],
+          model: configuredModel,
+        });
+      mockGetApprovalSnapshot.mockImplementationOnce(
+        consoleApi.getApprovalSnapshot,
+      );
+      if (earlyEvent)
+        mockGetApprovalSnapshot.mockImplementationOnce(
+          consoleApi.getApprovalSnapshot,
+        );
+      mockGetApprovalSnapshot.mockResolvedValue({
         pending: [
           {
             id: "approval-1",
@@ -2233,48 +2241,68 @@ describe("OwnedConversationSurface", () => {
         ],
         resolved: [],
       });
-    vi.stubGlobal(
-      "fetch",
-      routeFetch((url) =>
-        url.includes("/console/live")
-          ? sseResponse([
-              {
-                type: "tool_approval_request",
-                id: "approval-1",
-                request_id: "approval-1",
-                call_id: "call-1",
-                tool_name: "Bash",
-                prompt: "Tool 'Bash' requires approval (Balanced)",
-              },
-            ])
-          : undefined,
-      ),
-    );
+      const detail =
+        "validation error: Chat configuration snapshot hook-config-first is unavailable";
+      const live = trackedSseResponse();
+      vi.stubGlobal(
+        "fetch",
+        routeFetch((url) => {
+          if (url.endsWith("/approvals/snapshot"))
+            return jsonResponse({ detail }, 422);
+          if (url.endsWith("/console/live")) return live.response;
+        }),
+      );
 
-    const { container } = render(
-      <MemoryRouter>
-        <OwnedConversationSurface
-          address={{ chatId: "chat-1" }}
-          executionAgentId="default"
-          chatModel={configuredModel}
-        />
-      </MemoryRouter>,
-    );
+      const { container } = render(
+        <MemoryRouter>
+          <OwnedConversationSurface
+            address={{ chatId: "chat-1" }}
+            executionAgentId="default"
+            chatModel={configuredModel}
+            currentDeviceId="linux"
+            authorityPlacementDeviceId="phone"
+          />
+        </MemoryRouter>,
+      );
 
-    const tray = await screen.findByLabelText("Approval queue");
-    expect(within(tray).getByText("Bash")).toBeInTheDocument();
-    expect(
-      within(tray).getByText("du -sh /Users/example/projects/rua"),
-    ).toBeInTheDocument();
-    const messageList = container.querySelector(".rua-chat-message-list");
-    if (messageList) {
+      await waitFor(() =>
+        expect(mockGetApprovalSnapshot).toHaveBeenCalledTimes(1),
+      );
+      await act(async () => {});
+      expect(screen.queryByRole("alert")).toBeNull();
+      await act(async () => {
+        live.send({
+          type: "tool_approval_request",
+          id: "approval-1",
+          request_id: "approval-1",
+          call_id: "call-1",
+          tool_name: "Bash",
+        });
+      });
+      expect(screen.queryByRole("alert")).toBeNull();
+      const tray = await screen.findByLabelText(
+        "Approval queue",
+        {},
+        { timeout: 3000 },
+      );
+      expect(mockGetApprovalSnapshot.mock.calls).toEqual(
+        Array.from({ length: earlyEvent ? 3 : 2 }, () => ["chat-1"]),
+      );
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(within(tray).getByText("Bash")).toBeInTheDocument();
       expect(
-        within(messageList as HTMLElement).queryByText(
-          "Tool 'Bash' requires approval (Balanced)",
-        ),
-      ).toBeNull();
-    }
-  });
+        within(tray).getByText("du -sh /Users/example/projects/rua"),
+      ).toBeInTheDocument();
+      const messageList = container.querySelector(".rua-chat-message-list");
+      if (messageList) {
+        expect(
+          within(messageList as HTMLElement).queryByText(
+            "Tool 'Bash' requires approval (Balanced)",
+          ),
+        ).toBeNull();
+      }
+    },
+  );
 
   it("shows an empty-output fallback when the stream completes without assistant text", async () => {
     mockGetChat

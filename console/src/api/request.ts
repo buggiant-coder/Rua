@@ -2,6 +2,17 @@ import { consoleFetch } from "./consoleTransport";
 import { getApiUrl, clearAuthToken } from "./config";
 import { buildAuthHeaders } from "./authHeaders";
 
+export class ApiRequestError extends Error {
+  readonly status: number;
+  readonly detail: string | null;
+
+  constructor(message: string, status: number, detail: string | null) {
+    super(message);
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 function getErrorMessageFromBody(
   text: string,
   contentType: string,
@@ -105,7 +116,7 @@ export async function request<T = unknown>(
         ? `${errorMessage} - ${text}`
         : `Request failed: ${response.status} ${response.statusText}`;
 
-      throw new Error(finalMessage);
+      throw new ApiRequestError(finalMessage, response.status, errorMessage);
     }
 
     const text = await response.text().catch(() => "");
