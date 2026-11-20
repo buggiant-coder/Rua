@@ -598,15 +598,61 @@ async fn protected_tree_is_excluded_and_reported_as_missing_coverage() {
     std::fs::create_dir(root.path().join(".secret")).unwrap();
     std::fs::write(root.path().join(".secret/restricted.txt"), "private").unwrap();
     std::fs::write(root.path().join("public.txt"), "visible").unwrap();
+    std::fs::write(root.path().join("second.txt"), "visible").unwrap();
+    let ctx = make_ctx(&root);
     let result = GlobSearchTool
         .call(
-            json!({"pattern":"**/*.txt","include_hidden":true}),
-            make_ctx(&root),
+            json!({"pattern":"**/*.txt","include_hidden":true,"max_results":1}),
+            ctx.clone(),
         )
         .await
         .unwrap();
     assert!(result.is_error);
     assert!(result.text_content().contains("public.txt"));
     assert!(!result.text_content().contains("restricted.txt"));
+    assert_eq!(result.metadata["omitted_entries"], 1);
     assert_eq!(result.metadata["file_location"]["coverage"], "partial");
+    let last = GlobSearchTool
+        .call(result.metadata["continuation"].clone(), ctx)
+        .await
+        .unwrap();
+    assert!(last.is_error);
+    assert!(last.text_content().contains("second.txt"));
+    assert!(!last.text_content().contains("public.txt"));
+    assert!(!last.metadata.contains_key("continuation"));
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[tokio::test]
+async fn search_pages_preserve_partial_coverage_for_unrepresentable_paths() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let invalid = std::ffi::OsStr::from_bytes(b"a\xff.txt");
+    std::fs::write(root.path().join(invalid), "hit ambiguous\n").unwrap();
+    std::fs::write(root.path().join("a�.txt"), "hit first\n").unwrap();
+    std::fs::write(root.path().join("z.txt"), "hit last\n").unwrap();
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("desktop".into());
+    let tools: [(&dyn Tool, &str); 2] = [(&GrepSearchTool, "hit"), (&GlobSearchTool, "*.txt")];
+    for (tool, pattern) in tools {
+        let page = tool
+            .call(json!({"pattern":pattern, "max_results":1}), ctx.clone())
+            .await
+            .unwrap();
+        assert!(page.is_error, "{}: {}", tool.name(), text(&page));
+        assert_eq!(page.metadata["file_location"]["coverage"], "partial");
+        assert_eq!(page.metadata["omitted_entries"], 1);
+        assert!(text(&page).contains("a�.txt"));
+        assert!(!text(&page).contains("hit ambiguous"));
+        let next = &page.metadata["continuation"];
+        assert_eq!(next["offset"], 1);
+        assert_eq!(next["device_id"], "desktop");
+        let last = tool.call(next.clone(), ctx.clone()).await.unwrap();
+        assert!(last.is_error);
+        assert_eq!(last.metadata["omitted_entries"], 1);
+        assert!(text(&last).contains("z.txt"));
+        assert!(!text(&last).contains("a�.txt"));
+        assert!(!last.metadata.contains_key("continuation"));
+    }
 }

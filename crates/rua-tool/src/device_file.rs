@@ -135,7 +135,11 @@ pub(crate) async fn call(
         token_estimate_divisor: ctx.token_estimate_divisor,
     };
     let mut result = match tool {
-        "read" => crate::ReadFileTool.read_from(args, &exec_ctx, media).await,
+        "read" => {
+            crate::ReadFileTool
+                .read_from(args, &exec_ctx, media, device_id.is_none())
+                .await
+        }
         "edit" => {
             crate::EditFileTool
                 .execute_with_context(args, &exec_ctx)

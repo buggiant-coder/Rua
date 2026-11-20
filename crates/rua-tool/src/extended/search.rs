@@ -1,5 +1,10 @@
 use async_trait::async_trait;
 use serde::Deserialize;
+#[cfg(feature = "search")]
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 use rua_contract::Tool;
 use rua_core::tool::{ToolContext, ToolResult, ToolSchema};
@@ -49,6 +54,50 @@ fn result_limit_notice(tool: &str, max_results: usize, unit: &str, next_step: &s
         "[result_limit tool=\"{tool}\"] max_results={max_results} reached; returned the first \
          {max_results} {unit}. To see more, {next_step}.\n\n"
     )
+}
+
+#[cfg(feature = "search")]
+fn filter_search_entries(
+    walker: &mut ignore::WalkBuilder,
+    fs: &crate::fs::WorkspaceFs,
+) -> Arc<AtomicUsize> {
+    let omitted = Arc::new(AtomicUsize::new(0));
+    let skipped = omitted.clone();
+    let fs = fs.clone();
+    walker.filter_entry(move |entry| {
+        let path = entry.path();
+        if is_default_excluded(path) {
+            return false;
+        }
+        // Tool arguments use UTF-8. A lossy filename can identify a different file.
+        if path.to_str().is_none() || fs.check_secret_dir(path).is_err() {
+            skipped.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        true
+    });
+    omitted
+}
+
+#[cfg(feature = "search")]
+fn search_result(trace_id: &str, output: String, omitted: usize, details: &[String]) -> ToolResult {
+    if omitted == 0 {
+        return ToolResult::text(trace_id, output);
+    }
+    let mut body = format!("Search incomplete: failed to inspect {omitted} path(s).");
+    for detail in details {
+        body.push_str("\n- ");
+        body.push_str(detail);
+    }
+    if !output.is_empty() {
+        body.push_str("\n\n[partial results]\n");
+        body.push_str(&output);
+    }
+    let mut result = ToolResult::error(trace_id, body);
+    result
+        .metadata
+        .insert("omitted_entries".into(), omitted.into());
+    result
 }
 
 #[derive(Debug, Deserialize)]
@@ -237,12 +286,18 @@ impl GrepSearchTool {
         let mut search_errors: Vec<String> = Vec::new();
         let mut search_error_count = 0usize;
 
-        let fs = ctx.workspace_fs.clone();
-        walk_builder.filter_entry(move |entry| {
-            !is_default_excluded(entry.path()) && fs.check_secret_dir(entry.path()).is_ok()
-        });
+        let omitted = filter_search_entries(&mut walk_builder, &ctx.workspace_fs);
         let walker = walk_builder.build();
         let mut remaining_skip = args.offset;
+        let single_file_label = search_root.is_file().then(|| {
+            search_root
+                .strip_prefix(ctx.workspace_fs.root())
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(|_| {
+                    ctx.workspace_fs
+                        .public_path(std::path::Path::new(args.path.as_deref().unwrap_or("")))
+                })
+        });
 
         for entry in walker {
             if ctx.is_cancelled() {
@@ -281,7 +336,10 @@ impl GrepSearchTool {
                 }
             }
 
-            let display_path = display_path_for(path, &search_root, ctx.workspace_fs.root());
+            let display_path = single_file_label
+                .as_deref()
+                .unwrap_or_else(|| path.strip_prefix(&search_root).expect("walked search root"))
+                .to_string_lossy();
 
             if let Some(ref includes) = resolved_include {
                 if !is_matched_by_globs(&display_path, includes) {
@@ -339,26 +397,7 @@ impl GrepSearchTool {
             return Ok(ToolResult::error(&ctx.trace_id, body));
         }
 
-        if search_error_count > 0 {
-            let mut body =
-                format!("Search incomplete: failed to inspect {search_error_count} path(s).");
-            for error in &search_errors {
-                body.push_str("\n- ");
-                body.push_str(error);
-            }
-            if search_error_count > search_errors.len() {
-                body.push_str(&format!(
-                    "\n- ... and {} more error(s)",
-                    search_error_count - search_errors.len()
-                ));
-            }
-            if !output_lines.is_empty() {
-                body.push_str("\n\n[partial results]\n");
-                body.push_str(&output_lines.join("\n"));
-            }
-            return Ok(ToolResult::error(&ctx.trace_id, body));
-        }
-
+        search_error_count += omitted.load(Ordering::Relaxed);
         let truncation_meta = if output_size_truncated {
             let shown = output_lines.len() as u64;
             let hint = format!(
@@ -387,13 +426,13 @@ impl GrepSearchTool {
                 notice.push_str(&output_lines.join("\n"));
             }
             notice
-        } else if output_lines.is_empty() {
+        } else if output_lines.is_empty() && search_error_count == 0 {
             format!("No matches found for pattern: {}", args.pattern)
         } else {
             output_lines.join("\n")
         };
 
-        let mut result = ToolResult::text(&ctx.trace_id, output);
+        let mut result = search_result(&ctx.trace_id, output, search_error_count, &search_errors);
         result.truncation = truncation_meta;
         if result_limit_reached || output_size_truncated {
             result.metadata.insert("more_results".into(), true.into());
@@ -575,25 +614,14 @@ impl GlobSearchTool {
                 std::path::Path::new(&args.pattern).components().count(),
             ));
         }
-        let fs = ctx.workspace_fs.clone();
-        let denied = std::sync::Arc::new(std::sync::atomic::AtomicUsize::default());
-        let skipped = denied.clone();
-        builder.filter_entry(move |entry| {
-            if is_default_excluded(entry.path()) {
-                return false;
-            }
-            if fs.check_secret_dir(entry.path()).is_err() {
-                skipped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                return false;
-            }
-            true
-        });
-        for entry in builder.build().skip(1) {
+        let omitted = filter_search_entries(&mut builder, &ctx.workspace_fs);
+        for entry in builder.build() {
             if ctx.is_cancelled() {
                 cancelled = true;
                 break;
             }
             let entry = match entry {
+                Ok(entry) if entry.depth() == 0 => continue,
                 Ok(entry) => entry,
                 Err(_) => {
                     failed += 1;
@@ -630,16 +658,7 @@ impl GlobSearchTool {
         if ctx.is_cancelled() {
             cancelled = true;
         }
-        failed += denied.load(std::sync::atomic::Ordering::Relaxed);
-        if failed > 0 {
-            return Ok(ToolResult::error(
-                &ctx.trace_id,
-                format!(
-                    "Search incomplete: {failed} inaccessible paths.\n{}",
-                    results.join("\n")
-                ),
-            ));
-        }
+        failed += omitted.load(Ordering::Relaxed);
         results.sort();
 
         if cancelled {
@@ -667,13 +686,13 @@ impl GlobSearchTool {
                 notice.push_str(&results.join("\n"));
             }
             notice
-        } else if results.is_empty() {
+        } else if results.is_empty() && failed == 0 {
             format!("No files matched pattern: {}", args.pattern)
         } else {
             results.join("\n")
         };
 
-        let mut result = ToolResult::text(&ctx.trace_id, output);
+        let mut result = search_result(&ctx.trace_id, output, failed, &[]);
         if truncated {
             result.metadata.insert("more_results".into(), true.into());
             let next = args.offset.saturating_add(results.len());
@@ -800,25 +819,6 @@ fn glob_matches(path: &str, pattern: &str) -> bool {
         let _ = (path, pattern);
         false
     }
-}
-
-fn display_path_for(
-    path: &std::path::Path,
-    search_root: &std::path::Path,
-    workspace_root: &std::path::Path,
-) -> String {
-    if search_root.is_file() {
-        return path
-            .strip_prefix(workspace_root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
-    }
-
-    path.strip_prefix(search_root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .to_string()
 }
 
 #[cfg(feature = "search")]

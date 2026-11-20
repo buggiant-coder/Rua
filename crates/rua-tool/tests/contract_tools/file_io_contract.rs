@@ -616,6 +616,15 @@ async fn directory_pages_keep_the_device_and_skip_previously_returned_names() {
     for name in ["z.jpg", "a.jpg", "m.jpg"] {
         std::fs::write(directory.join(name), []).unwrap();
     }
+    let legacy = ReadFileTool
+        .call(json!({"file_path":"photos","limit":2}), make_ctx(&root))
+        .await
+        .unwrap();
+    assert_eq!(
+        legacy.text_content().matches("Continue with read(").count(),
+        1
+    );
+    assert!(legacy.text_content().contains(r#""file_path":"photos""#));
     let mut ctx = make_ctx(&root);
     ctx.local_device_id = Some("desktop".into());
     ctx.metadata
@@ -631,6 +640,15 @@ async fn directory_pages_keep_the_device_and_skip_previously_returned_names() {
     assert_eq!(next["after"], "m.jpg");
     assert_eq!(next["device_id"], "desktop");
     assert_eq!(next["file_path"], json!(directory.canonicalize().unwrap()));
+    assert_eq!(
+        page.text_content().matches("Continue with read(").count(),
+        1,
+        "{}",
+        page.text_content()
+    );
+    assert!(page
+        .text_content()
+        .contains(&format!("Continue with read({next}).")));
     let tail = ReadFileTool.call(next.clone(), ctx).await.unwrap();
     assert!(tail.text_content().starts_with("z.jpg\n"));
     assert_eq!(
@@ -695,6 +713,74 @@ async fn huge_text_and_binary_inputs_are_bounded_before_formatting() {
         .await
         .unwrap();
     assert_eq!(tail.text_content(), "     2 | tail\n");
+}
+
+#[cfg(all(unix, feature = "search"))]
+#[tokio::test]
+async fn android_single_file_grep_returns_only_the_public_guest_path() {
+    use rua_tool::extended::search::GrepSearchTool;
+    use std::path::PathBuf;
+
+    const ENV: &str = "RUA_TEST_SINGLE_FILE_GREP_ROOT";
+    const TEST: &str =
+        "file_io_contract::android_single_file_grep_returns_only_the_public_guest_path";
+    let Some(root) = std::env::var_os(ENV).map(PathBuf::from) else {
+        // Run in a child so the mobile profile cannot affect other tests in this binary.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env(ENV, &root)
+            .env("RUA_HOST_PROFILE", "mobile-apk")
+            .env("RUA_ANDROID_NATIVE_DIR", root.join("native"))
+            .env("RUA_ANDROID_DATA_DIR", root.join("data"))
+            .env("HOME", root.join("home"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    let backing = root.join("data/runtime/debian");
+    let cwd = root.join("home/workspace");
+    for directory in [
+        root.join("native"),
+        backing.join("usr/bin"),
+        backing.join("etc"),
+        cwd.clone(),
+    ] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    std::fs::write(root.join("native/libproot.so"), []).unwrap();
+    std::fs::write(backing.join("usr/bin/env"), []).unwrap();
+    std::fs::write(backing.join("etc/release-marker"), "guest hit\n").unwrap();
+
+    let public_file = "/etc/release-marker";
+    let result = GrepSearchTool
+        .call(
+            json!({"pattern":"guest hit","path":public_file,"device_id":"phone"}),
+            ToolContext {
+                tool_result_store_dir: Some(root.join("tool-results")),
+                working_dir: cwd,
+                local_device_id: Some("phone".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!result.is_error, "{}", result.text_content());
+    assert_eq!(result.metadata["file_location"]["device_id"], "phone");
+    assert_eq!(result.metadata["file_location"]["path"], public_file);
+    let body = result.text_content();
+    assert!(!body.contains(backing.to_str().unwrap()), "{body}");
+    assert!(
+        body.contains("/etc/release-marker:1:") && body.contains("guest hit"),
+        "{body}"
+    );
 }
 
 #[cfg(unix)]

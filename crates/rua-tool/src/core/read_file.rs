@@ -86,7 +86,7 @@ impl ReadFileTool {
         args: serde_json::Value,
         ctx: &ToolExecutionContext,
     ) -> std::result::Result<ToolResult, ToolError> {
-        self.read_from(args, ctx, None).await
+        self.read_from(args, ctx, None, true).await
     }
 
     pub(crate) async fn read_from(
@@ -94,6 +94,7 @@ impl ReadFileTool {
         args: serde_json::Value,
         ctx: &ToolExecutionContext,
         media: Option<rua_core::ResolvedChatMedia>,
+        emit_directory_hint: bool,
     ) -> std::result::Result<ToolResult, ToolError> {
         let file_path = args["file_path"]
             .as_str()
@@ -176,7 +177,8 @@ impl ReadFileTool {
         };
 
         if metadata.is_dir() {
-            return directory_page(&args, &resolved, file_path, ctx, limit).await;
+            return directory_page(&args, &resolved, file_path, ctx, limit, emit_directory_hint)
+                .await;
         }
         if !metadata.is_file() {
             return Ok(ToolResult::error(
@@ -386,6 +388,7 @@ async fn directory_page(
     path: &str,
     ctx: &ToolExecutionContext,
     limit: Option<usize>,
+    emit_hint: bool,
 ) -> std::result::Result<ToolResult, ToolError> {
     if args.get("byte_offset").is_some()
         || args.get("start_line").is_some()
@@ -458,9 +461,11 @@ async fn directory_page(
         .insert("directory_entries".into(), entries.into());
     if has_more {
         let next = serde_json::json!({"file_path":path,"limit":limit,"after":names.last()});
-        result.content.push(agent_types::ContentPart::Text {
-            text: format!("\nContinue with read({next})."),
-        });
+        if emit_hint {
+            result.content.push(agent_types::ContentPart::Text {
+                text: format!("\nContinue with read({next})."),
+            });
+        }
         result.metadata.insert("continuation".into(), next);
     }
     if omitted > 0 {
