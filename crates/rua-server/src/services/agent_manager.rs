@@ -271,12 +271,13 @@ impl AgentManager {
             .map_err(|error| RuaError::Config {
                 message: format!("Invalid Agent reference '{id}': {error}"),
             })?;
-        let path = PathBuf::from(&profile_ref.workspace_dir).join("agent.json");
+        let workspace = rua_config::dirs::shellexpand_path(&profile_ref.workspace_dir);
+        let path = workspace.join("agent.json");
         let agent: rua_config::AgentProfileConfig =
             read_json_file(&path)?.ok_or_else(|| RuaError::Config {
                 message: format!("Agent '{id}' configuration is missing: {}", path.display()),
             })?;
-        if agent.id != id || agent.workspace_dir != profile_ref.workspace_dir {
+        if agent.id != id || rua_config::dirs::shellexpand_path(&agent.workspace_dir) != workspace {
             return Err(RuaError::Config { message: format!("Agent '{id}' configuration does not match its registered identity or workspace") });
         }
         Ok(Some(agent))
@@ -516,17 +517,12 @@ impl AgentManager {
         }
 
         let workspace_dir_str = spec.workspace_dir.unwrap_or_else(|| {
-            let data_str = self.data_dir.to_string_lossy();
-            let compact = dirs::home_dir()
-                .filter(|h| data_str.starts_with(&*h.to_string_lossy()))
-                .map(|h| {
-                    format!(
-                        "~{}/workspaces/{id}",
-                        &data_str[h.to_string_lossy().len()..]
-                    )
-                })
-                .unwrap_or_else(|| format!("{data_str}/workspaces/{id}"));
-            compact
+            ws_dir
+                .strip_prefix(rua_config::dirs::home_dir())
+                .map(|relative| PathBuf::from("~").join(relative))
+                .unwrap_or_else(|_| ws_dir.clone())
+                .to_string_lossy()
+                .into_owned()
         });
 
         if !prompt_files.is_empty() {

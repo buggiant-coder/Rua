@@ -87,6 +87,46 @@ fn without_ids(ids: &[String], excluded: &[&str]) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_created_under_home_reopens_with_its_saved_approval_mode() {
+    use rua_server::{router, AppState, ServerProfile};
+
+    let root = tempfile::tempdir_in(rua_config::dirs::home_dir()).unwrap();
+    let data = root.path().join("rua");
+    let id = "home-reader";
+    let workspace = data.join("workspaces").join(id);
+    let mode_path = format!("/api/agents/{id}/config/security/approval-mode");
+    {
+        let state = AppState::from_tempdir(data.clone(), ServerProfile::Test);
+        let app = router::build_app(state, None);
+        let created = create_agent(&app, id, "Home reader").await;
+        let registered = created["workspace_dir"].as_str().unwrap();
+        assert_eq!(rua_config::dirs::shellexpand_path(registered), workspace);
+        let mode = request(
+            &app,
+            Method::PUT,
+            &mode_path,
+            Some(json!({"approval_mode":"ask_first"})),
+        )
+        .await;
+        assert_eq!(mode.status(), StatusCode::OK);
+    }
+
+    let state = AppState::from_tempdir(data.clone(), ServerProfile::Test);
+    let app = router::build_app(state.clone(), None);
+    let resp = request(&app, Method::GET, &format!("/api/agents/{id}"), None).await;
+    let status = resp.status();
+    let detail = read_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(detail["id"], id);
+    assert_eq!(rua_config::load_agent_config(id, &data).unwrap().id, id);
+    let runtime = state.registry.get_or_create(id).await.unwrap();
+    assert_eq!(runtime.workspace_dir(), workspace);
+    let mode = request(&app, Method::GET, &mode_path, None).await;
+    assert_eq!(mode.status(), StatusCode::OK);
+    assert_eq!(read_json(mode).await["approval_mode"], "ask_first");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_create_get_delete_matches_qwenpaw_contract() {
     let app = build_app();
     let agent_id = "integ_agents_01";

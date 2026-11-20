@@ -140,6 +140,41 @@ async fn unregistered_workspace_is_not_discovered() {
 }
 
 #[tokio::test]
+async fn home_relative_registration_resolves_its_custom_workspace() {
+    let home = rua_config::dirs::home_dir();
+    let tmp = tempfile::tempdir_in(&home).unwrap();
+    let custom = tmp.path().join("selected-workspace");
+    let registered = std::path::Path::new("~").join(custom.strip_prefix(&home).unwrap());
+    write_config_json(&tmp, json!({"qa":{"id":"qa","workspace_dir":registered}}));
+    std::fs::create_dir(&custom).unwrap();
+    rua_config::atomic_write_json(
+        &custom.join("agent.json"),
+        &json!({"id":"qa","name":"Selected","workspace_dir":custom}),
+    )
+    .unwrap();
+    seed_agent_json(
+        &tmp,
+        "qa",
+        json!({"id":"qa","name":"Decoy","workspace_dir":custom}),
+    );
+
+    let manager = build_manager(&tmp);
+    assert_eq!(
+        manager.get_agent("qa").await.unwrap().unwrap().name,
+        "Selected"
+    );
+    assert_eq!(
+        rua_config::load_agent_config("qa", tmp.path())
+            .unwrap()
+            .name,
+        "Selected"
+    );
+    std::fs::remove_file(custom.join("agent.json")).unwrap();
+    assert!(manager.get_agent("qa").await.is_err());
+    assert!(rua_config::load_agent_config("qa", tmp.path()).is_err());
+}
+
+#[tokio::test]
 async fn missing_root_configuration_is_not_reconstructed_from_workspace() {
     let tmp = TempDir::new().unwrap();
     seed_agent_json(

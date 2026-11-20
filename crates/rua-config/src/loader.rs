@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::migration::atomic::atomic_write;
 use crate::types::RootConfig;
@@ -42,7 +42,8 @@ pub fn load_agent_config(
     })?;
     let reference: crate::types::AgentProfileRef =
         serde_json::from_value(value.clone()).map_err(std::io::Error::other)?;
-    let path = PathBuf::from(&reference.workspace_dir).join("agent.json");
+    let workspace = crate::dirs::shellexpand_path(&reference.workspace_dir);
+    let path = workspace.join("agent.json");
     let bytes = fs::read(&path).map_err(|error| {
         std::io::Error::new(
             error.kind(),
@@ -56,7 +57,8 @@ pub fn load_agent_config(
                 format!("parse Agent configuration {}: {error}", path.display()),
             )
         })?;
-    if profile.id != agent_id || profile.workspace_dir != reference.workspace_dir {
+    if profile.id != agent_id || crate::dirs::shellexpand_path(&profile.workspace_dir) != workspace
+    {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("Agent '{agent_id}' identity or workspace differs from its registration"),
