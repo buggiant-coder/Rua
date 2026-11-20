@@ -1,7 +1,6 @@
 use clap::Parser;
 use rua_cli::project::{
-    build_project_chat_request, project_chat_endpoint, project_chat_stop_endpoint,
-    project_chat_stream_endpoint, project_chats_endpoint,
+    build_project_chat_request, project_chat_history_endpoint, project_chats_endpoint,
 };
 use rua_cli::{Cli, Commands};
 use serde_json::json;
@@ -43,22 +42,18 @@ fn project_chat_command_series_is_registered() {
 }
 
 #[test]
-fn project_chat_endpoints_are_project_scoped_and_encoded() {
+fn project_is_a_list_filter_and_history_uses_an_encoded_chat_id() {
     assert_eq!(
         project_chats_endpoint("project/one", 20, 10, Some("fix race")),
-        "/api/projects/project%2Fone/chats?offset=20&limit=10&search=fix+race"
+        "/api/chats?project_id=project%2Fone&offset=20&limit=10&search=fix+race"
     );
     assert_eq!(
-        project_chat_endpoint("project/one", "chat/one"),
-        "/api/projects/project%2Fone/chats/chat%2Fone"
+        project_chat_history_endpoint("existing", None, None),
+        "/api/chats/existing"
     );
     assert_eq!(
-        project_chat_stream_endpoint("project/one", "chat/one"),
-        "/api/projects/project%2Fone/chats/chat%2Fone/console/chat"
-    );
-    assert_eq!(
-        project_chat_stop_endpoint("project/one", "chat/one"),
-        "/api/projects/project%2Fone/chats/chat%2Fone/console/stop"
+        project_chat_history_endpoint("chat/one", Some(10), Some(42)),
+        "/api/chats/chat%2Fone?turn_limit=10&before_turn_ordinal=42"
     );
 }
 
@@ -67,6 +62,7 @@ fn project_chat_request_uses_chat_identity_and_execution_agent() {
     let request = build_project_chat_request(
         "inspect this repository",
         "code",
+        "photos",
         Some("00000000-0000-4000-8000-000000000403".into()),
         Some("gpt-5"),
         Some(rua_core::AgentCollaborationMode::Execute),
@@ -77,6 +73,7 @@ fn project_chat_request_uses_chat_identity_and_execution_agent() {
         request.body,
         json!({
             "agent_id": "code",
+            "project_id": "photos",
             "chat_id": "00000000-0000-4000-8000-000000000403",
             "message": "inspect this repository",
             "model": "gpt-5",
@@ -87,7 +84,7 @@ fn project_chat_request_uses_chat_identity_and_execution_agent() {
 
 #[test]
 fn project_chat_request_generates_uuid_when_chat_id_is_omitted() {
-    let request = build_project_chat_request("hello", "default", None, None, None);
+    let request = build_project_chat_request("hello", "default", "photos", None, None, None);
 
     assert!(uuid::Uuid::parse_str(&request.chat_id).is_ok());
     assert_eq!(request.body["chat_id"], request.chat_id);

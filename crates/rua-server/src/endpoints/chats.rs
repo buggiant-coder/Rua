@@ -542,6 +542,25 @@ pub(crate) async fn dispatch_agent_chat_control(
     chat_id: &str,
     action: ConversationControlDeviceAction,
 ) -> Result<ConversationControlDeviceResponse, ApiError> {
+    dispatch_saved_chat_control(
+        &state.conversation_input_intake,
+        device_id_from_sync_device(&state.sync_device),
+        agent_id,
+        ws_dir,
+        chat_id,
+        action,
+    )
+    .await
+}
+
+pub(crate) async fn dispatch_saved_chat_control(
+    intake: &crate::services::conversation_input_intake::ConversationInputIntake,
+    source_device_id: Option<String>,
+    agent_id: &str,
+    ws_dir: &Path,
+    chat_id: &str,
+    action: ConversationControlDeviceAction,
+) -> Result<ConversationControlDeviceResponse, ApiError> {
     let placement =
         crate::services::conversation_authority_target::load_optional_chat_authority_placement(
             ws_dir, chat_id,
@@ -553,10 +572,10 @@ pub(crate) async fn dispatch_agent_chat_control(
                 "conversation authority placement not found for Chat '{chat_id}'"
             ))
         })?;
-    let source_device_id = device_id_from_sync_device(&state.sync_device)
+    let source_device_id = source_device_id
         .ok_or_else(|| ApiError::Unavailable("local Device identity is unavailable".to_string()))?;
     dispatch_conversation_control(
-        &state.conversation_input_intake,
+        intake,
         ConversationControlDeviceCommand {
             command_id: format!("chat-running-config-{}", uuid::Uuid::new_v4()),
             agent_id: agent_id.to_string(),
@@ -708,6 +727,11 @@ async fn get_chat_metadata_agent(
     State(state): State<AppState>,
     AxumPath(chat_id): AxumPath<String>,
 ) -> Response {
+    if let Err(error) =
+        crate::services::chat_context::ensure_chat_not_deleted(&state.rua_root, &chat_id)
+    {
+        return error.into_response();
+    }
     get_chat_metadata_core(state.chat_workspace().as_path(), &chat_id).await
 }
 
@@ -716,6 +740,11 @@ async fn get_chat_agent(
     AxumPath(chat_id): AxumPath<String>,
     Query(params): Query<ChatHistoryParams>,
 ) -> Response {
+    if let Err(error) =
+        crate::services::chat_context::ensure_chat_not_deleted(&state.rua_root, &chat_id)
+    {
+        return error.into_response();
+    }
     if let Err(error) = crate::services::console_chat::resolve_chat_id(&chat_id) {
         return ApiError::BadRequest(error).into_response();
     }
@@ -1009,8 +1038,11 @@ async fn delete_chat_agent(
     AxumPath(chat_id): AxumPath<String>,
     query: Query<super::projects::ProjectChatDeleteQuery>,
 ) -> Response {
+    if let Err(error) = crate::services::console_chat::resolve_chat_id(&chat_id) {
+        return ApiError::BadRequest(error).into_response();
+    }
     let context =
-        match crate::services::chat_context::load_chat_context(&state.rua_root, &chat_id).await {
+        match crate::services::chat_context::read_chat_header(&state.rua_root, &chat_id).await {
             Ok(Some(context)) => context,
             Ok(None) => {
                 if let Err(error) = clean_deleted_session(&state, &chat_id).await {
@@ -1424,13 +1456,14 @@ async fn populate_collaboration_source_availability(
         let Some(collaboration) = chat.collaboration.as_mut() else {
             continue;
         };
-        let scope = rua_core::ChatStore::resolve(rua_root, collaboration.source.clone());
         collaboration.source_available = Some(
-            WorkspaceSessionStore::new(scope.root())
-                .load_chat_header(collaboration.source.chat_id().as_str())
-                .await
-                .map_err(|error| error.to_string())?
-                .is_some(),
+            crate::services::chat_context::load_live_chat_header(
+                rua_root,
+                collaboration.source.chat_id().as_str(),
+            )
+            .await
+            .map_err(|error| error.to_string())?
+            .is_some(),
         );
     }
     Ok(())
@@ -1851,15 +1884,15 @@ pub(crate) async fn get_chat_core(
     if let Some(mut collaboration) =
         collaboration_from_meta(&serde_json::Value::Object(header.extra.clone()))
     {
-        let source_scope =
-            rua_core::ChatStore::resolve(&state.rua_root, collaboration.source.clone());
         collaboration.source_available = Some(
-            match WorkspaceSessionStore::new(source_scope.root())
-                .load_chat_header(collaboration.source.chat_id().as_str())
-                .await
+            match crate::services::chat_context::load_live_chat_header(
+                &state.rua_root,
+                collaboration.source.chat_id().as_str(),
+            )
+            .await
             {
                 Ok(header) => header.is_some(),
-                Err(error) => return ApiError::from(error).into_response(),
+                Err(error) => return error.into_response(),
             },
         );
         meta["collaboration"] =
@@ -3024,9 +3057,12 @@ fn chat_command_delivery_error(error: DeviceCommandDeliveryError, operation: &st
     }
     match error {
         DeviceCommandDeliveryError::Rejected { reason, detail } => {
-            if reason.contains("not_found") {
+            if reason == "approval_store_failed" {
+                ApiError::Internal(detail)
+            } else if reason == "approval_wrong_scope" || reason.contains("not_found") {
                 ApiError::NotFound(detail)
-            } else if reason.contains("stale")
+            } else if reason == "approval_invalid_state"
+                || reason.contains("stale")
                 || reason.contains("active_turn")
                 || reason.contains("not_editable")
                 || reason.contains("send_now")

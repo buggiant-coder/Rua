@@ -22,10 +22,6 @@ import {
   XCircle,
 } from "lucide-react";
 import { Btn, Drawer, Spinner, TextArea, Tooltip, toast } from "@/ui";
-import {
-  agentConversationTarget,
-  type ConversationApiTarget,
-} from "@/api/modules/conversation";
 import { taskApi } from "@/api/modules/task";
 import type {
   TaskAttempt,
@@ -47,7 +43,6 @@ type TaskActivityDrawerProps = {
   open: boolean;
   onClose: () => void;
   agentId: string;
-  target?: ConversationApiTarget;
   chatId?: string;
   currentDeviceId?: string | null;
   backgroundWork?: ConversationBackgroundWorkView | null;
@@ -339,12 +334,10 @@ function DependencyList({
 function AttemptDetail({
   task,
   attempt,
-  target,
   currentDeviceId,
 }: {
   task: TaskRecord;
   attempt: TaskAttempt;
-  target: ConversationApiTarget;
   currentDeviceId?: string | null;
 }) {
   const { t } = useTranslation();
@@ -367,9 +360,7 @@ function AttemptDetail({
     setFullResultError(null);
     try {
       const address = task.spec.owner.chat_address;
-      setFullResult(
-        await taskApi.getFullResult(target, address.chat_id, task.task_id),
-      );
+      setFullResult(await taskApi.getFullResult(address.chat_id, task.task_id));
     } catch (reason) {
       setFullResultError(
         reason instanceof Error ? reason.message : String(reason),
@@ -545,16 +536,11 @@ export default function TaskActivityDrawer({
   open,
   onClose,
   agentId,
-  target,
   chatId,
   currentDeviceId,
   backgroundWork,
 }: TaskActivityDrawerProps) {
   const { t } = useTranslation();
-  const taskTarget = useMemo(
-    () => target ?? agentConversationTarget(agentId),
-    [agentId, target],
-  );
   const {
     tasks,
     selectedTask,
@@ -572,7 +558,6 @@ export default function TaskActivityDrawer({
     sendTaskInput,
   } = useTaskActivity({
     open,
-    target: taskTarget,
     chatId,
     authorizationAgentId: agentId,
   });
@@ -589,7 +574,7 @@ export default function TaskActivityDrawer({
   const [selectedCollaborationKey, setSelectedCollaborationKey] = useState<
     string | null | undefined
   >(undefined);
-  useEffect(() => setSelectedCollaborationKey(undefined), [taskTarget, chatId]);
+  useEffect(() => setSelectedCollaborationKey(undefined), [chatId]);
   const selectedCollaboration =
     selectedCollaborationKey === undefined
       ? !tasks.some((task) => !TERMINAL_STATES.has(task.state))
@@ -916,7 +901,6 @@ export default function TaskActivityDrawer({
                     <AttemptDetail
                       task={selectedTask}
                       attempt={selectedAttempt}
-                      target={taskTarget}
                       currentDeviceId={currentDeviceId}
                     />
                   )}

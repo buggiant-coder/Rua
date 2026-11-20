@@ -3,7 +3,8 @@ use rua_cli::channels::{
     build_channel_send_payload, channel_config_endpoint, channels_config_endpoint,
     messages_send_endpoint, ChannelsCommands,
 };
-use rua_cli::console::{chat_endpoint, chats_collection_endpoint, chats_list_endpoint};
+use rua_cli::chat::chat_endpoint;
+use rua_cli::console::chats_list_endpoint;
 use rua_cli::cron::{
     cron_job_endpoint, cron_job_run_endpoint, cron_job_state_endpoint, cron_jobs_endpoint,
 };
@@ -110,19 +111,13 @@ fn channels_send_keeps_command_specific_agent_override() {
 }
 
 #[test]
-fn chats_endpoints_are_path_scoped_by_global_agent_id() {
+fn chats_use_agent_as_an_encoded_filter_and_chat_id_as_the_locator() {
+    assert_eq!(chats_list_endpoint(None, None, None), "/api/chats");
     assert_eq!(
-        chats_collection_endpoint("team_bot"),
-        "/api/agents/team_bot/chats"
+        chats_list_endpoint(Some("team_bot"), Some("alice & bob"), Some("console")),
+        "/api/chats?agent_id=team_bot&user_id=alice+%26+bob&channel=console"
     );
-    assert_eq!(
-        chats_list_endpoint("team_bot", Some("alice"), Some("console")),
-        "/api/agents/team_bot/chats?user_id=alice&channel=console"
-    );
-    assert_eq!(
-        chat_endpoint("team_bot", "chat-1"),
-        "/api/agents/team_bot/chats/chat-1"
-    );
+    assert_eq!(chat_endpoint("chat-1"), "/api/chats/chat-1");
 }
 
 #[test]

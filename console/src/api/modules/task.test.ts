@@ -11,15 +11,14 @@ describe("taskApi", () => {
     vi.clearAllMocks();
   });
 
-  it("scopes list and detail routes by agent and chat", async () => {
+  it("loads list and detail routes by Chat ID", async () => {
     vi.mocked(request).mockResolvedValue([]);
 
-    const target = { agentId: "agent/a" };
-    await taskApi.listTasks(target, "chat/b", {
+    await taskApi.listTasks("chat/b", {
       state: "running",
       limit: 20,
     });
-    await taskApi.getTask(target, "chat/b", "task/c");
+    await taskApi.getTask("chat/b", "task/c");
 
     expect(request).toHaveBeenNthCalledWith(
       1,
@@ -33,11 +32,10 @@ describe("taskApi", () => {
 
   it("uses the canonical cancel, retry, result, and activity routes", async () => {
     vi.mocked(request).mockResolvedValue({});
-    const target = { agentId: "agent" };
 
-    await taskApi.cancelTask(target, "chat", "task");
-    await taskApi.retryTask(target, "chat", "task", "agent");
-    await taskApi.getFullResult(target, "chat", "task");
+    await taskApi.cancelTask("chat", "task");
+    await taskApi.retryTask("chat", "task", "agent");
+    await taskApi.getFullResult("chat", "task");
 
     expect(request).toHaveBeenNthCalledWith(
       1,
@@ -49,49 +47,27 @@ describe("taskApi", () => {
       body: JSON.stringify({ authorization_agent_id: "agent" }),
     });
     expect(request).toHaveBeenNthCalledWith(3, "/chats/chat/tasks/task/result");
-    expect(taskApi.activityPath(target, "chat")).toBe(
-      "/chats/chat/tasks/activity",
-    );
+    expect(taskApi.activityPath("chat")).toBe("/chats/chat/tasks/activity");
   });
 
-  it("uses Project-scoped Task routes for Project Chats", async () => {
-    vi.mocked(request).mockResolvedValue([]);
-    const target = {
-      scope: "project" as const,
-      projectId: "project/a",
-      agentId: "agent-a",
-    };
-
-    await taskApi.listTasks(target, "chat/b");
-    await taskApi.getTask(target, "chat/b", "task/c");
-    await taskApi.cancelTask(target, "chat/b", "task/c");
-    await taskApi.retryTask(target, "chat/b", "task/c", "agent-b");
-    await taskApi.getFullResult(target, "chat/b", "task/c");
-
-    expect(request).toHaveBeenNthCalledWith(1, "/chats/chat%2Fb/tasks");
-    expect(request).toHaveBeenNthCalledWith(
-      2,
-      "/chats/chat%2Fb/tasks/task%2Fc",
+  it("routes input and watch controls to the Chat ID", async () => {
+    await taskApi.sendInput("chat/b", "task/c", {
+      type: "text",
+      text: "hello",
+    });
+    await taskApi.watchTask("chat/b", "task/c");
+    await taskApi.unwatchTask("chat/b", "task/c");
+    expect(request).toHaveBeenCalledWith(
+      "/chats/chat%2Fb/tasks/task%2Fc/input",
+      expect.objectContaining({ method: "POST" }),
     );
-    expect(request).toHaveBeenNthCalledWith(
-      3,
-      "/chats/chat%2Fb/tasks/task%2Fc/cancel",
+    expect(request).toHaveBeenCalledWith(
+      "/chats/chat%2Fb/tasks/task%2Fc/watch",
       { method: "POST" },
     );
-    expect(request).toHaveBeenNthCalledWith(
-      4,
-      "/chats/chat%2Fb/tasks/task%2Fc/retry",
-      {
-        method: "POST",
-        body: JSON.stringify({ authorization_agent_id: "agent-b" }),
-      },
-    );
-    expect(request).toHaveBeenNthCalledWith(
-      5,
-      "/chats/chat%2Fb/tasks/task%2Fc/result",
-    );
-    expect(taskApi.activityPath(target, "chat/b")).toBe(
-      "/chats/chat%2Fb/tasks/activity",
+    expect(request).toHaveBeenCalledWith(
+      "/chats/chat%2Fb/tasks/task%2Fc/unwatch",
+      { method: "POST" },
     );
   });
 });

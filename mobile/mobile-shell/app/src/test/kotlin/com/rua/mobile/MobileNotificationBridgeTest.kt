@@ -67,6 +67,20 @@ class MobileNotificationBridgeTest {
     }
 
     @Test
+    fun activationBeforeWebViewMountCanBeReadExactlyOnceByTheConsole() {
+        val controller = org.robolectric.Robolectric.buildActivity(MainActivity::class.java)
+        val activity = controller.get()
+        val bridge = MobileNotificationBridge(activity, takeActivation = activity::takePendingNotificationActivation)
+        val uri = "rua://chats/independent?turn=turn-1&source=notice#result"
+        val intent = userNotificationIntent(activity, notification("Done").copy(ruaUri = uri))
+
+        controller.newIntent(intent)
+
+        assertEquals(uri, bridge.takePendingActivation())
+        assertNull(bridge.takePendingActivation())
+    }
+
+    @Test
     fun payloadPreservesSenderBodyAndRuaUri() {
         val request = parseUserNotificationPayload(
             """
@@ -78,7 +92,7 @@ class MobileNotificationBridgeTest {
               },
               "title": "Run complete",
               "body": "The requested analysis is ready.",
-              "rua_uri": "rua://agents/researcher/chats/chat-42?turn=7#result"
+              "rua_uri": "rua://chats/chat-42?turn=7#result"
             }
             """.trimIndent()
         )
@@ -90,7 +104,7 @@ class MobileNotificationBridgeTest {
         assertEquals("Run complete", request.title)
         assertEquals("The requested analysis is ready.", request.body)
         assertEquals(
-            "rua://agents/researcher/chats/chat-42?turn=7#result",
+            "rua://chats/chat-42?turn=7#result",
             request.ruaUri,
         )
     }
@@ -101,8 +115,8 @@ class MobileNotificationBridgeTest {
             assertNull(safeRuaUriOrNull(uri))
         }
         assertEquals(
-            "rua://agents/default/chats/chat-a",
-            safeRuaUriOrNull("rua://agents/default/chats/chat-a"),
+            "rua://chats/chat-a",
+            safeRuaUriOrNull("rua://chats/chat-a"),
         )
     }
 
@@ -115,7 +129,7 @@ class MobileNotificationBridgeTest {
             senderName = "Research Agent",
             title = "Run complete",
             body = null,
-            ruaUri = "rua://agents/researcher/chats/chat-42",
+            ruaUri = "rua://chats/chat-42?turn=7&from=notification#result",
         )
 
         val intent = userNotificationIntent(context, request)
@@ -123,7 +137,7 @@ class MobileNotificationBridgeTest {
         assertEquals(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP, intent.flags)
         assertEquals(MainActivity::class.java.name, intent.component?.className)
         assertEquals(
-            "rua://agents/researcher/chats/chat-42",
+            "rua://chats/chat-42?turn=7&from=notification#result",
             intent.getStringExtra(MobileNotificationBridge.EXTRA_RUA_URI),
         )
         assertEquals(
@@ -140,6 +154,6 @@ class MobileNotificationBridgeTest {
         senderName = "Agent A",
         title = title,
         body = "Done",
-        ruaUri = "rua://agents/agent-a/chats/chat-1",
+        ruaUri = "rua://chats/chat-1",
     )
 }

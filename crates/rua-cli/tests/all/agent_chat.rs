@@ -1,18 +1,10 @@
 use clap::Parser;
 use rua_cli::agent::{
-    agent_chat_endpoint, build_agent_chat_request, extract_final_agent_chat_text,
-    extract_text_from_content, parse_sse_line,
+    build_agent_chat_request, extract_final_agent_chat_text, extract_text_from_content,
+    parse_sse_line,
 };
 use rua_cli::{Cli, Commands};
 use serde_json::json;
-
-#[test]
-fn chat_uses_agent_scoped_console_endpoint() {
-    assert_eq!(
-        agent_chat_endpoint("bot/b", "chat/one"),
-        "/api/agents/bot%2Fb/chats/chat%2Fone/console/chat"
-    );
-}
 
 #[test]
 fn chat_request_uses_explicit_chat_and_identity_prefix() {
@@ -25,6 +17,7 @@ fn chat_request_uses_explicit_chat_and_identity_prefix() {
         request.body,
         json!({
             "chat_id": chat_id,
+            "agent_id": "bot_b",
             "input": [{
                 "role": "user",
                 "content": [{

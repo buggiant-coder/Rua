@@ -42,7 +42,16 @@ export function verifyRouteAccess(): Promise<RouteAccess> {
 export async function requireRouteAccess(request: Request) {
   if ((await verifyRouteAccess()) === "ok") return;
   const url = new URL(request.url);
-  throw redirect(`/login?redirect=${encodeURIComponent(url.pathname)}`);
+  const pathname = url.pathname.replace(/^\/console(?=\/|$)/, "") || "/";
+  const hash =
+    url.hash ||
+    (url.pathname === window.location.pathname &&
+    url.search === window.location.search
+      ? window.location.hash
+      : "");
+  throw redirect(
+    `/login?redirect=${encodeURIComponent(pathname + url.search + hash)}`,
+  );
 }
 
 export function __resetRouteAccessForTests() {

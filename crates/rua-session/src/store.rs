@@ -4805,18 +4805,21 @@ impl WorkspaceSessionStore {
             .collect())
     }
 
+    pub async fn read_turn(&self, chat_id: &str, turn_id: &str) -> Result<Option<TurnIndexRecord>> {
+        Ok(self
+            .load_turn_index(chat_id)
+            .await?
+            .turns
+            .into_iter()
+            .find(|turn| turn.turn_id == turn_id))
+    }
+
     pub async fn read_turn_messages(
         &self,
         chat_id: &str,
         turn_id: &str,
     ) -> Result<Vec<MessageLogEntry>> {
-        let Some(turn) = self
-            .load_turn_index(chat_id)
-            .await?
-            .turns
-            .into_iter()
-            .find(|turn| turn.turn_id == turn_id)
-        else {
+        let Some(turn) = self.read_turn(chat_id, turn_id).await? else {
             return Ok(vec![]);
         };
 

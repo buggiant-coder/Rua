@@ -10709,7 +10709,7 @@ async fn user_notification_crosses_device_session_and_is_presented_once() {
         },
         title: "Run complete".to_string(),
         body: Some("The requested analysis is ready.".to_string()),
-        rua_uri: Some("rua://agents/researcher/chats/chat-42?turn=7#result".to_string()),
+        rua_uri: Some("rua://chats/chat-42?turn=7#result".to_string()),
     };
 
     source_service.send(expected.clone()).await;

@@ -541,7 +541,10 @@ impl CollaborationService {
             .await
             .map_err(|error| error.to_string())?
         {
-            if !header.extra.contains_key(COLLABORATION_META_KEY) {
+            if !header.extra.contains_key(COLLABORATION_META_KEY)
+                || crate::services::chat_context::chat_is_deleted(&self.root, &header.chat_id)
+                    .map_err(|e| e.to_string())?
+            {
                 continue;
             }
             let target = ChatAddress::new(&header.chat_id);
@@ -610,12 +613,13 @@ impl CollaborationService {
                         .map_err(|error| error.to_string())?;
                 }
                 if record.delivery == CollaborationDeliveryState::Deferred {
-                    let source_exists = self
-                        .store(&record.source)
-                        .load_chat_header(record.source.chat_id().as_str())
-                        .await
-                        .map_err(|error| error.to_string())?
-                        .is_some();
+                    let source_exists = crate::services::chat_context::load_live_chat_header(
+                        &self.root,
+                        record.source.chat_id().as_str(),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .is_some();
                     if source_exists {
                         deferred_sources.insert(record.source.clone());
                     } else {
@@ -658,11 +662,13 @@ impl CollaborationService {
         caller: &CollaborationCaller,
     ) -> Result<ChatHookConfiguration, String> {
         let store = self.store(&caller.address);
-        let header = store
-            .load_chat_header(caller.address.chat_id().as_str())
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or("Source Chat is unavailable")?;
+        let header = crate::services::chat_context::load_live_chat_header(
+            &self.root,
+            caller.address.chat_id().as_str(),
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("Source Chat is unavailable")?;
         if header.extra.contains_key(COLLABORATION_META_KEY) {
             return Err("Collaboration Chats cannot delegate another level".into());
         }
@@ -1028,12 +1034,13 @@ impl CollaborationService {
         yield_seconds: u64,
     ) -> Result<CollaborationReply, String> {
         let _resource_admission = self.intake.project_work_admission(&caller.address).await?;
-        let source_header = self
-            .store(&caller.address)
-            .load_chat_header(caller.address.chat_id().as_str())
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or("Source Chat is unavailable")?;
+        let source_header = crate::services::chat_context::load_live_chat_header(
+            &self.root,
+            caller.address.chat_id().as_str(),
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or("Source Chat is unavailable")?;
         let project_id = source_header.project_id.as_deref();
         if matches!(
             &executor,

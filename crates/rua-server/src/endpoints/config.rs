@@ -132,7 +132,7 @@ pub(crate) async fn trigger_manual_heartbeat_run(
             "failed to obtain workspace runtime for heartbeat: {e}"
         ))
     })?;
-    let prompt = match rua_cron::heartbeat::load_heartbeat_md(&runtime.rua_root()) {
+    let prompt = match rua_cron::heartbeat::load_heartbeat_md(&runtime.workspace_dir()) {
         Some(prompt) if !prompt.trim().is_empty() => prompt,
         _ => {
             tracing::debug!(agent_id = %agent_id, "manual heartbeat skipped: no HEARTBEAT.md");
@@ -140,13 +140,36 @@ pub(crate) async fn trigger_manual_heartbeat_run(
         }
     };
 
+    let config = read_heartbeat_cells(&state.agent_cells, &agent_id).await?;
+    let profile = load_agent_profile(&state.rua_root, Some(&agent_id), &state.agent_cells).await?;
+    let (channel, mut target) =
+        rua_cron::heartbeat::heartbeat_dispatch(&config.target, profile.last_dispatch.as_ref());
+    crate::cron_bootstrap::bind_last_heartbeat_chat(
+        &state.rua_root,
+        &agent_id,
+        &config.target,
+        &channel,
+        &mut target,
+        profile.last_dispatch.as_ref(),
+    )
+    .await
+    .map_err(ApiError::Internal)?;
+    let execution_agent_id = match target.chat_id.as_deref() {
+        Some(id) => {
+            crate::services::chat_context::load_chat_context(&state.rua_root, id)
+                .await?
+                .ok_or_else(|| ApiError::NotFound(format!("Scheduled Chat not found: {id}")))?
+                .agent_id
+        }
+        None => agent_id,
+    };
     let outcome = state
         .console_facade
         .submit_chat(
-            &agent_id,
+            &execution_agent_id,
             ConsoleChatRequest {
                 message: prompt,
-                chat_id: None,
+                chat_id: target.chat_id,
                 model: None,
                 is_reconnect: false,
                 attachments: Vec::new(),

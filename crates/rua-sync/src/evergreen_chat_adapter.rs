@@ -234,7 +234,12 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
         }
         for chat_id in chat_ids {
             let address = ChatAddress::new(chat_id);
-            if self.project_is_deleted(&address, None) {
+            if rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(&self.data_dir)
+                .load(&address)
+                .map_err(SyncError::Store)?
+                .is_some()
+                || self.project_is_deleted(&address, None)
+            {
                 continue;
             }
             changes.extend(Self::snapshot_changes_for_chat(
@@ -274,6 +279,16 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
         let decision = merge_store.resolve_lww(&cursor_id, change.hlc, is_delete)?;
         if decision == LwwDecision::Skip {
             return Ok(ApplyOutcome::Skipped);
+        }
+        if !is_delete
+            && rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(&self.data_dir)
+                .load(&address)
+                .map_err(SyncError::Store)?
+                .is_some()
+        {
+            return Ok(ApplyOutcome::Applied {
+                cursor: tombstone_cursor(change.hlc, None),
+            });
         }
         if !is_delete {
             if let Some(record_id) = history_replacement_record_id(relative) {

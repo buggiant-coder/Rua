@@ -49,6 +49,7 @@ pub fn test_context(data_dir: std::path::PathBuf) -> Arc<WorkspaceContext> {
         usage_recorder: None,
         push_store_dir: None,
         agent_resolver: Arc::new(AgentResolver::new("default")),
+        channel_chat_facade: std::sync::OnceLock::new(),
         command_runtime_factory: std::sync::OnceLock::new(),
         session_replication_hook: std::sync::OnceLock::new(),
         memory_publication_hook: Arc::new(std::sync::OnceLock::new()),

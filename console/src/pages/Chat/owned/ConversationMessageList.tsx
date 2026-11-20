@@ -3390,17 +3390,17 @@ export default memo(function ConversationMessageList({
                 item.output.some((message) => message.id === parsed.messageId)),
           )
         : -1;
-      const cardIndex =
-        matchedIndex >= 0
-          ? matchedIndex
-          : parsed.turnId
-          ? items.findIndex(
-              (item) =>
-                item.turn_id === parsed.turnId && item.kind === "assistant",
-            )
-          : typeof parsed.cardIndex === "number"
-          ? parsed.cardIndex
-          : -1;
+      let cardIndex = matchedIndex;
+      if (cardIndex < 0 && parsed.turnId) {
+        cardIndex = items.findIndex(
+          (item) => item.turn_id === parsed.turnId && item.kind === "assistant",
+        );
+        if (cardIndex < 0) {
+          cardIndex = items.findIndex((item) => item.turn_id === parsed.turnId);
+        }
+      } else if (cardIndex < 0 && typeof parsed.cardIndex === "number") {
+        cardIndex = parsed.cardIndex;
+      }
       if (cardIndex < 0 || cardIndex >= items.length) {
         if (
           parsed.turnId &&

@@ -10,11 +10,7 @@ import { buildAuthHeaders } from "../authHeaders";
 import { getApiUrl } from "../config";
 import { acpApi } from "./acp";
 import { chatApi, type GetChatOptions, type StopChatRequest } from "./chat";
-import type {
-  ApprovalDecisionRequest,
-  ApprovalRequest,
-  ApprovalSnapshot,
-} from "./console";
+import { consoleApi } from "./console";
 import { request } from "../request";
 
 export interface ChatConfigurationPreview {
@@ -89,12 +85,11 @@ export const conversationApi = {
     }),
 
   openLive: (
-    target: ConversationApiTarget,
     chatId: string,
     body: Record<string, unknown>,
     signal: AbortSignal,
   ) =>
-    consoleFetch(chatApi.livePath(chatId, target.agentId), {
+    consoleFetch(chatApi.livePath(chatId), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -104,11 +99,8 @@ export const conversationApi = {
       signal,
     }),
 
-  getHistory: (
-    _target: ConversationApiTarget,
-    chatId: string,
-    options?: GetChatOptions,
-  ) => chatApi.getChat(chatId, options),
+  getHistory: (chatId: string, options?: GetChatOptions) =>
+    chatApi.getChat(chatId, options),
 
   updateModel: (
     target: ConversationApiTarget,
@@ -185,23 +177,8 @@ export const conversationApi = {
     message: string,
   ) => chatApi.editQueuedInput(chatId, inputId, message, target.agentId),
 
-  getApprovalSnapshot: (target: ConversationApiTarget, chatId: string) =>
-    request<ApprovalSnapshot>(
-      `${conversationPath(target, chatId)}/approvals/snapshot`,
-    ),
-
-  decideApproval: (
-    target: ConversationApiTarget,
-    chatId: string,
-    approvalId: string,
-    body: ApprovalDecisionRequest,
-  ) =>
-    request<ApprovalRequest>(
-      `${conversationPath(target, chatId)}/approvals/${encodeURIComponent(
-        approvalId,
-      )}/decide`,
-      { method: "POST", body: JSON.stringify(body) },
-    ),
+  getApprovalSnapshot: consoleApi.getApprovalSnapshot,
+  decideApproval: consoleApi.decideApproval,
 
   listAcpRunners: (
     target: ConversationApiTarget,
@@ -242,13 +219,6 @@ export const conversationApi = {
     targetDeviceId?: string | null,
   ) => acpApi.chatStatus(target.agentId, chatId, targetDeviceId),
 
-  getAcpPermissionSnapshot: (target: ConversationApiTarget, chatId: string) =>
-    acpApi.getPermissionSnapshot(target.agentId, chatId),
-
-  decideAcpPermission: (
-    target: ConversationApiTarget,
-    chatId: string,
-    requestId: string,
-    optionId: string,
-  ) => acpApi.decidePermission(target.agentId, chatId, requestId, optionId),
+  getAcpPermissionSnapshot: acpApi.getPermissionSnapshot,
+  decideAcpPermission: acpApi.decidePermission,
 };

@@ -79,7 +79,7 @@ async fn seed_local_authority(state: &AppState, chat_id: &str, title: &str) {
         .await
         .expect("workspace");
     materialize_targeted_chat(
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         "default",
         chat_id,
         title,
@@ -98,7 +98,7 @@ async fn seed_local_authority(state: &AppState, chat_id: &str, title: &str) {
 
 async fn capture_fixture_configuration(state: &AppState, chat_id: &str) {
     let runtime = state.registry.get_or_create("default").await.unwrap();
-    let store = WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let mut header = store.load_chat_header(chat_id).await.unwrap().unwrap();
     let authority_device_id = header.extra["authority_placement"]["device_id"]
         .as_str()
@@ -150,7 +150,7 @@ async fn authority_intake_owns_acp_binding_persistence() {
         .get_or_create("default")
         .await
         .expect("workspace");
-    let workspace_dir = runtime.workspace_dir();
+    let workspace_dir = runtime.chat_workspace_dir();
     let device_id = local_device_id(&state);
 
     intake(&state)
@@ -195,6 +195,33 @@ async fn authority_intake_owns_acp_binding_persistence() {
 }
 
 #[tokio::test]
+async fn remote_first_input_cannot_recreate_a_deleted_chat() {
+    let temp = TempDir::new().unwrap();
+    let state = AppState::from_tempdir(temp.path().to_path_buf(), ServerProfile::Test);
+    let address = ChatAddress::new(CHAT_ID);
+    rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(&state.rua_root)
+        .persist(&address)
+        .unwrap();
+    let mut pending = remote_request_to(
+        CHAT_ID,
+        "delayed-input",
+        1,
+        "resume",
+        &local_device_id(&state),
+    );
+    pending.base_manifest_hash =
+        rua_server::services::conversation_manifest::initial_conversation_manifest_hash(&address)
+            .unwrap();
+    let error = intake(&state)
+        .accept_remote_conversation_input(pending, chrono::Utc::now().to_rfc3339())
+        .await
+        .unwrap_err();
+    assert!(error.contains("Chat not found"), "{error}");
+    let store = WorkspaceSessionStore::new(state.chat_workspace().as_path());
+    assert!(store.load_chat_header(CHAT_ID).await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn remote_input_rejects_stale_authority_epoch() {
     let temp = TempDir::new().expect("tempdir");
     let state = AppState::from_tempdir(temp.path().to_path_buf(), ServerProfile::Test);
@@ -205,7 +232,7 @@ async fn remote_input_rejects_stale_authority_epoch() {
         .expect("workspace");
     let device_id = local_device_id(&state);
     materialize_targeted_chat(
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         "default",
         CHAT_ID,
         "Epoch test",
@@ -587,7 +614,7 @@ async fn intake_generated_chat_persists_default_model() {
         .get_or_create("default")
         .await
         .expect("workspace");
-    let header = WorkspaceSessionStore::new(runtime.workspace_dir())
+    let header = WorkspaceSessionStore::new(runtime.chat_workspace_dir())
         .load_chat_header(&chat_id)
         .await
         .expect("load header")
@@ -608,7 +635,7 @@ async fn incomplete_replica_submit_never_materializes_local_authority() {
             .get_or_create("default")
             .await
             .expect("workspace");
-        let store = WorkspaceSessionStore::new(runtime.workspace_dir());
+        let store = WorkspaceSessionStore::new(runtime.chat_workspace_dir());
         let path = store.chat_dir(CHAT_ID).join(partial);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"{}\n").unwrap();
@@ -644,7 +671,7 @@ async fn expected_epoch_without_replica_rejects_before_creating_chat() {
         "{outcome:?}"
     );
     let runtime = state.registry.get_or_create("default").await.unwrap();
-    assert!(WorkspaceSessionStore::new(runtime.workspace_dir())
+    assert!(WorkspaceSessionStore::new(runtime.chat_workspace_dir())
         .load_chat_header(CHAT_ID)
         .await
         .unwrap()
@@ -657,7 +684,7 @@ async fn index_only_replica_submit_does_not_recreate_authority() {
     let state = AppState::from_tempdir(temp.path().to_path_buf(), ServerProfile::Test);
     seed_local_authority(&state, CHAT_ID, "partial replica").await;
     let runtime = state.registry.get_or_create("default").await.unwrap();
-    let workspace = runtime.workspace_dir();
+    let workspace = runtime.chat_workspace_dir();
     let store = WorkspaceSessionStore::new(&workspace);
     std::fs::remove_dir_all(store.chat_dir(CHAT_ID)).unwrap();
     assert!(rua_server::services::chat_index::get(&workspace, CHAT_ID)
@@ -703,7 +730,7 @@ async fn rejected_first_input_does_not_materialize_agent_chat() {
         .submit_delivery("default", request(CHAT_ID, "must be rejected"))
         .await;
     assert!(matches!(outcome, rua_server::services::conversation_input_intake::ConversationInputDeliveryOutcome::Rejected { .. }), "{outcome:?}");
-    let workspace = temp.path().join("workspaces/default");
+    let workspace = temp.path().join("chats");
     assert!(
         WorkspaceSessionStore::new(&workspace)
             .load_chat_header(CHAT_ID)
@@ -736,7 +763,7 @@ async fn invalid_initial_acp_is_rejected_before_materialization() {
         matches!(outcome, ConversationInputDeliveryOutcome::Rejected { .. }),
         "{outcome:?}"
     );
-    let store = WorkspaceSessionStore::new(temp.path().join("workspaces/default"));
+    let store = WorkspaceSessionStore::new(temp.path().join("chats"));
     assert!(store.load_chat_header(CHAT_ID).await.unwrap().is_none());
     assert!(state
         .conversation_authority
@@ -770,7 +797,7 @@ async fn rejected_remote_first_agent_input_does_not_materialize_chat() {
         .await
         .expect_err("draining Agent rejects remote first input");
     assert!(error.contains("shutting down"), "{error}");
-    let workspace = temp.path().join("workspaces/default");
+    let workspace = temp.path().join("chats");
     assert!(WorkspaceSessionStore::new(&workspace)
         .load_chat_header(CHAT_ID)
         .await
@@ -805,7 +832,7 @@ async fn accepted_remote_first_agent_input_materializes_chat_and_turn() {
         .await
         .expect("remote first input accepted");
     assert_eq!(ack.mode, ConversationInputAcceptanceMode::Started);
-    let workspace = temp.path().join("workspaces/default");
+    let workspace = temp.path().join("chats");
     let store = WorkspaceSessionStore::new(&workspace);
     let header = store
         .load_chat_header(CHAT_ID)
@@ -848,7 +875,7 @@ async fn corrupted_first_input_attachment_is_rejected_without_chat() {
         .metadata
         .insert("first_submission".into(), serde_json::Value::Bool(true));
     let media_id = "00000000-0000-4000-8000-000000000112";
-    let root = temp.path().join("workspaces/default");
+    let root = temp.path().join("chats");
     std::fs::create_dir_all(root.join("media")).unwrap();
     std::fs::write(root.join("media").join(media_id), b"abc").unwrap();
     remote.input = Some(vec![
@@ -932,7 +959,7 @@ async fn concurrent_first_agent_inputs_keep_the_winner_configuration() {
     );
     release_first.notify_one();
 
-    let store = WorkspaceSessionStore::new(temp.path().join("workspaces/default"));
+    let store = WorkspaceSessionStore::new(temp.path().join("chats"));
     let header = store
         .load_chat_header(CHAT_ID)
         .await
@@ -979,7 +1006,7 @@ async fn concurrent_first_agent_inputs_keep_the_winner_configuration() {
 async fn intake_accepts_session_authority_without_chat_index() {
     let temp = TempDir::new().expect("tempdir");
     let state = AppState::from_tempdir(temp.path().to_path_buf(), ServerProfile::Test);
-    let workspace = temp.path().join("workspaces/default");
+    let workspace = temp.path().join("chats");
     let device_id = local_device_id(&state);
     let now = "2026-07-20T00:00:00Z".to_string();
     let mut header = ChatSessionHeader::new(ChatMetadata {
@@ -1049,7 +1076,7 @@ async fn submit_delivery_reports_local_authority_transport() {
 async fn submit_delivery_reports_remote_authority_transport() {
     let temp = TempDir::new().expect("tempdir");
     let state = AppState::from_tempdir(temp.path().to_path_buf(), ServerProfile::Test);
-    let workspace = temp.path().join("workspaces/default");
+    let workspace = temp.path().join("chats");
     materialize_targeted_chat(
         &workspace,
         "default",
@@ -1132,7 +1159,7 @@ async fn local_submit_uses_authority_header_model_and_ignores_request_metadata()
         }))
         .await;
 
-    let workspace = temp.path().join("workspaces/default");
+    let workspace = temp.path().join("chats");
     materialize_targeted_chat(
         &workspace,
         "default",
@@ -1593,7 +1620,7 @@ async fn concurrent_local_submits_do_not_leave_silent_user_only_turns() {
         assert_local_delivery(outcome, chat_id);
     }
 
-    let store = WorkspaceSessionStore::new(temp.path().join("workspaces/default"));
+    let store = WorkspaceSessionStore::new(temp.path().join("chats"));
     for chat_id in chats {
         let mut terminal = None;
         let mut saw_failed_note = false;
@@ -1641,7 +1668,7 @@ async fn concurrent_local_submits_do_not_leave_silent_user_only_turns() {
 async fn intake_marks_acp_bound_chat_as_acp_driver() {
     let temp = TempDir::new().expect("tempdir");
     let state = AppState::from_tempdir(temp.path().to_path_buf(), ServerProfile::Test);
-    let workspace = temp.path().join("workspaces/default");
+    let workspace = temp.path().join("chats");
     let device_id = local_device_id(&state);
     materialize_targeted_chat(
         &workspace,
@@ -1821,7 +1848,7 @@ async fn local_producer_exit_clears_authority_snapshot() {
 
     assert!(cleared, "producer exit did not clear authority snapshot");
 
-    let store = WorkspaceSessionStore::new(temp.path().join("workspaces/default"));
+    let store = WorkspaceSessionStore::new(temp.path().join("chats"));
     let turns = store
         .read_turn_range(CHAT_ID, 1, usize::MAX)
         .await
@@ -1860,11 +1887,10 @@ async fn agent_scoped_submit_persists_compact_turn_agent_assignment() {
         .await;
     assert_local_delivery(outcome, CHAT_ID);
 
-    let store = WorkspaceSessionStore::new(temp.path().join("workspaces/default"));
+    let store = WorkspaceSessionStore::new(temp.path().join("chats"));
     let address = ChatAddress::new(CHAT_ID);
-    let chat_service = ChatService::from_workspace(rua_core::WorkspaceRoot::new(
-        temp.path().join("workspaces/default"),
-    ));
+    let chat_service =
+        ChatService::from_workspace(rua_core::WorkspaceRoot::new(temp.path().join("chats")));
     let assignment = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let turns = store
@@ -1908,7 +1934,7 @@ async fn panicking_runtime_clears_authority_and_persists_failed_terminal() {
         .await;
     assert_local_delivery(outcome, CHAT_ID);
 
-    let store = WorkspaceSessionStore::new(temp.path().join("workspaces/default"));
+    let store = WorkspaceSessionStore::new(temp.path().join("chats"));
     let mut terminal = None;
     let mut saw_failed_note = false;
     let mut authority_cleared = false;
@@ -2284,7 +2310,7 @@ async fn submit_delivery_rejects_orphan_active_turn_without_durable_placement() 
 async fn local_producer_drains_next_input_from_conversation_authority_queue() {
     let temp = TempDir::new().expect("tempdir");
     let state = AppState::from_tempdir(temp.path().to_path_buf(), ServerProfile::Test);
-    let store = WorkspaceSessionStore::new(temp.path().join("workspaces/default"));
+    let store = WorkspaceSessionStore::new(temp.path().join("chats"));
     let mut live_subscription = state
         .active_stream_broadcast_hub
         .subscribe_chat(&chat_address(), &BTreeMap::new())
@@ -2443,7 +2469,7 @@ async fn local_producer_drains_next_input_from_conversation_authority_queue() {
 async fn remote_started_producer_drains_local_and_remote_followups_from_one_authority_queue() {
     let temp = TempDir::new().expect("tempdir");
     let state = AppState::from_tempdir(temp.path().to_path_buf(), ServerProfile::Test);
-    let store = WorkspaceSessionStore::new(temp.path().join("workspaces/default"));
+    let store = WorkspaceSessionStore::new(temp.path().join("chats"));
     let target_device_id = state
         .sync_device
         .read()
@@ -2692,7 +2718,7 @@ async fn panicked_producer_persists_failed_terminal_fact_and_drains_stream() {
     let state = AppState::from_tempdir(temp.path().to_path_buf(), ServerProfile::Test);
     let key = stream_key();
     let turn_id = "turn-panic-finalizer";
-    let store = WorkspaceSessionStore::new(temp.path().join("workspaces/default"));
+    let store = WorkspaceSessionStore::new(temp.path().join("chats"));
     store
         .save_chat_header(&ChatSessionHeader::new(ChatMetadata {
             chat_id: CHAT_ID.to_string(),
@@ -2764,7 +2790,7 @@ async fn panicked_producer_persists_failed_terminal_fact_and_drains_stream() {
         panic_conversation_authority: Some(Arc::clone(&state.conversation_authority)),
         panic_agent_id: "default".to_string(),
         panic_chat_id: CHAT_ID.to_string(),
-        panic_scope_root: temp.path().join("workspaces/default"),
+        panic_scope_root: temp.path().join("chats"),
         detail: "boom".to_string(),
     })
     .await;

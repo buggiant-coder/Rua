@@ -1,5 +1,10 @@
 /* eslint-disable react-refresh/only-export-components */
-import { useLoaderData, type LoaderFunctionArgs } from "react-router-dom";
+import { useEffect } from "react";
+import {
+  useLocation,
+  useLoaderData,
+  type LoaderFunctionArgs,
+} from "react-router-dom";
 import { chatApi } from "@/api/modules/chat";
 import { projectsApi } from "@/api/modules/projects";
 import type { ChatHistory } from "@/api/types";
@@ -55,6 +60,23 @@ export async function loader({
 
 export function RouteComponent() {
   const data = useLoaderData() as ChatRouteData;
+  const location = useLocation();
+  useEffect(() => {
+    const turnId = new URLSearchParams(location.search).get("turn");
+    if (!turnId) return;
+    try {
+      sessionStorage.setItem(
+        "rua_search_scroll_target",
+        JSON.stringify({
+          conversationId: data.chatId,
+          ownerKey: "chat",
+          turnId,
+        }),
+      );
+      window.dispatchEvent(new Event("rua-search-scroll"));
+    } catch {}
+  }, [data.chatId, location.key, location.search]);
+
   return data.project ? (
     <ProjectChatPage
       key={data.chatId}

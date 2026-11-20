@@ -5,7 +5,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 use rua_channel::core::{ChannelManager, ChannelTarget};
 use rua_config::types::agents::HeartbeatConfig as AgentHeartbeatConfig;
-use rua_config::types::cron::CronJobSpec;
+use rua_config::types::cron::{CronJobSpec, DispatchTarget};
 use rua_contract::agent::{AgentInputMessage, AgentRequest, AgentRuntime};
 use rua_contract::cron::SystemScheduler;
 use rua_core::event::RuntimeEvent;
@@ -70,20 +70,19 @@ impl rua_cron::CronChannelSender for WorkspaceCronChannelSender {
         &self,
         agent_id: &str,
         channel: &str,
-        user_id: &str,
-        session_id: &str,
+        target: &DispatchTarget,
         text: &str,
     ) -> std::result::Result<(), rua_core::RuaError> {
         if channel == "console" {
             return self
-                .save_result_to_inbox(agent_id, channel, user_id, session_id, "", text)
+                .save_result_to_inbox(agent_id, channel, target, "", text)
                 .await;
         }
         let channel_manager = self.channel_manager_for(agent_id, "text delivery").await?;
         let target = ChannelTarget {
             agent_id: agent_id.to_string(),
-            conversation_id: session_id.to_string(),
-            sender_id: Some(user_id.to_string()),
+            conversation_id: target.reply_conversation().to_owned(),
+            sender_id: Some(target.user_id.clone()),
             reply_to: None,
             metadata: serde_json::Value::Null,
         };
@@ -96,20 +95,17 @@ impl rua_cron::CronChannelSender for WorkspaceCronChannelSender {
         &self,
         agent_id: &str,
         channel: &str,
-        user_id: &str,
-        session_id: &str,
+        target: &DispatchTarget,
         event: &rua_core::RuntimeEvent,
     ) -> std::result::Result<(), rua_core::RuaError> {
         if channel == "console" {
             match event {
                 RuntimeEvent::TextDelta { delta, .. } if !delta.is_empty() => {
-                    return self
-                        .send_text(agent_id, channel, user_id, session_id, delta)
-                        .await;
+                    return self.send_text(agent_id, channel, target, delta).await;
                 }
                 RuntimeEvent::Error { error } => {
                     return self
-                        .send_text(agent_id, channel, user_id, session_id, &error.to_string())
+                        .send_text(agent_id, channel, target, &error.to_string())
                         .await;
                 }
                 RuntimeEvent::AskUser { .. }
@@ -123,8 +119,8 @@ impl rua_cron::CronChannelSender for WorkspaceCronChannelSender {
         let channel_manager = self.channel_manager_for(agent_id, "event delivery").await?;
         let target = ChannelTarget {
             agent_id: agent_id.to_string(),
-            conversation_id: session_id.to_string(),
-            sender_id: Some(user_id.to_string()),
+            conversation_id: target.reply_conversation().to_owned(),
+            sender_id: Some(target.user_id.clone()),
             reply_to: None,
             metadata: serde_json::Value::Null,
         };
@@ -137,8 +133,7 @@ impl rua_cron::CronChannelSender for WorkspaceCronChannelSender {
         &self,
         agent_id: &str,
         channel: &str,
-        user_id: &str,
-        session_id: &str,
+        target: &DispatchTarget,
         job_name: &str,
         text: &str,
     ) -> std::result::Result<(), rua_core::RuaError> {
@@ -157,11 +152,18 @@ impl rua_cron::CronChannelSender for WorkspaceCronChannelSender {
         );
         extra.insert(
             "session_id".into(),
-            serde_json::Value::String(session_id.to_string()),
+            serde_json::Value::String(target.session_id.clone()),
         );
         extra.insert(
             "user_id".into(),
-            serde_json::Value::String(user_id.to_string()),
+            serde_json::Value::String(target.user_id.clone()),
+        );
+        if let Some(chat_id) = &target.chat_id {
+            extra.insert("chat_id".into(), serde_json::json!(chat_id));
+        }
+        extra.insert(
+            "conversation_id".into(),
+            serde_json::json!(target.reply_conversation()),
         );
         extra.insert(
             "source".into(),
@@ -173,7 +175,11 @@ impl rua_cron::CronChannelSender for WorkspaceCronChannelSender {
         );
         store
             .push(crate::endpoints::dto::PushMessage {
-                id: format!("cron:{agent_id}:{session_id}:{}", uuid::Uuid::new_v4()),
+                id: format!(
+                    "cron:{agent_id}:{}:{}",
+                    target.session_id,
+                    uuid::Uuid::new_v4()
+                ),
                 content: text.to_string(),
                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
                 extra,
@@ -184,12 +190,22 @@ impl rua_cron::CronChannelSender for WorkspaceCronChannelSender {
 }
 
 pub(crate) struct WorkspaceCronAgentRunner {
+    rua_root: PathBuf,
+    facade: Arc<dyn rua_channel::core::console::ConsoleChatFacade>,
     registry: Arc<dyn WorkspaceRegistry>,
 }
 
 impl WorkspaceCronAgentRunner {
-    pub(crate) fn new(registry: Arc<dyn WorkspaceRegistry>) -> Self {
-        Self { registry }
+    pub(crate) fn new(
+        registry: Arc<dyn WorkspaceRegistry>,
+        rua_root: PathBuf,
+        facade: Arc<dyn rua_channel::core::console::ConsoleChatFacade>,
+    ) -> Self {
+        Self {
+            registry,
+            rua_root,
+            facade,
+        }
     }
 
     async fn runtime_for_agent(
@@ -299,7 +315,7 @@ impl rua_cron::CronAgentRunner for WorkspaceCronAgentRunner {
             session_id,
             input,
             workspace_dir,
-            rua_cron::CronAgentRunOptions { tool_safety: false },
+            rua_cron::CronAgentRunOptions::default(),
         );
         runtime.stream(request).await
     }
@@ -312,6 +328,41 @@ impl rua_cron::CronAgentRunner for WorkspaceCronAgentRunner {
         input: &str,
         options: rua_cron::CronAgentRunOptions,
     ) -> std::result::Result<RuntimeEventStream, RuaError> {
+        if let Some(ref chat_id) = options.chat_id {
+            let failure = |message: String| RuaError::Cron {
+                job_id: format!("chat:{chat_id}"),
+                message,
+            };
+            let context = crate::services::chat_context::load_chat_context(&self.rua_root, chat_id)
+                .await
+                .map_err(|error| failure(error.to_string()))?
+                .ok_or_else(|| failure(format!("Scheduled Chat not found: {chat_id}")))?;
+            let request = rua_channel::core::console::ConsoleChatRequest {
+                message: input.into(),
+                chat_id: Some(chat_id.clone()),
+                model: None,
+                is_reconnect: false,
+                attachments: vec![],
+                input: None,
+                messages: None,
+                extra: serde_json::Map::from_iter([
+                    ("user_id".into(), serde_json::json!(user_id)),
+                    (
+                        "request_context".into(),
+                        serde_json::json!({"source": "cron"}),
+                    ),
+                ]),
+                channel_kind: None,
+            };
+            return rua_channel::core::console::submit_runtime_turn(
+                Arc::clone(&self.facade),
+                rua_core::ChatAddress::new(chat_id.as_str()),
+                &context.agent_id,
+                request,
+            )
+            .await
+            .map_err(failure);
+        }
         let (runtime, workspace_dir) = self.runtime_for_agent(agent_id).await?;
         let request =
             Self::build_request(agent_id, user_id, session_id, input, workspace_dir, options);
@@ -324,10 +375,11 @@ pub(crate) fn spawn_cron_scheduler(
     registry: Arc<dyn WorkspaceRegistry>,
     scheduler: Arc<TokioScheduler>,
     fire_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    facade: Arc<dyn rua_channel::core::console::ConsoleChatFacade>,
     push_store: crate::endpoints::messages::PushMessageStore,
 ) {
     tokio::spawn(async move {
-        run_cron_scheduler(data_dir, registry, scheduler, fire_rx, push_store).await;
+        run_cron_scheduler(data_dir, registry, scheduler, fire_rx, facade, push_store).await;
     });
 }
 
@@ -346,7 +398,42 @@ impl ScheduledJob {
     }
 }
 
-fn load_schedulable_jobs(data_dir: &std::path::Path) -> Result<Vec<ScheduledJob>, String> {
+pub(crate) async fn bind_last_heartbeat_chat(
+    rua_root: &std::path::Path,
+    account_id: &str,
+    heartbeat_target: &str,
+    channel: &str,
+    target: &mut DispatchTarget,
+    previous_dispatch: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    if target.chat_id.is_some()
+        || !heartbeat_target.eq_ignore_ascii_case("last")
+        || channel == "console"
+    {
+        return Ok(());
+    }
+    let Some(previous) = previous_dispatch else {
+        return Ok(());
+    };
+    let route = rua_session::external_chat::ExternalChatRoute {
+        account_id: account_id.into(),
+        platform_account_id: previous["platform_account_id"].as_str().map(str::to_string),
+        channel: channel.into(),
+        session_id: target.session_id.clone(),
+        conversation_id: target.reply_conversation().to_owned(),
+    };
+    if let Some(binding) = route
+        .resolve(rua_root, false)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|binding| binding.admitted)
+    {
+        target.chat_id = Some(binding.address.chat_id().to_string());
+    }
+    Ok(())
+}
+
+async fn load_schedulable_jobs(data_dir: &std::path::Path) -> Result<Vec<ScheduledJob>, String> {
     let mut jobs = Vec::new();
     let timezone = load_user_timezone(data_dir)?;
     let root = rua_config::load_config(&data_dir.join("config.json"), data_dir)
@@ -379,13 +466,26 @@ fn load_schedulable_jobs(data_dir: &std::path::Path) -> Result<Vec<ScheduledJob>
                 .transpose()
                 .map_err(|e| format!("Agent '{agent_id}' heartbeat config: {e}"))?
             {
-                if let Some(job) = rua_cron::build_heartbeat_job_spec(
+                if let Some(mut job) = rua_cron::build_heartbeat_job_spec(
                     &config.id,
                     &heartbeat,
                     &path,
                     &timezone,
                     config.last_dispatch.as_ref(),
                 ) {
+                    if let Some(dispatch) = &mut job.dispatch {
+                        if let Some(target) = &mut dispatch.target {
+                            bind_last_heartbeat_chat(
+                                data_dir,
+                                agent_id,
+                                &heartbeat.target,
+                                &dispatch.channel,
+                                target,
+                                config.last_dispatch.as_ref(),
+                            )
+                            .await?;
+                        }
+                    }
                     jobs.push(ScheduledJob::Heartbeat(job));
                 }
             }
@@ -415,6 +515,7 @@ async fn run_cron_scheduler(
     registry: Arc<dyn WorkspaceRegistry>,
     scheduler: Arc<TokioScheduler>,
     mut fire_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    facade: Arc<dyn rua_channel::core::console::ConsoleChatFacade>,
     push_store: crate::endpoints::messages::PushMessageStore,
 ) {
     let ws_dir = data_dir.join("workspaces");
@@ -422,8 +523,11 @@ async fn run_cron_scheduler(
     let channel_sender: Arc<dyn rua_cron::CronChannelSender> = Arc::new(
         WorkspaceCronChannelSender::new(Arc::clone(&registry)).with_push_store(push_store),
     );
-    let agent_runner: Arc<dyn rua_cron::CronAgentRunner> =
-        Arc::new(WorkspaceCronAgentRunner::new(Arc::clone(&registry)));
+    let agent_runner: Arc<dyn rua_cron::CronAgentRunner> = Arc::new(WorkspaceCronAgentRunner::new(
+        Arc::clone(&registry),
+        data_dir.clone(),
+        facade,
+    ));
     let executor = Arc::new(CronExecutor::new(channel_sender, agent_runner));
 
     let mut jobs_map: std::collections::HashMap<String, ScheduledJob> =
@@ -669,7 +773,7 @@ async fn reload_jobs(
     jobs_map: &mut std::collections::HashMap<String, ScheduledJob>,
     scheduler: &Arc<TokioScheduler>,
 ) -> Result<(), String> {
-    let fresh = load_schedulable_jobs(data_dir)?;
+    let fresh = load_schedulable_jobs(data_dir).await?;
     let fresh_ids: std::collections::HashSet<String> =
         fresh.iter().map(|j| j.spec().id.clone()).collect();
     let old_ids: std::collections::HashSet<String> = jobs_map.keys().cloned().collect();

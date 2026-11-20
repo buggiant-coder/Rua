@@ -33,6 +33,8 @@ pub struct WorkspaceContext {
     pub push_store_dir: Option<PathBuf>,
     pub agent_resolver: Arc<AgentResolver>,
 
+    pub channel_chat_facade:
+        std::sync::OnceLock<std::sync::Weak<dyn rua_channel::core::console::ConsoleChatFacade>>,
     pub command_runtime_factory: std::sync::OnceLock<rua_contract::agent::CommandRuntimeFactory>,
 
     pub session_replication_hook:

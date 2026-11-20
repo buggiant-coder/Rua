@@ -147,8 +147,7 @@ async fn production_sender_delivers_stream_final_and_propagates_send_failures() 
         .send_event(
             "default",
             "failed-delivery",
-            "recipient",
-            "cron-target",
+            &job("console", "final").dispatch.unwrap().target.unwrap(),
             &approval
         )
         .await
@@ -174,7 +173,12 @@ async fn console_delivery_is_visible_once_without_a_legacy_channel() {
     assert_eq!(store.list().await.len(), 3);
     let missing_store = WorkspaceCronChannelSender::new(state.registry.clone());
     assert!(missing_store
-        .send_text("default", "console", "recipient", "cron-target", "text")
+        .send_text(
+            "default",
+            "console",
+            &job("console", "final").dispatch.unwrap().target.unwrap(),
+            "text"
+        )
         .await
         .is_err());
 }

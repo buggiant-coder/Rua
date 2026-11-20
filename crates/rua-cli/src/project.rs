@@ -1,8 +1,10 @@
 use clap::{Args, Subcommand};
 use rua_core::AgentCollaborationMode;
 
-use crate::chat::{build_response_json, consume_sse_stream, stream_sse};
-use crate::http_client::{require_server, resolve_base_url, ApiClient};
+use crate::chat::{
+    build_response_json, chat_endpoint, chat_stream_endpoint, consume_sse_stream, stream_sse,
+};
+use crate::http_client::{api_url, relative_url, require_server, resolve_base_url, ApiClient};
 use crate::output::{print_value, OutputFormat};
 
 #[derive(Debug, Args)]
@@ -157,12 +159,12 @@ async fn run_chat(
         } => {
             let response = client
                 .get(&project_chat_history_endpoint(
-                    &project_id,
                     &chat_id,
                     turn_limit,
                     before_turn_ordinal,
                 ))
                 .await?;
+            check_project(&response, &project_id)?;
             print_value(&response, format);
         }
         ProjectChatCommands::Send {
@@ -172,12 +174,18 @@ async fn run_chat(
             model,
             mode,
         } => {
-            let request =
-                build_project_chat_request(&message, agent_id, chat_id, model.as_deref(), mode);
+            let request = build_project_chat_request(
+                &message,
+                agent_id,
+                &project_id,
+                chat_id,
+                model.as_deref(),
+                mode,
+            );
             eprintln!("INFO: Using chat_id: {}", request.chat_id);
             let events = consume_sse_stream(
                 client,
-                &project_chat_stream_endpoint(&project_id, &request.chat_id),
+                &chat_stream_endpoint(&request.chat_id),
                 agent_id,
                 &request.body,
             )
@@ -205,12 +213,18 @@ async fn run_chat(
             model,
             mode,
         } => {
-            let request =
-                build_project_chat_request(&message, agent_id, chat_id, model.as_deref(), mode);
+            let request = build_project_chat_request(
+                &message,
+                agent_id,
+                &project_id,
+                chat_id,
+                model.as_deref(),
+                mode,
+            );
             eprintln!("INFO: Using chat_id: {}", request.chat_id);
             stream_sse(
                 client,
-                &project_chat_stream_endpoint(&project_id, &request.chat_id),
+                &chat_stream_endpoint(&request.chat_id),
                 agent_id,
                 format,
                 &request.body,
@@ -246,11 +260,9 @@ async fn run_chat(
                     "Project Chat update requires --name, --pin, --unpin, --pin-order, or --mode"
                 );
             }
+            body.insert("project_id".into(), serde_json::json!(project_id));
             let response = client
-                .patch(
-                    &project_chat_endpoint(&project_id, &chat_id),
-                    &serde_json::Value::Object(body),
-                )
+                .patch(&chat_endpoint(&chat_id), &serde_json::Value::Object(body))
                 .await?;
             print_value(&response, format);
         }
@@ -259,11 +271,9 @@ async fn run_chat(
             chat_id,
             force,
         } => {
+            require_project(client, &chat_id, &project_id).await?;
             let response = client
-                .delete(&format!(
-                    "{}?force={force}",
-                    project_chat_endpoint(&project_id, &chat_id)
-                ))
+                .delete(&format!("{}?force={force}", chat_endpoint(&chat_id)))
                 .await?;
             print_value(&response, format);
         }
@@ -271,9 +281,10 @@ async fn run_chat(
             project_id,
             chat_id,
         } => {
+            require_project(client, &chat_id, &project_id).await?;
             let response = client
                 .post(
-                    &project_chat_stop_endpoint(&project_id, &chat_id),
+                    &format!("{}/console/stop", chat_endpoint(&chat_id)),
                     &serde_json::json!({}),
                 )
                 .await?;
@@ -286,6 +297,7 @@ async fn run_chat(
 pub fn build_project_chat_request(
     message: &str,
     agent_id: &str,
+    project_id: &str,
     chat_id: Option<String>,
     model: Option<&str>,
     mode: Option<AgentCollaborationMode>,
@@ -293,6 +305,7 @@ pub fn build_project_chat_request(
     let chat_id = chat_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let mut body = serde_json::json!({
         "agent_id": agent_id,
+        "project_id": project_id,
         "chat_id": chat_id,
         "message": message,
     });
@@ -311,9 +324,10 @@ pub fn project_chats_endpoint(
     limit: u64,
     search: Option<&str>,
 ) -> String {
-    let mut url = api_url(&["projects", project_id, "chats"]);
+    let mut url = api_url(&["chats"]);
     {
         let mut query = url.query_pairs_mut();
+        query.append_pair("project_id", project_id);
         query.append_pair("offset", &offset.to_string());
         query.append_pair("limit", &limit.to_string());
         if let Some(search) = search.filter(|value| !value.trim().is_empty()) {
@@ -323,17 +337,12 @@ pub fn project_chats_endpoint(
     relative_url(url)
 }
 
-pub fn project_chat_endpoint(project_id: &str, chat_id: &str) -> String {
-    relative_url(api_url(&["projects", project_id, "chats", chat_id]))
-}
-
 pub fn project_chat_history_endpoint(
-    project_id: &str,
     chat_id: &str,
     turn_limit: Option<u64>,
     before_turn_ordinal: Option<u64>,
 ) -> String {
-    let mut url = api_url(&["projects", project_id, "chats", chat_id]);
+    let mut url = api_url(&["chats", chat_id]);
     {
         let mut query = url.query_pairs_mut();
         if let Some(turn_limit) = turn_limit {
@@ -346,34 +355,21 @@ pub fn project_chat_history_endpoint(
     relative_url(url)
 }
 
-pub fn project_chat_stream_endpoint(project_id: &str, chat_id: &str) -> String {
-    relative_url(api_url(&[
-        "projects", project_id, "chats", chat_id, "console", "chat",
-    ]))
+fn check_project(chat: &serde_json::Value, expected: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        chat["project_id"].as_str() == Some(expected),
+        "Chat does not belong to Project {expected}"
+    );
+    Ok(())
 }
 
-pub fn project_chat_stop_endpoint(project_id: &str, chat_id: &str) -> String {
-    relative_url(api_url(&[
-        "projects", project_id, "chats", chat_id, "console", "stop",
-    ]))
-}
-
-fn api_url(segments: &[&str]) -> reqwest::Url {
-    let mut url = reqwest::Url::parse("http://localhost").expect("valid URL base");
-    {
-        let mut path = url.path_segments_mut().expect("URL supports path segments");
-        path.clear();
-        path.push("api");
-        for segment in segments {
-            path.push(segment);
-        }
-    }
-    url
-}
-
-fn relative_url(url: reqwest::Url) -> String {
-    match url.query() {
-        Some(query) => format!("{}?{query}", url.path()),
-        None => url.path().to_string(),
-    }
+async fn require_project(
+    client: &ApiClient,
+    chat_id: &str,
+    project_id: &str,
+) -> anyhow::Result<()> {
+    let metadata = client
+        .get(&format!("{}/metadata", chat_endpoint(chat_id)))
+        .await?;
+    check_project(&metadata, project_id)
 }

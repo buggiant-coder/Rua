@@ -53,6 +53,8 @@ fn make_streaming_agent_job(id: &str) -> CronJobSpec {
         r#type: "channel".into(),
         channel: "console".into(),
         target: Some(DispatchTarget {
+            chat_id: None,
+            conversation_id: None,
             user_id: "cron-agent-user".into(),
             session_id: "console:cron-agent-session".into(),
             extra: Default::default(),
@@ -90,6 +92,8 @@ fn make_text_job(id: &str, text: Option<&str>) -> CronJobSpec {
             r#type: "channel".into(),
             channel: "console".into(),
             target: Some(DispatchTarget {
+                chat_id: None,
+                conversation_id: None,
                 user_id: "cron-user".into(),
                 session_id: "console:cron-session".into(),
                 extra: Default::default(),
@@ -158,8 +162,7 @@ impl CronChannelSender for FailingChannelSender {
         &self,
         _agent_id: &str,
         channel: &str,
-        _user_id: &str,
-        _session_id: &str,
+        _target: &DispatchTarget,
         _text: &str,
     ) -> Result<(), RuaError> {
         Err(RuaError::Runtime {
@@ -171,8 +174,7 @@ impl CronChannelSender for FailingChannelSender {
         &self,
         _agent_id: &str,
         channel: &str,
-        _user_id: &str,
-        _session_id: &str,
+        _target: &DispatchTarget,
         _event: &RuntimeEvent,
     ) -> Result<(), RuaError> {
         Err(RuaError::Runtime {

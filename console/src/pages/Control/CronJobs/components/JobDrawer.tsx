@@ -4,7 +4,12 @@ import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import dayjs from "dayjs";
-import type { CronJobSpecOutput } from "../../../../api/types";
+import type {
+  ChatSpec,
+  CronDispatchTargetItem,
+  CronJobSpecOutput,
+} from "../../../../api/types";
+import { chatApi } from "../../../../api/modules/chat";
 import { cronJobApi } from "../../../../api/modules/cronjob";
 import { TIMEZONE_OPTIONS, DEFAULT_FORM_VALUES } from "./constants";
 import { parseCron } from "./parseCron";
@@ -26,11 +31,7 @@ import {
 } from "@/ui";
 
 type CronJob = CronJobSpecOutput;
-type DispatchTargetOption = {
-  channel: string;
-  user_id: string;
-  session_id: string;
-};
+type DispatchTargetOption = CronDispatchTargetItem;
 
 interface JobDrawerProps {
   open: boolean;
@@ -53,6 +54,9 @@ export function JobDrawer({
   const [dispatchTargets, setDispatchTargets] = useState<
     DispatchTargetOption[]
   >([]);
+
+  const [savedChats, setSavedChats] = useState<ChatSpec[]>([]);
+  const [chatSearch, setChatSearch] = useState("");
 
   const schema = z
     .object({
@@ -94,6 +98,8 @@ export function JobDrawer({
         target: z.object({
           user_id: z.string().min(1, t("cronJobs.pleaseInputUserId")),
           session_id: z.string().min(1, t("cronJobs.pleaseInputSessionId")),
+          conversation_id: z.string().optional().nullable(),
+          chat_id: z.string().optional().nullable(),
         }),
         mode: z.enum(["stream", "final"]).optional(),
       }),
@@ -229,6 +235,7 @@ export function JobDrawer({
         console.warn("Failed to load cron dispatch targets", err);
         setDispatchTargets([]);
       });
+    setChatSearch("");
     if (editingJob) {
       const schedule = (editingJob.schedule || {}) as any;
       const scheduleType = schedule.type || "cron";
@@ -289,6 +296,29 @@ export function JobDrawer({
   const taskType = watch("task_type");
   const repeatEnabled = watch("repeatEnabled");
   const repeatEndType = watch("repeatEndType");
+
+  useEffect(() => {
+    if (!open || taskType !== "agent") return;
+    let active = true;
+    chatApi
+      .listChats({
+        view: "user",
+        archived: false,
+        search: chatSearch,
+        limit: 50,
+      })
+      .then(
+        ({ data }) => {
+          if (active) setSavedChats(data);
+        },
+        () => {
+          if (active) setSavedChats([]);
+        },
+      );
+    return () => {
+      active = false;
+    };
+  }, [open, taskType, chatSearch]);
 
   const basicGroup = (
     <div className={styles.formGroup}>
@@ -724,6 +754,7 @@ export function JobDrawer({
           <FormField label={t("cronJobs.dispatchTargetPicker")}>
             <Select
               showSearch
+              aria-label={t("cronJobs.dispatchTargetPicker")}
               placeholder={t("cronJobs.dispatchTargetPickerPlaceholder")}
               filterOption={(input: string, option: any) =>
                 (option?.label?.toString() || "")
@@ -731,15 +762,21 @@ export function JobDrawer({
                   .includes(input.toLowerCase())
               }
               options={dispatchTargets.map((target) => ({
-                label: `${target.channel} · ${target.user_id} · ${target.session_id}`,
-                value: `${target.channel}\t${target.user_id}\t${target.session_id}`,
+                label: `${target.chat_name} · ${target.channel} · ${target.user_id}`,
+                value: target.chat_id,
               }))}
-              onChange={(value: string) => {
-                const [channel, userId, sessionId] = String(value).split("\t");
-                if (!channel || !userId || !sessionId) return;
-                setValue("dispatch.channel", channel);
-                setValue("dispatch.target.user_id", userId);
-                setValue("dispatch.target.session_id", sessionId);
+              onChange={(id: string) => {
+                const target = dispatchTargets.find(
+                  (item) => item.chat_id === id,
+                );
+                if (!target) return;
+                setValue("dispatch.channel", target.channel);
+                setValue("dispatch.target.user_id", target.user_id);
+                setValue("dispatch.target.session_id", target.session_id);
+                setValue(
+                  "dispatch.target.conversation_id",
+                  target.conversation_id,
+                );
               }}
             />
           </FormField>
@@ -800,6 +837,44 @@ export function JobDrawer({
             />
           </FormField>
 
+          <FormField label={t("cronJobs.dispatchConversationId")}>
+            <Controller
+              name="dispatch.target.conversation_id"
+              control={control}
+              render={({ field }) => (
+                <InputWithExample
+                  value={field.value ?? ""}
+                  onChange={(e: any) => field.onChange(e.target.value || null)}
+                />
+              )}
+            />
+          </FormField>
+
+          {taskType === "agent" && (
+            <FormField label={t("cronJobs.continueChat")}>
+              <Controller
+                name="dispatch.target.chat_id"
+                control={control}
+                render={({ field }) => (
+                  <Select
+                    showSearch
+                    aria-label={t("cronJobs.continueChat")}
+                    onSearch={setChatSearch}
+                    filterOption={() => true}
+                    value={field.value ?? ""}
+                    onChange={(id: string) => field.onChange(id || null)}
+                    options={[
+                      { label: t("cronJobs.noChat"), value: "" },
+                      ...savedChats.map((chat) => ({
+                        label: chat.name || chat.id,
+                        value: chat.id,
+                      })),
+                    ]}
+                  />
+                )}
+              />
+            </FormField>
+          )}
           <FormField label={t("cronJobs.dispatchMode")}>
             <Controller
               name="dispatch.mode"

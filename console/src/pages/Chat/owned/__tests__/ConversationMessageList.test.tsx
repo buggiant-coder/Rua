@@ -1752,6 +1752,22 @@ describe("ConversationMessageList", () => {
     expect(sessionStorage.getItem("rua_search_scroll_target")).toBeNull();
   });
 
+  it("locates a linked turn before it has an assistant reply", async () => {
+    const turnId = "turn-user-only";
+    sessionStorage.setItem("rua_search_scroll_target", JSON.stringify({ turnId }));
+    const projection = projectConversation("chat-1", {
+      messages: [{ id: "user-only", turn_id: turnId, role: "user", content: "Waiting for a reply" }],
+    });
+    const locate = vi.fn();
+    const { container } = render(
+      <ConversationMessageList projection={projection} onLocateTurn={locate} />,
+    );
+    await waitFor(() => {
+      expect(container.querySelector(".rua-chat-message--search-jump")).toHaveTextContent("Waiting for a reply");
+    });
+    expect(locate).not.toHaveBeenCalled();
+  });
+
   it("opens lazy reasoning when navigating to a matching search result", async () => {
     const projection = projectConversation("chat-search-lazy", {
       messages: [

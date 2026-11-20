@@ -84,17 +84,15 @@ impl ChatCompletionNotifier {
         if fact.status != "completed" {
             return;
         }
-        let scope_store =
-            rua_core::chat_store::ChatStore::resolve(&self.rua_root, fact.address.clone());
-        let header = rua_session::WorkspaceSessionStore::new(scope_store.root())
-            .load_chat_header(fact.address.chat_id().as_str())
-            .await
-            .ok()
-            .flatten();
-        let chat_title = header.as_ref().map(|header| header.metadata.title.as_str());
-        let Some(agent_id) = turn_agent_id
-            .or_else(|| header.as_ref().map(|header| header.agent_id.trim()))
-            .filter(|agent_id| !agent_id.is_empty())
+        let Ok(Some(header)) = crate::services::chat_context::load_live_chat_header(
+            &self.rua_root,
+            fact.address.chat_id().as_str(),
+        )
+        .await
+        else {
+            return;
+        };
+        let Some(agent_id) = non_empty(turn_agent_id).or_else(|| non_empty(Some(&header.agent_id)))
         else {
             return;
         };
@@ -108,7 +106,7 @@ impl ChatCompletionNotifier {
         let Some(template) = request_for_completed_chat(
             fact,
             &self.local_device_id,
-            chat_title,
+            Some(&header.metadata.title),
             agent_id,
             agent_name.as_deref(),
         ) else {
@@ -148,6 +146,11 @@ pub fn request_for_completed_chat(
     if fact.status != "completed" {
         return None;
     }
+    let mut uri = reqwest::Url::parse("rua://chats").ok()?;
+    uri.path_segments_mut()
+        .ok()?
+        .push(fact.address.chat_id().as_str());
+    uri.query_pairs_mut().append_pair("turn", &fact.turn_id);
     Some(UserNotificationRequest {
         target_device_id: target_device_id.to_string(),
         sender: UserNotificationSender {
@@ -158,11 +161,7 @@ pub fn request_for_completed_chat(
             .map(str::to_string)
             .unwrap_or_else(|| format!("对话 {}", fact.address.chat_id())),
         body: Some("已完成回复".to_string()),
-        rua_uri: Some(format!(
-            "rua://chats/{}?turn={}",
-            fact.address.chat_id(),
-            fact.turn_id
-        )),
+        rua_uri: Some(uri.into()),
     })
 }
 

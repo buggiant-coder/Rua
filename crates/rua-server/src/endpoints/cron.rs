@@ -5,7 +5,7 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use rua_core::RuaError;
 use serde::Deserialize;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -115,6 +115,8 @@ fn spec_to_dto(spec: &CronJobSpec) -> dto::CronJob {
                 .map(|t| dto::CronDispatchTarget {
                     user_id: t.user_id.clone(),
                     session_id: t.session_id.clone(),
+                    conversation_id: t.conversation_id.clone(),
+                    chat_id: t.chat_id.clone(),
                 })
                 .unwrap_or_default(),
             mode: d.mode.clone(),
@@ -156,12 +158,15 @@ fn spec_to_dto(spec: &CronJobSpec) -> dto::CronJob {
 fn create_to_spec(create: dto::CronJobCreate, agent_id: &str) -> CronJobSpec {
     let dispatch_target = if create.dispatch.target.user_id.is_empty()
         && create.dispatch.target.session_id.is_empty()
+        && create.dispatch.target.chat_id.is_none()
     {
         None
     } else {
         Some(DispatchTarget {
             user_id: create.dispatch.target.user_id,
             session_id: create.dispatch.target.session_id,
+            conversation_id: create.dispatch.target.conversation_id,
+            chat_id: create.dispatch.target.chat_id,
             extra: serde_json::Map::new(),
         })
     };
@@ -282,13 +287,17 @@ fn apply_update(spec: &mut CronJobSpec, update: dto::CronJobUpdate) {
         }
     }
     if let Some(dispatch) = update.dispatch {
-        let target = if dispatch.target.user_id.is_empty() && dispatch.target.session_id.is_empty()
+        let target = if dispatch.target.user_id.is_empty()
+            && dispatch.target.session_id.is_empty()
+            && dispatch.target.chat_id.is_none()
         {
             None
         } else {
             Some(DispatchTarget {
                 user_id: dispatch.target.user_id,
                 session_id: dispatch.target.session_id,
+                conversation_id: dispatch.target.conversation_id,
+                chat_id: dispatch.target.chat_id,
                 extra: serde_json::Map::new(),
             })
         };
@@ -346,6 +355,14 @@ fn apply_update(spec: &mut CronJobSpec, update: dto::CronJobUpdate) {
 }
 
 fn normalize_job_spec_for_write(spec: &mut CronJobSpec) -> Result<(), ApiError> {
+    if let Some(chat_id) = spec
+        .dispatch
+        .as_ref()
+        .and_then(|d| d.target.as_ref())
+        .and_then(|t| t.chat_id.as_deref())
+    {
+        crate::services::console_chat::resolve_chat_id(chat_id).map_err(ApiError::BadRequest)?;
+    }
     if spec.schedule.r#type.is_empty() {
         spec.schedule.r#type = "cron".to_string();
     }
@@ -539,6 +556,8 @@ fn history_entry_to_dto(entry: CronDispatchHistoryEntry) -> dto::CronDispatchHis
         channel: entry.channel,
         user_id: entry.user_id,
         session_id: entry.session_id,
+        chat_id: entry.chat_id,
+        conversation_id: entry.conversation_id,
         mode: entry.mode,
         status: entry.status,
         success: entry.success,
@@ -569,6 +588,7 @@ fn cron_job_not_found(job_id: &str) -> Response {
 }
 
 async fn do_list_dispatch_targets(
+    account_id: &str,
     workspace_dir: &std::path::Path,
     query: DispatchTargetsQuery,
 ) -> Response {
@@ -586,47 +606,64 @@ async fn do_list_dispatch_targets(
         .map(|value| value.to_ascii_lowercase());
     let limit = query.limit.unwrap_or(500).clamp(1, 2000);
 
-    let chats = match chat_index::list_all(workspace_dir).await {
-        Ok(chats) => chats,
+    let filter = rua_session::chat_index::ChatIndexFilter {
+        archived: Some(false),
+        conversation_view: rua_session::chat_index::ChatConversationView::User,
+        channel: channel_filter.clone(),
+        ..Default::default()
+    };
+    let chats = match chat_index::list(workspace_dir, filter, 0, u64::MAX).await {
+        Ok(page) => page.entries,
         Err(e) => {
             return ApiError::Internal(format!("failed to list cron dispatch targets: {e}"))
-                .into_response();
+                .into_response()
         }
     };
-
-    let mut seen = HashSet::new();
     let mut channels = BTreeSet::new();
     let mut items = Vec::new();
-
     for chat in chats {
-        if channel_filter
-            .as_deref()
-            .is_some_and(|ch| chat.channel != ch)
-        {
-            continue;
-        }
+        let (session_id, conversation_id) = if chat.channel == "console" {
+            ("default".to_owned(), "default".to_owned())
+        } else {
+            let Some(route) = chat
+                .meta
+                .get(rua_session::external_chat::EXTERNAL_CHANNEL_META_KEY)
+                .and_then(|value| {
+                    serde_json::from_value::<rua_session::external_chat::ExternalChatRoute>(
+                        value.clone(),
+                    )
+                    .ok()
+                })
+            else {
+                continue;
+            };
+            if route.account_id != account_id || route.channel != chat.channel {
+                continue;
+            }
+            (route.session_id, route.conversation_id)
+        };
         if let Some(keyword) = &keyword {
-            let haystack =
-                format!("{} {} {}", chat.channel, chat.user_id, chat.id).to_ascii_lowercase();
-            if !haystack.contains(keyword) {
+            let haystack = format!(
+                "{} {} {} {} {} {}",
+                chat.channel, chat.user_id, chat.id, chat.name, conversation_id, session_id
+            );
+            if !haystack.to_ascii_lowercase().contains(keyword) {
                 continue;
             }
         }
-
         channels.insert(chat.channel.clone());
-        let key = (chat.channel.clone(), chat.user_id.clone(), chat.id.clone());
-        if seen.insert(key.clone()) {
-            items.push(dto::CronDispatchTargetItem {
-                channel: key.0,
-                user_id: key.1,
-                session_id: key.2,
-            });
-            if items.len() >= limit {
-                break;
-            }
+        items.push(dto::CronDispatchTargetItem {
+            channel: chat.channel,
+            user_id: chat.user_id,
+            session_id,
+            conversation_id,
+            chat_id: chat.id,
+            chat_name: chat.name,
+        });
+        if items.len() >= limit {
+            break;
         }
     }
-
     channels.insert("console".to_string());
     let response = dto::CronDispatchTargetsResponse {
         channels: channels.into_iter().collect(),
@@ -776,14 +813,18 @@ async fn do_run_job(
     let data_dir = state.rua_root.clone();
     let registry = Arc::clone(&state.registry);
     let push_store = state.push_message_store.clone();
+    let facade = Arc::clone(&state.console_facade);
     tokio::spawn(async move {
         let channel_sender: Arc<dyn rua_cron::CronChannelSender> = Arc::new(
             crate::cron_bootstrap::WorkspaceCronChannelSender::new(Arc::clone(&registry))
                 .with_push_store(push_store),
         );
-        let agent_runner: Arc<dyn rua_cron::CronAgentRunner> = Arc::new(
-            crate::cron_bootstrap::WorkspaceCronAgentRunner::new(Arc::clone(&registry)),
-        );
+        let agent_runner: Arc<dyn rua_cron::CronAgentRunner> =
+            Arc::new(crate::cron_bootstrap::WorkspaceCronAgentRunner::new(
+                Arc::clone(&registry),
+                data_dir.clone(),
+                facade,
+            ));
         let executor = rua_cron::CronExecutor::new(channel_sender, agent_runner);
         let result = executor.execute(&run_spec).await;
         if result.success {
@@ -861,7 +902,7 @@ async fn list_dispatch_targets(
     Extension(ctx): Extension<AgentExtractorContext>,
     Query(query): Query<DispatchTargetsQuery>,
 ) -> Response {
-    do_list_dispatch_targets(&ctx.runtime.workspace_dir(), query).await
+    do_list_dispatch_targets(&ctx.agent_id, &ctx.runtime.chat_workspace_dir(), query).await
 }
 
 async fn get_job(
@@ -955,7 +996,7 @@ async fn list_dispatch_targets_agent(
                 .into_response();
         }
     };
-    do_list_dispatch_targets(&runtime.workspace_dir(), query).await
+    do_list_dispatch_targets(&agent_id, &runtime.chat_workspace_dir(), query).await
 }
 
 async fn get_job_agent(

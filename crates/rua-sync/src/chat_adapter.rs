@@ -132,6 +132,15 @@ impl ChatIndexSyncAdapter {
             ));
         }
         let scope_root = self.scope_root(address);
+        let intents =
+            rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(&self.data_dir);
+        if intents.load(address).map_err(SyncError::Store)?.is_some() {
+            chat_index::delete_sync(&scope_root, address.chat_id().as_str())
+                .map_err(SyncError::Store)?;
+            return Ok(ApplyOutcome::Applied {
+                cursor: tombstone_cursor(change.hlc, None),
+            });
+        }
         let mut incoming = change.payload.clone();
         if let Some(local) = chat_index::get_sync(&scope_root, address.chat_id().as_str())
             .map_err(SyncError::Store)?
@@ -151,6 +160,7 @@ impl ChatIndexSyncAdapter {
             preserve_newer_authority_placement(&local, &mut incoming);
         }
         if self.project_is_deleted(&incoming) {
+            intents.persist(address).map_err(SyncError::Store)?;
             chat_index::delete_sync(&scope_root, address.chat_id().as_str())
                 .map_err(SyncError::Store)?;
             return Ok(ApplyOutcome::Applied {
@@ -174,6 +184,9 @@ impl ChatIndexSyncAdapter {
         if merge_store.resolve_lww(&cursor_id, change.hlc, true)? == LwwDecision::Skip {
             return Ok(ApplyOutcome::Skipped);
         }
+        rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(&self.data_dir)
+            .persist(address)
+            .map_err(SyncError::Store)?;
         chat_index::delete_sync(&self.scope_root(address), address.chat_id().as_str())
             .map_err(SyncError::Store)?;
         Ok(ApplyOutcome::Applied {
@@ -191,11 +204,15 @@ impl DomainSyncAdapter for ChatIndexSyncAdapter {
     async fn export_records(&self) -> SyncResult<Vec<SyncChange>> {
         let workspace = rua_core::RuaRoot::new(&self.data_dir).chat_workspace();
         let mut changes = Vec::new();
+        let intents =
+            rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(&self.data_dir);
         if workspace.as_path().is_dir() {
             for chat in chat_index::list_all_sync(workspace.as_path()).map_err(SyncError::Store)? {
                 let address = ChatAddress::new(chat.id.clone());
                 let payload = chat_index_record_to_json(chat);
-                if self.project_is_deleted(&payload) {
+                if self.project_is_deleted(&payload)
+                    || intents.load(&address).map_err(SyncError::Store)?.is_some()
+                {
                     continue;
                 }
                 changes.push(Self::index_change(

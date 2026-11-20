@@ -1267,7 +1267,7 @@ describe("ProjectChatPage", () => {
     );
   });
 
-  it("exports Project Chat history through the shared Conversation target", async () => {
+  it("exports Project Chat history by Chat ID", async () => {
     renderPage({
       project,
       chatId: "chat-export",
@@ -1283,16 +1283,11 @@ describe("ProjectChatPage", () => {
     );
 
     await waitFor(() =>
-      expect(exportConversationMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          projectId: "project-1",
-        }),
-        "chat-export",
-      ),
+      expect(exportConversationMock).toHaveBeenCalledWith("chat-export"),
     );
   });
 
-  it("opens the shared Task activity drawer with the Project target", async () => {
+  it("opens the shared Task activity drawer for the Project Chat", async () => {
     renderPage({
       project,
       chatId: "chat-tasks",
@@ -1307,9 +1302,6 @@ describe("ProjectChatPage", () => {
       open: true,
       agentId: "default",
       chatId: "chat-tasks",
-      target: {
-        projectId: "project-1",
-      },
     });
   });
 

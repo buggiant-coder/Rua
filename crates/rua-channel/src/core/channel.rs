@@ -32,5 +32,15 @@ pub trait Channel: Send + Sync {
 
 #[async_trait]
 pub trait Process: Send + Sync {
+    /// Handle a native Chat control after the channel's access and mention gates.
+    async fn handle_chat_control(&self, _req: &AgentRequest) -> Option<RuntimeEvent> {
+        None
+    }
+
+    /// Resolve an existing native session for control and never create a Chat.
+    async fn control_chat_id(&self, req: &AgentRequest) -> Result<Option<String>> {
+        Ok(Some(req.session_id.clone()))
+    }
+
     async fn handle(&self, req: AgentRequest) -> BoxStream<'static, RuntimeEvent>;
 }

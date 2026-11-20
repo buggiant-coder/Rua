@@ -208,7 +208,7 @@ pub fn build_heartbeat_job_spec(
 
     let prompt = load_heartbeat_md(workspace_dir)?;
     let cron = heartbeat_cron_expr(&config.every);
-    let (channel, user_id, session_id) = heartbeat_dispatch(&config.target, last_dispatch);
+    let (channel, target) = heartbeat_dispatch(&config.target, last_dispatch);
     let mut meta = serde_json::Map::new();
     meta.insert(
         "internal".into(),
@@ -247,11 +247,7 @@ pub fn build_heartbeat_job_spec(
         dispatch: Some(DispatchSpec {
             r#type: "channel".to_string(),
             channel,
-            target: Some(DispatchTarget {
-                user_id,
-                session_id,
-                extra: Default::default(),
-            }),
+            target: Some(target),
             mode: "stream".to_string(),
             meta: Default::default(),
             extra: Default::default(),
@@ -292,43 +288,44 @@ fn active_hours_from_value(value: &serde_json::Value) -> Option<ActiveHoursRange
     parse_active_hours(&format!("{start}-{end}"))
 }
 
-fn heartbeat_dispatch(
+pub fn heartbeat_dispatch(
     target: &str,
     last_dispatch: Option<&serde_json::Value>,
-) -> (String, String, String) {
+) -> (String, DispatchTarget) {
     let target = target.trim();
     if target.eq_ignore_ascii_case("last") {
-        if let Some(dispatch) = dispatch_from_last(last_dispatch) {
-            return dispatch;
+        if let Some(route) = last_dispatch.filter(|route| {
+            route["channel"]
+                .as_str()
+                .is_some_and(|channel| !channel.trim().is_empty())
+        }) {
+            let field = |key: &str| route[key].as_str().filter(|s| !s.trim().is_empty());
+            return (
+                field("channel").unwrap().to_owned(),
+                DispatchTarget {
+                    user_id: field("user_id").unwrap_or("main").to_owned(),
+                    session_id: field("session_id").unwrap_or("main").to_owned(),
+                    conversation_id: field("conversation_id").map(str::to_owned),
+                    chat_id: field("chat_id").map(str::to_owned),
+                    extra: Default::default(),
+                },
+            );
         }
     }
 
-    if target.is_empty() || target.eq_ignore_ascii_case("main") {
-        return ("console".into(), "main".into(), "main".into());
-    }
-
-    (target.to_string(), "main".into(), "main".into())
-}
-
-fn dispatch_from_last(value: Option<&serde_json::Value>) -> Option<(String, String, String)> {
-    let value = value?;
-    let channel = value.get("channel")?.as_str()?.trim();
-    if channel.is_empty() {
-        return None;
-    }
-    let user_id = value
-        .get("user_id")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or("main");
-    let session_id = value
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or("main");
-    Some((
-        channel.to_string(),
-        user_id.to_string(),
-        session_id.to_string(),
-    ))
+    let channel = if target.is_empty() || target.eq_ignore_ascii_case("main") {
+        "console"
+    } else {
+        target
+    };
+    (
+        channel.to_owned(),
+        DispatchTarget {
+            user_id: "main".into(),
+            session_id: "main".into(),
+            conversation_id: None,
+            chat_id: None,
+            extra: Default::default(),
+        },
+    )
 }

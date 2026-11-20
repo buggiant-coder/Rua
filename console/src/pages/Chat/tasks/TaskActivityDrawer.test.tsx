@@ -16,7 +16,6 @@ import type {
   ChatSpec,
   ConversationBackgroundWorkView,
 } from "@/api/types/chat";
-import type { ConversationApiTarget } from "@/api/modules/conversation";
 
 const collaborationApiMock = vi.hoisted(() => ({
   agents: vi.fn(),
@@ -42,10 +41,7 @@ const taskApiMock = vi.hoisted(() => ({
   unwatchTask: vi.fn(),
   sendInput: vi.fn(),
   getFullResult: vi.fn(),
-  activityPath: vi.fn(
-    (_target: ConversationApiTarget, chatId: string) =>
-      `/chats/${chatId}/tasks/activity`,
-  ),
+  activityPath: vi.fn((chatId: string) => `/chats/${chatId}/tasks/activity`),
 }));
 
 const conversationApiMock = vi.hoisted(() => ({
@@ -233,7 +229,6 @@ function renderDrawer(
   currentDeviceId: string | null = "device-a",
   options: {
     backgroundWork?: ConversationBackgroundWorkView;
-    target?: ConversationApiTarget;
   } = {},
 ) {
   taskApiMock.listTasks.mockResolvedValue(tasks);
@@ -337,7 +332,6 @@ describe("TaskActivityDrawer", () => {
       total: 1,
     });
     renderDrawer([], "device-a", {
-      target: { projectId: "project-a" },
       backgroundWork: {
         suppressed: false,
         items: [
@@ -630,7 +624,6 @@ describe("TaskActivityDrawer", () => {
     fireEvent.click(confirmCancel);
     await waitFor(() =>
       expect(taskApiMock.cancelTask).toHaveBeenCalledWith(
-        { agentId: "agent-a" },
         "chat-a",
         running.task_id,
       ),
@@ -662,7 +655,6 @@ describe("TaskActivityDrawer", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Watch" }));
     await waitFor(() =>
       expect(taskApiMock.watchTask).toHaveBeenCalledWith(
-        { agentId: "agent-a" },
         "chat-a",
         running.task_id,
       ),
@@ -672,7 +664,6 @@ describe("TaskActivityDrawer", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Send" }));
     await waitFor(() =>
       expect(taskApiMock.sendInput).toHaveBeenCalledWith(
-        { agentId: "agent-a" },
         "chat-a",
         running.task_id,
         { type: "text", text: "change direction" },
@@ -703,7 +694,6 @@ describe("TaskActivityDrawer", () => {
     );
     await waitFor(() =>
       expect(taskApiMock.sendInput).toHaveBeenCalledWith(
-        { agentId: "agent-a" },
         "chat-a",
         running.task_id,
         { type: "close_stdin" },

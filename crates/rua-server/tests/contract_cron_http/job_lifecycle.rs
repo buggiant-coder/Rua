@@ -325,27 +325,39 @@ async fn cron_create_accepts_qwenpaw_once_repeat_runtime_shape() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cron_dispatch_targets_are_derived_from_agent_chat_index() {
+async fn cron_dispatch_targets_keep_platform_routes_separate_from_saved_chat_ids() {
     let app = build_app();
     let agent_id = "integ_cron_targets_contract";
     create_agent(&app.app, agent_id, "Cron targets contract").await;
-    let workspace_dir = app.state.rua_root.join("workspaces").join(agent_id);
-
+    let workspace = app.state.chat_workspace();
+    let chat_id = "00000000-0000-4000-8000-000000000641";
     for (id, channel, user_id) in [
-        ("console:cron-session-a", "console", "cron-user-a"),
-        ("ding:cron-session-b", "dingtalk", "cron-user-b"),
+        (
+            "00000000-0000-4000-8000-000000000640",
+            "console",
+            "cron-user-a",
+        ),
+        (chat_id, "dingtalk", "cron-user-b"),
     ] {
+        let metadata = if channel == "console" {
+            json!({})
+        } else {
+            json!({"external_channel": {
+                "account_id": agent_id, "channel": channel,
+                "session_id": "thread-session-b", "conversation_id": "native-room"
+            }})
+        };
         chat_index::upsert(
-            &workspace_dir,
+            workspace.as_path(),
             ChatIndexEntry {
-                id: id.to_string(),
-                name: id.to_string(),
-                user_id: user_id.to_string(),
-                channel: channel.to_string(),
+                id: id.into(),
+                name: "Saved chat".into(),
+                user_id: user_id.into(),
+                channel: channel.into(),
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
-                meta: serde_json::Value::Null,
-                status: "idle".to_string(),
+                meta: metadata,
+                status: "idle".into(),
                 pinned: false,
                 pin_order: 0,
                 tag: rua_session::ChatTag::None,
@@ -353,9 +365,8 @@ async fn cron_dispatch_targets_are_derived_from_agent_chat_index() {
             },
         )
         .await
-        .expect("seed chat index");
+        .unwrap();
     }
-
     let all = request(
         &app.app,
         Method::GET,
@@ -387,10 +398,9 @@ async fn cron_dispatch_targets_are_derived_from_agent_chat_index() {
     assert_eq!(filtered_body["items"].as_array().expect("items").len(), 1);
     assert_eq!(filtered_body["items"][0]["channel"], "dingtalk");
     assert_eq!(filtered_body["items"][0]["user_id"], "cron-user-b");
-    assert_eq!(
-        filtered_body["items"][0]["session_id"],
-        "ding:cron-session-b"
-    );
+    assert_eq!(filtered_body["items"][0]["session_id"], "thread-session-b");
+    assert_eq!(filtered_body["items"][0]["conversation_id"], "native-room");
+    assert_eq!(filtered_body["items"][0]["chat_id"], chat_id);
 
     delete_agent(&app.app, agent_id).await;
 }

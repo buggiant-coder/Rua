@@ -674,6 +674,18 @@ async fn branch_before_has_identical_multiple_chat_behavior() {
     for address in addresses {
         seed_two_turn_chat(root.path(), &address).await;
 
+        let key = rua_session::external_chat::EXTERNAL_CHANNEL_META_KEY;
+        let source = ChatStore::resolve(root.path(), address.clone());
+        let store = WorkspaceSessionStore::new(source.root());
+        let native_route = serde_json::json!({"account_id":"agent-a", "channel":"slack",
+            "session_id":address.chat_id().as_str(), "conversation_id":"room"});
+        store
+            .update_chat_header(address.chat_id().as_str(), |header| {
+                header.extra.insert(key.into(), native_route.clone());
+            })
+            .await
+            .unwrap();
+        service.repair_projection(&address).await.unwrap();
         let branch = service
             .branch_before(&address, "turn-second")
             .await
@@ -683,6 +695,22 @@ async fn branch_before_has_identical_multiple_chat_behavior() {
             branch.project_id(),
             service.load(&address).await.unwrap().unwrap().project_id()
         );
+        assert_eq!(
+            store
+                .load_chat_header(address.chat_id().as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .extra[key],
+            native_route
+        );
+        assert!(!store
+            .load_chat_header(branch.address().chat_id().as_str())
+            .await
+            .unwrap()
+            .unwrap()
+            .extra
+            .contains_key(key));
         assert_ne!(branch.address().chat_id(), address.chat_id());
         assert_eq!(branch.title(), "Parity chat (branch)");
         assert!(!branch.pinned());

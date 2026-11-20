@@ -797,7 +797,7 @@ async fn local_user_notification_is_streamed_once_with_payload_unchanged() {
         },
         title: "Run complete".to_string(),
         body: Some("The requested analysis is ready.".to_string()),
-        rua_uri: Some("rua://agents/researcher/chats/chat-42?turn=7#result".to_string()),
+        rua_uri: Some("rua://chats/chat-42?turn=7#result".to_string()),
     };
 
     state.user_notifications.send(request.clone()).await;

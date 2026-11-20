@@ -49,17 +49,23 @@ struct CreateJobArgs {
     #[arg(long)]
     text: Option<String>,
 
-    #[arg(long, default_value = "console")]
-    channel: String,
+    #[arg(long)]
+    channel: Option<String>,
 
     #[arg(long)]
     target_user: Option<String>,
 
     #[arg(long)]
     target_session: Option<String>,
+    /// Native platform conversation to deliver to, if different from its session.
+    #[arg(long)]
+    target_conversation: Option<String>,
+    /// Saved Rua Chat to continue for a shared Agent run.
+    #[arg(long)]
+    chat_id: Option<String>,
 
-    #[arg(long, default_value = "final")]
-    mode: String,
+    #[arg(long)]
+    mode: Option<String>,
 
     #[arg(long = "save-result-to-inbox")]
     save_result_to_inbox: Option<bool>,
@@ -229,6 +235,8 @@ async fn run_async(
                 channel,
                 target_user,
                 target_session,
+                target_conversation,
+                chat_id,
                 mode,
                 save_result_to_inbox,
                 share_session,
@@ -286,12 +294,14 @@ async fn run_async(
 
                 let dispatch = serde_json::json!({
                     "type": "channel",
-                    "channel": channel,
+                    "channel": channel.as_deref().unwrap_or("console"),
                     "target": {
                         "user_id": target_user.as_deref().unwrap_or(""),
                         "session_id": target_session.as_deref().unwrap_or(""),
+                        "conversation_id": target_conversation,
+                        "chat_id": chat_id,
                     },
-                    "mode": mode,
+                    "mode": mode.as_deref().unwrap_or("final"),
                     "meta": {},
                 });
                 let runtime = serde_json::json!({
@@ -376,6 +386,8 @@ async fn run_async(
                 channel,
                 target_user,
                 target_session,
+                target_conversation,
+                chat_id,
                 mode,
                 save_result_to_inbox,
                 share_session,
@@ -464,21 +476,20 @@ async fn run_async(
                     other => anyhow::bail!("Unsupported schedule type: {other}"),
                 };
             }
-            if target_user.is_some()
-                || target_session.is_some()
-                || channel != "console"
-                || mode != "final"
-            {
-                body["dispatch"] = serde_json::json!({
-                    "type": "channel",
-                    "channel": channel,
-                    "target": {
-                        "user_id": target_user.or_else(|| body.pointer("/dispatch/target/user_id").and_then(|v| v.as_str()).map(str::to_string)).unwrap_or_default(),
-                        "session_id": target_session.or_else(|| body.pointer("/dispatch/target/session_id").and_then(|v| v.as_str()).map(str::to_string)).unwrap_or_default(),
-                    },
-                    "mode": mode,
-                    "meta": body.pointer("/dispatch/meta").cloned().unwrap_or_else(|| serde_json::json!({})),
-                });
+            for (key, value) in [("channel", channel), ("mode", mode)] {
+                if let Some(value) = value {
+                    body["dispatch"][key] = value.into();
+                }
+            }
+            for (key, value) in [
+                ("user_id", target_user),
+                ("session_id", target_session),
+                ("conversation_id", target_conversation),
+                ("chat_id", chat_id),
+            ] {
+                if let Some(value) = value {
+                    body["dispatch"]["target"][key] = value.into();
+                }
             }
             if let Some(save) = save_result_to_inbox {
                 body["save_result_to_inbox"] = serde_json::json!(save);

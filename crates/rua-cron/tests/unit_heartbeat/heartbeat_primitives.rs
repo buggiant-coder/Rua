@@ -111,7 +111,9 @@ fn heartbeat_job_spec_uses_persisted_config_and_last_dispatch() {
     let last = serde_json::json!({
         "channel": "dingtalk",
         "user_id": "u1",
-        "session_id": "s1"
+        "session_id": "s1",
+        "conversation_id": "platform-room",
+        "chat_id": "00000000-0000-4000-8000-000000000641"
     });
 
     let job = build_heartbeat_job_spec("agent-a", &cfg, tmp.path(), "Asia/Shanghai", Some(&last))
@@ -127,6 +129,11 @@ fn heartbeat_job_spec_uses_persisted_config_and_last_dispatch() {
     let target = dispatch.target.expect("target");
     assert_eq!(target.user_id, "u1");
     assert_eq!(target.session_id, "s1");
+    assert_eq!(target.conversation_id.as_deref(), Some("platform-room"));
+    assert_eq!(
+        target.chat_id.as_deref(),
+        Some("00000000-0000-4000-8000-000000000641")
+    );
     assert_eq!(job.meta["internal"], "heartbeat");
     assert_eq!(job.meta["active_hours"]["start"], "09:00");
 }

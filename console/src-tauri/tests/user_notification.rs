@@ -26,12 +26,12 @@ fn native_notification_keeps_sender_and_body_distinct() {
 
 #[test]
 fn notification_activation_accepts_only_safe_rua_uris_without_rewriting() {
-    let uri = "rua://agents/researcher/chats/chat-42?turn=7#result";
+    let uri = "rua://chats/chat-42?turn=7#result";
     assert_eq!(valid_rua_uri(uri), Some(uri));
 
     for invalid in [
         "",
-        " rua://agents/default/chats/a",
+        " rua://chats/a",
         "https://rua.example",
         "rua:/missing-host",
         "rua://user:secret@agents/default",

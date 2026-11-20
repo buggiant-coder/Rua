@@ -506,3 +506,23 @@ pub fn should_bypass_proxy_for_base_url(base_url: &str) -> bool {
         .parse::<std::net::IpAddr>()
         .is_ok_and(|ip| ip.is_loopback())
 }
+
+pub(crate) fn api_url(segments: &[&str]) -> reqwest::Url {
+    let mut url = reqwest::Url::parse("http://localhost").expect("valid URL base");
+    {
+        let mut path = url.path_segments_mut().expect("URL supports path segments");
+        path.clear();
+        path.push("api");
+        for segment in segments {
+            path.push(segment);
+        }
+    }
+    url
+}
+
+pub(crate) fn relative_url(url: reqwest::Url) -> String {
+    match url.query().filter(|query| !query.is_empty()) {
+        Some(query) => format!("{}?{query}", url.path()),
+        None => url.path().to_string(),
+    }
+}

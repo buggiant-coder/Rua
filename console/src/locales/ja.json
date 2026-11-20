@@ -936,6 +936,9 @@
     "saveFailed": "ハートビート設定の保存に失敗しました"
   },
   "cronJobs": {
+    "dispatchConversationId": "プラットフォームの会話 ID",
+    "continueChat": "続ける Rua チャット",
+    "noChat": "チャットを指定しない",
     "title": "定期実行",
     "description": "指定した時刻に自動実行されるスケジュールタスクを作成・管理します。",
     "searchPlaceholder": "ジョブを検索",

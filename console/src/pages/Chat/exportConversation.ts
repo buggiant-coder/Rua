@@ -1,15 +1,11 @@
-import {
-  conversationApi,
-  type ConversationApiTarget,
-} from "@/api/modules/conversation";
+import { conversationApi } from "@/api/modules/conversation";
 import { getDownloadFolderHint, saveTextFile } from "@/utils/saveFile";
 import { formatMessagesAsMarkdown, groupIntoMessageBlocks } from "./utils";
 
 export async function exportConversationAsMarkdown(
-  target: ConversationApiTarget,
   chatId: string,
 ): Promise<{ filename: string; folderHint: string; saved: boolean }> {
-  const history = await conversationApi.getHistory(target, chatId);
+  const history = await conversationApi.getHistory(chatId);
   const blocks = groupIntoMessageBlocks(history.messages || [], true, true);
   const selected = new Set(blocks.map((_, index) => index));
   const markdown = formatMessagesAsMarkdown(blocks, selected, chatId);

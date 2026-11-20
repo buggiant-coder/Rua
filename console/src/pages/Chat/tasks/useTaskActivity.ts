@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildAuthHeaders } from "@/api/authHeaders";
 import { getApiUrl } from "@/api/config";
-import type { ConversationApiTarget } from "@/api/modules/conversation";
 import { taskApi } from "@/api/modules/task";
 import type { TaskEvent, TaskRecord } from "@/api/types/task";
 import { readSseChunks } from "../owned/sse";
@@ -14,7 +13,6 @@ export type TaskActivityConnection =
 
 type UseTaskActivityOptions = {
   open: boolean;
-  target: ConversationApiTarget;
   chatId?: string;
   authorizationAgentId: string;
 };
@@ -37,14 +35,9 @@ function upsertTask(tasks: TaskRecord[], next: TaskRecord): TaskRecord[] {
 
 export function useTaskActivity({
   open,
-  target,
   chatId,
   authorizationAgentId,
 }: UseTaskActivityOptions) {
-  const taskTarget = useMemo<ConversationApiTarget>(
-    () => ({ agentId: target.agentId, projectId: target.projectId }),
-    [target.agentId, target.projectId],
-  );
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -86,7 +79,7 @@ export function useTaskActivity({
     setLoading(true);
     setError(null);
     try {
-      const records = await taskApi.listTasks(taskTarget, chatId, {
+      const records = await taskApi.listTasks(chatId, {
         limit: 200,
       });
       if (scopeRef.current === requestScope) replaceTasks(records);
@@ -97,7 +90,7 @@ export function useTaskActivity({
     } finally {
       if (scopeRef.current === requestScope) setLoading(false);
     }
-  }, [chatId, replaceTasks, scope, taskTarget]);
+  }, [chatId, replaceTasks, scope]);
 
   const refreshTask = useCallback(
     (taskId: string): Promise<void> => {
@@ -116,7 +109,7 @@ export function useTaskActivity({
           do {
             pending.dirty = false;
             try {
-              const record = await taskApi.getTask(taskTarget, chatId, taskId);
+              const record = await taskApi.getTask(chatId, taskId);
               if (isCurrent()) {
                 setTasks((current) => upsertTask(current, record));
               }
@@ -130,12 +123,14 @@ export function useTaskActivity({
       })();
       return pending.promise;
     },
-    [chatId, reload, scope, taskReads, taskTarget],
+    [chatId, reload, scope, taskReads],
   );
 
   useEffect(() => {
     setTasks([]);
     setSelectedTaskId(null);
+    setBusyTaskId(null);
+    setLoading(false);
     setError(null);
   }, [scope]);
 
@@ -163,14 +158,11 @@ export function useTaskActivity({
       controller = new AbortController();
       setConnection(attempt === 0 ? "connecting" : "reconnecting");
       try {
-        const response = await fetch(
-          getApiUrl(taskApi.activityPath(taskTarget, chatId)),
-          {
-            method: "GET",
-            headers: buildAuthHeaders(),
-            signal: controller.signal,
-          },
-        );
+        const response = await fetch(getApiUrl(taskApi.activityPath(chatId)), {
+          method: "GET",
+          headers: buildAuthHeaders(),
+          signal: controller.signal,
+        });
         if (!response.ok || !response.body) {
           throw new Error(`Task activity unavailable (${response.status})`);
         }
@@ -227,7 +219,6 @@ export function useTaskActivity({
     reload,
     replaceTasks,
     scope,
-    taskTarget,
     taskReads,
     viewerVisible,
   ]);
@@ -240,22 +231,19 @@ export function useTaskActivity({
       try {
         const record =
           action === "cancel"
-            ? await taskApi.cancelTask(taskTarget, chatId, taskId)
-            : await taskApi.retryTask(
-                taskTarget,
-                chatId,
-                taskId,
-                authorizationAgentId,
-              );
+            ? await taskApi.cancelTask(chatId, taskId)
+            : await taskApi.retryTask(chatId, taskId, authorizationAgentId);
+        if (scopeRef.current !== scope) return;
         setTasks((current) => upsertTask(current, record));
         setSelectedTaskId(taskId);
       } catch (reason) {
+        if (scopeRef.current !== scope) return;
         setError(reason instanceof Error ? reason.message : String(reason));
       } finally {
-        setBusyTaskId(null);
+        if (scopeRef.current === scope) setBusyTaskId(null);
       }
     },
-    [authorizationAgentId, chatId, taskTarget],
+    [authorizationAgentId, chatId, scope],
   );
 
   const setWatch = useCallback(
@@ -265,18 +253,19 @@ export function useTaskActivity({
       setError(null);
       try {
         if (watch) {
-          await taskApi.watchTask(taskTarget, chatId, taskId);
+          await taskApi.watchTask(chatId, taskId);
         } else {
-          await taskApi.unwatchTask(taskTarget, chatId, taskId);
+          await taskApi.unwatchTask(chatId, taskId);
         }
         await refreshTask(taskId);
       } catch (reason) {
+        if (scopeRef.current !== scope) return;
         setError(reason instanceof Error ? reason.message : String(reason));
       } finally {
-        setBusyTaskId(null);
+        if (scopeRef.current === scope) setBusyTaskId(null);
       }
     },
-    [chatId, refreshTask, taskTarget],
+    [chatId, refreshTask, scope],
   );
 
   const sendInput = useCallback(
@@ -288,15 +277,16 @@ export function useTaskActivity({
       setBusyTaskId(taskId);
       setError(null);
       try {
-        await taskApi.sendInput(taskTarget, chatId, taskId, input);
+        await taskApi.sendInput(chatId, taskId, input);
         await refreshTask(taskId);
       } catch (reason) {
+        if (scopeRef.current !== scope) return;
         setError(reason instanceof Error ? reason.message : String(reason));
       } finally {
-        setBusyTaskId(null);
+        if (scopeRef.current === scope) setBusyTaskId(null);
       }
     },
-    [chatId, refreshTask, taskTarget],
+    [chatId, refreshTask, scope],
   );
 
   const selectedTask = useMemo(

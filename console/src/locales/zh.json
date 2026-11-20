@@ -1212,6 +1212,9 @@
     "saveFailed": "保存心跳配置失败"
   },
   "cronJobs": {
+    "dispatchConversationId": "平台回复会话 ID",
+    "continueChat": "续接 Rua 对话",
+    "noChat": "不绑定对话",
     "title": "定时任务",
     "description": "创建和管理在指定时间自动执行的定时任务。",
     "searchPlaceholder": "搜索定时任务",

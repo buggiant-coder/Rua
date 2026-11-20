@@ -9,27 +9,17 @@ private fun identity(value: String, name: String, limit: Int = 200): String {
     return value
 }
 
-internal data class PhoneChatAddress(val kind: String, val resourceId: String, val chatId: String) {
-    init {
-        require(kind == "agent" || kind == "project") { "Invalid Phone Use Chat scope" }
-        identity(resourceId, "resource ID")
-        identity(chatId, "Chat ID")
-    }
+internal data class PhoneChatAddress(val chatId: String) {
+    init { identity(chatId, "Chat ID") }
 
     fun apiPath(): String {
-        fun segment(value: String): String = URLEncoder.encode(value, "UTF-8").replace("+", "%20")
+        val segment = URLEncoder.encode(chatId, "UTF-8").replace("+", "%20")
             .let { if (it == "." || it == "..") it.replace(".", "%2E") else it }
-        val scope = if (kind == "agent") "agents" else "projects"
-        return "/$scope/${segment(resourceId)}/chats/${segment(chatId)}"
+        return "/chats/$segment"
     }
 
     companion object {
-        fun fromJson(value: JSONObject): PhoneChatAddress {
-            val scope = value.getJSONObject("scope")
-            val kind = scope.getString("kind")
-            val resourceKey = if (kind == "agent") "agent_id" else "project_id"
-            return PhoneChatAddress(kind, scope.getString(resourceKey), value.getString("chat_id"))
-        }
+        fun fromJson(value: JSONObject) = PhoneChatAddress(value.getString("chat_id"))
     }
 }
 
@@ -48,10 +38,7 @@ internal data class PhoneInvocation(
     }
 
     fun toJson(): JSONObject = JSONObject().put("owner", owner)
-        .put("chat_address", JSONObject()
-            .put("scope", JSONObject().put("kind", chatAddress.kind)
-                .put(if (chatAddress.kind == "agent") "agent_id" else "project_id", chatAddress.resourceId))
-            .put("chat_id", chatAddress.chatId))
+        .put("chat_address", JSONObject().put("chat_id", chatAddress.chatId))
         .put("turn_id", turnId)
         .put("authority_epoch", authorityEpoch)
         .put("chat_configuration_epoch", configurationEpoch)

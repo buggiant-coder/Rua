@@ -1,401 +1,295 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream, StreamExt};
-use tokio::sync::Mutex;
-
-use rua_agent::memory_signal::MemorySignal;
-use rua_agent::memory_signal_note::{memory_signal_runtime_note, render_memory_signal_for_model};
 use rua_channel::core::channel::Process;
+use rua_channel::core::console::{submit_runtime_turn, ConsoleChatFacade, ConsoleChatRequest};
 use rua_channel::core::content::{AgentChannelRequest, IncomingContentPart};
-use rua_contract::agent::{AgentInputMessage, AgentRuntime};
-use rua_core::event::RuntimeEvent;
-use rua_core::id::{AgentId, SessionId};
-use rua_core::message::ContentPart;
-use rua_session::{
-    ChatMetadata, ChatSessionHeader, NewConversationMessage, NewConversationTurn, TurnLifecycle,
-};
+use rua_core::{RuaError, RuaRoot, RuntimeEvent};
+use rua_session::chat_deletion::ChatDeleteIntentStore;
+use rua_session::external_chat::{ExternalChatBinding, ExternalChatRoute};
+use rua_session::WorkspaceSessionStore;
+use serde_json::{json, Value};
 
 pub struct ChannelProcessAdapter {
-    runtime: Arc<dyn AgentRuntime>,
-    workspace_dir: Option<PathBuf>,
-    memory_write_available: bool,
+    rua_root: PathBuf,
+    subscription_agent_id: String,
+    facade: Weak<dyn ConsoleChatFacade>,
 }
 
 impl ChannelProcessAdapter {
-    pub fn new(runtime: Arc<dyn AgentRuntime>) -> Self {
+    pub fn new(
+        rua_root: PathBuf,
+        subscription_agent_id: String,
+        facade: Weak<dyn ConsoleChatFacade>,
+    ) -> Self {
         Self {
-            runtime,
-            workspace_dir: None,
-            memory_write_available: false,
+            rua_root,
+            subscription_agent_id,
+            facade,
         }
     }
 
-    pub fn with_workspace_dir(mut self, workspace_dir: PathBuf) -> Self {
-        self.workspace_dir = Some(workspace_dir);
-        self
+    fn route(&self, req: &AgentChannelRequest) -> ExternalChatRoute {
+        ExternalChatRoute {
+            account_id: self.subscription_agent_id.clone(),
+            platform_account_id: ["account_id", "robot_code", "bot_id"]
+                .iter()
+                .find_map(|key| {
+                    req.metadata
+                        .get(key)?
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                }),
+            channel: req.channel_id.clone(),
+            session_id: req.session_id.clone(),
+            conversation_id: req.conversation_id.clone(),
+        }
     }
 
-    pub fn with_memory_write_available(mut self, available: bool) -> Self {
-        self.memory_write_available = available;
-        self
-    }
-
-    fn build_request(
-        workspace_dir: Option<&Path>,
+    async fn target(
+        &self,
         req: &AgentChannelRequest,
-        mut runtime_note_messages: Vec<AgentInputMessage>,
-        memory_signal: Option<&MemorySignal>,
-    ) -> rua_contract::agent::AgentRequest {
-        let content_parts: Vec<ContentPart> = req
+        reserve: bool,
+    ) -> Result<Option<(ExternalChatBinding, String)>, String> {
+        let Some(binding) = self
+            .route(req)
+            .resolve(&self.rua_root, reserve)
+            .await
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(None);
+        };
+        if ChatDeleteIntentStore::from_rua_root(&self.rua_root)
+            .load(&binding.address)?
+            .is_some()
+        {
+            return Err(format!("Chat {} was deleted", binding.address));
+        }
+        let root = RuaRoot::new(&self.rua_root);
+        let header = WorkspaceSessionStore::new(root.chat_workspace().as_path())
+            .load_chat_header(binding.address.chat_id().as_str())
+            .await
+            .map_err(|e| e.to_string())?;
+        let agent = match header {
+            Some(header) => header.agent_id,
+            None if binding.admitted => {
+                return Err(format!("Chat {} is unavailable", binding.address))
+            }
+            None if !reserve => return Ok(None),
+            None if !req.agent_id.is_empty() => req.agent_id.clone(),
+            None => self.subscription_agent_id.clone(),
+        };
+        Ok(Some((binding, agent)))
+    }
+
+    fn facade(&self) -> Result<Arc<dyn ConsoleChatFacade>, String> {
+        self.facade
+            .upgrade()
+            .ok_or_else(|| "Chat admission service is unavailable".into())
+    }
+
+    async fn submit(
+        &self,
+        req: AgentChannelRequest,
+    ) -> Result<BoxStream<'static, RuntimeEvent>, String> {
+        let facade = self.facade()?;
+        let (binding, agent) = self
+            .target(&req, true)
+            .await?
+            .ok_or("external Chat binding is unavailable")?;
+        let content: Vec<_> = req.input.iter().map(channel_part).collect();
+        let message = req
             .input
             .iter()
-            .map(|part| match part {
-                IncomingContentPart::Text { text } => ContentPart::Text { text: text.clone() },
-                IncomingContentPart::Image { path, mime, .. } => ContentPart::Image {
-                    url: format!("file://{}", path.display()),
-                    media_type: mime.clone(),
-                    alt: None,
-                },
-                IncomingContentPart::File {
-                    path, mime, name, ..
-                } => ContentPart::File {
-                    url: format!("file://{}", path.display()),
-                    name: name.clone().unwrap_or_default(),
-                    media_type: mime.clone(),
-                    size: None,
-                },
-                IncomingContentPart::Audio { path, mime, .. } => ContentPart::Audio {
-                    url: format!("file://{}", path.display()),
-                    media_type: mime.clone(),
-                },
-                IncomingContentPart::Video { path, mime, .. } => ContentPart::Video {
-                    url: format!("file://{}", path.display()),
-                    media_type: mime.clone(),
-                },
-                IncomingContentPart::Url { url, .. } => ContentPart::Text { text: url.clone() },
+            .filter_map(|part| match part {
+                IncomingContentPart::Text { text } => Some(text.as_str()),
+                IncomingContentPart::Url { url, .. } => Some(url.as_str()),
+                _ => None,
             })
-            .collect();
-
-        runtime_note_messages.push(AgentInputMessage {
-            role: "user".to_string(),
-            content: content_parts,
-        });
-        if let Some(signal) = memory_signal {
-            runtime_note_messages.push(AgentInputMessage {
-                role: "system".to_string(),
-                content: vec![ContentPart::Text {
-                    text: render_memory_signal_for_model(signal),
-                }],
-            });
-        }
-
-        rua_contract::agent::AgentRequest {
-            session_id: SessionId::new(&req.session_id),
-            user_id: req.user_id.clone(),
-            agent_id: AgentId::new(&req.agent_id),
-            messages: runtime_note_messages,
-            model_override: None,
-            tool_mode: "auto".to_string(),
-            attachments: vec![],
-            display_preferences: None,
-            disabled_tools: Vec::new(),
-            metadata: HashMap::new(),
-            cancel: None,
-            run_control: None,
-            workspace_dir: workspace_dir.map(Path::to_path_buf),
-            conversation_store_dir: workspace_dir.map(Path::to_path_buf),
-            working_dir: None,
-        }
-    }
-}
-
-struct SessionPersistCtx {
-    workspace_dir: PathBuf,
-    agent_id: String,
-    session_id: String,
-    user_text: String,
-    memory_signal: Option<MemorySignal>,
-    text_acc: Mutex<String>,
-    thinking_acc: Mutex<String>,
-    tool_events: Mutex<Vec<serde_json::Value>>,
-}
-
-async fn ensure_im_session_header(
-    workspace_dir: &Path,
-    agent_id: &str,
-    session_id: &str,
-) -> Result<(), String> {
-    let store = rua_session::WorkspaceSessionStore::new(workspace_dir);
-    if store
-        .load_chat_header(session_id)
-        .await
-        .map_err(|e| format!("load_chat_header: {e}"))?
-        .is_some()
-    {
-        return Ok(());
-    }
-
-    let now = chrono::Utc::now().to_rfc3339();
-    store
-        .save_chat_header(&ChatSessionHeader::new(ChatMetadata {
-            chat_id: session_id.to_string(),
-            agent_id: agent_id.to_string(),
-            title: "Channel chat".to_string(),
-            created_at: now.clone(),
-            last_activity_at: now,
-            pinned: false,
-            archived: false,
-            preview: None,
-        }))
-        .await
-        .map_err(|e| format!("save_chat_header: {e}"))
-}
-
-async fn save_im_session(
-    workspace_dir: &Path,
-    agent_id: &str,
-    session_id: &str,
-    user_text: &str,
-    memory_signal: Option<&MemorySignal>,
-    assistant_content: &[serde_json::Value],
-) -> Result<(), String> {
-    if user_text.is_empty() && memory_signal.is_none() && assistant_content.is_empty() {
-        return Ok(());
-    }
-
-    ensure_im_session_header(workspace_dir, agent_id, session_id).await?;
-
-    let store = rua_session::WorkspaceSessionStore::new(workspace_dir);
-    let mut messages = Vec::new();
-    if !user_text.is_empty() {
-        let mut metadata = serde_json::Map::new();
-        metadata.insert("name".to_string(), serde_json::json!("user"));
-        messages.push(NewConversationMessage {
-            message_id: format!("msg-{}", uuid::Uuid::new_v4()),
-            role: "user".to_string(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            status: "completed".to_string(),
-            content: serde_json::json!([{"type": "text", "text": user_text}]),
-            provider: None,
-            tool: None,
-            metadata,
-        });
-    }
-
-    if let Some(signal) = memory_signal {
-        let runtime_note_id = format!("memory-signal-{}", uuid::Uuid::new_v4());
-        messages.push(
-            memory_signal_runtime_note(runtime_note_id, chrono::Utc::now().to_rfc3339(), signal)
-                .into_new_conversation_message()
-                .map_err(|error| error.to_string())?,
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut extra = serde_json::Map::new();
+        extra.insert("channel".into(), json!(req.channel_id));
+        extra.insert(
+            "user_id".into(),
+            json!(rua_channel::core::pipeline::acl_sender_id(&req)),
         );
-    }
-
-    if !assistant_content.is_empty() {
-        let mut metadata = serde_json::Map::new();
-        metadata.insert("name".to_string(), serde_json::json!(agent_id));
-        messages.push(NewConversationMessage {
-            message_id: format!("msg-{}", uuid::Uuid::new_v4()),
-            role: "assistant".to_string(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            status: "completed".to_string(),
-            content: serde_json::Value::Array(assistant_content.to_vec()),
-            provider: None,
-            tool: None,
-            metadata,
-        });
-    }
-
-    store
-        .append_conversation_turn(
-            session_id,
-            NewConversationTurn {
-                turn_id: format!("turn-{}", uuid::Uuid::new_v4()),
-                lifecycle: TurnLifecycle {
-                    user_submitted_at: chrono::Utc::now().to_rfc3339(),
-                    assistant_started_at: None,
-                    assistant_completed_at: (!assistant_content.is_empty())
-                        .then(|| chrono::Utc::now().to_rfc3339()),
-                    status: "completed".to_string(),
-                },
-                selected_variant_id: None,
-                messages,
+        if let Some(name) = ["sender_nick", "user_name", "username"]
+            .iter()
+            .find_map(|key| {
+                req.metadata
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.is_empty())
+            })
+        {
+            extra.insert("sender_name".into(), json!(name));
+        }
+        if let Some(id) = req.message_id.filter(|id| !id.is_empty()) {
+            let id = binding.platform_message_key(&id);
+            let turn_id = format!("turn-im-{id}");
+            let store =
+                WorkspaceSessionStore::new(RuaRoot::new(&self.rua_root).chat_workspace().as_path());
+            if store
+                .read_turn(binding.address.chat_id().as_str(), &turn_id)
+                .await
+                .map_err(|e| e.to_string())?
+                .is_some_and(|turn| {
+                    rua_session::TurnLifecycleStatus::parse(&turn.lifecycle.status)
+                        .is_syncable_conversation_state()
+                })
+            {
+                return Ok(stream::empty().boxed());
+            }
+            extra.insert("turn_id".into(), json!(turn_id));
+            extra.insert("submission_id".into(), json!(format!("submission-im-{id}")));
+        }
+        let events = submit_runtime_turn(
+            Arc::clone(&facade),
+            binding.address.clone(),
+            &agent,
+            ConsoleChatRequest {
+                message,
+                chat_id: Some(binding.address.chat_id().to_string()),
+                model: None,
+                is_reconnect: false,
+                attachments: vec![],
+                input: Some(vec![json!({"role":"user","content":content})]),
+                messages: None,
+                extra,
+                channel_kind: None,
             },
         )
-        .await
-        .map(|_| ())
-        .map_err(|e| format!("append_conversation_turn: {e}"))
+        .await?;
+        binding
+            .confirm(&self.rua_root)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(events
+            .map(|event| event.unwrap_or_else(|error| RuntimeEvent::Error { error }))
+            .boxed())
+    }
+
+    async fn control(
+        &self,
+        req: &AgentChannelRequest,
+        command: &str,
+        approval_id: Option<&str>,
+    ) -> Result<String, String> {
+        let Some((binding, agent)) = self.target(req, false).await? else {
+            return Ok("当前没有可操作的对话".into());
+        };
+        let facade = self.facade()?;
+        if command == "/stop" {
+            return Ok(if facade
+                .stop_chat(&agent, binding.address.chat_id().as_str())
+                .await
+            {
+                "已停止当前任务"
+            } else {
+                "当前没有正在执行的任务"
+            }
+            .into());
+        }
+        let approve = command == "/approve";
+        let decided = facade
+            .decide_chat_approval(
+                &binding.address,
+                &agent,
+                approval_id,
+                approve,
+                rua_channel::core::pipeline::acl_sender_id(req),
+            )
+            .await?;
+        Ok(if !decided {
+            "当前没有待审批请求"
+        } else if approve {
+            "已批准"
+        } else {
+            "已拒绝"
+        }
+        .into())
+    }
+}
+
+fn channel_part(part: &IncomingContentPart) -> Value {
+    let url = |path: &Path| format!("file://{}", path.display());
+    match part {
+        IncomingContentPart::Text { text } => json!({"type":"text","text":text}),
+        IncomingContentPart::Url { url, .. } => json!({"type":"text","text":url}),
+        IncomingContentPart::Image { path, mime, .. } => {
+            json!({"type":"image","url":url(path),"mime_type":mime})
+        }
+        IncomingContentPart::File {
+            path, mime, name, ..
+        } => json!({"type":"file","url":url(path),"mime_type":mime,"name":name}),
+        IncomingContentPart::Audio { path, mime, .. } => {
+            json!({"type":"audio","url":url(path),"mime_type":mime})
+        }
+        IncomingContentPart::Video { path, mime, .. } => {
+            json!({"type":"video","url":url(path),"mime_type":mime})
+        }
+    }
 }
 
 #[async_trait]
 impl Process for ChannelProcessAdapter {
-    async fn handle(
-        &self,
-        req: rua_channel::core::channel::AgentRequest,
-    ) -> BoxStream<'static, RuntimeEvent> {
-        if let Some(ref ws_dir) = self.workspace_dir {
-            let agent_id = if req.agent_id.is_empty() {
-                "default"
-            } else {
-                req.agent_id.as_str()
-            };
-            let sender_name = req
-                .metadata
-                .get("sender_nick")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            if let Err(e) = crate::chats_store::ensure_chat_entry(
-                ws_dir,
-                &req.session_id,
-                &req.channel_id,
-                &req.user_id,
-                sender_name.as_deref(),
-            )
+    async fn control_chat_id(&self, req: &AgentChannelRequest) -> rua_core::Result<Option<String>> {
+        self.target(req, false)
             .await
-            {
-                tracing::warn!(error = %e, "ensure_chat_entry failed, continuing");
-            }
-            if let Err(e) = ensure_im_session_header(ws_dir, agent_id, &req.session_id).await {
-                tracing::warn!(error = %e, "ensure channel session header failed, continuing");
-            }
-        }
+            .map(|result| result.map(|(binding, _)| binding.address.chat_id().to_string()))
+            .map_err(|message| RuaError::Runtime { message })
+    }
 
-        let user_text: String = req
-            .input
-            .iter()
-            .filter_map(|p| {
-                if let IncomingContentPart::Text { text } = p {
-                    Some(text.as_str())
+    async fn handle_chat_control(&self, req: &AgentChannelRequest) -> Option<RuntimeEvent> {
+        let text = rua_channel::core::extract_query_text_from_request(req);
+        let mut words = text.split_whitespace();
+        let command = words.next()?;
+        if !command.starts_with('/') {
+            return None;
+        }
+        let command = command.to_ascii_lowercase();
+        let (command, id) = match command.as_str() {
+            "/stop" | "/approve" | "/deny" => (command.as_str(), None),
+            "/daemon" | "/approval" => {
+                let action = words.next()?.to_ascii_lowercase();
+                let decision = match action.as_str() {
+                    "approve" => "/approve",
+                    "deny" | "reject" => "/deny",
+                    _ => return None,
+                };
+                if command == "/approval" {
+                    (decision, Some(words.next()?))
                 } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let mut memory_signal = None;
-        if let Some(ref ws_dir) = self.workspace_dir {
-            let store = rua_session::WorkspaceSessionStore::new(ws_dir);
-            match rua_agent::memory_signal_note::detect_memory_signal_for_user_input(
-                &store,
-                &req.session_id,
-                &user_text,
-                self.memory_write_available,
-            )
-            .await
-            {
-                Ok(signal) => memory_signal = signal,
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        session_id = %req.session_id,
-                        "failed to detect channel memory signal"
-                    );
+                    (decision, None)
                 }
             }
+            _ => return None,
+        };
+        Some(match self.control(req, command, id).await {
+            Ok(delta) => RuntimeEvent::TextDelta {
+                delta,
+                message_id: None,
+            },
+            Err(message) => RuntimeEvent::Error {
+                error: RuaError::Runtime { message },
+            },
+        })
+    }
+
+    async fn handle(&self, req: AgentChannelRequest) -> BoxStream<'static, RuntimeEvent> {
+        if let Some(control) = self.handle_chat_control(&req).await {
+            return stream::iter([control]).boxed();
         }
-
-        let persist_ctx = self.workspace_dir.as_ref().map(|ws_dir| {
-            let agent_id = if req.agent_id.is_empty() {
-                "default".to_string()
-            } else {
-                req.agent_id.clone()
-            };
-            Arc::new(SessionPersistCtx {
-                workspace_dir: ws_dir.clone(),
-                agent_id,
-                session_id: req.session_id.clone(),
-                user_text,
-                memory_signal: memory_signal.clone(),
-                text_acc: Mutex::new(String::new()),
-                thinking_acc: Mutex::new(String::new()),
-                tool_events: Mutex::new(Vec::new()),
-            })
-        });
-
-        let contract_req = Self::build_request(
-            self.workspace_dir.as_deref(),
-            &req,
-            Vec::new(),
-            memory_signal.as_ref(),
-        );
-        match self.runtime.stream(contract_req).await {
-            Ok(s) => {
-                let base = s.map(|r| r.unwrap_or_else(|e| RuntimeEvent::Error { error: e }));
-                match persist_ctx {
-                    Some(ctx) => base
-                        .then(move |event| {
-                            let ctx = ctx.clone();
-                            async move {
-                                match &event {
-                                    RuntimeEvent::TextDelta { delta, .. } => {
-                                        ctx.text_acc.lock().await.push_str(delta);
-                                    }
-                                    RuntimeEvent::ThinkingDelta { delta, .. } => {
-                                        ctx.thinking_acc.lock().await.push_str(delta);
-                                    }
-                                    RuntimeEvent::ToolCall { call } => {
-                                        ctx.tool_events.lock().await.push(serde_json::json!({
-                                            "type": "tool_use",
-                                            "id": call.id,
-                                            "name": call.name,
-                                            "input": call.arguments
-                                        }));
-                                    }
-                                    RuntimeEvent::ToolResult { result } => {
-                                        ctx.tool_events.lock().await.push(serde_json::json!({
-                                            "type": "tool_result",
-                                            "id": result.call_id,
-                                            "name": result.name.clone().unwrap_or_default(),
-                                            "output": [{"type": "text", "text": result.text_content()}]
-                                        }));
-                                    }
-                                    RuntimeEvent::End { .. } => {
-                                        let full_text = ctx.text_acc.lock().await.clone();
-                                        let thinking = ctx.thinking_acc.lock().await.clone();
-                                        let tool_events = ctx.tool_events.lock().await.clone();
-
-                                        let mut assistant_content: Vec<serde_json::Value> = Vec::new();
-                                        if !thinking.is_empty() {
-                                            assistant_content.push(serde_json::json!({
-                                                "type": "thinking",
-                                                "thinking": thinking
-                                            }));
-                                        }
-                                        assistant_content.extend(tool_events);
-                                        if !full_text.is_empty() {
-                                            assistant_content.push(serde_json::json!({
-                                                "type": "text",
-                                                "text": full_text
-                                            }));
-                                        }
-
-                                        if let Err(e) = save_im_session(
-                                            &ctx.workspace_dir,
-                                            &ctx.agent_id,
-                                            &ctx.session_id,
-                                            &ctx.user_text,
-                                            ctx.memory_signal.as_ref(),
-                                            &assistant_content,
-                                        )
-                                        .await
-                                        {
-                                            tracing::warn!(error = %e, "IM session persist failed");
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                                event
-                            }
-                        })
-                        .boxed(),
-                    None => base.boxed(),
-                }
-            }
-            Err(e) => stream::once(async move { RuntimeEvent::Error { error: e } }).boxed(),
+        match self.submit(req).await {
+            Ok(events) => events,
+            Err(message) => stream::iter([RuntimeEvent::Error {
+                error: RuaError::Runtime { message },
+            }])
+            .boxed(),
         }
     }
 }

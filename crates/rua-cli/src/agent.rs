@@ -3,7 +3,7 @@ use std::path::{Component, Path, PathBuf};
 
 use clap::{Args, Subcommand};
 
-use crate::chat::chat_endpoint;
+use crate::chat::chat_stream_endpoint;
 use crate::http_client::{require_server, resolve_base_url, ApiClient};
 use crate::output::{print_value, OutputFormat};
 
@@ -372,14 +372,10 @@ pub fn is_workspace_dir_inside_working_dir(workspace_dir: &Path, working_dir: &P
     workspace_dir.starts_with(&working_dir) && workspace_dir != working_dir
 }
 
-pub fn agent_chat_endpoint(agent_id: &str, chat_id: &str) -> String {
-    format!("{}/console/chat", chat_endpoint(agent_id, chat_id))
-}
-
 pub fn build_agent_chat_request(
     message: &str,
     from_agent: &str,
-    _to_agent: &str,
+    to_agent: &str,
     chat_id: Option<String>,
 ) -> AgentChatRequest {
     let final_chat_id = chat_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -388,6 +384,7 @@ pub fn build_agent_chat_request(
 
     let body = serde_json::json!({
         "chat_id": final_chat_id,
+        "agent_id": to_agent,
         "input": [{
             "role": "user",
             "content": [{"type": "text", "text": final_message}],
@@ -416,7 +413,7 @@ async fn send_agent_chat_request(
     body: &serde_json::Value,
     timeout_secs: u64,
 ) -> anyhow::Result<reqwest::Response> {
-    let url = client.streaming_url(&agent_chat_endpoint(to_agent, chat_id));
+    let url = client.streaming_url(&chat_stream_endpoint(chat_id));
     let resp = client
         .inner()
         .post(&url)

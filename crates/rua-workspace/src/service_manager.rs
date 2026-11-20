@@ -558,7 +558,7 @@ impl ServiceManager {
         skills_service: std::sync::Arc<rua_skills::SkillService>,
         channel_manager: std::sync::Arc<rua_channel::core::ChannelManager>,
         im_configs: ImPlatformConfigs,
-        react_runtime: Option<std::sync::Arc<dyn rua_contract::agent::AgentRuntime>>,
+        channel_process: Option<Arc<dyn rua_channel::core::channel::Process>>,
     ) {
         let ImPlatformConfigs {
             dingtalk: dingtalk_config,
@@ -587,16 +587,8 @@ impl ServiceManager {
             return;
         }
 
-        if let Some(ref react_rt) = react_runtime {
-            channel_manager
-                .set_process(Arc::new(
-                    crate::channel_process_adapter::ChannelProcessAdapter::new(Arc::clone(
-                        react_rt,
-                    ))
-                    .with_workspace_dir(skills_service.workspace_dir().to_path_buf())
-                    .with_memory_write_available(true),
-                ))
-                .await;
+        if let Some(process) = channel_process {
+            channel_manager.set_process(process).await;
         }
         let mut adapter = crate::services::ChannelsServiceAdapter::new(channel_manager);
         if let Some(cfg) = dingtalk_config {

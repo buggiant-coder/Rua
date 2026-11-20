@@ -587,6 +587,33 @@ describe("useConversationViewRuntime", () => {
     });
   });
 
+  it("keeps pending approvals and the open Live viewer through a change of executor", async () => {
+    const live = controlledSseResponse();
+    const fetchMock = routeFetchWithLiveStreams(live.response);
+    vi.stubGlobal("fetch", fetchMock);
+    chatApiMock.getChat.mockResolvedValue({ status: "running", messages: [] });
+    const { rerender, unmount } = renderHook(
+      ({ agentId }) =>
+        useConversationViewRuntime({
+          address: { chatId: "stable" },
+          executionAgentId: agentId,
+        }),
+      { initialProps: { agentId: "first" } },
+    );
+    await waitFor(() =>
+      expect(chatApiMock.livePath).toHaveBeenCalledWith("stable"),
+    );
+    expect(consoleApiMock.getApprovalSnapshot).toHaveBeenCalledWith("stable");
+    const liveCount = chatApiMock.livePath.mock.calls.length;
+    const reads = chatApiMock.getChat.mock.calls.length;
+    const snapshots = consoleApiMock.getApprovalSnapshot.mock.calls.length;
+    await act(async () => rerender({ agentId: "next" }));
+    expect(chatApiMock.livePath).toHaveBeenCalledTimes(liveCount);
+    expect(chatApiMock.getChat).toHaveBeenCalledTimes(reads);
+    expect(consoleApiMock.getApprovalSnapshot).toHaveBeenCalledTimes(snapshots);
+    unmount();
+  });
+
   it("attaches remote Live without waiting for an availability preflight", async () => {
     chatApiMock.getChat.mockResolvedValue({
       status: "running",
@@ -796,10 +823,7 @@ describe("useConversationViewRuntime", () => {
     await waitFor(() =>
       expect(result.current.error).toBe("ACP device is offline"),
     );
-    expect(acpApiMock.getPermissionSnapshot).toHaveBeenCalledWith(
-      "agent-a",
-      "chat-1",
-    );
+    expect(acpApiMock.getPermissionSnapshot).toHaveBeenCalledWith("chat-1");
   });
 
   it("uses inactive server ACP control over a stale runner selection", async () => {
@@ -10018,7 +10042,6 @@ describe("useConversationViewRuntime", () => {
     });
 
     expect(consoleApiMock.decideApproval).toHaveBeenCalledWith(
-      { agentId: "agent-a" },
       "chat-1",
       "approval-1",
       {
@@ -10054,7 +10077,6 @@ describe("useConversationViewRuntime", () => {
     });
 
     expect(consoleApiMock.decideApproval).toHaveBeenCalledWith(
-      { agentId: "agent-a" },
       "chat-1",
       "approval-1",
       {
@@ -10246,7 +10268,6 @@ describe("useConversationViewRuntime", () => {
     });
 
     expect(consoleApiMock.decideApproval).toHaveBeenCalledWith(
-      { agentId: "agent-a", projectId: "project-1" },
       "chat-project-1",
       "approval-project-1",
       { decision: "run_once", decided_by: "webui" },

@@ -1,6 +1,7 @@
 use clap::{Args, Subcommand};
 
-use crate::http_client::{resolve_base_url, ApiClient};
+use crate::chat::chat_endpoint;
+use crate::http_client::{api_url, relative_url, resolve_base_url, ApiClient};
 use crate::output::{print_value, OutputFormat};
 
 #[derive(Debug, Args)]
@@ -50,37 +51,38 @@ pub fn run(
     args: ConsoleArgs,
     format: OutputFormat,
     base_url: Option<&str>,
-    agent_id: &str,
+    selected_agent: Option<&str>,
 ) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(args, format, base_url, agent_id))
+    rt.block_on(run_async(args, format, base_url, selected_agent))
 }
 
 async fn run_async(
     args: ConsoleArgs,
     format: OutputFormat,
     base_url: Option<&str>,
-    agent_id: &str,
+    selected_agent: Option<&str>,
 ) -> anyhow::Result<()> {
-    let client = ApiClient::new(&resolve_base_url(base_url), agent_id);
+    let client = ApiClient::new(
+        &resolve_base_url(base_url),
+        selected_agent.unwrap_or("default"),
+    );
 
     match args.command {
         ConsoleCommands::List { user_id, channel } => {
-            let path = chats_list_endpoint(agent_id, user_id.as_deref(), channel.as_deref());
+            let path = chats_list_endpoint(selected_agent, user_id.as_deref(), channel.as_deref());
             let resp = client.get(&path).await?;
             match format {
                 OutputFormat::Json => crate::output::print_json(&resp),
                 OutputFormat::Human => {
                     let chats = resp
-                        .get("chats")
-                        .and_then(|v| v.as_array())
-                        .cloned()
-                        .unwrap_or_default();
+                        .as_array()
+                        .ok_or_else(|| anyhow::anyhow!("expected a Chat list"))?;
                     if chats.is_empty() {
                         println!("No chat sessions found.");
                     } else {
                         println!("Chat Sessions:");
-                        for chat in &chats {
+                        for chat in chats {
                             let id = chat.get("id").and_then(|v| v.as_str()).unwrap_or("?");
                             let name = chat
                                 .get("name")
@@ -95,7 +97,7 @@ async fn run_async(
             }
         }
         ConsoleCommands::Get { chat_id } => {
-            let resp = client.get(&chat_endpoint(agent_id, &chat_id)).await?;
+            let resp = client.get(&chat_endpoint(&chat_id)).await?;
             print_value(&resp, format);
         }
         ConsoleCommands::Create {
@@ -103,21 +105,17 @@ async fn run_async(
             name,
             channel,
         } => {
-            let body = build_create_chat_body(&name, &user_id, &channel);
-            let resp = client
-                .post(&chats_collection_endpoint(agent_id), &body)
-                .await?;
+            let body = build_create_chat_body(&name, client.agent_id(), &user_id, &channel);
+            let resp = client.post("/api/chats", &body).await?;
             print_value(&resp, format);
         }
         ConsoleCommands::Update { chat_id, name } => {
             let body = serde_json::json!({ "name": name });
-            let resp = client
-                .put(&chat_endpoint(agent_id, &chat_id), &body)
-                .await?;
+            let resp = client.put(&chat_endpoint(&chat_id), &body).await?;
             print_value(&resp, format);
         }
         ConsoleCommands::Delete { chat_id } => {
-            let resp = client.delete(&chat_endpoint(agent_id, &chat_id)).await?;
+            let resp = client.delete(&chat_endpoint(&chat_id)).await?;
             match format {
                 OutputFormat::Json => crate::output::print_json(&resp),
                 OutputFormat::Human => println!("Chat session '{chat_id}' deleted."),
@@ -128,35 +126,36 @@ async fn run_async(
     Ok(())
 }
 
-pub fn build_create_chat_body(name: &str, user_id: &str, channel: &str) -> serde_json::Value {
+pub fn build_create_chat_body(
+    name: &str,
+    agent_id: &str,
+    user_id: &str,
+    channel: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "name": name,
+        "agent_id": agent_id,
         "user_id": user_id,
         "channel": channel,
     })
 }
 
-pub fn chats_collection_endpoint(agent_id: &str) -> String {
-    format!("/api/agents/{agent_id}/chats")
-}
-
-pub fn chats_list_endpoint(agent_id: &str, user_id: Option<&str>, channel: Option<&str>) -> String {
-    let mut query_parts = Vec::new();
-    if let Some(uid) = user_id {
-        query_parts.push(format!("user_id={uid}"));
+pub fn chats_list_endpoint(
+    agent_id: Option<&str>,
+    user_id: Option<&str>,
+    channel: Option<&str>,
+) -> String {
+    let mut url = api_url(&["chats"]);
+    let mut query = url.query_pairs_mut();
+    if let Some(id) = agent_id {
+        query.append_pair("agent_id", id);
     }
-    if let Some(ch) = channel {
-        query_parts.push(format!("channel={ch}"));
+    if let Some(id) = user_id {
+        query.append_pair("user_id", id);
     }
-
-    let base = chats_collection_endpoint(agent_id);
-    if query_parts.is_empty() {
-        base
-    } else {
-        format!("{base}?{}", query_parts.join("&"))
+    if let Some(channel) = channel {
+        query.append_pair("channel", channel);
     }
-}
-
-pub fn chat_endpoint(agent_id: &str, chat_id: &str) -> String {
-    format!("/api/agents/{agent_id}/chats/{chat_id}")
+    drop(query);
+    relative_url(url)
 }

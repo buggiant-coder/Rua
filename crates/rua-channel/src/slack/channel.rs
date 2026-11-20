@@ -854,6 +854,7 @@ fn slack_parse_native(
     let mut metadata = serde_json::json!({
         "channel": channel,
         "slack_channel_id": channel,
+                "account_id": bot_user_id,
         "sender_id": user,
         "slack_user_id": user,
         "channel_type": channel_type,

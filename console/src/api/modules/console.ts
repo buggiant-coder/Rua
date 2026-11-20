@@ -131,19 +131,17 @@ export const consoleApi = {
     request<{ messages: PushMessage[]; pending_approvals: PendingApproval[] }>(
       `/agents/${encodeURIComponent(agentId)}/console/push-messages`,
     ),
-  getApprovalSnapshot: (agentId: string, chatId: string) =>
+  getApprovalSnapshot: (chatId: string) =>
     request<ApprovalSnapshot>(
-      `/agents/${encodeURIComponent(
-        agentId,
-      )}/approvals/snapshot?chat_id=${encodeURIComponent(chatId)}`,
+      `/chats/${encodeURIComponent(chatId)}/approvals/snapshot`,
     ),
   decideApproval: (
-    agentId: string,
+    chatId: string,
     approvalId: string,
     body: ApprovalDecisionRequest,
   ) =>
     request<ApprovalRequest>(
-      `/agents/${encodeURIComponent(agentId)}/approvals/${encodeURIComponent(
+      `/chats/${encodeURIComponent(chatId)}/approvals/${encodeURIComponent(
         approvalId,
       )}/decide`,
       {

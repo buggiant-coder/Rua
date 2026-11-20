@@ -10,7 +10,7 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class PhoneScreenshotLifecycleTest {
     private fun invocation(turn: String) = PhoneInvocation(
-        "owner", PhoneChatAddress("agent", "default", "chat"), turn, "authority", "configuration",
+        "owner", PhoneChatAddress("chat"), turn, "authority", "configuration",
     )
 
     @Test fun aLateScreenshotFailureDoesNotInvalidateTheNextTurnsObservation() {

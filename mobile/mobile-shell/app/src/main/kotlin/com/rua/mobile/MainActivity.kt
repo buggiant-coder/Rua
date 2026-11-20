@@ -489,7 +489,7 @@ class MainActivity : AppCompatActivity() {
 
     private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
     private var saveBlobRequest: MobileSaveBlobRequest? = null
-    private var pendingNotificationRuaUri: String? = null
+    private val pendingNotificationRuaUri = java.util.concurrent.atomic.AtomicReference<String?>()
 
 
 
@@ -682,18 +682,17 @@ class MainActivity : AppCompatActivity() {
         val uri = intent.getStringExtra(MobileNotificationBridge.EXTRA_RUA_URI)
             ?.let(::safeRuaUriOrNull)
         if (uri != null) {
-            pendingNotificationRuaUri = uri
+            pendingNotificationRuaUri.set(uri)
             dispatchPendingNotificationRuaUri()
         }
     }
 
+    internal fun takePendingNotificationActivation(): String? = pendingNotificationRuaUri.getAndSet(null)
+
     private fun dispatchPendingNotificationRuaUri() {
-        val uri = pendingNotificationRuaUri ?: return
+        if (pendingNotificationRuaUri.get() == null) return
         val activeWebView = webView ?: return
-        pendingNotificationRuaUri = null
-        val js = "window.dispatchEvent(new CustomEvent(" +
-            "'rua:user-notification-activated'," +
-            "{detail:{uri:${JSONObject.quote(uri)}}}))"
+        val js = "window.dispatchEvent(new Event('rua:user-notification-activated'))"
         uiHandler.post {
             activeWebView.evaluateJavascript(js, null)
         }
@@ -1201,6 +1200,7 @@ class MainActivity : AppCompatActivity() {
                 MobileNotificationBridge(
                     this@MainActivity,
                     this@MainActivity::requestNotificationPermission,
+                    this@MainActivity::takePendingNotificationActivation,
                 ),
                 MobileNotificationBridge.JS_NAME,
             )

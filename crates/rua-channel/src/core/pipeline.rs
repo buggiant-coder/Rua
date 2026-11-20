@@ -521,7 +521,7 @@ pub async fn run_inbound_acl_with_indicator(
     result
 }
 
-fn acl_sender_id(req: &AgentChannelRequest) -> &str {
+pub fn acl_sender_id(req: &AgentChannelRequest) -> &str {
     const KEYS: &[&str] = &[
         "acl_sender_id",
         "sender_id",

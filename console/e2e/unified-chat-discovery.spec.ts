@@ -306,3 +306,127 @@ test("one discovery panel lists and searches across Projects with the same visib
     page.getByText(`Saved history for ${photo.name}`, { exact: true }),
   ).toBeVisible();
 });
+
+test("two windows suppress an open Chat and present one notification that returns to its turn", async ({
+  page,
+  context,
+}) => {
+  const second = await context.newPage();
+  const shown: { page: Page; title: string }[] = [];
+  for (const view of [page, second]) {
+    await mockDiscoveryServer(view);
+    await view.exposeFunction("recordFixtureNotification", (title: string) =>
+      shown.push({ page: view, title }),
+    );
+    await view.addInitScript((active) => {
+      const harness = window as Window & {
+        recordFixtureNotification(title: string): void;
+      };
+      Object.defineProperty(document, "hasFocus", { value: () => active });
+      Object.defineProperty(document, "visibilityState", {
+        get: () => (active ? "visible" : "hidden"),
+      });
+      window.addEventListener("fixture-background", () => {
+        active = false;
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      const viewers = new BroadcastChannel("rua:chat-viewer-v1");
+      viewers.onmessage = ({ data }) => {
+        if (data?.kind === "viewer")
+          document.documentElement.dataset.viewedChat = data.chatAddress ?? "";
+      };
+      const NativeSource = window.EventSource;
+      window.EventSource = class extends NativeSource {
+        constructor(url: string | URL, init?: EventSourceInit) {
+          super(url, init);
+          if (String(url).endsWith("/platform/user-notifications/events")) {
+            document.documentElement.dataset.notificationListener = "ready";
+            window.addEventListener("fixture-notification", (event) => {
+              this.dispatchEvent(
+                new MessageEvent("user_notification", {
+                  data: JSON.stringify((event as CustomEvent).detail),
+                }),
+              );
+            });
+          }
+        }
+      };
+      class FixtureNotification {
+        static permission = "granted";
+        onclick?: () => void;
+        constructor(title: string) {
+          harness.recordFixtureNotification(title);
+          window.addEventListener("fixture-click", () => this.onclick?.(), {
+            once: true,
+          });
+        }
+        close() {}
+      }
+      Object.defineProperty(window, "Notification", {
+        value: FixtureNotification,
+      });
+    }, view === page);
+  }
+
+  await page.goto(`/console/chats/${photo.id}`);
+  await expect(page.getByText(`Saved history for ${photo.name}`)).toBeVisible();
+  await second.goto("/console/settings");
+  await expect(second.locator("html")).toHaveAttribute(
+    "data-notification-listener",
+    "ready",
+  );
+  await expect(second.locator("html")).toHaveAttribute(
+    "data-viewed-chat",
+    `chats/${photo.id}`,
+  );
+
+  const turn = `turn-${photo.id}`;
+  const uri = `rua://chats/${photo.id}?turn=${turn}&from=notification#result`;
+  const send = (view: Page, title: string, rua_uri?: string) =>
+    view.evaluate(
+      (payload) => {
+        window.dispatchEvent(
+          new CustomEvent("fixture-notification", { detail: payload }),
+        );
+      },
+      {
+        title,
+        rua_uri,
+        sender: { id: "previous-agent", name: "Previous Agent" },
+        target_device_id: "desktop",
+      },
+    );
+  await Promise.all([
+    send(page, "Already open", uri),
+    send(second, "Already open", uri),
+  ]);
+  await send(second, "Unrelated");
+  await expect
+    .poll(() => shown.map((item) => item.title))
+    .toEqual(["Unrelated"]);
+
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event("fixture-background")),
+  );
+  await expect(second.locator("html")).toHaveAttribute("data-viewed-chat", "");
+  await Promise.all([
+    send(page, "Completed", uri),
+    send(second, "Completed", uri),
+  ]);
+  await expect
+    .poll(() => shown.filter((item) => item.title === "Completed").length)
+    .toBe(1);
+  const presenting = shown.find((item) => item.title === "Completed")!.page;
+  await presenting.evaluate(() =>
+    window.dispatchEvent(new Event("fixture-click")),
+  );
+  await expect(presenting).toHaveURL(
+    new RegExp(
+      `/console/chats/${photo.id}\\?turn=${turn}&from=notification#result$`,
+    ),
+  );
+  await expect(
+    presenting.locator(".rua-chat-message--search-jump"),
+  ).toContainText(`Saved history for ${photo.name}`);
+  expect(shown.map((item) => item.title)).toEqual(["Unrelated", "Completed"]);
+});

@@ -10,6 +10,7 @@ autotests = false
 
 [dependencies]
 agent-types.workspace = true
+blake3.workspace = true
 rua-core.workspace = true
 rua-config.workspace = true
 rua-text-search.workspace = true

@@ -978,6 +978,24 @@ impl WorkspaceRuntime {
             .to_path_buf()
     }
 
+    pub fn channel_chat_process(
+        &self,
+    ) -> Result<Arc<dyn rua_channel::core::channel::Process>, WorkspaceError> {
+        let facade = self.ctx.channel_chat_facade.get().ok_or_else(|| {
+            WorkspaceError::component_init_failed(
+                "channels",
+                "Chat admission service is unavailable",
+            )
+        })?;
+        Ok(Arc::new(
+            crate::channel_process_adapter::ChannelProcessAdapter::new(
+                self.ctx.rua_root.clone(),
+                self.agent_id.clone(),
+                facade.clone(),
+            ),
+        ))
+    }
+
     pub(crate) fn task_runtime(&self) -> Arc<rua_task::TaskRuntime> {
         Arc::clone(&self.ctx.task_runtime)
     }
@@ -1327,13 +1345,11 @@ impl WorkspaceRuntime {
             .await;
         self.service_manager
             .apply_channels(|| async {
-                if let Some(runtime) = self.react_runtime().await {
+                if new.values().any(|channel| channel["enabled"] == true)
+                    && !manager.has_process().await
+                {
                     manager
-                        .set_process_if_absent(Arc::new(
-                            crate::channel_process_adapter::ChannelProcessAdapter::new(runtime)
-                                .with_workspace_dir(self.workspace_dir())
-                                .with_memory_write_available(self.memory_manager().await.is_some()),
-                        ))
+                        .set_process_if_absent(self.channel_chat_process()?)
                         .await;
                 }
                 let mut applied = previous.clone();

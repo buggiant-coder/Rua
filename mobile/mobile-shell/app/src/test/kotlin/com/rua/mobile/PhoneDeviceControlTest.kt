@@ -19,7 +19,7 @@ import org.robolectric.shadows.ShadowSettings
 @LooperMode(LooperMode.Mode.PAUSED)
 class PhoneDeviceControlTest {
     @Test fun aLateOperationCancellationCannotReleaseTheSessionOrCancelItsNextOperation() {
-        val invocation = PhoneInvocation("owner", PhoneChatAddress("agent", "default", "chat"), "turn", "authority", "configuration")
+        val invocation = PhoneInvocation("owner", PhoneChatAddress("chat"), "turn", "authority", "configuration")
         ShadowSettings.setCanDrawOverlays(true)
         PhoneDeviceControl.initialize(RuntimeEnvironment.getApplication(), "generation") {}
         try {
@@ -40,7 +40,7 @@ class PhoneDeviceControlTest {
     }
 
     @Test fun surfaceShowsTheCurrentActionThenWaitsAndIgnoresLateCompletion() {
-        val invocation = PhoneInvocation("owner", PhoneChatAddress("agent", "default", "chat"), "turn", "authority", "configuration")
+        val invocation = PhoneInvocation("owner", PhoneChatAddress("chat"), "turn", "authority", "configuration")
         ShadowSettings.setCanDrawOverlays(true)
         PhoneDeviceControl.initialize(RuntimeEnvironment.getApplication(), "generation") {}
         try {
@@ -98,8 +98,8 @@ class PhoneDeviceControlTest {
         PhoneDeviceControl.initialize(app, "generation") {}
         try {
             for (address in listOf(
-                PhoneChatAddress("agent", "default", "chat-one"),
-                PhoneChatAddress("project", "project /一", "chat +/?"),
+                PhoneChatAddress("chat-one"),
+                PhoneChatAddress("chat +/?"),
             )) {
                 val invocation = PhoneInvocation("owner", address, "turn", "authority", "configuration")
                 PhoneDeviceControl.sessions.activate(invocation)
@@ -132,7 +132,7 @@ class PhoneDeviceControlTest {
         val app = RuntimeEnvironment.getApplication()
         val launches = shadowOf(app)
         ShadowSettings.setCanDrawOverlays(true)
-        val invocation = PhoneInvocation("owner", PhoneChatAddress("agent", "default", "chat"), "turn", "authority", "configuration")
+        val invocation = PhoneInvocation("owner", PhoneChatAddress("chat"), "turn", "authority", "configuration")
         PhoneDeviceControl.initialize(app, "generation") {}
         try {
             val lease = PhoneDeviceControl.sessions.activate(invocation)
@@ -146,7 +146,7 @@ class PhoneDeviceControlTest {
             val returned = launches.nextStartedActivity
             assertNotNull(returned)
             assertEquals(MainActivity::class.java.name, returned.component!!.className)
-            assertEquals("rua://agents/default/chats/chat", returned.getStringExtra(MobileNotificationBridge.EXTRA_RUA_URI))
+            assertEquals("rua://chats/chat", returned.getStringExtra(MobileNotificationBridge.EXTRA_RUA_URI))
             PhoneDeviceControl.stopSession(lease.sessionId)
             assertFalse(PhoneDeviceControl.release(invocation, "generation"))
             assertTrue(runCatching { PhoneDeviceControl.sessions.activate(invocation) }.isFailure)

@@ -5,14 +5,13 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use rua_security::approval_authority::{
     ApprovalAuthorityError, ApprovalDecision, ApprovalOwner, ApprovalRequest, ApprovalReuseMatcher,
-    ApprovalReuseRule, ApprovalReuseScope, ApprovalSnapshot, ApprovalStatus, PermissionRuleEffect,
+    ApprovalReuseRule, ApprovalReuseScope, ApprovalSnapshot, PermissionRuleEffect,
     PermissionRuleInput, PermissionRuleSource,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::errors::ApiError;
 use crate::extractors::ChatPath;
-use crate::services::conversation_authority::ConversationActiveTurnPhase;
 use crate::services::device_command_bus::{
     ConversationApprovalDecision, ConversationControlDeviceAction,
     ConversationControlDeviceResponse,
@@ -96,7 +95,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/agents/{agent_id}/approvals/{approval_id}/decide",
-            post(decide_authority_approval),
+            post(decide_runtime_session_approval),
         )
         .route(
             "/agents/{agent_id}/permission-rules",
@@ -183,7 +182,7 @@ async fn chat_control_approval(
     }
 }
 
-async fn decide_authority_approval(
+async fn decide_runtime_session_approval(
     State(state): State<AppState>,
     Path((agent_id, approval_id)): Path<(String, String)>,
     Json(body): Json<AuthorityDecisionBody>,
@@ -235,46 +234,15 @@ async fn decide_authority_approval(
     };
 
     let approval_authority = security.approval_authority();
-    let resume_request = approval_authority.request(&approval_id).await;
-    if let Some(request) = resume_request
-        .as_ref()
-        .filter(|request| request.agent_id == agent_id)
-    {
-        if let Some(address) = request.owner.as_chat_address() {
-            let _ = state
-                .conversation_authority
-                .transition_active_turn_phase(
-                    address,
-                    Some(&request.turn_id),
-                    ConversationActiveTurnPhase::RunningTool,
-                )
-                .await;
-        }
+    let belongs_to_agent_session = approval_authority.request(&approval_id).await.is_some_and(|request|
+        request.agent_id == agent_id && matches!(&request.owner, ApprovalOwner::RuntimeSession { agent_id: owner_agent_id, .. } if owner_agent_id == &agent_id)
+    );
+    if !belongs_to_agent_session {
+        return authority_error_to_response(ApprovalAuthorityError::NotFound(approval_id));
     }
-
     let outcome = approval_authority
         .decide_for_agent(&agent_id, &approval_id, decision)
         .await;
-    if outcome.is_err()
-        && approval_authority
-            .request(&approval_id)
-            .await
-            .is_some_and(|request| request.status == ApprovalStatus::Pending)
-    {
-        if let Some(request) = resume_request.as_ref() {
-            if let Some(address) = request.owner.as_chat_address() {
-                let _ = state
-                    .conversation_authority
-                    .transition_active_turn_phase(
-                        address,
-                        Some(&request.turn_id),
-                        ConversationActiveTurnPhase::WaitingApproval,
-                    )
-                    .await;
-            }
-        }
-    }
-
     match outcome {
         Ok(request) => {
             if should_emit_agent_security {

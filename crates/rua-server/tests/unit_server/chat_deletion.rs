@@ -44,3 +44,26 @@ fn persistence_failure_does_not_create_an_intent() {
     assert!(store.persist(&address()).is_err());
     assert!(store.load(&address()).is_err());
 }
+
+#[test]
+fn simultaneous_local_and_synced_deletes_observe_the_same_terminal_intent() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ChatDeleteIntentStore::from_rua_root(temp.path());
+    let ready = std::sync::Barrier::new(8);
+    std::thread::scope(|threads| {
+        let callers = (0..8)
+            .map(|_| {
+                threads.spawn(|| {
+                    ready.wait();
+                    store.persist(&address()).unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        let intents = callers
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect::<Vec<_>>();
+        assert!(intents.iter().all(|intent| intent == &intents[0]));
+        assert_eq!(store.load(&address()).unwrap().unwrap(), intents[0]);
+    });
+}

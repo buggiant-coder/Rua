@@ -2,7 +2,6 @@
 
 pub mod channel_conflict;
 pub mod channel_process_adapter;
-pub mod chats_store;
 pub mod config;
 pub mod context;
 pub mod error;

@@ -113,37 +113,37 @@ class PhoneUseSessionDeviceTest {
         }
     }
 
-    private fun approve(agent: String, chat: String) {
-        val pending = api("GET", "/agents/$agent/approvals/snapshot?chat_id=$chat").optJSONArray("pending") ?: return
+    private fun approve(chat: String) {
+        val pending = api("GET", "/chats/$chat/approvals/snapshot").optJSONArray("pending") ?: return
         for (index in 0 until pending.length()) {
             val item = pending.getJSONObject(index)
             val name = item.optString("tool_name", item.optString("tool"))
             assertTrue("Unexpected fixture tool approval: $name", name in listOf("phone_status", "phone_list_apps", "phone_observe", "phone_release"))
-            api("POST", "/agents/$agent/approvals/${item.getString("id")}/decide", JSONObject()
+            api("POST", "/chats/$chat/approvals/${item.getString("id")}/decide", JSONObject()
                 .put("decision", "run_once").put("decided_by", "phone-session-device-fixture"))
         }
     }
 
-    private fun history(agent: String, chat: String) = api("GET", "/agents/$agent/chats/$chat")
+    private fun history(chat: String) = api("GET", "/chats/$chat")
     private fun messages(history: JSONObject): List<JSONObject> {
         val rows = history.getJSONArray("messages")
         return (0 until rows.length()).map { rows.getJSONObject(it) }
     }
 
-    private fun newChat(agent: String) = api("POST", "/agents/$agent/chats", JSONObject()
+    private fun newChat(agent: String) = api("POST", "/chats", JSONObject().put("agent_id", agent)
         .put("name", "Phone session fixture").put("user_id", "phone-session-device-fixture")
         .put("channel", "console").put("meta", JSONObject()).put("model", model)).getString("id")
 
-    private fun submit(agent: String, chat: String, case: String, mode: String): String {
-        val result = api("POST", "/agents/$agent/chats/$chat/console/submit", JSONObject()
+    private fun submit(chat: String, case: String, mode: String): String {
+        val result = api("POST", "/chats/$chat/console/submit", JSONObject()
             .put("message", "native-phone-session:$case:$mode").put("model", model))
         assertTrue(result.getBoolean("accepted"))
         return case
     }
 
-    private fun held(agent: String, chat: String, case: String, observationExpected: Boolean = true) {
+    private fun held(chat: String, case: String, observationExpected: Boolean = true) {
         await("Observation did not reach the model hold: $case") {
-            approve(agent, chat)
+            approve(chat)
             val state = control("state").optJSONObject(case) ?: return@await false
             if (!state.getBoolean("held")) return@await false
             val events = state.getJSONArray("events")
@@ -161,11 +161,11 @@ class PhoneUseSessionDeviceTest {
 
     private fun continueCase(case: String) { control("continue", JSONObject().put("case", case)) }
 
-    private fun completed(agent: String, chat: String, case: String, absent: Boolean = false) {
+    private fun completed(chat: String, case: String, absent: Boolean = false) {
         await("Agent did not complete: $case") {
-            approve(agent, chat)
+            approve(chat)
             if (absent) assertSurface(false)
-            val current = history(agent, chat)
+            val current = history(chat)
             assertFalse("Fixture rejected the result", current.toString().contains("PHONE_SESSION_FAILED"))
             val rows = messages(current)
             val turn = rows.lastOrNull()?.optString("turn_id")
@@ -176,21 +176,21 @@ class PhoneUseSessionDeviceTest {
         }
     }
 
-    private fun release(agent: String, chat: String, case: String) {
-        submit(agent, chat, case, "release-only")
-        completed(agent, chat, case)
+    private fun release(chat: String, case: String) {
+        submit(chat, case, "release-only")
+        completed(chat, case)
         await("Release did not remove the overlay", 3) { !indicatorPresent() }
         assertSurface(false)
     }
 
-    private fun stopHeldTurn(agent: String, chat: String, case: String, lateTool: String) {
-        val turnId = messages(history(agent, chat)).last().getString("turn_id")
-        val countBefore = messages(history(agent, chat)).count { it.optString("turn_id") == turnId && it.optString("type") == "plugin_call" }
+    private fun stopHeldTurn(chat: String, case: String, lateTool: String) {
+        val turnId = messages(history(chat)).last().getString("turn_id")
+        val countBefore = messages(history(chat)).count { it.optString("turn_id") == turnId && it.optString("type") == "plugin_call" }
         val stop = visibleNode(STOP) ?: error("Native Stop button missing")
         try { assertTrue("Native Stop click failed", stop.performAction(AccessibilityNodeInfo.ACTION_CLICK)) }
         finally { stop.recycle() }
         await("Stop did not cancel the current Turn") {
-            val rows = messages(history(agent, chat)).filter { it.optString("turn_id") == turnId }
+            val rows = messages(history(chat)).filter { it.optString("turn_id") == turnId }
             rows.any { it.optString("turn_status") == "interrupted" } && rows.none { it.optString("turn_status") == "in_progress" } &&
                 !api("GET", "/platform/phone").getBoolean("session_active") && !indicatorPresent()
         }
@@ -198,10 +198,10 @@ class PhoneUseSessionDeviceTest {
         SystemClock.sleep(2000)
         val lateEvents = control("state").getJSONObject(case).getJSONArray("events")
         assertEquals("Fixture must attempt the delayed response", lateTool, lateEvents.getJSONObject(lateEvents.length() - 1).getString("requested_tool"))
-        val after = messages(history(agent, chat)).filter { it.optString("turn_id") == turnId }
+        val after = messages(history(chat)).filter { it.optString("turn_id") == turnId }
         assertEquals("Canceled Turn dispatched a later tool", countBefore, after.count { it.optString("type") == "plugin_call" })
         assertEquals("Canceled Turn left a pending approval", 0,
-            api("GET", "/agents/$agent/approvals/snapshot?chat_id=$chat").getJSONArray("pending").length())
+            api("GET", "/chats/$chat/approvals/snapshot").getJSONArray("pending").length())
         assertSurface(false)
     }
 
@@ -249,34 +249,34 @@ class PhoneUseSessionDeviceTest {
                     val b = agents[1]
                     val chatA = newChat(a)
                     val chatB = newChat(b)
-                    submit(a, chatA, "neutral-$suffix", "neutral")
-                    completed(a, chatA, "neutral-$suffix", absent = true)
+                    submit(chatA, "neutral-$suffix", "neutral")
+                    completed(chatA, "neutral-$suffix", absent = true)
 
-                    val explicitRelease = submit(a, chatA, "release-$suffix", "release")
-                    held(a, chatA, explicitRelease)
+                    val explicitRelease = submit(chatA, "release-$suffix", "release")
+                    held(chatA, explicitRelease)
                     persistFor(5000)
                     continueCase(explicitRelease)
-                    completed(a, chatA, explicitRelease)
+                    completed(chatA, explicitRelease)
                     await("Explicit release left the overlay", 3) { !indicatorPresent() }
                     assertSurface(false)
 
-                    val retained = submit(a, chatA, "retain-$suffix", "retain")
-                    held(a, chatA, retained)
-                    submit(b, chatB, "busy-$suffix", "contender")
-                    completed(b, chatB, "busy-$suffix")
+                    val retained = submit(chatA, "retain-$suffix", "retain")
+                    held(chatA, retained)
+                    submit(chatB, "busy-$suffix", "contender")
+                    completed(chatB, "busy-$suffix")
                     assertSurface(true)
                     continueCase(retained)
-                    completed(a, chatA, retained)
+                    completed(chatA, retained)
                     persistFor(3000)
 
                     // The existing session must bind Stop to this new Turn, rather than the completed Turn.
-                    val inherited = submit(a, chatA, "inherited-$suffix", "stop-inherited")
-                    held(a, chatA, inherited, observationExpected = false)
-                    stopHeldTurn(a, chatA, inherited, "phone_observe")
+                    val inherited = submit(chatA, "inherited-$suffix", "stop-inherited")
+                    held(chatA, inherited, observationExpected = false)
+                    stopHeldTurn(chatA, inherited, "phone_observe")
 
-                    val stopped = submit(a, chatA, "stop-$suffix", "stop")
-                    held(a, chatA, stopped)
-                    stopHeldTurn(a, chatA, stopped, "phone_click")
+                    val stopped = submit(chatA, "stop-$suffix", "stop")
+                    held(chatA, stopped)
+                    stopHeldTurn(chatA, stopped, "phone_click")
                     val counter = automation.windows.asSequence().mapNotNull { it.root }
                         .flatMap { root -> try { root.findAccessibilityNodeInfosByText("clicks=0").asSequence().toList().asSequence() } finally { root.recycle() } }.toList()
                     try { assertTrue("Delayed click changed the harmless target", counter.any { it.text?.toString() == "clicks=0" }) }
@@ -284,12 +284,12 @@ class PhoneUseSessionDeviceTest {
                     assertSurface(false)
 
                     // The former contender can acquire only after A's session is gone.
-                    val acquired = submit(b, chatB, "handoff-$suffix", "retain")
-                    held(b, chatB, acquired)
+                    val acquired = submit(chatB, "handoff-$suffix", "retain")
+                    held(chatB, acquired)
                     continueCase(acquired)
-                    completed(b, chatB, acquired)
+                    completed(chatB, acquired)
                     assertSurface(true)
-                    release(b, chatB, "cleanup-$suffix")
+                    release(chatB, "cleanup-$suffix")
                     assertEquals("Session operations restarted the resident", resident, MobileRuntimeProcess.findRuaServerPids())
                 } finally {
                     val cleanupFailures = mutableListOf<Throwable>()

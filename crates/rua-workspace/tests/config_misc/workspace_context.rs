@@ -48,6 +48,7 @@ fn workspace_context_has_all_fields() {
         usage_recorder: None,
         push_store_dir: Some(dir.path().to_path_buf()),
         agent_resolver: Arc::new(AgentResolver::new("default")),
+        channel_chat_facade: std::sync::OnceLock::new(),
         command_runtime_factory: std::sync::OnceLock::new(),
         session_replication_hook: std::sync::OnceLock::new(),
         memory_publication_hook: Arc::new(std::sync::OnceLock::new()),

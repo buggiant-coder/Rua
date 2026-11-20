@@ -231,6 +231,43 @@ async fn chat_tombstone_rejects_newer_index_upsert() {
         RegistryApplyStatus::Applied
     );
 
+    let durable = rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(data.path());
+    assert_eq!(durable.load(&address).unwrap().unwrap().address, address);
+    // An independent Evergreen cursor cannot resurrect Session files for a deleted Chat.
+    let evergreen = rua_sync::evergreen_chat_adapter::EvergreenChatSyncAdapter::new(
+        data.path().to_path_buf(),
+        "restarted-replica",
+    );
+    let mut restarted = SyncRegistry::new();
+    restarted.register(Arc::new(evergreen)).unwrap();
+    let late_session = rua_sync::evergreen_chat_adapter::EvergreenChatSyncAdapter::file_change(
+        "session-after-chat-delete",
+        &address,
+        "session",
+        serde_json::json!({"chat_id": address.chat_id(), "agent_id":"agent-b"}),
+        "delayed-replica",
+        hlc(501),
+    );
+    assert_eq!(
+        restarted
+            .apply_change(&late_session, &merge_store)
+            .await
+            .unwrap()
+            .status,
+        RegistryApplyStatus::Applied
+    );
+    assert_eq!(
+        merge_store
+            .get_record_cursor("evergreen_chat:chats/terminal-chat/session")
+            .unwrap()
+            .unwrap()
+            .state,
+        RecordState::Tombstoned
+    );
+    assert!(!data
+        .path()
+        .join("chats/sessions/terminal-chat/session.json")
+        .exists());
     let newer = ChatIndexSyncAdapter::index_change(
         "resurrect-terminal-chat",
         address.clone(),

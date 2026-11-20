@@ -20,3 +20,6 @@ mod voice_endpoints_synthesize;
 mod wecom_channel_aibot;
 #[path = "channels/xiaoyi_config_injection.rs"]
 mod xiaoyi_config_injection;
+
+#[path = "channels/adapter_session_persist.rs"]
+mod adapter_session_persist;

@@ -1,6 +1,10 @@
+import {
+  addressFromChatPath,
+  chatPath,
+} from "../pages/Chat/conversationAddress";
+import { consolePathFromRuaUri } from "./ruaUri";
 import type { UserNotificationRequest } from "./types";
 
-const CHAT_ADDRESS_PATTERN = /^chats\/[^/]+$/;
 const VIEWER_CHANNEL = "rua:chat-viewer-v1";
 const VIEWER_HEARTBEAT_MS = 1_000;
 const VIEWER_LEASE_MS = 3_500;
@@ -19,21 +23,13 @@ interface PresentationContext {
 }
 
 function normalizedChatAddress(value: string): string | null {
-  const normalized = value.replace(/^\/+|\/+$/g, "");
-  return CHAT_ADDRESS_PATTERN.test(normalized) ? normalized : null;
+  const address = addressFromChatPath("/" + value.replace(/^\/+/, ""));
+  return address ? chatPath(address.chatId).slice(1) : null;
 }
 
 export function chatAddressFromRuaUri(rawUri?: string): string | null {
-  if (!rawUri) return null;
-  try {
-    const uri = new URL(rawUri);
-    if (uri.protocol !== "rua:" || uri.username || uri.password || uri.port) {
-      return null;
-    }
-    return normalizedChatAddress(`${uri.hostname}${uri.pathname}`);
-  } catch {
-    return null;
-  }
+  const path = rawUri && consolePathFromRuaUri(rawUri, "");
+  return path ? normalizedChatAddress(path.split(/[?#]/, 1)[0]) : null;
 }
 
 export function chatAddressFromConsolePath(pathname: string): string | null {
@@ -59,7 +55,9 @@ export interface ChatViewerCoordinator {
   stop(): void;
 }
 
-export function startChatViewerCoordinator(): ChatViewerCoordinator {
+export function startChatViewerCoordinator(
+  subscribeNavigation?: (announce: () => void) => () => void,
+): ChatViewerCoordinator {
   const windowId = crypto.randomUUID();
   const remoteViewers = new Map<string, ChatViewerMessage>();
   const channel =
@@ -83,6 +81,11 @@ export function startChatViewerCoordinator(): ChatViewerCoordinator {
 
   if (channel) {
     channel.onmessage = (event: MessageEvent<unknown>) => {
+      if (event.data === "query-viewers") {
+        announce();
+        return;
+      }
+      if (!event.data || typeof event.data !== "object") return;
       const message = event.data as Partial<ChatViewerMessage>;
       if (
         message.kind !== "viewer" ||
@@ -107,6 +110,8 @@ export function startChatViewerCoordinator(): ChatViewerCoordinator {
     };
   }
 
+  channel?.postMessage("query-viewers");
+  const unsubscribe = subscribeNavigation?.(announce);
   const heartbeat = window.setInterval(announce, VIEWER_HEARTBEAT_MS);
   window.addEventListener("popstate", announce);
   window.addEventListener("focus", announce);
@@ -145,6 +150,7 @@ export function startChatViewerCoordinator(): ChatViewerCoordinator {
       });
     },
     stop() {
+      unsubscribe?.();
       window.clearInterval(heartbeat);
       window.removeEventListener("popstate", announce);
       window.removeEventListener("focus", announce);

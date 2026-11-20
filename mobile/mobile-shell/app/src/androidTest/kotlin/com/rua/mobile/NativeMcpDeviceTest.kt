@@ -40,7 +40,7 @@ class NativeMcpDeviceTest {
                 .put("command", "node").put("args", org.json.JSONArray().put("native-mcp-fixture.js"))
                 .put("env", JSONObject().put("MCP_FIXTURE_SECRET", "fixture-secret")).put("call_timeout_secs", 2)
                 .put("auto_connect", "lazy_on_first_use")
-            await("Resident ready", 30) { runCatching { api("GET", "/agents/default/chats"); true }.getOrDefault(false) }
+            await("Resident ready", 30) { runCatching { api("GET", "/auth/status"); true }.getOrDefault(false) }
             val previousFixtures = api("GET", "/agents/default/mcp").getJSONArray("items")
             for (index in 0 until previousFixtures.length()) {
                 val entry = previousFixtures.getJSONObject(index)
@@ -109,14 +109,14 @@ class NativeMcpDeviceTest {
                 val previous = api("GET", "/models/active")
                 try {
                     api("PUT", "/models/active", JSONObject().put("provider_id", provider).put("model", "native-runtime-model"))
-                    val chat = api("POST", "/agents/default/chats", JSONObject("""{"name":"MCP stop","user_id":"native-e2e","channel":"console","meta":{},"model":{"provider_id":"$provider","model":"native-runtime-model","thinking_strength":"off"}}"""))
+                    val chat = api("POST", "/chats", JSONObject("""{"agent_id":"default","name":"MCP stop","user_id":"native-e2e","channel":"console","meta":{},"model":{"provider_id":"$provider","model":"native-runtime-model","thinking_strength":"off"}}"""))
                     val id = chat.getString("id")
                     callMarker.delete()
-                    val submit = api("POST", "/agents/default/chats/$id/console/submit", JSONObject().put("message", "native-runtime-mcp-stop"))
+                    val submit = api("POST", "/chats/$id/console/submit", JSONObject().put("message", "native-runtime-mcp-stop"))
                     await("Agent MCP descendants started", 30) { fixture.approveFixtureCalls(token, id); pids(callMarker).size == 2 }
                     val children = pids(callMarker)
                     val active = submit.getJSONObject("control").getJSONObject("active_turn")
-                    assertTrue(api("POST", "/agents/default/chats/$id/console/stop", JSONObject().put("turn_id", active.getString("turn_id")).put("authority_epoch", active.getString("authority_epoch"))).getBoolean("stopped"))
+                    assertTrue(api("POST", "/chats/$id/console/stop", JSONObject().put("turn_id", active.getString("turn_id")).put("authority_epoch", active.getString("authority_epoch"))).getBoolean("stopped"))
                     await("Agent Stop cancels MCP request subtree") { gone(children) }
                 } finally {
                     if (previous.optString("provider_id").isEmpty()) api("DELETE", "/models/active")

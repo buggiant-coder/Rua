@@ -4,7 +4,6 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use mcp_manager::manager::McpManager;
-use rua_contract::agent::AgentRuntime;
 use rua_contract::config::AppConfig;
 use rua_contract::cron::SystemScheduler;
 use rua_plugin_runtime::PluginRegistry;
@@ -843,6 +842,7 @@ impl AppState {
             usage_recorder: Some(usage_recorder_for_runtime),
             push_store_dir: Some(data_dir.clone()),
             agent_resolver: Arc::new(AgentResolver::new(&active_agent_id)),
+            channel_chat_facade: std::sync::OnceLock::new(),
             command_runtime_factory: std::sync::OnceLock::new(),
             session_replication_hook: std::sync::OnceLock::new(),
             memory_publication_hook: Arc::new(std::sync::OnceLock::new()),
@@ -1210,11 +1210,7 @@ impl AppState {
             .with_collaboration_binding(Arc::clone(&collaboration_binding))
             .with_product_hooks(Arc::clone(&product_hooks))
             .with_candidate_completion_runtime(candidate_completion_runtime)
-            .with_project_runtime(
-                data_dir.clone(),
-                Arc::clone(&project_catalog),
-                Arc::clone(&project_bindings),
-            )
+            .with_project_runtime(Arc::clone(&project_catalog), Arc::clone(&project_bindings))
             .with_security(Arc::clone(&security_module))
             .with_approval_authority(Arc::clone(security_module.approval_authority()))
             .with_acp_permission_relay(Arc::clone(&acp_permission_relay))
@@ -1248,6 +1244,10 @@ impl AppState {
             .with_active_stream_broadcast_hub(Arc::clone(&active_stream_broadcast_hub)),
         );
 
+        workspace_context_ref
+            .channel_chat_facade
+            .set(Arc::downgrade(&console_facade))
+            .expect("Channel Chat facade was already installed");
         {
             let ns = sync_ns_cell.read().ok().and_then(|guard| guard.clone());
             let device = sync_device_cell.read().ok().and_then(|guard| guard.clone());
@@ -1525,14 +1525,9 @@ impl AppState {
                     }
                 };
 
-                let react_rt: Arc<dyn AgentRuntime> = match workspace_rt.react_runtime().await {
-                    Some(rt) => rt,
-                    None => {
-                        tracing::error!("react_runtime not available for platform services");
-                        return Err("react_runtime not available for platform services".to_string());
-                    }
-                };
-
+                let process = workspace_rt
+                    .channel_chat_process()
+                    .map_err(|error| error.to_string())?;
                 let ws_dir = dd.join("workspaces").join(&agent_id);
                 let skill_svc = match rua_skills::SkillService::new(&ws_dir) {
                     Ok(svc) => Arc::new(svc),
@@ -1549,7 +1544,7 @@ impl AppState {
                         skill_svc,
                         cm,
                         im_configs,
-                        Some(react_rt),
+                        Some(process),
                     )
                     .await;
 
@@ -1600,6 +1595,7 @@ impl AppState {
             Arc::clone(&workspace_registry),
             Arc::clone(&cron_scheduler_impl),
             cron_fire_rx,
+            Arc::clone(&console_facade),
             push_store.clone(),
         );
         let sidecar_store = Arc::new(
@@ -2163,7 +2159,6 @@ impl AppState {
                 .with_collaboration_binding(Arc::clone(&collaboration_binding))
                 .with_product_hooks(Arc::clone(&self.product_hooks))
                 .with_project_runtime(
-                    self.rua_root.clone(),
                     Arc::clone(&self.project_catalog),
                     Arc::clone(&self.project_bindings),
                 )

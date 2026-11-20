@@ -604,6 +604,7 @@ impl channel::Channel for MattermostChannel {
                         .is_ok_and(|threads| threads.iter().any(|id| id == root));
                 match parser::parse_with_thread_policy(native, &bid, &bname, followed) {
                     Ok(Some(mut req)) => {
+                        req.metadata["account_id"] = serde_json::json!(bid);
                         match mattermost_check_duplicate_request(&event_deduper, &req) {
                             Ok(true) => {
                                 tracing::debug!(

@@ -117,6 +117,7 @@ internal class NotificationPermissionGate(
 class MobileNotificationBridge(
     private val activity: Activity,
     requestNotificationPermission: (((Boolean) -> Unit) -> Unit) = { callback -> callback(false) },
+    private val takeActivation: () -> String? = { null },
 ) {
     private val handler = Handler(activity.mainLooper)
     private val permissionGate = NotificationPermissionGate(
@@ -124,6 +125,9 @@ class MobileNotificationBridge(
         requestPermission = requestNotificationPermission,
         present = ::present,
     )
+
+    @JavascriptInterface
+    fun takePendingActivation(): String? = takeActivation()
 
     @JavascriptInterface
     fun capability(): String = CAPABILITY

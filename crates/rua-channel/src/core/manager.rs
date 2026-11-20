@@ -125,6 +125,9 @@ impl RoutingProcess {
 #[async_trait]
 impl Process for RoutingProcess {
     async fn handle(&self, req: AgentChannelRequest) -> BoxStream<'static, RuntimeEvent> {
+        if let Some(response) = self.inner.handle_chat_control(&req).await {
+            return Box::pin(futures::stream::iter([response]));
+        }
         let query = extract_query_text_from_request(&req);
         let level = self.command_registry.get_priority_level(&query);
 
@@ -386,6 +389,10 @@ impl ChannelManager {
         *self.process.write().await = Some(process);
     }
 
+    pub async fn has_process(&self) -> bool {
+        self.process.read().await.is_some()
+    }
+
     pub async fn set_process_if_absent(&self, process: Arc<dyn Process>) {
         let mut current = self.process.write().await;
         if current.is_none() {
@@ -596,11 +603,39 @@ impl ChannelManager {
         let query = extract_query_text(&payload);
         let level = self.command_registry.get_priority_level(&query);
 
+        let process = self.process.read().await.clone();
+        let mut control_id = Some(session_id.clone());
+        if let Some(process) = process.filter(|_| crate::core::im::is_im_channel(&channel_id)) {
+            let target = target_from_payload(&session_id, &payload);
+            let req = AgentChannelRequest {
+                agent_id: target.agent_id.clone(),
+                user_id: target.sender_id.clone().unwrap_or_default(),
+                session_id: session_id.clone(),
+                channel_id: channel_id.clone(),
+                conversation_id: target.conversation_id.clone(),
+                message_id: None,
+                metadata: payload.clone(),
+                input: vec![IncomingContentPart::Text {
+                    text: query.clone(),
+                }],
+            };
+            if let Some(response) = process.handle_chat_control(&req).await {
+                if let RuntimeEvent::TextDelta { delta, .. } = response {
+                    self.send_text(&channel_id, target, delta).await?;
+                } else if let RuntimeEvent::Error { error } = response {
+                    return Err(error);
+                }
+                return Ok(());
+            }
+            control_id = process.control_chat_id(&req).await?;
+        }
         if crate::core::im::is_im_channel(&channel_id)
             && !query.starts_with("/approve")
             && !query.starts_with("/deny")
         {
-            self.reject_pending_if_any(&session_id).await;
+            if let Some(control_id) = control_id.as_deref() {
+                self.reject_pending_if_any(control_id).await;
+            }
         }
 
         if self.command_registry.is_control_command(&query) {

@@ -224,11 +224,7 @@ describe("projectChatsApi", () => {
     );
   });
 
-  it("routes Project approval and ACP control families without authority selectors", async () => {
-    const approvalBody = {
-      decision: "run_once" as const,
-      decided_by: "webui",
-    };
+  it("routes Project ACP control families without authority selectors", async () => {
     const enterBody = {
       runner: "codex",
       cwd: "/repo",
@@ -236,13 +232,6 @@ describe("projectChatsApi", () => {
       target_device_id: "must-not-cross-project-boundary",
     };
 
-    await projectChatsApi.getApprovalSnapshot("project/one", "chat/one");
-    await projectChatsApi.decideApproval(
-      "project/one",
-      "chat/one",
-      "approval/one",
-      approvalBody,
-    );
     await projectChatsApi.listAcpRunners("project/one", "chat/one");
     await projectChatsApi.listAcpSessions(
       "project/one",
@@ -253,26 +242,12 @@ describe("projectChatsApi", () => {
     await projectChatsApi.enterAcp("project/one", "chat/one", enterBody);
     await projectChatsApi.exitAcp("project/one", "chat/one");
     await projectChatsApi.getAcpStatus("project/one", "chat/one");
-    await projectChatsApi.getAcpPermissionSnapshot("project/one", "chat/one");
-    await projectChatsApi.decideAcpPermission(
-      "project/one",
-      "chat/one",
-      "request/one",
-      "allow/once",
-    );
     await projectChatsApi.persistAcpHistoryPreview("project/one", "chat/one", {
       preview_id: 7,
       text: "history",
       runner: "codex",
     });
 
-    expect(request).toHaveBeenCalledWith(
-      "/chats/chat%2Fone/approvals/snapshot",
-    );
-    expect(request).toHaveBeenCalledWith(
-      "/chats/chat%2Fone/approvals/approval%2Fone/decide",
-      { method: "POST", body: JSON.stringify(approvalBody) },
-    );
     expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/acp/runners");
     expect(request).toHaveBeenCalledWith(
       "/chats/chat%2Fone/acp/sessions?runner=codex%2Frunner&cwd=%2Frepo",
@@ -289,14 +264,6 @@ describe("projectChatsApi", () => {
       method: "POST",
     });
     expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/acp/status");
-    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/acp/permissions");
-    expect(request).toHaveBeenCalledWith(
-      "/chats/chat%2Fone/acp/permissions/request%2Fone/decide",
-      {
-        method: "POST",
-        body: JSON.stringify({ option_id: "allow/once" }),
-      },
-    );
     expect(request).toHaveBeenCalledWith(
       "/chats/chat%2Fone/acp-history-preview",
       {

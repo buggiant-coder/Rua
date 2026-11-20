@@ -636,6 +636,9 @@ impl ChatService {
         branch_header.user_id = source_header.user_id;
         branch_header.channel = source_header.channel;
         branch_header.extra = source_header.extra;
+        branch_header
+            .extra
+            .remove(rua_session::external_chat::EXTERNAL_CHANNEL_META_KEY);
         store.save_chat_header(&branch_header).await?;
 
         if let Some((target_turn, target_variant_id)) = branch_point {
@@ -1223,6 +1226,7 @@ pub fn project_chat_header(
                 message: "Chat index metadata must be an object".into(),
             })?;
     meta.remove(rua_session::collaboration::COLLABORATION_META_KEY);
+    meta.remove(rua_session::external_chat::EXTERNAL_CHANNEL_META_KEY);
     meta.extend(header.extra.clone());
     // Configuration snapshots and selection audit history are loaded when opening a Chat.
     meta.remove("hook_configuration");

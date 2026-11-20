@@ -162,8 +162,18 @@ fn default_dispatch_mode() -> String {
 pub struct DispatchTarget {
     pub user_id: String,
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_id: Option<String>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl DispatchTarget {
+    pub fn reply_conversation(&self) -> &str {
+        self.conversation_id.as_deref().unwrap_or(&self.session_id)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

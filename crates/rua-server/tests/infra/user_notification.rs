@@ -163,6 +163,67 @@ fn notification_wire_roundtrip_preserves_sender_payload_and_uri() {
 }
 
 #[tokio::test]
+async fn notification_keeps_turn_sender_after_agent_change_and_skips_deleted_or_missing_chat() {
+    use rua_server::services::agent_manager::AgentManager;
+    use rua_server::services::chat_completion_notification::ChatCompletionNotifier;
+    use rua_session::{ChatMetadata, ChatSessionHeader, WorkspaceSessionStore};
+
+    let temp = tempfile::tempdir().unwrap();
+    let local = Arc::new(CapturingLocalAdapter::new(true));
+    let notifier = ChatCompletionNotifier::new(
+        "local".into(),
+        temp.path().to_path_buf(),
+        temp.path().join("sync"),
+        Arc::new(UserNotificationService::new(
+            "local",
+            local.clone(),
+            Arc::new(CapturingRemoteTransport::new(true)),
+        )),
+        Arc::new(AgentManager::new(temp.path().to_path_buf())),
+        Arc::new(std::sync::OnceLock::new()),
+    );
+    let mut fact = terminal_fact(rua_core::ChatAddress::new("chat-42"), "completed");
+    fact.turn_id = "turn & 1#final".into();
+    notifier.notify(&fact, Some("turn-agent")).await;
+    assert_eq!(local.calls.load(Ordering::SeqCst), 0);
+
+    let header = ChatSessionHeader::new(ChatMetadata {
+        chat_id: "chat-42".into(),
+        agent_id: "current-agent".into(),
+        title: "Notification".into(),
+        created_at: "2026-08-20T00:00:00Z".into(),
+        last_activity_at: "2026-08-20T00:00:00Z".into(),
+        pinned: false,
+        archived: false,
+        preview: None,
+    });
+    WorkspaceSessionStore::new(temp.path().join("chats"))
+        .save_chat_header(&header)
+        .await
+        .unwrap();
+    notifier.notify(&fact, Some("turn-agent")).await;
+    notifier.notify(&fact, None).await;
+    {
+        let requests = local.requests.lock().unwrap();
+        assert_eq!(requests[0].sender.id, "turn-agent");
+        assert_eq!(requests[1].sender.id, "current-agent");
+        assert_eq!(requests[0].rua_uri, requests[1].rua_uri);
+        let uri = reqwest::Url::parse(requests[0].rua_uri.as_ref().unwrap()).unwrap();
+        assert_eq!(uri.path(), "/chat-42");
+        assert_eq!(
+            uri.query_pairs().collect::<Vec<_>>(),
+            [("turn".into(), fact.turn_id.as_str().into())]
+        );
+        assert!(uri.fragment().is_none());
+    }
+    rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(temp.path())
+        .persist(&fact.address)
+        .unwrap();
+    notifier.notify(&fact, Some("turn-agent")).await;
+    assert_eq!(local.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn local_target_uses_local_adapter_exactly_once() {
     let local = Arc::new(CapturingLocalAdapter::new(true));
     let remote = Arc::new(CapturingRemoteTransport::new(true));

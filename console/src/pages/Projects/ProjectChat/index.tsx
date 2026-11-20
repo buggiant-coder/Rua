@@ -635,7 +635,7 @@ export default function ProjectChatPage({
   const exportCurrentChat = useCallback(async () => {
     if (lazy) return;
     try {
-      const result = await exportConversationAsMarkdown(projectTarget, chatId);
+      const result = await exportConversationAsMarkdown(chatId);
       if (result.saved) {
         toast.success(
           result.folderHint
@@ -649,7 +649,7 @@ export default function ProjectChatPage({
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
     }
-  }, [chatId, lazy, projectTarget, t]);
+  }, [chatId, lazy, t]);
 
   const moreMenuItems = [
     {
@@ -774,11 +774,7 @@ export default function ProjectChatPage({
           projects={projects}
           projectDeviceLabel={projectDeviceLabel}
           onSelect={handleProjectSelect}
-          onSelectIndependent={() =>
-            navigate(
-              resolveStandaloneChatPath(),
-            )
-          }
+          onSelectIndependent={() => navigate(resolveStandaloneChatPath())}
           onCreate={() => setCreateProjectOpen(true)}
           onOverview={() => navigate("/projects?overview=1")}
         />
@@ -960,7 +956,6 @@ export default function ProjectChatPage({
         backgroundWork={history?.control?.background_work}
         onClose={() => setTaskDrawerOpen(false)}
         agentId={executionAgentId || "default"}
-        target={projectTarget}
         chatId={chatId}
         currentDeviceId={currentDeviceId}
       />

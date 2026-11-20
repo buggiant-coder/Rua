@@ -100,13 +100,8 @@ describe("acpApi Rust route canaries", () => {
   });
 
   it("uses chat-scoped ACP permission relay routes with exact option ids", async () => {
-    await acpApi.getPermissionSnapshot("agent/a", "chat/1");
-    await acpApi.decidePermission(
-      "agent/a",
-      "chat/1",
-      "permission/1",
-      "allow_session",
-    );
+    await acpApi.getPermissionSnapshot("chat/1");
+    await acpApi.decidePermission("chat/1", "permission/1", "allow_session");
 
     expect(request).toHaveBeenNthCalledWith(
       1,

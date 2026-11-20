@@ -46,9 +46,24 @@ fn config_defaults_write_agent_settings_and_keep_tool_inventory() {
         rua_config::get_heartbeat_config(&target, None).unwrap()["every"],
         "6h"
     );
-    rua_config::update_last_dispatch(&target, "console", "user", "session", None).unwrap();
+    rua_config::update_last_dispatch(
+        &target,
+        "console",
+        &rua_config::types::cron::DispatchTarget {
+            user_id: "user".into(),
+            session_id: "session".into(),
+            conversation_id: Some("platform-room".into()),
+            chat_id: Some("00000000-0000-4000-8000-000000000641".into()),
+            extra: Default::default(),
+        },
+        None,
+    )
+    .unwrap();
     let saved = rua_config::load_agent_config("default", &target).unwrap();
-    assert_eq!(saved.last_dispatch.unwrap()["session_id"], "session");
+    let last = saved.last_dispatch.unwrap();
+    assert_eq!(last["session_id"], "session");
+    assert_eq!(last["conversation_id"], "platform-room");
+    assert_eq!(last["chat_id"], "00000000-0000-4000-8000-000000000641");
     assert_eq!(
         saved.channels.unwrap()["dingtalk"]["show_tool_details"],
         true

@@ -5,7 +5,7 @@ use clap::{Args, Subcommand};
 use rua_core::AgentCollaborationMode;
 use serde::{Deserialize, Serialize};
 
-use crate::http_client::{require_server, resolve_base_url, ApiClient};
+use crate::http_client::{api_url, require_server, resolve_base_url, ApiClient};
 use crate::output::{print_value, OutputFormat};
 
 #[derive(Debug, Args)]
@@ -76,9 +76,7 @@ async fn run_async(
 
     match args.command {
         ChatCommands::Show { chat_id } => {
-            let resp = client
-                .get(&format!("/api/agents/{agent_id}/chats/{chat_id}"))
-                .await?;
+            let resp = client.get(&chat_endpoint(&chat_id)).await?;
             print_value(&resp, format);
         }
         ChatCommands::Send {
@@ -89,14 +87,10 @@ async fn run_async(
         } => {
             let chat_id = chat_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             eprintln!("INFO: Using chat_id: {chat_id}");
-            let body = build_chat_body(&message, Some(&chat_id), model.as_deref(), mode);
-            let events = consume_sse_stream(
-                &client,
-                &chat_stream_endpoint(agent_id, &chat_id),
-                agent_id,
-                &body,
-            )
-            .await?;
+            let body = build_chat_body(&message, agent_id, Some(&chat_id), model.as_deref(), mode);
+            let events =
+                consume_sse_stream(&client, &chat_stream_endpoint(&chat_id), agent_id, &body)
+                    .await?;
 
             let full_text = extract_completed_text(&events);
             match format {
@@ -124,10 +118,10 @@ async fn run_async(
         } => {
             let chat_id = chat_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             eprintln!("INFO: Using chat_id: {chat_id}");
-            let body = build_chat_body(&message, Some(&chat_id), model.as_deref(), mode);
+            let body = build_chat_body(&message, agent_id, Some(&chat_id), model.as_deref(), mode);
             stream_sse(
                 &client,
-                &chat_stream_endpoint(agent_id, &chat_id),
+                &chat_stream_endpoint(&chat_id),
                 agent_id,
                 format,
                 &body,
@@ -137,7 +131,7 @@ async fn run_async(
         ChatCommands::Update { chat_id, mode } => {
             let response = client
                 .put(
-                    &chat_endpoint(agent_id, &chat_id),
+                    &chat_endpoint(&chat_id),
                     &serde_json::json!({"collaboration_mode": mode}),
                 )
                 .await?;
@@ -150,11 +144,12 @@ async fn run_async(
 
 pub fn build_chat_body(
     message: &str,
+    agent_id: &str,
     chat_id: Option<&str>,
     model: Option<&str>,
     mode: Option<AgentCollaborationMode>,
 ) -> serde_json::Value {
-    let mut body = serde_json::json!({ "message": message });
+    let mut body = serde_json::json!({ "message": message, "agent_id": agent_id });
     if let Some(cid) = chat_id {
         body["chat_id"] = serde_json::Value::String(cid.to_string());
     }
@@ -167,20 +162,12 @@ pub fn build_chat_body(
     body
 }
 
-pub fn chat_endpoint(agent_id: &str, chat_id: &str) -> String {
-    let mut url = reqwest::Url::parse("http://localhost").expect("valid URL base");
-    {
-        let mut path = url.path_segments_mut().expect("URL supports path segments");
-        path.clear();
-        for segment in ["api", "agents", agent_id, "chats", chat_id] {
-            path.push(segment);
-        }
-    }
-    url.path().to_string()
+pub fn chat_endpoint(chat_id: &str) -> String {
+    api_url(&["chats", chat_id]).path().to_owned()
 }
 
-pub fn chat_stream_endpoint(agent_id: &str, chat_id: &str) -> String {
-    format!("{}/console/chat", chat_endpoint(agent_id, chat_id))
+pub fn chat_stream_endpoint(chat_id: &str) -> String {
+    format!("{}/console/chat", chat_endpoint(chat_id))
 }
 
 pub(crate) async fn send_chat_request(

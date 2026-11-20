@@ -17,6 +17,8 @@ export interface CronJobScheduleOnce {
 export type CronJobSchedule = CronJobScheduleCron | CronJobScheduleOnce;
 
 export interface CronJobTarget {
+  chat_id?: string | null;
+  conversation_id?: string | null;
   user_id: string;
   session_id: string;
 }
@@ -67,6 +69,9 @@ export interface CronJobView extends CronJobSpecOutput {
 }
 
 export interface CronDispatchTargetItem {
+  chat_id: string;
+  chat_name: string;
+  conversation_id: string;
   channel: string;
   user_id: string;
   session_id: string;

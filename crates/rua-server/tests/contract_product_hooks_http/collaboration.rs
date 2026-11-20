@@ -2307,6 +2307,21 @@ async fn chat_lists_separate_user_and_collaboration_views_and_keep_deleted_sourc
         .iter()
         .any(|entry| entry["id"] == child.chat.chat_id().as_str()));
 
+    rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(&test.state.rua_root)
+        .persist(&source.address)
+        .unwrap();
+    let child_history = request(
+        &test.app,
+        Method::GET,
+        &format!("/api/chats/{}", child.chat.chat_id()),
+        None,
+    )
+    .await;
+    assert_eq!(child_history.status(), StatusCode::OK);
+    assert_eq!(
+        read_json(child_history).await["meta"]["collaboration"]["source_available"],
+        false
+    );
     WorkspaceSessionStore::new(
         ChatStore::resolve(&test.state.rua_root, source.address.clone()).root(),
     )
@@ -3571,10 +3586,7 @@ async fn task_approval_wait_is_visible_and_decision_preserves_write_boundary() {
                 let response = request(
                     &approvals,
                     Method::GET,
-                    &format!(
-                        "/api/agents/implementation/approvals/snapshot?chat_id={}",
-                        child.chat.chat_id()
-                    ),
+                    &format!("/api/chats/{}/approvals/snapshot", child.chat.chat_id()),
                     None,
                 )
                 .await;
@@ -3608,7 +3620,7 @@ async fn task_approval_wait_is_visible_and_decision_preserves_write_boundary() {
         let response = request(
             &approvals,
             Method::POST,
-            &format!("/api/agents/implementation/approvals/{pending}/decide"),
+            &format!("/api/chats/{}/approvals/{pending}/decide",child.chat.chat_id()),
             Some(json!({"decision":if decision == "cancel" { "run_once" } else { decision },"decided_by":"test"})),
         )
         .await;

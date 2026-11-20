@@ -83,6 +83,14 @@ fn build_acl_metadata(common: &ChannelCommonConfig) -> serde_json::Value {
     metadata
 }
 
+fn account_metadata(common: &ChannelCommonConfig, account: Option<&str>) -> serde_json::Value {
+    let mut metadata = build_acl_metadata(common);
+    if let Some(account) = account.filter(|id| !id.is_empty()) {
+        metadata["account_id"] = account.into();
+    }
+    metadata
+}
+
 fn string_option(common: &ChannelCommonConfig, key: &str) -> Option<String> {
     common
         .extra
@@ -334,7 +342,7 @@ impl ChannelsServiceAdapter {
         };
         let mut feishu = rua_channel::feishu::FeishuChannel::new(feishu_config)
             .with_render_options(render_options(&config.common))
-            .with_acl_config(build_acl_metadata(&config.common));
+            .with_acl_config(account_metadata(&config.common, config.app_id.as_deref()));
 
         if let Some(domain) = string_option(&config.common, "domain") {
             feishu = feishu
@@ -373,7 +381,7 @@ impl ChannelsServiceAdapter {
             rua_channel::wecom::WecomChannel::new(config.bot_id.clone(), config.secret.clone())
                 .with_render_options(render_options(&config.common))
                 .with_media_dir(config.media_dir.clone())
-                .with_acl_config(build_acl_metadata(&config.common));
+                .with_acl_config(account_metadata(&config.common, Some(&config.bot_id)));
 
         if let Some(ws_url) = string_option(&config.common, "ws_url") {
             wecom = wecom.with_ws_url(ws_url);
@@ -416,7 +424,14 @@ impl ChannelsServiceAdapter {
         let mut telegram = rua_channel::telegram::TelegramChannel::new(telegram_config)
             .with_client(channel_http_client(&config.common)?)
             .with_render_options(render_options(&config.common))
-            .with_acl_config(build_acl_metadata(&config.common));
+            .with_acl_config(account_metadata(
+                &config.common,
+                config
+                    .bot_token
+                    .split_once(':')
+                    .map(|(id, _)| id)
+                    .filter(|id| id.bytes().all(|byte| byte.is_ascii_digit())),
+            ));
 
         if let Some(base_url) = string_option(&config.common, "base_url") {
             telegram = telegram.with_base_url(base_url.trim_end_matches('/').to_string());
@@ -498,7 +513,7 @@ impl ChannelsServiceAdapter {
         .with_media_dir(config.media_dir.clone())
         .with_render_options(render_options(&config.common))
         .with_media_dir(config.media_dir.clone())
-        .with_acl_config(build_acl_metadata(&config.common));
+        .with_acl_config(account_metadata(&config.common, Some(&config.app_id)));
 
         if let Err(e) = self.manager.register(Arc::new(qq)).await {
             tracing::error!(error = %e, "failed to register QQ channel");
@@ -565,7 +580,7 @@ impl ChannelsServiceAdapter {
                 config.common.language.clone(),
             )
             .with_channel_metadata({
-                let mut metadata = build_acl_metadata(&config.common);
+                let mut metadata = account_metadata(&config.common, Some(&config.client_id));
                 metadata["streaming_enabled"] = (config.streaming_enabled
                     || config.ai_card_enabled
                     || config.message_type == "card")
@@ -746,7 +761,10 @@ impl ChannelsServiceAdapter {
         let discord = rua_channel::discord::DiscordChannel::new(discord_config)
             .with_client(channel_http_client(&config.common)?)
             .with_render_options(render_options(&config.common))
-            .with_acl_config(build_acl_metadata(&config.common));
+            .with_acl_config(account_metadata(
+                &config.common,
+                config.bot_user_id.as_deref(),
+            ));
 
         if let Err(e) = self.manager.register(Arc::new(discord)).await {
             tracing::error!(error = %e, "failed to register Discord channel");
@@ -800,7 +818,7 @@ impl ChannelsServiceAdapter {
                 string_option(&config.common, "device_name").unwrap_or_else(|| "rua-bot".into()),
             )
             .with_render_options(render_options(&config.common))
-            .with_acl_config(build_acl_metadata(&config.common));
+            .with_acl_config(account_metadata(&config.common, Some(&config.user_id)));
 
         if let Err(e) = self.manager.register(Arc::new(matrix)).await {
             tracing::error!(error = %e, "failed to register Matrix channel");
@@ -1009,7 +1027,7 @@ impl ChannelsServiceAdapter {
         };
         let xiaoyi = rua_channel::xiaoyi::XiaoyiChannel::new(xiaoyi_config)
             .with_render_options(render_options(&config.common))
-            .with_acl_config(build_acl_metadata(&config.common));
+            .with_acl_config(account_metadata(&config.common, Some(&config.agent_id)));
 
         if let Err(e) = self.manager.register(Arc::new(xiaoyi)).await {
             tracing::error!(error = %e, "failed to register Xiaoyi channel");
@@ -1053,7 +1071,7 @@ impl ChannelsServiceAdapter {
                     .to_string(),
             )
             .with_render_options(render_options(&config.common))
-            .with_acl_config(build_acl_metadata(&config.common));
+            .with_acl_config(account_metadata(&config.common, Some(&config.app_id)));
 
         if let Err(e) = self.manager.register(Arc::new(yuanbao)).await {
             tracing::error!(error = %e, "failed to register Yuanbao channel");

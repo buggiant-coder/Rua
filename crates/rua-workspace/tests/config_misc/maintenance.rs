@@ -3,7 +3,6 @@ use super::test_helpers;
 use serde_json::json;
 use std::time::Duration;
 
-use rua_workspace::chats_store::ensure_chat_entry;
 use rua_workspace::lifecycle::PlatformProfile;
 use rua_workspace::root::RuaRoot;
 use rua_workspace::runtime::WorkspaceRuntime;
@@ -148,11 +147,16 @@ async fn agent_maintenance_preserves_shared_chat_storage_when_index_rows_are_mis
             preview: None,
         });
         store.save_chat_header(&header).await.unwrap();
+        if chat_id == "registered" {
+            rua_session::chat_index::upsert(
+                chats.as_path(),
+                rua_chat::project_chat_header(&header, None).unwrap(),
+            )
+            .await
+            .unwrap();
+        }
         set_modified_age(&store.chat_dir(chat_id), old_age);
     }
-    ensure_chat_entry(chats.as_path(), "registered", "console", "default", None)
-        .await
-        .unwrap();
     let unassigned = store.chat_dir("unassigned");
     std::fs::create_dir_all(&unassigned).unwrap();
     set_modified_age(&unassigned, old_age);

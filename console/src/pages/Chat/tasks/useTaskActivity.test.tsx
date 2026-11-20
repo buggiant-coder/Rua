@@ -9,17 +9,7 @@ const taskApiMock = vi.hoisted(() => ({
   cancelTask: vi.fn(),
   retryTask: vi.fn(),
   getFullResult: vi.fn(),
-  activityPath: vi.fn(
-    (
-      target:
-        | { scope: "agent"; agentId: string }
-        | { scope: "project"; projectId: string },
-      chatId: string,
-    ) =>
-      target.scope === "project"
-        ? `/projects/${target.projectId}/chats/${chatId}/tasks/activity`
-        : `/agents/${target.agentId}/chats/${chatId}/tasks/activity`,
-  ),
+  activityPath: vi.fn((chatId: string) => `/chats/${chatId}/tasks/activity`),
 }));
 
 const conversationApiMock = vi.hoisted(() => ({
@@ -49,7 +39,6 @@ function record(): TaskRecord {
     spec: {
       owner: {
         chat_address: {
-          scope: { kind: "agent", agent_id: "agent-a" },
           chat_id: "chat-a",
         },
       },
@@ -99,7 +88,6 @@ describe("useTaskActivity", () => {
     const { unmount } = renderHook(() =>
       useTaskActivity({
         open: true,
-        target: { scope: "agent", agentId: "agent-a" },
         chatId: "chat-a",
         authorizationAgentId: "agent-a",
       }),
@@ -111,11 +99,9 @@ describe("useTaskActivity", () => {
       },
       { timeout: 2_500 },
     );
-    expect(taskApiMock.listTasks).toHaveBeenCalledWith(
-      { scope: "agent", agentId: "agent-a" },
-      "chat-a",
-      { limit: 200 },
-    );
+    expect(taskApiMock.listTasks).toHaveBeenCalledWith("chat-a", {
+      limit: 200,
+    });
     expect(taskApiMock.retryTask).not.toHaveBeenCalled();
     unmount();
   });
@@ -139,18 +125,13 @@ describe("useTaskActivity", () => {
     const { result, unmount } = renderHook(() =>
       useTaskActivity({
         open: true,
-        target: { scope: "agent", agentId: "agent-a" },
         chatId: "chat-a",
         authorizationAgentId: "agent-a",
       }),
     );
 
     await waitFor(() =>
-      expect(taskApiMock.getTask).toHaveBeenCalledWith(
-        { scope: "agent", agentId: "agent-a" },
-        "chat-a",
-        "task-1",
-      ),
+      expect(taskApiMock.getTask).toHaveBeenCalledWith("chat-a", "task-1"),
     );
     await waitFor(() => expect(result.current.tasks).toEqual([updated]));
     unmount();
@@ -182,7 +163,6 @@ describe("useTaskActivity", () => {
     const { result, unmount } = renderHook(() =>
       useTaskActivity({
         open: true,
-        target: { scope: "agent", agentId: "agent-a" },
         chatId: "chat-a",
         authorizationAgentId: "agent-a",
       }),
@@ -237,7 +217,7 @@ describe("useTaskActivity", () => {
       ({ chatId, open }) =>
         useTaskActivity({
           open,
-          target: { scope: "agent", agentId: "agent-a" },
+
           chatId,
           authorizationAgentId: "agent-a",
         }),
@@ -285,54 +265,54 @@ describe("useTaskActivity", () => {
     ).toBe("task-1");
   });
 
-  it("uses the Project target for Task activity", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(
-          `event: snapshot\ndata: ${JSON.stringify({
-            type: "snapshot",
-            tasks: [],
-          })}\n\n`,
-          { headers: { "Content-Type": "text/event-stream" } },
-        ),
+  it("keeps the stream and Task selection when the authorization Agent changes", async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(
+        new ReadableStream({
+          start(c) {
+            controller = c;
+          },
+        }),
       ),
     );
-    const target = {
-      scope: "project" as const,
-      projectId: "project-a",
-    };
-
-    const { unmount } = renderHook(() =>
-      useTaskActivity({
-        open: true,
-        target,
-        chatId: "chat-a",
-        authorizationAgentId: "agent-a",
-      }),
+    vi.stubGlobal("fetch", fetcher);
+    taskApiMock.listTasks.mockResolvedValue([record()]);
+    taskApiMock.retryTask.mockResolvedValue(record());
+    const { result, rerender, unmount } = renderHook(
+      ({ agentId }) =>
+        useTaskActivity({
+          open: true,
+          chatId: "chat-a",
+          authorizationAgentId: agentId,
+        }),
+      { initialProps: { agentId: "agent-a" } },
     );
-
-    await waitFor(() =>
-      expect(taskApiMock.listTasks).toHaveBeenCalledWith(target, "chat-a", {
-        limit: 200,
-      }),
+    await waitFor(() => expect(result.current.selectedTaskId).toBe("task-1"));
+    rerender({ agentId: "agent-b" });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/chats/chat-a/tasks/activity",
+      expect.anything(),
     );
-    expect(taskApiMock.activityPath).toHaveBeenCalledWith(target, "chat-a");
+    expect(result.current.selectedTaskId).toBe("task-1");
+    await act(async () => result.current.retryTask("task-1"));
+    expect(taskApiMock.retryTask).toHaveBeenCalledWith(
+      "chat-a",
+      "task-1",
+      "agent-b",
+    );
     unmount();
+    controller.close();
   });
 
   it("uses the current Agent to authorize a Project Task retry", async () => {
     const retried = record();
     taskApiMock.retryTask.mockResolvedValue(retried);
-    const target = {
-      scope: "project" as const,
-      projectId: "project-a",
-    };
 
     const { result } = renderHook(() =>
       useTaskActivity({
         open: false,
-        target,
         chatId: "chat-a",
         authorizationAgentId: "agent-b",
       }),
@@ -343,11 +323,40 @@ describe("useTaskActivity", () => {
     });
 
     expect(taskApiMock.retryTask).toHaveBeenCalledWith(
-      target,
       "chat-a",
       "task-1",
       "agent-b",
     );
+  });
+
+  it("keeps a late task control result with its original Chat", async () => {
+    let finish!: (record: TaskRecord) => void;
+    taskApiMock.cancelTask.mockImplementationOnce(
+      () =>
+        new Promise<TaskRecord>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const { result, rerender } = renderHook(
+      ({ chatId }) =>
+        useTaskActivity({
+          open: false,
+          chatId,
+          authorizationAgentId: "agent-a",
+        }),
+      { initialProps: { chatId: "original" } },
+    );
+    let cancel!: Promise<void>;
+    act(() => {
+      cancel = result.current.cancelTask("original-task");
+    });
+    rerender({ chatId: "other" });
+    await act(async () => {
+      finish({ task_id: "original-task" } as TaskRecord);
+      await cancel;
+    });
+    expect(result.current.tasks).toEqual([]);
+    expect(result.current.busyTaskId).toBeNull();
   });
 
   it("closes activity while hidden and refreshes before reconnecting", async () => {
@@ -379,7 +388,6 @@ describe("useTaskActivity", () => {
     const { unmount } = renderHook(() =>
       useTaskActivity({
         open: true,
-        target: { scope: "agent", agentId: "agent-a" },
         chatId: "chat-a",
         authorizationAgentId: "agent-a",
       }),

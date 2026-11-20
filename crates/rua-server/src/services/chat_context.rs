@@ -52,14 +52,85 @@ pub async fn load_chat_context(
     chat_id: &str,
 ) -> Result<Option<ChatContext>, ApiError> {
     crate::services::console_chat::resolve_chat_id(chat_id).map_err(ApiError::BadRequest)?;
-    let header =
-        WorkspaceSessionStore::new(rua_core::RuaRoot::new(rua_root).chat_workspace().as_path())
-            .load_chat_header(chat_id)
-            .await
-            .map_err(ApiError::from)?;
-    Ok(header.map(|header| ChatContext {
-        agent_id: header.agent_id,
-        project_id: header.project_id,
+    Ok(load_live_chat_header(rua_root, chat_id)
+        .await?
+        .map(ChatContext::from))
+}
+
+impl From<rua_session::ChatSessionHeader> for ChatContext {
+    fn from(header: rua_session::ChatSessionHeader) -> Self {
+        Self {
+            agent_id: header.agent_id,
+            project_id: header.project_id,
+        }
+    }
+}
+
+pub(crate) async fn load_live_chat_header(
+    rua_root: &Path,
+    chat_id: &str,
+) -> Result<Option<rua_session::ChatSessionHeader>, ApiError> {
+    if chat_is_deleted(rua_root, chat_id)? {
+        return Ok(None);
+    }
+    read_chat_header(rua_root, chat_id).await
+}
+
+/// Deletion retries may need the saved membership after the terminal intent was recorded.
+pub(crate) async fn read_chat_header(
+    rua_root: &Path,
+    chat_id: &str,
+) -> Result<Option<rua_session::ChatSessionHeader>, ApiError> {
+    WorkspaceSessionStore::new(rua_core::RuaRoot::new(rua_root).chat_workspace().as_path())
+        .load_chat_header(chat_id)
+        .await
+        .map_err(ApiError::from)
+}
+
+pub(crate) fn chat_is_deleted(rua_root: &Path, chat_id: &str) -> Result<bool, ApiError> {
+    rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(rua_root)
+        .load(&rua_core::ChatAddress::new(chat_id))
+        .map(|intent| intent.is_some())
+        .map_err(ApiError::Internal)
+}
+
+pub(crate) fn ensure_chat_not_deleted(rua_root: &Path, chat_id: &str) -> Result<(), ApiError> {
+    if chat_is_deleted(rua_root, chat_id)? {
+        return Err(ApiError::NotFound(format!("Chat not found: {chat_id}")));
+    }
+    Ok(())
+}
+
+pub(crate) async fn load_indexed_context(
+    workspace: &rua_core::WorkspaceRoot,
+    chat_id: &str,
+) -> Result<Option<ChatContext>, ApiError> {
+    if !workspace
+        .chat_index_path()
+        .try_exists()
+        .map_err(|error| ApiError::Internal(error.to_string()))?
+    {
+        return Ok(None);
+    }
+    let Some(row) = rua_session::chat_index::get(workspace.as_path(), chat_id)
+        .await
+        .map_err(ApiError::Internal)?
+    else {
+        return Ok(None);
+    };
+    let agent_id = row
+        .meta
+        .get("agent_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| ApiError::Conflict("Saved Chat configuration has not arrived".into()))?;
+    Ok(Some(ChatContext {
+        agent_id: agent_id.to_owned(),
+        project_id: row
+            .meta
+            .get("project_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
     }))
 }
 
@@ -69,7 +140,13 @@ pub async fn resolve_submission_context(
     draft_agent_id: Option<&str>,
     requested_project: Option<Option<&str>>,
 ) -> Result<ChatContext, ApiError> {
-    let context = if let Some(context) = load_chat_context(&state.rua_root, chat_id).await? {
+    crate::services::console_chat::resolve_chat_id(chat_id).map_err(ApiError::BadRequest)?;
+    ensure_chat_not_deleted(&state.rua_root, chat_id)?;
+    let saved = match read_chat_header(&state.rua_root, chat_id).await? {
+        Some(header) => Some(ChatContext::from(header)),
+        None => load_indexed_context(&state.chat_workspace(), chat_id).await?,
+    };
+    let context = if let Some(context) = saved {
         check_project_membership(context.project_id.as_deref(), requested_project)?;
         context
     } else {

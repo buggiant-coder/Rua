@@ -39,6 +39,9 @@ pub(crate) async fn persist_first_agent_submission(
                 .agent_assignment
                 .clone()
                 .ok_or_else(|| "Agent Turn Assignment is unavailable".to_string())?;
+            let external_route = rua_session::external_chat::route_for_chat(scope_root, address)
+                .await
+                .map_err(|error| error.to_string())?;
             materialize_staged_chat(scope_root, address, |staging_root| async move {
                 crate::services::console_chat::materialize_targeted_chat_with_model(
                     &staging_root,
@@ -68,6 +71,20 @@ pub(crate) async fn persist_first_agent_submission(
                             .and_then(serde_json::Value::as_str)
                         {
                             header.channel = channel.to_owned();
+                        }
+                        if let Some(route) = external_route.as_ref() {
+                            header.metadata.title = match input
+                                .extra
+                                .get("sender_name")
+                                .and_then(serde_json::Value::as_str)
+                            {
+                                Some(name) => format!("{}: {name}", route.channel),
+                                None => format!("{} chat", route.channel),
+                            };
+                            header.extra.insert(
+                                rua_session::external_chat::EXTERNAL_CHANNEL_META_KEY.into(),
+                                serde_json::json!(route),
+                            );
                         }
                         let mut activity = serde_json::Value::Object(header.extra.clone());
                         crate::services::chat_device_activity::apply_chat_created(
@@ -355,6 +372,14 @@ async fn commit_staged_chat(
     staging_root: &Path,
     entry: ChatIndexEntry,
 ) -> Result<(), String> {
+    // This is the final shared Chat workspace. The staging root is private to the writer.
+    let rua_root = scope_root
+        .parent()
+        .ok_or("Chat workspace has no Rua root")?;
+    let intents = rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(rua_root);
+    if intents.load(address)?.is_some() {
+        return Err(format!("Chat not found: {}", address.chat_id()));
+    }
     let final_store = WorkspaceSessionStore::new(scope_root);
     let final_chat_dir = final_store.chat_dir(address.chat_id().as_str());
     let staging_chat_dir =
@@ -367,6 +392,12 @@ async fn commit_staged_chat(
     if let Err(error) = chat_index::insert(scope_root, entry).await {
         remove_dir_if_exists(&final_chat_dir).await;
         return Err(error);
+    }
+    // A paired Device can deliver the terminal fact while the local files are committing.
+    if intents.load(address)?.is_some() {
+        chat_index::delete(scope_root, address.chat_id().as_str()).await?;
+        remove_dir_if_exists(&final_chat_dir).await;
+        return Err(format!("Chat not found: {}", address.chat_id()));
     }
     Ok(())
 }

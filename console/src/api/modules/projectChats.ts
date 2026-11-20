@@ -6,8 +6,6 @@ import type {
   ACPChatExitResponse,
   ACPChatSessionEntry,
   ACPChatStatus,
-  ACPPermissionRequest,
-  ACPPermissionSnapshot,
   ACPRunnerInfo,
   AcpHistoryPreviewRequest,
   AcpHistoryPreviewResponse,
@@ -28,11 +26,6 @@ import type {
   StopChatRequest,
   LlmDebugCaptureStatus,
 } from "./chat";
-import type {
-  ApprovalDecisionRequest,
-  ApprovalRequest,
-  ApprovalSnapshot,
-} from "./console";
 import type { ProjectChatAgentState } from "../types/project";
 
 export type ProjectChatListParams = Omit<
@@ -328,29 +321,6 @@ export const projectChatsApi = {
       { method: "POST", body: JSON.stringify(body) },
     ),
 
-  getApprovalSnapshot: (projectId: string, chatId: string) =>
-    request<ApprovalSnapshot>(
-      projectChatChildPath(projectId, chatId, "approvals/snapshot"),
-    ),
-
-  decideApproval: (
-    projectId: string,
-    chatId: string,
-    approvalId: string,
-    body: ApprovalDecisionRequest,
-  ) =>
-    request<ApprovalRequest>(
-      projectChatChildPath(
-        projectId,
-        chatId,
-        `approvals/${encodeURIComponent(approvalId)}/decide`,
-      ),
-      {
-        method: "POST",
-        body: JSON.stringify(body),
-      },
-    ),
-
   listAcpRunners: (projectId: string, chatId: string) =>
     request<ACPRunnerInfo[]>(
       projectChatChildPath(projectId, chatId, "acp/runners"),
@@ -393,29 +363,6 @@ export const projectChatsApi = {
   getAcpStatus: (projectId: string, chatId: string) =>
     request<ACPChatStatus>(
       projectChatChildPath(projectId, chatId, "acp/status"),
-    ),
-
-  getAcpPermissionSnapshot: (projectId: string, chatId: string) =>
-    request<ACPPermissionSnapshot>(
-      projectChatChildPath(projectId, chatId, "acp/permissions"),
-    ),
-
-  decideAcpPermission: (
-    projectId: string,
-    chatId: string,
-    requestId: string,
-    optionId: string,
-  ) =>
-    request<ACPPermissionRequest>(
-      projectChatChildPath(
-        projectId,
-        chatId,
-        `acp/permissions/${encodeURIComponent(requestId)}/decide`,
-      ),
-      {
-        method: "POST",
-        body: JSON.stringify({ option_id: optionId }),
-      },
     ),
 
   submitPath: (projectId: string, chatId: string) =>

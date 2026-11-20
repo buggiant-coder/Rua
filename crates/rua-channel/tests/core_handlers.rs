@@ -4,6 +4,8 @@ mod console_adapter;
 mod control_handlers;
 #[path = "core_handlers/empty_user_filter.rs"]
 mod empty_user_filter;
+#[path = "core_handlers/external_turn.rs"]
+mod external_turn;
 #[path = "core_handlers/handle_incoming.rs"]
 mod handle_incoming;
 #[path = "core_handlers/render_options_per_kind.rs"]

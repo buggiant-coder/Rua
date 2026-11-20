@@ -57,6 +57,42 @@ fn build_app_with_capturing_facade(
     )
 }
 
+const CHAT_ID: &str = "4edc47c3-1d8f-48bf-bd95-9a81a0f379d8";
+const OTHER_CHAT_ID: &str = "389b1504-a145-4b32-8c82-48d47052666a";
+
+async fn seed_chat(app: &super::support::TestApp, chat_id: &str) {
+    use rua_server::services::conversation_authority_placement::{
+        ConversationAuthorityEpoch, ConversationAuthorityPlacement,
+    };
+    let device =
+        rua_server::services::device_context::current_sync_device_id(&app.state.sync_device)
+            .unwrap();
+    let address = rua_core::ChatAddress::new(chat_id);
+    let workspace = app.state.chat_workspace();
+    let store = rua_session::WorkspaceSessionStore::new(workspace.as_path());
+    if store.load_chat_header(chat_id).await.unwrap().is_some() {
+        return;
+    }
+    let placement = ConversationAuthorityPlacement {
+        authority_epoch: ConversationAuthorityEpoch::next_for_device(&device, None),
+        base_manifest_hash:
+            rua_server::services::conversation_manifest::initial_conversation_manifest_hash(
+                &address,
+            )
+            .unwrap(),
+        device_id: device,
+    };
+    rua_server::services::console_chat::materialize_targeted_chat(
+        workspace.as_path(),
+        "default",
+        chat_id,
+        "Approval fixture",
+        &placement,
+    )
+    .await
+    .unwrap();
+}
+
 async fn create_authority_request(app: &super::support::TestApp) -> String {
     create_authority_request_for_command(app, "echo hello").await
 }
@@ -65,26 +101,29 @@ async fn create_authority_request_for_command(
     app: &super::support::TestApp,
     command: &str,
 ) -> String {
-    create_authority_request_for_command_in_chat(app, "chat-1", "tool-call-1", command).await
+    create_authority_request_for_command_in_chat(app, "default", CHAT_ID, "tool-call-1", command)
+        .await
 }
 
 async fn create_authority_request_for_command_in_chat(
     app: &super::support::TestApp,
+    agent_id: &str,
     chat_id: &str,
     tool_call_id: &str,
     command: &str,
 ) -> String {
+    seed_chat(app, chat_id).await;
     let runtime = app
         .state
         .registry
-        .get_or_create("default")
+        .get_or_create(agent_id)
         .await
         .expect("runtime");
     let security = runtime.security_module().await.expect("security module");
     let request = security
         .approval_authority()
         .create_request(ApprovalRequestInput {
-            agent_id: "default".into(),
+            agent_id: agent_id.into(),
             owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new(chat_id)),
             turn_id: "turn-1".into(),
             tool_call_id: tool_call_id.into(),
@@ -111,7 +150,7 @@ async fn create_denied_authority_request(app: &super::support::TestApp) -> Strin
         .approval_authority()
         .create_denied_request(ApprovalRequestInput {
             agent_id: "default".into(),
-            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new("chat-1")),
+            owner: rua_security::ApprovalOwner::chat(rua_core::ChatAddress::new(CHAT_ID)),
             turn_id: "turn-1".into(),
             tool_call_id: "tool-call-denied".into(),
             tool_name: "bash".into(),
@@ -133,9 +172,9 @@ async fn authority_decide_run_once_approves_one_pending_request() {
     let resp = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/default/approvals/{request_id}/decide"),
+        &format!("/api/chats/{CHAT_ID}/approvals/{request_id}/decide"),
         Some(json!({ "decision": "run_once", "decided_by": "webui" })),
-        Some("default"),
+        None,
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -143,7 +182,7 @@ async fn authority_decide_run_once_approves_one_pending_request() {
     assert_eq!(body["id"], request_id);
     assert_eq!(body["agent_id"], "default");
     assert_eq!(body["owner"]["kind"], "chat");
-    assert_eq!(body["owner"]["address"]["chat_id"], "chat-1");
+    assert_eq!(body["owner"]["address"]["chat_id"], CHAT_ID);
     assert_eq!(body["tool_name"], "bash");
     assert_eq!(body["status"], "approved");
     assert_eq!(body["decided_by"], "webui");
@@ -151,9 +190,9 @@ async fn authority_decide_run_once_approves_one_pending_request() {
     let duplicate = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/default/approvals/{request_id}/decide"),
+        &format!("/api/chats/{CHAT_ID}/approvals/{request_id}/decide"),
         Some(json!({ "decision": "run_once", "decided_by": "webui" })),
-        Some("default"),
+        None,
     )
     .await;
     assert_eq!(duplicate.status(), StatusCode::CONFLICT);
@@ -166,6 +205,7 @@ async fn authority_decide_run_once_approves_one_pending_request() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_session_snapshot_is_separate_from_chat_snapshot() {
     let app = build_app();
+    let chat_request = create_authority_request(&app).await;
     let runtime = app
         .state
         .registry
@@ -177,7 +217,7 @@ async fn runtime_session_snapshot_is_separate_from_chat_snapshot() {
         .approval_authority()
         .create_request(ApprovalRequestInput {
             agent_id: "default".into(),
-            owner: rua_security::ApprovalOwner::runtime_session("default", "acp-session-1"),
+            owner: rua_security::ApprovalOwner::runtime_session("default", CHAT_ID),
             turn_id: "turn-1".into(),
             tool_call_id: "tool-call-1".into(),
             tool_name: "bash".into(),
@@ -192,7 +232,7 @@ async fn runtime_session_snapshot_is_separate_from_chat_snapshot() {
     let runtime_snapshot = request(
         &app.app,
         Method::GET,
-        "/api/agents/default/approvals/runtime-sessions/acp-session-1/snapshot",
+        &format!("/api/agents/default/approvals/runtime-sessions/{CHAT_ID}/snapshot"),
         None,
         Some("default"),
     )
@@ -208,13 +248,54 @@ async fn runtime_session_snapshot_is_separate_from_chat_snapshot() {
     let chat_snapshot = request(
         &app.app,
         Method::GET,
-        "/api/agents/default/approvals/snapshot?chat_id=acp-session-1",
+        &format!("/api/chats/{CHAT_ID}/approvals/snapshot"),
         None,
-        Some("default"),
+        None,
     )
     .await;
     assert_eq!(chat_snapshot.status(), StatusCode::OK);
-    assert_eq!(read_json(chat_snapshot).await["pending"], json!([]));
+    let chat_snapshot = read_json(chat_snapshot).await;
+    assert_eq!(chat_snapshot["pending"].as_array().unwrap().len(), 1);
+    assert_eq!(chat_snapshot["pending"][0]["id"], chat_request);
+    assert_eq!(runtime_snapshot["pending"].as_array().unwrap().len(), 1);
+
+    for path in [
+        format!("/api/agents/default/approvals/{chat_request}/decide"),
+        format!("/api/chats/{CHAT_ID}/approvals/{}/decide", created.id),
+    ] {
+        let response = request(
+            &app.app,
+            Method::POST,
+            &path,
+            Some(json!({"decision":"run_once","decided_by":"test"})),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+    let session_decision = request(
+        &app.app,
+        Method::POST,
+        &format!("/api/agents/default/approvals/{}/decide", created.id),
+        Some(json!({"decision":"run_once","decided_by":"runtime"})),
+        None,
+    )
+    .await;
+    assert_eq!(session_decision.status(), StatusCode::OK);
+    assert_eq!(
+        read_json(session_decision).await["owner"]["kind"],
+        "runtime_session"
+    );
+    let chat_decision = request(
+        &app.app,
+        Method::POST,
+        &format!("/api/chats/{CHAT_ID}/approvals/{chat_request}/decide"),
+        Some(json!({"decision":"reject","decided_by":"console"})),
+        None,
+    )
+    .await;
+    assert_eq!(chat_decision.status(), StatusCode::OK);
+    assert_eq!(read_json(chat_decision).await["status"], "rejected");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -222,7 +303,8 @@ async fn authority_decide_run_once_does_not_schedule_backend_continuation() {
     let (app, captured) = build_app_with_capturing_facade();
     let request_id = create_authority_request_for_command_in_chat(
         &app,
-        "4edc47c3-1d8f-48bf-bd95-9a81a0f379d8",
+        "default",
+        CHAT_ID,
         "tool-call-1",
         "du -sh /Users/example/projects/rua 2>/dev/null",
     )
@@ -231,9 +313,9 @@ async fn authority_decide_run_once_does_not_schedule_backend_continuation() {
     let resp = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/default/approvals/{request_id}/decide"),
+        &format!("/api/chats/{CHAT_ID}/approvals/{request_id}/decide"),
         Some(json!({ "decision": "run_once", "decided_by": "webui" })),
-        Some("default"),
+        None,
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -253,7 +335,7 @@ async fn authority_decide_allow_chat_persists_backend_matcher_rule() {
     let resp = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/default/approvals/{request_id}/decide"),
+        &format!("/api/chats/{CHAT_ID}/approvals/{request_id}/decide"),
         Some(json!({
             "decision": "allow_chat",
             "decided_by": "webui",
@@ -263,7 +345,7 @@ async fn authority_decide_allow_chat_persists_backend_matcher_rule() {
                 "input_params": "git status *"
             }
         })),
-        Some("default"),
+        None,
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -281,7 +363,7 @@ async fn authority_decide_allow_chat_persists_backend_matcher_rule() {
         .approval_authority()
         .find_reuse_rule_at(
             "default",
-            &rua_core::ChatAddress::new("chat-1"),
+            &rua_core::ChatAddress::new(CHAT_ID),
             "bash",
             &json!({ "command": "git status" }),
         )
@@ -299,7 +381,7 @@ async fn authority_agent_scope_rules_can_be_listed_and_deleted() {
     let resp = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/default/approvals/{request_id}/decide"),
+        &format!("/api/chats/{CHAT_ID}/approvals/{request_id}/decide"),
         Some(json!({
             "decision": "allow_agent",
             "decided_by": "webui",
@@ -309,7 +391,7 @@ async fn authority_agent_scope_rules_can_be_listed_and_deleted() {
                 "input_params": "git status *"
             }
         })),
-        Some("default"),
+        None,
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -393,7 +475,7 @@ async fn permission_rule_crud_supports_manual_deny_enable_disable() {
     let security = runtime.security_module().await.expect("security module");
     let ctx = rua_security::ToolCallContext::new(
         "default",
-        "chat-1",
+        CHAT_ID,
         "WebSearch",
         serde_json::json!({"query": "x"}),
     );
@@ -430,14 +512,28 @@ async fn permission_rule_crud_supports_manual_deny_enable_disable() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn authority_agent_scope_rule_writes_emit_agent_security_v4() {
+async fn chat_decisions_publish_rules_for_the_request_agent_after_the_chat_selects_another_agent() {
     let app = build_sync_enabled_app();
-    let request_id = create_authority_request_for_command(&app, "git status --short").await;
+    app.state
+        .agent_service
+        .create_agent(
+            serde_json::from_value(json!({"id":"original","name":"Original agent"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    let request_id = create_authority_request_for_command_in_chat(
+        &app,
+        "original",
+        CHAT_ID,
+        "tool-call-1",
+        "git status --short",
+    )
+    .await;
 
     let resp = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/default/approvals/{request_id}/decide"),
+        &format!("/api/chats/{CHAT_ID}/approvals/{request_id}/decide"),
         Some(json!({
             "decision": "allow_agent",
             "decided_by": "webui",
@@ -447,7 +543,7 @@ async fn authority_agent_scope_rule_writes_emit_agent_security_v4() {
                 "input_params": "git status *"
             }
         })),
-        Some("default"),
+        None,
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -455,7 +551,7 @@ async fn authority_agent_scope_rule_writes_emit_agent_security_v4() {
     let changes = collect_v4_changes(&app.state).await;
     let upsert = changes.iter().find(|change| {
         change.domain == "agent_security"
-            && change.record_id == "default"
+            && change.record_id == "original"
             && change.kind == "upsert"
             && change.payload["permission_rules"]
                 .as_array()
@@ -476,21 +572,31 @@ async fn authority_agent_scope_rule_writes_emit_agent_security_v4() {
     let list = request(
         &app.app,
         Method::GET,
-        "/api/agents/default/permission-rules",
+        "/api/agents/original/permission-rules",
         None,
-        Some("default"),
+        None,
     )
     .await;
     assert_eq!(list.status(), StatusCode::OK);
     let body = read_json(list).await;
     let rule_id = body[0]["id"].as_str().expect("rule id");
+    let selected_rules = request(
+        &app.app,
+        Method::GET,
+        "/api/agents/default/permission-rules",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(selected_rules.status(), StatusCode::OK);
+    assert_eq!(read_json(selected_rules).await, json!([]));
 
     let delete = request(
         &app.app,
         Method::DELETE,
-        &format!("/api/agents/default/permission-rules/{rule_id}"),
+        &format!("/api/agents/original/permission-rules/{rule_id}"),
         None,
-        Some("default"),
+        None,
     )
     .await;
     assert_eq!(delete.status(), StatusCode::NO_CONTENT);
@@ -499,7 +605,7 @@ async fn authority_agent_scope_rule_writes_emit_agent_security_v4() {
     let latest_security = changes
         .iter()
         .rev()
-        .find(|change| change.domain == "agent_security" && change.record_id == "default")
+        .find(|change| change.domain == "agent_security" && change.record_id == "original")
         .expect("agent security change after delete");
     assert_eq!(latest_security.kind, "upsert");
     assert!(
@@ -514,23 +620,46 @@ async fn authority_agent_scope_rule_writes_emit_agent_security_v4() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn authority_snapshot_returns_pending_and_resolved_for_chat() {
     let app = build_app();
-    let pending_a =
-        create_authority_request_for_command_in_chat(&app, "chat-1", "tool-call-a", "echo a").await;
-    let pending_b =
-        create_authority_request_for_command_in_chat(&app, "chat-1", "tool-call-b", "echo b").await;
-    let approved =
-        create_authority_request_for_command_in_chat(&app, "chat-1", "tool-call-c", "echo c").await;
+    let pending_a = create_authority_request_for_command_in_chat(
+        &app,
+        "default",
+        CHAT_ID,
+        "tool-call-a",
+        "echo a",
+    )
+    .await;
+    let pending_b = create_authority_request_for_command_in_chat(
+        &app,
+        "default",
+        CHAT_ID,
+        "tool-call-b",
+        "echo b",
+    )
+    .await;
+    let approved = create_authority_request_for_command_in_chat(
+        &app,
+        "default",
+        CHAT_ID,
+        "tool-call-c",
+        "echo c",
+    )
+    .await;
     let denied = create_denied_authority_request(&app).await;
-    let other_chat =
-        create_authority_request_for_command_in_chat(&app, "chat-2", "tool-call-other", "echo x")
-            .await;
+    let other_chat = create_authority_request_for_command_in_chat(
+        &app,
+        "default",
+        OTHER_CHAT_ID,
+        "tool-call-other",
+        "echo x",
+    )
+    .await;
 
     let resp = request(
         &app.app,
         Method::POST,
-        &format!("/api/agents/default/approvals/{approved}/decide"),
+        &format!("/api/chats/{CHAT_ID}/approvals/{approved}/decide"),
         Some(json!({ "decision": "run_once", "decided_by": "webui" })),
-        Some("default"),
+        None,
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -538,9 +667,9 @@ async fn authority_snapshot_returns_pending_and_resolved_for_chat() {
     let resp = request(
         &app.app,
         Method::GET,
-        "/api/agents/default/approvals/snapshot?chat_id=chat-1",
+        &format!("/api/chats/{CHAT_ID}/approvals/snapshot"),
         None,
-        Some("default"),
+        None,
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);

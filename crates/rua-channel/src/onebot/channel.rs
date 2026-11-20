@@ -667,6 +667,7 @@ fn parse_onebot_event(
             message_id,
             metadata: serde_json::json!({
                 "_onebot_connection_id": native["_onebot_connection_id"],
+                "account_id": self_id.map(|id| id.to_string()),
                 "message_type": message_type,
                 "user_id": user_id,
                 "sender_id": user_id.to_string(),

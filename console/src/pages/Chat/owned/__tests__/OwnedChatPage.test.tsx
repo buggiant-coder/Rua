@@ -91,9 +91,7 @@ const taskApiMock = vi.hoisted(() => ({
   cancelTask: vi.fn(),
   retryTask: vi.fn(),
   getFullResult: vi.fn(),
-  activityPath: vi.fn(
-    (_target: unknown, chatId: string) => `/chats/${chatId}/tasks/activity`,
-  ),
+  activityPath: vi.fn((chatId: string) => `/chats/${chatId}/tasks/activity`),
 }));
 
 vi.mock("@/api/modules/chat", () => ({
@@ -761,13 +759,9 @@ describe("owned ChatPage route identity", () => {
     const drawer = await screen.findByRole("dialog");
     expect(within(drawer).getByText(label("chat.tasks.title"))).toBeVisible();
     await waitFor(() =>
-      expect(taskApiMock.listTasks).toHaveBeenCalledWith(
-        { agentId: "default" },
-        "chat-1",
-        {
-          limit: 200,
-        },
-      ),
+      expect(taskApiMock.listTasks).toHaveBeenCalledWith("chat-1", {
+        limit: 200,
+      }),
     );
     expect(document.querySelector("[data-rua-task-card]")).toBeNull();
   });

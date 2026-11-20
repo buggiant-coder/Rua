@@ -123,7 +123,12 @@ fn main() -> anyhow::Result<()> {
         Commands::Auth(args) => rua_cli::auth::run(args),
         Commands::Channels(args) => rua_cli::channels::run(args, base_url, agent_id),
         Commands::Chat(args) => rua_cli::chat::run(args, format, base_url, agent_id),
-        Commands::Chats(args) => rua_cli::console::run(args, format, base_url, agent_id),
+        Commands::Chats(args) => {
+            let selected = (matches.value_source("agent_id")
+                == Some(clap::parser::ValueSource::CommandLine))
+            .then_some(agent_id.as_str());
+            rua_cli::console::run(args, format, base_url, selected)
+        }
         Commands::Clean(args) => rua_cli::clean::run(args, &paths),
         Commands::Config(args) => rua_cli::config::run(args, format, &paths.rua_root),
         Commands::Cron(args) => rua_cli::cron::run(args, format, base_url, agent_id),

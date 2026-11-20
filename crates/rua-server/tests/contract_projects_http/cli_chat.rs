@@ -243,3 +243,51 @@ async fn project_cli_chat_real_facade_has_project_runtime() {
 
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deleted_chat_reference_cannot_restart_a_turn_through_cli_or_console() {
+    let test = super::support::build_app();
+    let id = "00000000-0000-4000-8000-000000000404";
+    let path = format!("/api/chats/{id}");
+    let submission = json!({"agent_id": "default", "message": "Remember this Chat"});
+    let first = request(
+        &test.app,
+        Method::POST,
+        &format!("{path}/console/submit"),
+        Some(submission.clone()),
+    )
+    .await;
+    assert!(first.status().is_success());
+    super::support::wait_for_chat_idle(&test.state, id).await;
+    let store = rua_session::WorkspaceSessionStore::new(test.state.chat_workspace().as_path());
+    let original = store.load_chat_header(id).await.unwrap().unwrap();
+    let deleted = request(&test.app, Method::DELETE, &path, None).await;
+    assert!(
+        deleted.status().is_success(),
+        "delete returned {}",
+        deleted.status()
+    );
+    assert!(store.load_chat_header(id).await.unwrap().is_none());
+    // Simulate a Session file already in flight when its Chat deletion was observed.
+    store.save_chat_header(&original).await.unwrap();
+    for suffix in ["", "/metadata"] {
+        let response = request(&test.app, Method::GET, &format!("{path}{suffix}"), None).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{suffix}");
+    }
+    for suffix in ["/console/chat", "/console/submit"] {
+        let response = request(
+            &test.app,
+            Method::POST,
+            &format!("{path}{suffix}"),
+            Some(submission.clone()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{suffix}");
+    }
+    assert!(
+        rua_session::chat_index::get(test.state.chat_workspace().as_path(), id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}

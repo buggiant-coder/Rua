@@ -12,20 +12,21 @@ import java.util.concurrent.TimeUnit
 @RunWith(RobolectricTestRunner::class)
 class PhoneSessionTest {
     private fun invocation(turn: String = "turn-1") = PhoneInvocation(
-        "owner", PhoneChatAddress("agent", "default", "chat"), turn, "authority", "configuration",
+        "owner", PhoneChatAddress("chat"), turn, "authority", "configuration",
     )
 
     @Test fun invocationRequiresTheCurrentNestedProtocolAndEncodesOnlyCanonicalChatPaths() {
-        val current = invocation().copy(chatAddress = PhoneChatAddress("project", "project /一", "chat +/?"))
+        val current = invocation().copy(chatAddress = PhoneChatAddress("chat +/?"))
         assertEquals(current, PhoneInvocation.fromParams(JSONObject().put("invocation", current.toJson())))
-        assertEquals("/projects/project%20%2F%E4%B8%80/chats/chat%20%2B%2F%3F", current.chatAddress.apiPath())
-        assertEquals("/agents/default/chats/chat", invocation().chatAddress.apiPath())
+        assertEquals("/chats/chat%20%2B%2F%3F", current.chatAddress.apiPath())
+        assertEquals("/chats/chat", invocation().chatAddress.apiPath())
+        assertEquals(setOf("chat_id"), current.toJson().getJSONObject("chat_address").keys().asSequence().toSet())
         assertTrue(runCatching { PhoneInvocation.fromParams(current.toJson()) }.isFailure)
         for (key in listOf("owner", "turn_id", "authority_epoch", "chat_configuration_epoch")) {
             val json = current.toJson().put(key, " ")
             assertTrue(key, runCatching { PhoneInvocation.fromParams(JSONObject().put("invocation", json)) }.isFailure)
         }
-        assertTrue(runCatching { PhoneChatAddress.fromJson(JSONObject().put("scope", JSONObject().put("kind", "other")).put("chat_id", "chat")) }.isFailure)
+        assertTrue(runCatching { PhoneChatAddress.fromJson(JSONObject().put("chat_id", "")) }.isFailure)
         assertTrue(runCatching { invocation().copy(turnId = "x".repeat(201)) }.isFailure)
     }
 
@@ -35,7 +36,7 @@ class PhoneSessionTest {
         assertEquals(first, state.activate(invocation()))
         assertTrue(state.isCurrent(invocation()))
         assertTrue(runCatching { state.activate(invocation().copy(owner = "other")) }.isFailure)
-        assertTrue(runCatching { state.activate(invocation().copy(chatAddress = PhoneChatAddress("agent", "default", "other"))) }.isFailure)
+        assertTrue(runCatching { state.activate(invocation().copy(chatAddress = PhoneChatAddress("other"))) }.isFailure)
         assertEquals(first, state.current())
     }
 

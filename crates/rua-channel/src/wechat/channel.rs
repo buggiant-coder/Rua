@@ -759,6 +759,7 @@ fn build_request_from_native_value(native: serde_json::Value) -> Option<AgentReq
         },
         metadata: serde_json::json!({
             "wechat_from_user_id": from_user_id,
+                "account_id": native.get("to_user_id"),
             "wechat_context_token": context_token,
             "wechat_group_id": group_id,
             "is_group": is_group,

@@ -5,7 +5,7 @@ vi.mock("../request", () => ({ request: vi.fn() }));
 import { request } from "../request";
 import { consoleApi } from "./console";
 
-describe("consoleApi agent-scoped routes", () => {
+describe("consoleApi routes", () => {
   afterEach(() => vi.clearAllMocks());
 
   it("loads push messages for the explicit agent with an encoded path", async () => {
@@ -17,11 +17,9 @@ describe("consoleApi agent-scoped routes", () => {
   });
 
   it("loads chat-scoped approval snapshots through the authority endpoint", async () => {
-    await consoleApi.getApprovalSnapshot("agent/a", "chat/1");
+    await consoleApi.getApprovalSnapshot("chat/1");
 
-    expect(request).toHaveBeenCalledWith(
-      "/agents/agent%2Fa/approvals/snapshot?chat_id=chat%2F1",
-    );
+    expect(request).toHaveBeenCalledWith("/chats/chat%2F1/approvals/snapshot");
   });
 
   it("submits decisions through the approval control endpoint", async () => {
@@ -31,14 +29,14 @@ describe("consoleApi agent-scoped routes", () => {
       subcommand: "status",
     };
 
-    await consoleApi.decideApproval("agent/a", "approval/1", {
+    await consoleApi.decideApproval("chat/1", "approval/1", {
       decision: "allow_chat",
       decided_by: "webui",
       matcher,
     });
 
     expect(request).toHaveBeenCalledWith(
-      "/agents/agent%2Fa/approvals/approval%2F1/decide",
+      "/chats/chat%2F1/approvals/approval%2F1/decide",
       {
         method: "POST",
         body: JSON.stringify({

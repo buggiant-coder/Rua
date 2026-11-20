@@ -31,14 +31,13 @@ pub fn get_heartbeat_config(
 pub fn update_last_dispatch(
     wd: &Path,
     channel: &str,
-    user_id: &str,
-    session_id: &str,
+    target: &crate::types::cron::DispatchTarget,
     agent_id: Option<&str>,
 ) -> std::io::Result<()> {
     let mut agent = load_agent_config(agent_id.unwrap_or("default"), wd)?;
-    agent.last_dispatch = Some(serde_json::json!({
-        "channel": channel, "user_id": user_id, "session_id": session_id
-    }));
+    let mut route = serde_json::to_value(target).map_err(std::io::Error::other)?;
+    route["channel"] = serde_json::json!(channel);
+    agent.last_dispatch = Some(route);
     let workspace = crate::dirs::shellexpand_path(&agent.workspace_dir);
     crate::loader::save_agent_config(&agent, &workspace)
 }

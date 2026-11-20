@@ -1301,6 +1301,9 @@
     "saveFailed": "Failed to save heartbeat config"
   },
   "cronJobs": {
+    "dispatchConversationId": "Platform conversation ID",
+    "continueChat": "Continue Rua chat",
+    "noChat": "No bound chat",
     "title": "Cron Jobs",
     "description": "Create and manage scheduled tasks that automatically execute at specified times. ",
     "searchPlaceholder": "Search jobs",

@@ -27,6 +27,10 @@ pub struct CronDispatchTarget {
     pub user_id: String,
     #[serde(default)]
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -166,6 +170,10 @@ pub struct CronDispatchHistoryEntry {
     pub channel: String,
     pub user_id: String,
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_id: Option<String>,
     pub mode: String,
     pub status: String,
     pub success: bool,
@@ -185,6 +193,9 @@ pub struct CronJobRunOverride {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CronDispatchTargetItem {
+    pub chat_id: String,
+    pub chat_name: String,
+    pub conversation_id: String,
     pub channel: String,
     pub user_id: String,
     pub session_id: String,

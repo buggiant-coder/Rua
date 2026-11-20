@@ -85,8 +85,8 @@ class NativeAcpDeviceTest {
                 }
                 api("PUT", runner, JSONObject().put("env", JSONObject()))
                 assertTrue(api("GET", "$runner/check").getBoolean("ok"))
-                val chat = api("POST", "/agents/default/chats", JSONObject("""{"name":"ACP native runtime","user_id":"native-e2e","channel":"console","meta":{}}"""))
-                val base = "/agents/default/chats/${chat.getString("id")}"
+                val chat = api("POST", "/chats", JSONObject("""{"agent_id":"default","name":"ACP native runtime","user_id":"native-e2e","channel":"console","meta":{}}"""))
+                val base = "/chats/${chat.getString("id")}"
                 chatBase = base
                 File(workspace, "native-acp-output.json").delete()
                 api("POST", "$base/console/submit", JSONObject().put("message", "native-acp-probe").put("initial_acp", JSONObject().put("runner", "codex")))

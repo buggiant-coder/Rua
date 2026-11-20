@@ -6,14 +6,6 @@ function currentUserId(): string {
   return "default";
 }
 
-function activeChatIdFromLocation(): string {
-  if (typeof window === "undefined") return "default";
-  const match = window.location.pathname.match(/^\/chat\/([^/?#]+)/);
-  const raw = match?.[1];
-  if (!raw || raw === "undefined" || raw === "null") return "default";
-  return decodeURIComponent(raw);
-}
-
 export const DEFAULT_FORM_VALUES = {
   enabled: false,
   schedule: {
@@ -43,7 +35,7 @@ export const DEFAULT_FORM_VALUES = {
     channel: "console",
     target: {
       user_id: currentUserId(),
-      session_id: activeChatIdFromLocation(),
+      session_id: "default",
     },
     mode: "final" as const,
   },

@@ -30,7 +30,7 @@ describe("conversationApi", () => {
       const turn = { before_turn_id: "turn/one" };
       const sendNow = { command_id: "command-1", authority_epoch: "epoch-1" };
 
-      await conversationApi.getHistory(context, id, { turnLimit: 20 });
+      await conversationApi.getHistory(id, { turnLimit: 20 });
       await conversationApi.previewConfiguration(context, id);
       await conversationApi.applyConfiguration(context, id, {
         current: { epoch: "old" },
@@ -54,8 +54,8 @@ describe("conversationApi", () => {
         "input/one",
         sendNow,
       );
-      await conversationApi.getApprovalSnapshot(context, id);
-      await conversationApi.getAcpPermissionSnapshot(context, id);
+      await conversationApi.getApprovalSnapshot(id);
+      await conversationApi.getAcpPermissionSnapshot(id);
 
       expect(vi.mocked(request).mock.calls).toEqual([
         [`${path}?turn_limit=20`],
@@ -96,12 +96,7 @@ describe("conversationApi", () => {
         [`${path}/acp/permissions`],
       ]);
       const signal = new AbortController().signal;
-      await conversationApi.openLive(
-        context,
-        id,
-        { viewer_id: "viewer" },
-        signal,
-      );
+      await conversationApi.openLive(id, { viewer_id: "viewer" }, signal);
       expect(consoleFetch).toHaveBeenCalledWith(
         `${path}/console/live`,
         expect.objectContaining({

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use futures::StreamExt;
-use rua_config::types::cron::CronJobSpec;
+use rua_config::types::cron::{CronJobSpec, DispatchTarget};
 use rua_core::event::RuntimeEvent;
 use rua_core::RuaError;
 use std::pin::Pin;
@@ -47,8 +47,7 @@ pub trait CronChannelSender: Send + Sync {
         &self,
         agent_id: &str,
         channel: &str,
-        user_id: &str,
-        session_id: &str,
+        target: &DispatchTarget,
         text: &str,
     ) -> Result<(), RuaError>;
 
@@ -56,8 +55,7 @@ pub trait CronChannelSender: Send + Sync {
         &self,
         agent_id: &str,
         channel: &str,
-        user_id: &str,
-        session_id: &str,
+        target: &DispatchTarget,
         event: &RuntimeEvent,
     ) -> Result<(), RuaError>;
 
@@ -65,8 +63,7 @@ pub trait CronChannelSender: Send + Sync {
         &self,
         _agent_id: &str,
         _channel: &str,
-        _user_id: &str,
-        _session_id: &str,
+        _target: &DispatchTarget,
         _job_name: &str,
         _text: &str,
     ) -> Result<(), RuaError> {
@@ -77,8 +74,9 @@ pub trait CronChannelSender: Send + Sync {
 pub type RuntimeEventStream =
     Pin<Box<dyn futures::Stream<Item = Result<RuntimeEvent, RuaError>> + Send>>;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Default)]
 pub struct CronAgentRunOptions {
+    pub chat_id: Option<String>,
     pub tool_safety: bool,
 }
 
@@ -221,17 +219,11 @@ impl CronExecutor {
     }
 
     async fn execute_inner(&self, job: &CronJobSpec) -> Result<(), RuaError> {
-        let (channel, user_id, session_id) = extract_dispatch(job);
+        let (channel, target) = extract_dispatch(job);
 
         match job.task_type.as_str() {
-            "text" => {
-                self.execute_text(job, &channel, &user_id, &session_id)
-                    .await
-            }
-            "agent" => {
-                self.execute_agent(job, &channel, &user_id, &session_id)
-                    .await
-            }
+            "text" => self.execute_text(job, channel, &target).await,
+            "agent" => self.execute_agent(job, channel, &target).await,
             other => {
                 tracing::warn!(
                     job_id = %job.id,
@@ -250,8 +242,7 @@ impl CronExecutor {
         &self,
         job: &CronJobSpec,
         channel: &str,
-        user_id: &str,
-        session_id: &str,
+        target: &DispatchTarget,
     ) -> Result<(), RuaError> {
         let text = job
             .text
@@ -274,11 +265,11 @@ impl CronExecutor {
         );
 
         self.channel_sender
-            .send_text(agent_id, channel, user_id, session_id, text)
+            .send_text(agent_id, channel, target, text)
             .await?;
         if job.save_result_to_inbox.unwrap_or(false) && channel != "console" {
             self.channel_sender
-                .save_result_to_inbox(agent_id, channel, user_id, session_id, &job.name, text)
+                .save_result_to_inbox(agent_id, channel, target, &job.name, text)
                 .await?;
         }
         Ok(())
@@ -288,8 +279,7 @@ impl CronExecutor {
         &self,
         job: &CronJobSpec,
         channel: &str,
-        user_id: &str,
-        session_id: &str,
+        target: &DispatchTarget,
     ) -> Result<(), RuaError> {
         let agent_id = job.agent_id.as_deref().unwrap_or("default");
 
@@ -320,11 +310,20 @@ impl CronExecutor {
 
         let runtime = job.runtime.as_ref();
         let run_session_id = if runtime.is_some_and(|r| !r.share_session) {
-            format!("{session_id}:cron:{}:{}", job.id, uuid::Uuid::new_v4())
+            format!(
+                "{}:cron:{}:{}",
+                target.session_id,
+                job.id,
+                uuid::Uuid::new_v4()
+            )
         } else {
-            session_id.to_string()
+            target.session_id.clone()
         };
         let options = CronAgentRunOptions {
+            chat_id: target
+                .chat_id
+                .clone()
+                .filter(|_| runtime.is_none_or(|r| r.share_session)),
             tool_safety: runtime.is_some_and(|r| r.tool_safety),
         };
 
@@ -340,7 +339,7 @@ impl CronExecutor {
         }
         let mut stream = self
             .agent_runner
-            .stream_query_with_options(agent_id, user_id, &run_session_id, &input, options)
+            .stream_query_with_options(agent_id, &target.user_id, &run_session_id, &input, options)
             .await?;
 
         let mut output = String::new();
@@ -359,7 +358,7 @@ impl CronExecutor {
                 )
             {
                 self.channel_sender
-                    .send_event(agent_id, channel, user_id, session_id, &event)
+                    .send_event(agent_id, channel, target, &event)
                     .await?;
             }
             if let RuntimeEvent::Error { error } = event {
@@ -383,7 +382,7 @@ impl CronExecutor {
 
         if mode == "final" && !output.trim().is_empty() {
             self.channel_sender
-                .send_text(agent_id, channel, user_id, session_id, &output)
+                .send_text(agent_id, channel, target, &output)
                 .await?;
         }
         if job.save_result_to_inbox.unwrap_or(false)
@@ -391,7 +390,7 @@ impl CronExecutor {
             && !output.trim().is_empty()
         {
             self.channel_sender
-                .save_result_to_inbox(agent_id, channel, user_id, session_id, &job.name, &output)
+                .save_result_to_inbox(agent_id, channel, target, &job.name, &output)
                 .await?;
         }
 
@@ -399,28 +398,22 @@ impl CronExecutor {
     }
 }
 
-pub fn extract_dispatch(job: &CronJobSpec) -> (String, String, String) {
-    if let Some(dispatch) = &job.dispatch {
-        let channel = if dispatch.channel.is_empty() {
-            "console".to_string()
-        } else {
-            dispatch.channel.clone()
-        };
-
-        let (user_id, session_id) = if let Some(target) = &dispatch.target {
-            (target.user_id.clone(), target.session_id.clone())
-        } else {
-            ("default".to_string(), "default".to_string())
-        };
-
-        (channel, user_id, session_id)
-    } else {
-        (
-            "console".to_string(),
-            "default".to_string(),
-            "default".to_string(),
-        )
-    }
+fn extract_dispatch(job: &CronJobSpec) -> (&str, DispatchTarget) {
+    let dispatch = job.dispatch.as_ref();
+    let channel = dispatch
+        .map(|d| d.channel.as_str())
+        .filter(|v| !v.is_empty())
+        .unwrap_or("console");
+    let target = dispatch
+        .and_then(|d| d.target.clone())
+        .unwrap_or_else(|| DispatchTarget {
+            user_id: "default".into(),
+            session_id: "default".into(),
+            chat_id: None,
+            conversation_id: None,
+            extra: Default::default(),
+        });
+    (channel, target)
 }
 
 pub type MockMessage = (String, String, String, String);
@@ -466,14 +459,13 @@ impl CronChannelSender for MockChannelSender {
         &self,
         _agent_id: &str,
         channel: &str,
-        user_id: &str,
-        session_id: &str,
+        target: &DispatchTarget,
         text: &str,
     ) -> Result<(), RuaError> {
         self.messages.lock().await.push((
             channel.to_string(),
-            user_id.to_string(),
-            session_id.to_string(),
+            target.user_id.clone(),
+            target.reply_conversation().to_owned(),
             text.to_string(),
         ));
         Ok(())
@@ -483,8 +475,7 @@ impl CronChannelSender for MockChannelSender {
         &self,
         _agent_id: &str,
         _channel: &str,
-        _user_id: &str,
-        _session_id: &str,
+        _target: &DispatchTarget,
         event: &RuntimeEvent,
     ) -> Result<(), RuaError> {
         self.events.lock().await.push(event.clone());
@@ -495,15 +486,14 @@ impl CronChannelSender for MockChannelSender {
         &self,
         _agent_id: &str,
         channel: &str,
-        user_id: &str,
-        session_id: &str,
+        target: &DispatchTarget,
         job_name: &str,
         text: &str,
     ) -> Result<(), RuaError> {
         self.inbox_messages.lock().await.push((
             channel.to_string(),
-            user_id.to_string(),
-            session_id.to_string(),
+            target.user_id.clone(),
+            target.reply_conversation().to_owned(),
             job_name.to_string(),
             text.to_string(),
         ));

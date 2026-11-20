@@ -1560,10 +1560,7 @@ export function AgentChatPage({
   const exportCurrentChat = async () => {
     if (!effectiveChatId) return;
     try {
-      const result = await exportConversationAsMarkdown(
-        agentConversationTarget(selectedAgent),
-        effectiveChatId,
-      );
+      const result = await exportConversationAsMarkdown(effectiveChatId);
       if (result.saved) {
         toast.success(
           result.folderHint

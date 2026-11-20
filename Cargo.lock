@@ -8853,6 +8853,7 @@ version = "0.8.1"
 dependencies = [
  "agent-types",
  "async-trait",
+ "blake3",
  "chrono",
  "futures",
  "mime_guess",

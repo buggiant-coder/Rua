@@ -1,9 +1,11 @@
 pub mod active_work_plan;
+pub mod chat_deletion;
 pub mod chat_index;
 pub mod collaboration;
 pub mod commands;
 pub mod display_media;
 pub mod early_background_compaction;
+pub mod external_chat;
 pub mod history_replacement;
 pub mod model_switch;
 pub mod projection;

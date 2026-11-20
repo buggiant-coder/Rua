@@ -145,16 +145,16 @@ class NativeHostDeviceTest {
                             shell("settings put secure accessibility_enabled 0")
                             await("Accessibility revocation not observed") { MobileAccessibilityService.instance == null }
                         }
-                        val chat = api("POST", "/agents/default/chats", """{"name":"$mode","user_id":"native-host-e2e","channel":"console","meta":{},"model":{"provider_id":"$provider","model":"native-runtime-model","thinking_strength":"off"}}""")
+                        val chat = api("POST", "/chats", """{"agent_id":"default","name":"$mode","user_id":"native-host-e2e","channel":"console","meta":{},"model":{"provider_id":"$provider","model":"native-runtime-model","thinking_strength":"off"}}""")
                         val id = chat.getString("id")
-                        api("POST", "/agents/default/chats/$id/console/submit", """{"message":"native-runtime-$mode","model":{"provider_id":"$provider","model":"native-runtime-model","thinking_strength":"off"}}""")
+                        api("POST", "/chats/$id/console/submit", """{"message":"native-runtime-$mode","model":{"provider_id":"$provider","model":"native-runtime-model","thinking_strength":"off"}}""")
                         var terminated = false
                         var snapshot = ""
                         await("$mode did not finish: $snapshot", 60) {
-                            val pending = api("GET", "/agents/default/approvals/snapshot?chat_id=$id").optJSONArray("pending")
+                            val pending = api("GET", "/chats/$id/approvals/snapshot").optJSONArray("pending")
                             if (pending != null) for (index in 0 until pending.length()) {
                                 val approvalId = pending.getJSONObject(index).getString("id")
-                                api("POST", "/agents/default/approvals/$approvalId/decide", """{"decision":"run_once","decided_by":"native-phone-fixture"}""")
+                                api("POST", "/chats/$id/approvals/$approvalId/decide", """{"decision":"run_once","decided_by":"native-phone-fixture"}""")
                             }
                             val op = PhoneDeviceControl.state.current()
                             if (!terminated && op != null && op.submitted.get() && mode in listOf("phone-terminate", "phone-stop")) {
@@ -167,16 +167,16 @@ class NativeHostDeviceTest {
                                         terminated = true
                                     }
                                 } else {
-                                    val history = api("GET", "/agents/default/chats/$id")
+                                    val history = api("GET", "/chats/$id")
                                     val messages = history.getJSONArray("messages")
                                     val turn = (0 until messages.length()).map { messages.getJSONObject(it) }.last { it.optString("turn_status") == "in_progress" }
                                     val epoch = history.getJSONObject("meta").getJSONObject("authority_placement").getString("authority_epoch")
                                     val body = JSONObject().put("turn_id", turn.getString("turn_id")).put("authority_epoch", epoch)
-                                    assertTrue(api("POST", "/agents/default/chats/$id/console/stop", body.toString()).getBoolean("stopped"))
+                                    assertTrue(api("POST", "/chats/$id/console/stop", body.toString()).getBoolean("stopped"))
                                     terminated = true
                                 }
                             }
-                            snapshot = api("GET", "/agents/default/chats/$id").toString()
+                            snapshot = api("GET", "/chats/$id").toString()
                             if (snapshot.contains("NATIVE_AGENT_FAILED")) error("$mode: " + snapshot.substringAfterLast("NATIVE_AGENT_FAILED").take(2000))
                             if (mode in listOf("phone-terminate", "phone-stop")) {
                                 val messages = JSONObject(snapshot).getJSONArray("messages")

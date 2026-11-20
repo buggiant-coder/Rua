@@ -50,6 +50,8 @@ fn make_text_job(id: &str, text: &str) -> CronJobSpec {
             r#type: "channel".to_string(),
             channel: "test-channel".to_string(),
             target: Some(DispatchTarget {
+                chat_id: None,
+                conversation_id: None,
                 user_id: "test-user".to_string(),
                 session_id: "test-session".to_string(),
                 extra: Default::default(),

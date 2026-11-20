@@ -1,5 +1,10 @@
 pub mod channel;
+mod single_turn;
 pub mod terminal;
+
+pub use single_turn::{
+    submit_display_turn, submit_runtime_turn, ExternalTurnStream, EXTERNAL_RUNTIME_EVENTS,
+};
 
 pub use channel::{
     make_response_done_json, ordered_user_content_parts, AttachmentInfo, ConsoleChannelService,

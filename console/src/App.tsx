@@ -2,6 +2,7 @@ import {
   Navigate,
   Outlet,
   RouterProvider,
+  useLocation,
   createBrowserRouter,
 } from "react-router-dom";
 import {
@@ -48,6 +49,7 @@ const dayjsLocaleMap: Record<string, string> = {
 };
 
 function AuthGuard() {
+  const location = useLocation();
   const [status, setStatus] = useState<"loading" | "auth-required" | "ok">(
     "loading",
   );
@@ -75,7 +77,9 @@ function AuthGuard() {
   if (status === "auth-required")
     return (
       <Navigate
-        to={`/login?redirect=${encodeURIComponent(window.location.pathname)}`}
+        to={`/login?redirect=${encodeURIComponent(
+          location.pathname + location.search + location.hash,
+        )}`}
         replace
       />
     );
@@ -119,6 +123,7 @@ function InitializedRouter({
       }),
     [router],
   );
+  useUserNotifications(subscribe);
   const initialized = useSyncExternalStore(
     subscribe,
     () => router.state.initialized,
@@ -134,7 +139,6 @@ function getRouterBasename(pathname: string): string | undefined {
 
 function AppInner() {
   useAppLifecycle();
-  useUserNotifications();
   isMobile();
   const basename = getRouterBasename(window.location.pathname);
   const routerRef = useRef<ReturnType<typeof createBrowserRouter> | null>(null);

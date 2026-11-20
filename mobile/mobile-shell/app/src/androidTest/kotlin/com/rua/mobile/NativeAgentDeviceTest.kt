@@ -35,10 +35,10 @@ class NativeAgentDeviceTest {
     }
 
     internal fun approveFixtureCalls(token: String, chatId: String) {
-        val pending = api(token, "GET", "/agents/default/approvals/snapshot?chat_id=$chatId").optJSONArray("pending") ?: return
+        val pending = api(token, "GET", "/chats/$chatId/approvals/snapshot").optJSONArray("pending") ?: return
         for (index in 0 until pending.length()) {
             val id = pending.getJSONObject(index).getString("id")
-            api(token, "POST", "/agents/default/approvals/$id/decide", """{"decision":"run_once","decided_by":"native-runtime-device-fixture"}""")
+            api(token, "POST", "/chats/$chatId/approvals/$id/decide", """{"decision":"run_once","decided_by":"native-runtime-device-fixture"}""")
         }
     }
 
@@ -74,15 +74,15 @@ class NativeAgentDeviceTest {
             val previousModel = api(token, "GET", "/models/active")
             try {
                 api(token, "PUT", "/models/active", """{"provider_id":"$provider","model":"native-runtime-model"}""")
-                val chat = api(token, "POST", "/agents/default/chats", """{"name":"Debian real Agent acceptance","user_id":"native-e2e","channel":"console","meta":{},"model":{"provider_id":"$provider","model":"native-runtime-model","thinking_strength":"off"}}""")
+                val chat = api(token, "POST", "/chats", """{"agent_id":"default","name":"Debian real Agent acceptance","user_id":"native-e2e","channel":"console","meta":{},"model":{"provider_id":"$provider","model":"native-runtime-model","thinking_strength":"off"}}""")
                 val id = chat.getString("id")
-                val submitted = api(token, "POST", "/agents/default/chats/$id/console/submit", JSONObject().put("message", if (skills) "native-runtime-skills" else "native-runtime-agent-check").toString())
+                val submitted = api(token, "POST", "/chats/$id/console/submit", JSONObject().put("message", if (skills) "native-runtime-skills" else "native-runtime-agent-check").toString())
                 check(submitted.getBoolean("accepted"))
                 val end = SystemClock.elapsedRealtime() + 180_000
                 var snapshot = ""
                 while (SystemClock.elapsedRealtime() < end) {
                     approveFixtureCalls(token, id)
-                    snapshot = api(token, "GET", "/agents/default/chats/$id").toString()
+                    snapshot = api(token, "GET", "/chats/$id").toString()
                     if (snapshot.contains("NATIVE_AGENT_ALL_PASS") || snapshot.contains("NATIVE_AGENT_FAILED") || snapshot.contains("\"turn_status\":\"failed\"")) break
                     SystemClock.sleep(250)
                 }
@@ -106,9 +106,9 @@ class NativeAgentDeviceTest {
                 for (mode in if (skills) listOf("node-stop", "python-timeout") else listOf("python-stop", "python-timeout", "bash-stop")) {
                     val marker = File(context.filesDir, "guest-home/native-$mode-pids")
                     marker.delete()
-                    val controlChat = api(token, "POST", "/agents/default/chats", """{"name":"$mode","user_id":"native-e2e","channel":"console","meta":{},"model":{"provider_id":"$provider","model":"native-runtime-model","thinking_strength":"off"}}""")
+                    val controlChat = api(token, "POST", "/chats", """{"agent_id":"default","name":"$mode","user_id":"native-e2e","channel":"console","meta":{},"model":{"provider_id":"$provider","model":"native-runtime-model","thinking_strength":"off"}}""")
                     val controlId = controlChat.getString("id")
-                    val controlSubmit = api(token, "POST", "/agents/default/chats/$controlId/console/submit", """{"message":"native-runtime-$mode"}""")
+                    val controlSubmit = api(token, "POST", "/chats/$controlId/console/submit", """{"message":"native-runtime-$mode"}""")
                     val startedDeadline = SystemClock.elapsedRealtime() + 20_000
                     fun childPids(): List<String> = runCatching {
                         marker.readText().trim().split(' ').filter { it.toIntOrNull() != null }
@@ -124,7 +124,7 @@ class NativeAgentDeviceTest {
                     if (mode.endsWith("stop")) {
                         val active = controlSubmit.getJSONObject("control").getJSONObject("active_turn")
                         val stop = JSONObject().put("turn_id", active.getString("turn_id")).put("authority_epoch", active.getString("authority_epoch"))
-                        assertTrue(api(token, "POST", "/agents/default/chats/$controlId/console/stop", stop.toString()).getBoolean("stopped"))
+                        assertTrue(api(token, "POST", "/chats/$controlId/console/stop", stop.toString()).getBoolean("stopped"))
                     }
                     val cleanupDeadline = SystemClock.elapsedRealtime() + 15_000
                     while (pids.any { File("/proc/$it").exists() } && SystemClock.elapsedRealtime() < cleanupDeadline) SystemClock.sleep(100)

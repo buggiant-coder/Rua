@@ -370,6 +370,27 @@ pub trait ConsoleChatFacade: Send + Sync {
         Box::pin(futures::stream::empty())
     }
 
+    async fn decide_chat_approval(
+        &self,
+        _address: &rua_core::ChatAddress,
+        _agent_id: &str,
+        _approval_id: Option<&str>,
+        _approve: bool,
+        _decided_by: &str,
+    ) -> Result<bool, String> {
+        Err("Chat approval service is unavailable".into())
+    }
+
+    /// Withdraw only this submission when the origin stops consuming an external turn.
+    async fn cancel_submitted_turn(
+        &self,
+        _address: rua_core::ChatAddress,
+        _execution_agent_id: &str,
+        _turn_id: &str,
+        _input_id: Option<&str>,
+    ) {
+    }
+
     async fn stop_chat(&self, agent_id: &str, chat_id: &str) -> bool;
 
     async fn stop_chat_outcome(&self, agent_id: &str, chat_id: &str) -> ConsoleStopOutcome {
@@ -1545,7 +1566,11 @@ impl ConsoleChannelService {
             let session_id = rua_core::id::SessionId::new(&chat_id);
             let agent_req = AgentRequest {
                 session_id,
-                user_id: "console".to_string(),
+                user_id: metadata
+                    .get("user_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("console")
+                    .to_owned(),
                 agent_id: rua_core::id::AgentId::new(&agent_id),
                 messages,
                 model_override,

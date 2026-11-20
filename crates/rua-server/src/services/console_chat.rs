@@ -991,6 +991,10 @@ enum ConversationPublicationBoundary {
 }
 
 impl SessionSyncEmitter {
+    pub(crate) fn rua_root(&self) -> &std::path::Path {
+        &self.data_dir
+    }
+
     pub(crate) fn from_app_state(state: &crate::AppState) -> Self {
         Self::new(
             state.rua_root.clone(),
@@ -1230,6 +1234,14 @@ impl SessionSyncEmitter {
                 return;
             }
         };
+        self.emit_sync_fact(SyncPublicationFact::AgentConfigCommitted {
+            agent_id: agent_id.to_owned(),
+            config: portable,
+        })
+        .await;
+    }
+
+    pub(crate) async fn emit_sync_fact(&self, fact: SyncPublicationFact) {
         let runtime = SyncPublicationRuntime::new(
             self.data_dir.join("sync"),
             Arc::clone(&self.sync_enabled),
@@ -1239,14 +1251,7 @@ impl SessionSyncEmitter {
             Some(Arc::clone(&self.sync_hlc_clock)),
             Arc::clone(&self.sync_trigger),
         );
-        let _ = publish_sync_fact_with_runtime(
-            &runtime,
-            SyncPublicationFact::AgentConfigCommitted {
-                agent_id: agent_id.to_string(),
-                config: portable,
-            },
-        )
-        .await;
+        let _ = publish_sync_fact_with_runtime(&runtime, fact).await;
     }
 }
 
@@ -2963,10 +2968,11 @@ pub(crate) fn build_submitted_user_turn(
     )))
 }
 
-async fn load_persisted_submitted_user_turn(
+async fn prepare_persisted_submitted_user_turn(
     scope_root: &Path,
     chat_id: &str,
     turn_id: &str,
+    memory_signal: Option<&MemorySignal>,
 ) -> rua_core::Result<Option<AppendedSubmittedUserTurn>> {
     let store = rua_session::WorkspaceSessionStore::new(scope_root);
     let message = store
@@ -2974,6 +2980,16 @@ async fn load_persisted_submitted_user_turn(
         .await?
         .into_iter()
         .find(|message| message.role == "user");
+    if let (Some(signal), Some(user_message)) = (memory_signal, message.as_ref()) {
+        let note = memory_signal_runtime_note(
+            format!("memory-signal-{turn_id}"),
+            user_message.created_at.clone(),
+            signal,
+        );
+        store.append_runtime_note(chat_id, turn_id, note).await?;
+        // The user Turn is already admitted and the model has not started its first call.
+        store.flush_pending_runtime_notes(chat_id, turn_id).await?;
+    }
     Ok(message.map(|message| {
         let message = NewConversationMessage {
             message_id: message.message_id,
@@ -3444,11 +3460,11 @@ impl ConsoleChatService {
                     (!device_id_str.is_empty()).then_some(device_id_str.as_str()),
                     device_name_snapshot.as_deref(),
                 ));
-            let project_id = match rua_session::WorkspaceSessionStore::new(&scope_root)
+            let header = match rua_session::WorkspaceSessionStore::new(&scope_root)
                 .load_chat_header(address.chat_id().as_str())
                 .await
             {
-                Ok(Some(header)) => header.project_id.map(rua_core::ProjectId::new),
+                Ok(Some(header)) => header,
                 Ok(None) => {
                     let _ = tx.send(Err("accepted Chat header is missing".into())).await;
                     return;
@@ -3458,6 +3474,14 @@ impl ConsoleChatService {
                     return;
                 }
             };
+            let external_channel = header
+                .extra
+                .get(rua_session::external_chat::EXTERNAL_CHANNEL_META_KEY)
+                .and_then(|route| route["channel"].as_str())
+                .filter(|channel| {
+                    req.extra.get("channel").and_then(serde_json::Value::as_str) == Some(*channel)
+                });
+            let project_id = header.project_id.map(rua_core::ProjectId::new);
             let project_resources = match project_id.as_ref() {
                 Some(project_id) => {
                     let binding = project_bindings
@@ -3725,8 +3749,13 @@ impl ConsoleChatService {
                     let persisted = if submitted_user_turn_persisted {
                         match authority_turn_id.as_deref() {
                             Some(turn_id) => {
-                                load_persisted_submitted_user_turn(&scope_root, &chat_id, turn_id)
-                                    .await
+                                prepare_persisted_submitted_user_turn(
+                                    &scope_root,
+                                    &chat_id,
+                                    turn_id,
+                                    memory_signal.as_ref(),
+                                )
+                                .await
                             }
                             None => Err(rua_core::RuaError::Runtime {
                                 message: "pre-persisted Project first Turn is missing its turn_id"
@@ -3864,7 +3893,13 @@ impl ConsoleChatService {
                 .unwrap_or_else(|| "zh".into());
 
             let mut metadata = std::collections::HashMap::new();
-            metadata.insert("channel".into(), serde_json::json!("console"));
+            metadata.insert(
+                "channel".into(),
+                serde_json::json!(external_channel.unwrap_or("console")),
+            );
+            if let Some(sender) = external_channel.and_then(|_| req.extra.get("user_id")) {
+                metadata.insert("user_id".into(), sender.clone());
+            }
             metadata.insert("locale".into(), serde_json::json!(locale));
             metadata.insert(
                 rua_agent::collaboration_mode::AGENT_COLLABORATION_MODE_METADATA_KEY.into(),
@@ -4828,6 +4863,76 @@ impl ConsoleChatFacade for ConsoleChatFacadeImpl {
         console_submit_outcome_from_delivery(outcome)
     }
 
+    async fn decide_chat_approval(
+        &self,
+        address: &ChatAddress,
+        agent_id: &str,
+        approval_id: Option<&str>,
+        approve: bool,
+        decided_by: &str,
+    ) -> Result<bool, String> {
+        self.input_intake
+            .decide_channel_approval(address, agent_id, approval_id, approve, decided_by)
+            .await
+    }
+
+    async fn cancel_submitted_turn(
+        &self,
+        address: ChatAddress,
+        agent_id: &str,
+        turn_id: &str,
+        input_id: Option<&str>,
+    ) {
+        use super::device_command_bus::{
+            ConversationControlDeviceAction, ConversationControlDeviceCommand,
+        };
+        let (source_device_id, target_device_id, epoch) = match self
+            .resolve_control_route(agent_id, address.chat_id().as_str())
+            .await
+        {
+            ConversationControlRoute::LocalAuthority {
+                authority_device_id,
+                authority_epoch,
+            } => (
+                authority_device_id.clone(),
+                authority_device_id,
+                authority_epoch,
+            ),
+            ConversationControlRoute::RemoteAuthority {
+                source_device_id,
+                target_device_id,
+                authority_epoch,
+            } => (source_device_id, target_device_id, authority_epoch),
+            ConversationControlRoute::Rejected { .. } => return,
+        };
+        let mut actions = Vec::new();
+        if let Some(input_id) = input_id {
+            actions.push(ConversationControlDeviceAction::DeleteQueuedInput {
+                input_id: input_id.into(),
+            });
+        }
+        actions.push(ConversationControlDeviceAction::StopTurn {
+            turn_id: turn_id.into(),
+            authority_epoch: epoch,
+        });
+        for action in actions {
+            let command = ConversationControlDeviceCommand {
+                command_id: uuid::Uuid::new_v4().to_string(),
+                address: address.clone(),
+                agent_id: agent_id.into(),
+                source_device_id: source_device_id.clone(),
+                target_device_id: target_device_id.clone(),
+                authority_epoch: epoch,
+                action,
+            };
+            let _ = super::conversation_control_dispatcher::dispatch_conversation_control(
+                &self.input_intake,
+                command,
+            )
+            .await;
+        }
+    }
+
     async fn stop_chat(&self, agent_id: &str, chat_id: &str) -> bool {
         self.stop_chat_outcome(agent_id, chat_id).await.stopped
     }
@@ -5527,6 +5632,11 @@ pub(crate) async fn drive_conversation_producer(
             exit_reason = "queue-empty";
             break;
         };
+        let external_runtime_events = pending
+            .extra
+            .get(rua_channel::core::console::EXTERNAL_RUNTIME_EVENTS)
+            .and_then(serde_json::Value::as_bool)
+            == Some(true);
         let task_watch_notification_id = pending
             .extra
             .get(crate::services::conversation_input_intake::RUNTIME_OBSERVATION_RECEIPT_META_KEY)
@@ -5713,6 +5823,23 @@ pub(crate) async fn drive_conversation_producer(
 
         let mut cancel_rx_inner = cancel_rx.clone();
         let mut cancel_channel_open = true;
+        let publish_external_event = async |turn_id: Option<&str>, event: &RuntimeEvent| {
+            if let Some(turn_id) = turn_id {
+                let payload = serde_json::json!({
+                    "type": "external_runtime_event", "turn_id": turn_id, "event": event,
+                })
+                .to_string();
+                publish_chat_live_activity(
+                    active_stream_broadcast_hub.as_ref(),
+                    &live_stream_id,
+                    &address,
+                    authority_epoch,
+                    payload.clone(),
+                )
+                .await;
+                streams.push_event_keyed(&key, payload).await;
+            }
+        };
         let mut live_turn_id = authority_turn_id;
         let mut live_terminal_status: Option<&'static str> = None;
         let mut terminal_events: Vec<std::result::Result<RuntimeEvent, String>> = Vec::new();
@@ -5822,6 +5949,9 @@ pub(crate) async fn drive_conversation_producer(
                             continue;
                         }
                         if matches!(event, dto::ChatEvent::Usage { .. }) {
+                            if external_runtime_events {
+                                publish_external_event(live_turn_id.as_deref(), &chat_event_to_runtime_event(event.clone())).await;
+                            }
                             if let Ok(payload) = serde_json::to_string(&event) {
                                 publish_chat_live_activity(
                                     active_stream_broadcast_hub.as_ref(),
@@ -5836,6 +5966,9 @@ pub(crate) async fn drive_conversation_producer(
                             continue;
                         }
                         let rt_event = chat_event_to_runtime_event(event);
+                        if external_runtime_events && !matches!(rt_event, RuntimeEvent::End { .. }) {
+                            publish_external_event(live_turn_id.as_deref(), &rt_event).await;
+                        }
                         if let Some(authority) = conversation_authority.as_ref() {
                             let _ = authority
                                 .observe_runtime_event(
@@ -5867,6 +6000,10 @@ pub(crate) async fn drive_conversation_producer(
                     Some(Err(e)) => {
                         errors_emitted += 1;
                         live_terminal_status = Some("failed");
+                        if external_runtime_events {
+                            let error = RuntimeEvent::Error { error: rua_core::RuaError::Runtime { message: e.to_string() } };
+                            publish_external_event(live_turn_id.as_deref(), &error).await;
+                        }
 
 
 

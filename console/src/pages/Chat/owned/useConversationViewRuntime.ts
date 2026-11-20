@@ -6,10 +6,7 @@ import {
   type ApprovalSnapshot,
   type ApprovalStatus,
 } from "@/api/modules/console";
-import {
-  conversationApi,
-  type ConversationApiTarget,
-} from "@/api/modules/conversation";
+import { conversationApi } from "@/api/modules/conversation";
 import type { ConversationAddress } from "../conversationAddress";
 import {
   useConversationIdentity,
@@ -454,14 +451,13 @@ function approvalRequestFromAcp(
 }
 
 async function loadApprovalSnapshot(
-  target: ConversationApiTarget,
   chatId: string,
   acpActive: boolean,
 ): Promise<ApprovalSnapshot> {
   const [ruaSnapshot, acpSnapshot] = await Promise.all([
-    conversationApi.getApprovalSnapshot(target, chatId),
+    conversationApi.getApprovalSnapshot(chatId),
     acpActive
-      ? conversationApi.getAcpPermissionSnapshot(target, chatId)
+      ? conversationApi.getAcpPermissionSnapshot(chatId)
       : Promise.resolve({ pending: [] }),
   ]);
   return {
@@ -1015,7 +1011,10 @@ function withActiveRegeneration(
   };
 }
 
-import { chatDraftScope, loadDraftConversationAcp } from "../conversationLifecycle";
+import {
+  chatDraftScope,
+  loadDraftConversationAcp,
+} from "../conversationLifecycle";
 import {
   saveSubmitted,
   loadSubmitted,
@@ -1637,7 +1636,6 @@ export function useConversationViewRuntime({
   useEffect(() => {
     if (!conversationId) return;
     let cancelled = false;
-    const target = conversationTarget;
     const pending = remotePendingSubmissions.filter(
       (submission) => submission.turn_id,
     );
@@ -1645,14 +1643,10 @@ export function useConversationViewRuntime({
       for (const submission of pending) {
         if (cancelled) return;
         try {
-          const around = await conversationApi.getHistory(
-            target,
-            conversationId,
-            {
-              aroundTurnId: submission.turn_id,
-              turnLimit: 1,
-            },
-          );
+          const around = await conversationApi.getHistory(conversationId, {
+            aroundTurnId: submission.turn_id,
+            turnLimit: 1,
+          });
           if (cancelled) return;
           const confirmed = around.messages?.some(
             (message) =>
@@ -1681,7 +1675,6 @@ export function useConversationViewRuntime({
     };
   }, [
     conversationId,
-    conversationTarget,
     runtimeOwnerKey,
     remotePendingSubmissions,
     updateRemotePendingSubmissions,
@@ -1691,7 +1684,6 @@ export function useConversationViewRuntime({
     async (chatId: string, current: () => boolean) => {
       try {
         const nextApprovalSnapshot = await loadApprovalSnapshot(
-          conversationTarget,
           chatId,
           acpPermissionActive,
         );
@@ -1706,24 +1698,21 @@ export function useConversationViewRuntime({
         );
       }
     },
-    [isCurrentConversation, conversationTarget, acpPermissionActive],
+    [isCurrentConversation, acpPermissionActive],
   );
 
   const loadStableHistory = useCallback(
     async (chatId: string) => {
       const mutationVersion = convergence.beginHistoryRead();
-      const targetAtCall = conversationTarget;
-      const nextHistory = await conversationApi.getHistory(
-        targetAtCall,
-        chatId,
-        { turnLimit: INITIAL_CHAT_TURN_PAGE_SIZE },
-      );
+      const nextHistory = await conversationApi.getHistory(chatId, {
+        turnLimit: INITIAL_CHAT_TURN_PAGE_SIZE,
+      });
       if (!isCurrentConversation()) return null;
       if (!validChatHistory(nextHistory)) return null;
       if (!convergence.acceptHistory(mutationVersion, nextHistory)) return null;
       return nextHistory;
     },
-    [convergence, isCurrentConversation, conversationTarget],
+    [convergence, isCurrentConversation],
   );
 
   const applyStableHistorySnapshot = useCallback((nextHistory: ChatHistory) => {
@@ -1949,7 +1938,6 @@ export function useConversationViewRuntime({
       const passive = options?.passive === true;
       const regeneration = options?.regeneration ?? null;
       const chatAtCall = conversationId;
-      const targetAtCall = conversationTarget;
       const controller = new AbortController();
       const reconnectCursor = activityCursorRef.current;
       const reconnectFold = streamFoldRef.current;
@@ -2019,7 +2007,6 @@ export function useConversationViewRuntime({
         try {
           const resumePosition = activityCursorRef.current;
           const response = await conversationApi.openLive(
-            targetAtCall,
             chatAtCall,
             {
               chat_id: conversationId,
@@ -2438,7 +2425,6 @@ export function useConversationViewRuntime({
       updateQueuedSubmissions,
       updateRemotePendingSubmissions,
       viewerVisible,
-      conversationTarget,
     ],
   );
 
@@ -2558,11 +2544,9 @@ export function useConversationViewRuntime({
     );
     setError(null);
 
-    const historyRequest = conversationApi.getHistory(
-      conversationTarget,
-      conversationId,
-      { turnLimit: INITIAL_CHAT_TURN_PAGE_SIZE },
-    );
+    const historyRequest = conversationApi.getHistory(conversationId, {
+      turnLimit: INITIAL_CHAT_TURN_PAGE_SIZE,
+    });
 
     historyRequest
       .then((nextHistory) => {
@@ -2622,7 +2606,6 @@ export function useConversationViewRuntime({
     conversationId,
     runtimeOwnerKey,
     projectId,
-    conversationTarget,
     reloadKey,
     applyStableHistorySnapshot,
     clearPendingActiveRegenerationFlush,
@@ -2636,11 +2619,7 @@ export function useConversationViewRuntime({
   useEffect(() => {
     if (!conversationId || deferInitialAttach) return;
     let cancelled = false;
-    void loadApprovalSnapshot(
-      conversationTarget,
-      conversationId,
-      acpPermissionActive,
-    )
+    void loadApprovalSnapshot(conversationId, acpPermissionActive)
       .then((nextApprovalSnapshot) => {
         if (cancelled || !isCurrentConversation()) return;
         setApprovalSnapshot(nextApprovalSnapshot);
@@ -2655,7 +2634,6 @@ export function useConversationViewRuntime({
     };
   }, [
     conversationId,
-    conversationTarget,
     acpPermissionActive,
     reloadKey,
     deferInitialAttach,
@@ -2681,9 +2659,8 @@ export function useConversationViewRuntime({
       if (!conversationId) return;
       const version = ++locateVersion.current;
       setError(null);
-      const target = conversationTarget;
       try {
-        const page = await conversationApi.getHistory(target, conversationId, {
+        const page = await conversationApi.getHistory(conversationId, {
           aroundTurnId: turnId,
           turnLimit: INITIAL_CHAT_TURN_PAGE_SIZE,
         });
@@ -2694,7 +2671,7 @@ export function useConversationViewRuntime({
           setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [conversationId, conversationTarget],
+    [conversationId],
   );
 
   const loadHistoryGap = useCallback(async () => {
@@ -2703,8 +2680,7 @@ export function useConversationViewRuntime({
     locatedReadBusy.current = true;
     const version = locateVersion.current;
     try {
-      const target = conversationTarget;
-      const older = await conversationApi.getHistory(target, conversationId, {
+      const older = await conversationApi.getHistory(conversationId, {
         beforeTurnOrdinal: gap.beforeTurnOrdinal,
         turnLimit: INITIAL_CHAT_TURN_PAGE_SIZE,
       });
@@ -2724,7 +2700,7 @@ export function useConversationViewRuntime({
     } finally {
       locatedReadBusy.current = false;
     }
-  }, [conversationId, history, locatedHistory, conversationTarget]);
+  }, [conversationId, history, locatedHistory]);
 
   useEffect(() => {
     if (
@@ -2759,12 +2735,7 @@ export function useConversationViewRuntime({
         turnLimit: INITIAL_CHAT_TURN_PAGE_SIZE,
         beforeTurnOrdinal,
       };
-      const targetAtCall = conversationTarget;
-      const older = await conversationApi.getHistory(
-        targetAtCall,
-        conversationId,
-        options,
-      );
+      const older = await conversationApi.getHistory(conversationId, options);
       if (!isCurrentConversation() || version !== locateVersion.current) return;
       if (loadingLocated)
         setLocatedHistory((current) =>
@@ -2777,13 +2748,7 @@ export function useConversationViewRuntime({
       loadingOlderRef.current = false;
       setLoadingOlder(false);
     }
-  }, [
-    conversationId,
-    history,
-    locatedHistory,
-    isCurrentConversation,
-    conversationTarget,
-  ]);
+  }, [conversationId, history, locatedHistory, isCurrentConversation]);
 
   useEffect(() => {
     if (!conversationResetInitializedRef.current) {
@@ -3356,7 +3321,6 @@ export function useConversationViewRuntime({
     ) => {
       if (!conversationId || !approvalRequestId) return;
 
-      const targetAtCall = conversationTarget;
       setHistory((current) =>
         markApprovalDecision(current, approvalRequestId, approve, options),
       );
@@ -3365,7 +3329,6 @@ export function useConversationViewRuntime({
       try {
         if (options?.acpOptionId) {
           await conversationApi.decideAcpPermission(
-            targetAtCall,
             conversationId,
             approvalRequestId,
             options.acpOptionId,
@@ -3397,7 +3360,6 @@ export function useConversationViewRuntime({
           };
         }
         await conversationApi.decideApproval(
-          targetAtCall,
           conversationId,
           approvalRequestId,
           body,
@@ -3429,7 +3391,7 @@ export function useConversationViewRuntime({
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [conversationId, conversationTarget],
+    [conversationId],
   );
 
   const displayHistory = useMemo(

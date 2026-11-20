@@ -13,6 +13,7 @@ export interface UserNotificationRequest {
 
 export interface AndroidUserNotificationBridge {
   capability(): string;
+  takePendingActivation?(): string | null;
   showUserNotification(payload: string): boolean;
 }
 

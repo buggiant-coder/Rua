@@ -17,6 +17,10 @@ pub struct CronDispatchHistoryEntry {
     pub channel: String,
     pub user_id: String,
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_id: Option<String>,
     pub mode: String,
     pub status: String,
     pub success: bool,
@@ -109,6 +113,8 @@ pub fn build_history_entry(
             .filter(|session_id| !session_id.is_empty())
             .unwrap_or("default")
             .to_string(),
+        conversation_id: target.and_then(|target| target.conversation_id.clone()),
+        chat_id: target.and_then(|target| target.chat_id.clone()),
         mode: dispatch
             .map(|dispatch| dispatch.mode.as_str())
             .filter(|mode| !mode.is_empty())

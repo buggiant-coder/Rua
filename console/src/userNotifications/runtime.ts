@@ -16,9 +16,11 @@ interface UserNotificationActivationEvent extends Event {
   };
 }
 
-export function startUserNotificationRuntime(): () => void {
+export function startUserNotificationRuntime(
+  subscribeNavigation: (announce: () => void) => () => void,
+): () => void {
   const adapter = selectUserNotificationAdapter();
-  const chatViewer = startChatViewerCoordinator();
+  const chatViewer = startChatViewerCoordinator(subscribeNavigation);
   const source = new EventSource(
     getApiUrl("/platform/user-notifications/events"),
   );
@@ -33,14 +35,18 @@ export function startUserNotificationRuntime(): () => void {
     } catch {}
   });
 
-  const onAndroidActivation = (event: Event) => {
-    const uri = (event as UserNotificationActivationEvent).detail?.uri;
+  const onAndroidActivation = (event?: Event) => {
+    const uri =
+      window.RuaNotificationNative?.takePendingActivation?.() ??
+      (event as UserNotificationActivationEvent | undefined)?.detail?.uri;
     if (typeof uri === "string") activateRuaUri(uri);
   };
   window.addEventListener(
     USER_NOTIFICATION_ACTIVATED_EVENT,
     onAndroidActivation,
   );
+
+  onAndroidActivation();
 
   let unlistenPromise: Promise<UnlistenFn> | undefined;
   if (isTauri()) {

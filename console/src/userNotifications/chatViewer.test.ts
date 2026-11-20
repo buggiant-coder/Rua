@@ -56,6 +56,13 @@ describe("chat notification viewer suppression", () => {
 
   it("normalizes supported chat addresses from URI and console routes", () => {
     expect(chatAddressFromRuaUri(request.rua_uri)).toBe("chats/chat-42");
+    expect(chatAddressFromRuaUri("rua://chats/%63hat-42?turn=7#output")).toBe(
+      "chats/chat-42",
+    );
+    expect(
+      chatAddressFromRuaUri("rua://agents/first/chats/chat-42"),
+    ).toBeNull();
+    expect(chatAddressFromRuaUri("rua:/chats/chat-42")).toBeNull();
     expect(chatAddressFromConsolePath("/console/chats/chat-7")).toBe(
       "chats/chat-7",
     );

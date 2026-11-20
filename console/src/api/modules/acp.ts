@@ -138,17 +138,12 @@ export const acpApi = {
     );
   },
 
-  getPermissionSnapshot: (_agentId: string | undefined, chatId: string) =>
+  getPermissionSnapshot: (chatId: string) =>
     request<ACPPermissionSnapshot>(
       `/chats/${encodeURIComponent(chatId)}/acp/permissions`,
     ),
 
-  decidePermission: (
-    _agentId: string | undefined,
-    chatId: string,
-    requestId: string,
-    optionId: string,
-  ) =>
+  decidePermission: (chatId: string, requestId: string, optionId: string) =>
     request<ACPPermissionRequest>(
       `/chats/${encodeURIComponent(
         chatId,

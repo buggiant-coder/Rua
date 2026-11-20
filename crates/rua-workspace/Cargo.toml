@@ -82,9 +82,5 @@ name = "file_manager"
 path = "tests/file_manager.rs"
 
 [[test]]
-name = "chats_store"
-path = "tests/chats_store.rs"
-
-[[test]]
 name = "unit_workspace"
 path = "tests/unit_workspace.rs"

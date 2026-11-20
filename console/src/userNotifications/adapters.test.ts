@@ -14,7 +14,7 @@ const request: UserNotificationRequest = {
   },
   title: "Run complete",
   body: "The requested analysis is ready.",
-  rua_uri: "rua://agents/researcher/chats/chat-42?turn=7#result",
+  rua_uri: "rua://chats/chat-42?turn=7#result",
 };
 
 function browserNotificationMock() {

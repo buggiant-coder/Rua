@@ -354,7 +354,7 @@ class PhoneUseBridgeTest {
     fun releaseWithoutAnActiveSessionIsIdempotent() {
         val state = newState()
         PhoneDeviceControl.initialize(org.robolectric.RuntimeEnvironment.getApplication(), state.generation) {}
-        val invocation = """{"owner":"fixture-owner","chat_address":{"scope":{"kind":"agent","agent_id":"default"},"chat_id":"fixture-chat"},"turn_id":"fixture-turn","authority_epoch":"fixture-authority","chat_configuration_epoch":"fixture-configuration"}"""
+        val invocation = """{"owner":"fixture-owner","chat_address":{"chat_id":"fixture-chat"},"turn_id":"fixture-turn","authority_epoch":"fixture-authority","chat_configuration_epoch":"fixture-configuration"}"""
         val responses = runSession(PhoneUseSession(state), peerPid = 101,
             input = frame("""{"id":"h","method":"hello","params":{}}""") +
                 frame("""{"id":"r1","method":"release","params":{"generation":"${state.generation}","invocation":$invocation}}""") +

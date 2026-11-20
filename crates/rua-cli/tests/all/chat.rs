@@ -34,10 +34,10 @@ fn chat_json_response_exposes_chat_id() {
 }
 
 #[test]
-fn chat_uses_agent_scoped_single_request_endpoint() {
+fn chat_uses_one_endpoint_per_chat() {
     assert_eq!(
-        chat_stream_endpoint("agent/one", "chat/one"),
-        "/api/agents/agent%2Fone/chats/chat%2Fone/console/chat"
+        chat_stream_endpoint("chat/one"),
+        "/api/chats/chat%2Fone/console/chat"
     );
 }
 
@@ -61,20 +61,19 @@ fn chat_mode_commands_and_request_body_are_typed() {
     assert_eq!(
         build_chat_body(
             "hello",
+            "researcher",
             Some("00000000-0000-4000-8000-000000000420"),
             None,
             Some(rua_core::AgentCollaborationMode::Execute),
         ),
         json!({
             "message": "hello",
+            "agent_id": "researcher",
             "chat_id": "00000000-0000-4000-8000-000000000420",
             "collaboration_mode": "execute",
         })
     );
-    assert_eq!(
-        chat_endpoint("default", "chat/one"),
-        "/api/agents/default/chats/chat%2Fone"
-    );
+    assert_eq!(chat_endpoint("chat/one"), "/api/chats/chat%2Fone");
 }
 
 #[test]
@@ -225,12 +224,13 @@ fn chats_create_has_no_session_id_input() {
 
 #[test]
 fn chats_create_body_contains_only_chat_metadata() {
-    let body = build_create_chat_body("CLI Chat", "default", "console");
+    let body = build_create_chat_body("CLI Chat", "researcher", "default", "console");
 
     assert_eq!(
         body,
         json!({
             "name": "CLI Chat",
+            "agent_id": "researcher",
             "user_id": "default",
             "channel": "console"
         })
