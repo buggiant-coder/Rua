@@ -31,6 +31,7 @@ pub struct ChatIndexRecord {
 pub struct ChatIndexFilter {
     pub agent_id: Option<String>,
     pub project_id: Option<String>,
+    pub without_project: bool,
     pub user_id: Option<String>,
     pub channel: Option<String>,
     pub search: Option<String>,
@@ -312,7 +313,7 @@ pub fn list_sync(
     offset: u64,
     limit: u64,
 ) -> Result<ChatIndexPage, String> {
-    let connection = open_connection(workspace_dir)?;
+    let mut connection = open_connection(workspace_dir)?;
     let selected_order = format!(
         "{} {}",
         filter.sort_by.sql_column(),
@@ -337,17 +338,14 @@ pub fn list_sync(
         .filter(|value| !value.is_empty())
         .map(chat_index_search_pattern);
     let search = search_pattern.as_deref();
-    let total = connection
-        .query_row(
-            r#"
-            SELECT COUNT(*) FROM chat_index
+    let predicate = r#"
             WHERE (?1 IS NULL OR user_id = ?1)
               AND (?2 IS NULL OR channel = ?2)
               AND (?3 IS NULL OR name LIKE ?3 ESCAPE '\' COLLATE NOCASE)
               AND (?4 IS NULL OR tag = ?4)
               AND (?5 = 'all'
-                   OR (?5 = 'user' AND json_type(meta_json, '$.collaboration') IS NULL)
-                   OR (?5 = 'collaboration' AND json_type(meta_json, '$.collaboration') IS NOT NULL))
+                   OR (?5 = 'user' AND COALESCE(json_type(meta_json, '$.collaboration'), '') != 'object')
+                   OR (?5 = 'collaboration' AND json_type(meta_json, '$.collaboration') = 'object'))
               AND (?6 IS NULL OR json_extract(meta_json, '$.collaboration.source.chat_id') = ?6)
               AND (?7 IS NULL
                    OR json_extract(meta_json, '$.collaboration.executor.kind') = ?7
@@ -357,106 +355,50 @@ pub fn list_sync(
               AND (?9 IS NULL OR archived = ?9)
               AND (?10 IS NULL OR json_extract(meta_json, '$.agent_id') = ?10)
               AND (?11 IS NULL OR json_extract(meta_json, '$.project_id') = ?11)
-            "#,
-            params![user_id, channel, search, tag, conversation_view, source_chat_id, executor, status, archived, agent_id, project_id],
-            |row| row.get::<_, u64>(0),
+              AND (NOT ?12 OR json_extract(meta_json, '$.project_id') IS NULL) "#;
+    let filters = params![
+        user_id,
+        channel,
+        search,
+        tag,
+        conversation_view,
+        source_chat_id,
+        executor,
+        status,
+        archived,
+        agent_id,
+        project_id,
+        filter.without_project
+    ];
+    let tx = connection
+        .transaction()
+        .map_err(|e| format!("begin Chat Index read: {e}"))?;
+    let total = tx
+        .query_row(
+            &format!("SELECT COUNT(*) FROM chat_index {predicate}"),
+            filters,
+            |row| row.get(0),
         )
         .map_err(|error| format!("count Chat Index: {error}"))?;
-    let mut pinned_statement = connection
-        .prepare(&format!(
-            r#"
-            SELECT {COLUMNS} FROM chat_index
-            WHERE (?1 IS NULL OR user_id = ?1)
-              AND (?2 IS NULL OR channel = ?2)
-              AND (?3 IS NULL OR name LIKE ?3 ESCAPE '\' COLLATE NOCASE)
-              AND (?4 IS NULL OR tag = ?4)
-              AND (?5 = 'all'
-                   OR (?5 = 'user' AND json_type(meta_json, '$.collaboration') IS NULL)
-                   OR (?5 = 'collaboration' AND json_type(meta_json, '$.collaboration') IS NOT NULL))
-              AND (?6 IS NULL OR json_extract(meta_json, '$.collaboration.source.chat_id') = ?6)
-              AND (?7 IS NULL
-                   OR json_extract(meta_json, '$.collaboration.executor.kind') = ?7
-                   OR json_extract(meta_json, '$.collaboration.executor_agent_id') = ?7
-                   OR json_extract(meta_json, '$.collaboration.executor.runner') = ?7)
-              AND (?8 IS NULL OR status = ?8)
-              AND (?9 IS NULL OR archived = ?9)
-              AND (?10 IS NULL OR json_extract(meta_json, '$.agent_id') = ?10)
-              AND (?11 IS NULL OR json_extract(meta_json, '$.project_id') = ?11)
-              AND pinned != 0
-            ORDER BY pin_order ASC, {selected_order}, id ASC
-            "#
-        ))
-        .map_err(|error| format!("prepare pinned Chat Index list: {error}"))?;
-    let mut entries = pinned_statement
-        .query_map(
-            params![
-                user_id,
-                channel,
-                search,
-                tag,
-                conversation_view,
-                source_chat_id,
-                executor,
-                status,
-                archived,
-                agent_id,
-                project_id
-            ],
-            row_to_record,
-        )
-        .map_err(|error| format!("query pinned Chat Index: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("read pinned Chat Index: {error}"))?;
-    let mut unpinned_statement = connection
-        .prepare(&format!(
-            r#"
-            SELECT {COLUMNS} FROM chat_index
-            WHERE (?1 IS NULL OR user_id = ?1)
-              AND (?2 IS NULL OR channel = ?2)
-              AND (?3 IS NULL OR name LIKE ?3 ESCAPE '\' COLLATE NOCASE)
-              AND (?4 IS NULL OR tag = ?4)
-              AND (?5 = 'all'
-                   OR (?5 = 'user' AND json_type(meta_json, '$.collaboration') IS NULL)
-                   OR (?5 = 'collaboration' AND json_type(meta_json, '$.collaboration') IS NOT NULL))
-              AND (?6 IS NULL OR json_extract(meta_json, '$.collaboration.source.chat_id') = ?6)
-              AND (?7 IS NULL
-                   OR json_extract(meta_json, '$.collaboration.executor.kind') = ?7
-                   OR json_extract(meta_json, '$.collaboration.executor_agent_id') = ?7
-                   OR json_extract(meta_json, '$.collaboration.executor.runner') = ?7)
-              AND (?8 IS NULL OR status = ?8)
-              AND (?9 IS NULL OR archived = ?9)
-              AND (?10 IS NULL OR json_extract(meta_json, '$.agent_id') = ?10)
-              AND (?11 IS NULL OR json_extract(meta_json, '$.project_id') = ?11)
-              AND pinned = 0
-            ORDER BY {selected_order}, id ASC
-            LIMIT ?12 OFFSET ?13
-            "#
-        ))
-        .map_err(|error| format!("prepare unpinned Chat Index list: {error}"))?;
-    entries.extend(
-        unpinned_statement
-            .query_map(
-                params![
-                    user_id,
-                    channel,
-                    search,
-                    tag,
-                    conversation_view,
-                    source_chat_id,
-                    executor,
-                    status,
-                    archived,
-                    agent_id,
-                    project_id,
-                    limit.min(i64::MAX as u64),
-                    offset
-                ],
-                row_to_record,
-            )
-            .map_err(|error| format!("query unpinned Chat Index: {error}"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| format!("read unpinned Chat Index: {error}"))?,
+    let limit = limit.min(i64::MAX as u64) as i64;
+    let offset = offset.min(i64::MAX as u64) as i64;
+    let page_params = filters
+        .iter()
+        .copied()
+        .chain([&limit as &dyn rusqlite::ToSql, &offset]);
+    let page_sql = format!(
+        "SELECT {COLUMNS} FROM chat_index {predicate}
+         ORDER BY pinned DESC, CASE WHEN pinned != 0 THEN pin_order END ASC, {selected_order}, id ASC
+         LIMIT ?13 OFFSET ?14"
     );
+    let mut statement = tx
+        .prepare(&page_sql)
+        .map_err(|error| format!("prepare Chat Index list: {error}"))?;
+    let entries = statement
+        .query_map(rusqlite::params_from_iter(page_params), row_to_record)
+        .map_err(|error| format!("query Chat Index: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("read Chat Index: {error}"))?;
     Ok(ChatIndexPage { entries, total })
 }
 
@@ -488,9 +430,7 @@ pub fn list_all_sync(workspace_dir: &Path) -> Result<Vec<ChatIndexRecord>, Strin
     Ok(records)
 }
 
-/// Latest activity across all Chats in a Scope, including archived and collaboration Chats.
-/// Reads only the existing projection and never materializes an empty Workspace.
-pub fn latest_activity_sync(workspace_dir: &Path) -> Result<Option<DateTime<Utc>>, String> {
+fn open_existing_activity_index(workspace_dir: &Path) -> Result<Option<Connection>, String> {
     let path = db_path(workspace_dir);
     if !path
         .try_exists()
@@ -503,6 +443,15 @@ pub fn latest_activity_sync(workspace_dir: &Path) -> Result<Option<DateTime<Utc>
     connection
         .busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|error| format!("set Chat Index activity busy timeout: {error}"))?;
+    Ok(Some(connection))
+}
+
+/// Latest activity across all Chats in a Scope, including archived and collaboration Chats.
+/// Reads only the existing projection and never materializes an empty Workspace.
+pub fn latest_activity_sync(workspace_dir: &Path) -> Result<Option<DateTime<Utc>>, String> {
+    let Some(connection) = open_existing_activity_index(workspace_dir)? else {
+        return Ok(None);
+    };
     connection
         .query_row("SELECT MAX(updated_at) FROM chat_index", [], |row| {
             row.get::<_, Option<String>>(0)?.map(parse_time).transpose()
@@ -639,6 +588,31 @@ pub async fn list(
     tokio::task::spawn_blocking(move || list_sync(&workspace_dir, filter, offset, limit))
         .await
         .map_err(|error| format!("Chat Index list task failed: {error}"))?
+}
+
+pub async fn project_last_activity(
+    workspace_dir: &Path,
+) -> Result<HashMap<String, DateTime<Utc>>, String> {
+    let workspace_dir = workspace_dir.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let Some(connection) = open_existing_activity_index(&workspace_dir)? else {
+            return Ok(HashMap::new());
+        };
+        let mut statement = connection
+            .prepare(
+                "SELECT json_extract(meta_json, '$.project_id') AS project_id, MAX(updated_at)
+                 FROM chat_index WHERE json_type(meta_json, '$.project_id') = 'text'
+                 GROUP BY project_id",
+            )
+            .map_err(|error| format!("prepare Project activity: {error}"))?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, parse_time(row.get(1)?)?)))
+            .map_err(|error| format!("query Project activity: {error}"))?;
+        rows.collect::<Result<HashMap<_, _>, _>>()
+            .map_err(|error| format!("read Project activity: {error}"))
+    })
+    .await
+    .map_err(|error| format!("Project activity task failed: {error}"))?
 }
 
 pub async fn get(workspace_dir: &Path, chat_id: &str) -> Result<Option<ChatIndexRecord>, String> {

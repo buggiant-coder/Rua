@@ -57,7 +57,7 @@ import { openChatDraft } from "@/pages/Chat/chatNavigation";
 import { historyProvesConversationMaterialized } from "@/pages/Chat/conversationRouteController";
 import {
   chatPath,
-  resolveAgentChatPath,
+  resolveStandaloneChatPath,
 } from "@/pages/Chat/conversationAddress";
 import { registerProjectNavigationAgent } from "@/layouts/conversationNavigationAgent";
 import {
@@ -354,6 +354,7 @@ export default function ProjectChatPage({
         const navigationKey = JSON.stringify([
           projectId,
           chatId,
+          nextHistory.agent_id,
           nextHistory.title,
           nextHistory.status,
         ]);
@@ -420,6 +421,7 @@ export default function ProjectChatPage({
         );
         lastSelectionRevisionRef.current = state.selection.revision;
         setExecutionAgentId(state.selection.agent_id);
+        invalidateConversationNavigation({ chatId }, false, projectId);
         setSelectedAgentAvailable(state.selected_agent_available);
         setSwitchBlockers(state.blockers);
         useAgentStore.getState().setSelectedAgent(state.selection.agent_id);
@@ -774,7 +776,7 @@ export default function ProjectChatPage({
           onSelect={handleProjectSelect}
           onSelectIndependent={() =>
             navigate(
-              resolveAgentChatPath(useAgentStore.getState().selectedAgent),
+              resolveStandaloneChatPath(),
             )
           }
           onCreate={() => setCreateProjectOpen(true)}

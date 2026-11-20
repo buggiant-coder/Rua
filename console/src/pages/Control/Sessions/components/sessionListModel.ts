@@ -36,6 +36,9 @@ export function filterAndSortSessions(
   const dir = sortOrder === "asc" ? 1 : -1;
 
   return [...filtered].sort((a, b) => {
+    if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+    if (a.pinned && b.pinned && a.pin_order !== b.pin_order)
+      return (a.pin_order ?? 0) - (b.pin_order ?? 0);
     switch (sortField) {
       case "name":
         return dir * collator.compare(a.name || "", b.name || "");

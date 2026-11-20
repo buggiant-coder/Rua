@@ -4,25 +4,10 @@ import type {
   ChatSpec,
   ConversationBackgroundWorkView,
 } from "@/api/types/chat";
-import type { ConversationApiTarget } from "@/api/modules/conversation";
 import { useCollaborationActivity } from "./useCollaborationActivity";
 
-const api = vi.hoisted(() => ({
-  agents: vi.fn(),
-  chats: vi.fn(),
-  projects: vi.fn(),
-}));
-vi.mock("@/api/modules/agents", () => ({
-  agentsApi: { listAgents: api.agents },
-}));
-vi.mock("@/api/modules/chat", () => ({ chatApi: { listChats: api.chats } }));
-vi.mock("@/api/modules/projectChats", () => ({
-  projectChatsApi: { listChats: api.projects },
-}));
-const target: ConversationApiTarget = {
-  scope: "project",
-  projectId: "project-a",
-};
+const listChats = vi.hoisted(() => vi.fn());
+vi.mock("@/api/modules/chat", () => ({ chatApi: { listChats } }));
 const child = (id: string, sourceId = "source-a"): ChatSpec => ({
   id,
   name: id,
@@ -34,7 +19,6 @@ const child = (id: string, sourceId = "source-a"): ChatSpec => ({
   status: "idle",
   collaboration: {
     source: {
-      scope: { kind: "project", project_id: "project-a" },
       chat_id: sourceId,
     },
     executor: { kind: "acp", runner: "codex" },
@@ -50,11 +34,11 @@ const child = (id: string, sourceId = "source-a"): ChatSpec => ({
 describe("useCollaborationActivity", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    api.projects.mockResolvedValue({ data: [], total: 0 });
+    listChats.mockResolvedValue({ data: [], total: 0 });
   });
 
   it("loads every page without overriding idle Chats with result delivery state", async () => {
-    api.projects.mockImplementation(async (_project, params) => ({
+    listChats.mockImplementation(async (params) => ({
       data: [child(params.offset === 0 ? "first" : "second")],
       total: 2,
     }));
@@ -66,7 +50,6 @@ describe("useCollaborationActivity", () => {
           id: "request-1",
           status: "result_ready",
           chat: {
-            scope: { kind: "project", project_id: "project-a" },
             chat_id: "first",
           },
         },
@@ -76,16 +59,18 @@ describe("useCollaborationActivity", () => {
       ({ backgroundWork }) =>
         useCollaborationActivity({
           open: true,
-          target,
           chatId: "source-a",
           backgroundWork,
         }),
       { initialProps: { backgroundWork: pending } },
     );
     await waitFor(() => expect(result.current.collaborations).toHaveLength(2));
-    expect(api.projects).toHaveBeenCalledWith(
-      "project-a",
-      expect.objectContaining({ offset: 1 }),
+    expect(listChats).toHaveBeenCalledWith(
+      expect.objectContaining({
+        view: "collaboration",
+        source_chat_id: "source-a",
+        offset: 1,
+      }),
     );
     expect(
       result.current.collaborations.find((row) => row.chat?.id === "first")
@@ -103,7 +88,7 @@ describe("useCollaborationActivity", () => {
 
   it("does not leak a late response into another source chat", async () => {
     let finishOld!: (page: { data: ChatSpec[]; total: number }) => void;
-    api.projects.mockImplementation(async (_project, params) =>
+    listChats.mockImplementation(async (params) =>
       params.source_chat_id === "source-a"
         ? new Promise((resolve) => {
             finishOld = resolve;
@@ -111,7 +96,7 @@ describe("useCollaborationActivity", () => {
         : { data: [child("new-child", "source-b")], total: 1 },
     );
     const { result, rerender } = renderHook(
-      ({ chatId }) => useCollaborationActivity({ open: true, target, chatId }),
+      ({ chatId }) => useCollaborationActivity({ open: true, chatId }),
       { initialProps: { chatId: "source-a" } },
     );
     rerender({ chatId: "source-b" });
@@ -128,23 +113,22 @@ describe("useCollaborationActivity", () => {
     vi.useFakeTimers();
     try {
       const { rerender, unmount } = renderHook(
-        ({ open }) =>
-          useCollaborationActivity({ open, target, chatId: "source-a" }),
+        ({ open }) => useCollaborationActivity({ open, chatId: "source-a" }),
         { initialProps: { open: true } },
       );
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
       });
-      expect(api.projects).toHaveBeenCalledTimes(1);
+      expect(listChats).toHaveBeenCalledTimes(1);
       await act(async () => {
         await vi.advanceTimersByTimeAsync(5000);
       });
-      expect(api.projects).toHaveBeenCalledTimes(2);
+      expect(listChats).toHaveBeenCalledTimes(2);
       rerender({ open: false });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(10000);
       });
-      expect(api.projects).toHaveBeenCalledTimes(2);
+      expect(listChats).toHaveBeenCalledTimes(2);
       unmount();
     } finally {
       vi.useRealTimers();

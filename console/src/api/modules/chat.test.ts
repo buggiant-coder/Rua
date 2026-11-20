@@ -201,7 +201,7 @@ describe("chatApi Rust independent Chat routes", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/chats?user_id=u%2F1&channel=dingtalk&tag=red&offset=10&limit=20",
-      { headers: { "X-Test": "1" } },
+      { headers: { "X-Test": "1" }, cache: "no-store" },
     );
   });
 
@@ -221,8 +221,8 @@ describe("chatApi Rust independent Chat routes", () => {
       status: "running",
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/chats?search=review&view=collaboration&source_chat_id=source%2F1&executor=mock_agent&status=running",
-      { headers: { "X-Test": "1" } },
+      "/api/chats?view=collaboration&search=review&source_chat_id=source%2F1&executor=mock_agent&status=running",
+      { headers: { "X-Test": "1" }, cache: "no-store" },
     );
   });
 
@@ -248,7 +248,12 @@ describe("chatApi Rust independent Chat routes", () => {
       turn_id: "turn-1",
       authority_epoch: "epoch-1",
     });
-    await chatApi.searchChats("hello world", "agent-1");
+    await chatApi.searchChats("hello world", {
+      agent_id: "agent-1",
+      without_project: true,
+      archived: true,
+      offset: 20,
+    });
 
     expect(request).toHaveBeenNthCalledWith(1, "/chats", {
       method: "POST",
@@ -296,7 +301,7 @@ describe("chatApi Rust independent Chat routes", () => {
     );
     expect(request).toHaveBeenNthCalledWith(
       11,
-      "/chats/search?q=hello%20world&agent_id=agent-1",
+      "/chats/search?agent_id=agent-1&without_project=true&archived=true&offset=20&q=hello+world",
     );
   });
 });

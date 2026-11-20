@@ -1024,28 +1024,22 @@ describe("owned ChatPage route identity", () => {
       screen.getByLabelText(label("navigation.manageConversations")),
     );
     await waitFor(() => expect(chatApiMock.listChats).toHaveBeenCalledTimes(2));
-    expect(chatApiMock.listChats).toHaveBeenNthCalledWith(
-      1,
-      {
-        offset: 0,
-        limit: 10,
-        archived: false,
-        sort_by: "updated_at",
-        sort_order: "desc",
-      },
-      "default",
-    );
-    expect(chatApiMock.listChats).toHaveBeenNthCalledWith(
-      2,
-      {
-        offset: 0,
-        limit: 10,
-        archived: false,
-        sort_by: "updated_at",
-        sort_order: "desc",
-      },
-      "default",
-    );
+    expect(chatApiMock.listChats).toHaveBeenNthCalledWith(1, {
+      without_project: true,
+      offset: 0,
+      limit: 10,
+      archived: false,
+      sort_by: "updated_at",
+      sort_order: "desc",
+    });
+    expect(chatApiMock.listChats).toHaveBeenNthCalledWith(2, {
+      without_project: true,
+      offset: 0,
+      limit: 10,
+      archived: false,
+      sort_by: "updated_at",
+      sort_order: "desc",
+    });
   });
 
   it("releases the chat activity stream while the browser tab is hidden", async () => {
@@ -1098,10 +1092,10 @@ describe("owned ChatPage route identity", () => {
     expect(screen.getByTestId("owned-surface")).not.toHaveTextContent("none");
   });
 
-  it("returns to the same agent's active chat without an empty first frame", async () => {
+  it("returns to the last active standalone chat without an empty first frame", async () => {
     renderChat("/chats/return-chat");
     await waitFor(() =>
-      expect(localStorage.getItem("rua_last_chat_id_default")).toBe(
+      expect(localStorage.getItem("rua_last_chat_id_no-project")).toBe(
         "return-chat",
       ),
     );
@@ -1124,7 +1118,9 @@ describe("owned ChatPage route identity", () => {
     renderChat("/chats/chat-1");
 
     await waitFor(() =>
-      expect(localStorage.getItem("rua_last_chat_id_default")).toBe("chat-1"),
+      expect(localStorage.getItem("rua_last_chat_id_no-project")).toBe(
+        "chat-1",
+      ),
     );
   });
 
@@ -1623,28 +1619,22 @@ describe("owned ChatPage route identity", () => {
     await screen.findByText("Page two chat 11");
     expect(screen.getByText("Page one chat 1")).toBeInTheDocument();
 
-    expect(chatApiMock.listChats).toHaveBeenNthCalledWith(
-      1,
-      {
-        offset: 0,
-        limit: 10,
-        archived: false,
-        sort_by: "updated_at",
-        sort_order: "desc",
-      },
-      "default",
-    );
-    expect(chatApiMock.listChats).toHaveBeenNthCalledWith(
-      2,
-      {
-        offset: 10,
-        limit: 10,
-        archived: false,
-        sort_by: "updated_at",
-        sort_order: "desc",
-      },
-      "default",
-    );
+    expect(chatApiMock.listChats).toHaveBeenNthCalledWith(1, {
+      without_project: true,
+      offset: 0,
+      limit: 10,
+      archived: false,
+      sort_by: "updated_at",
+      sort_order: "desc",
+    });
+    expect(chatApiMock.listChats).toHaveBeenNthCalledWith(2, {
+      without_project: true,
+      offset: 10,
+      limit: 10,
+      archived: false,
+      sort_by: "updated_at",
+      sort_order: "desc",
+    });
   });
 
   it("orders pinned chats before unpinned chats in the owned drawer", async () => {
@@ -1743,16 +1733,14 @@ describe("owned ChatPage route identity", () => {
     );
     await screen.findByText("Agent B chat");
 
-    expect(chatApiMock.listChats).toHaveBeenCalledWith(
-      {
-        offset: 0,
-        limit: 10,
-        archived: false,
-        sort_by: "updated_at",
-        sort_order: "desc",
-      },
-      "agent-b",
-    );
+    expect(chatApiMock.listChats).toHaveBeenCalledWith({
+      without_project: true,
+      offset: 0,
+      limit: 10,
+      archived: false,
+      sort_by: "updated_at",
+      sort_order: "desc",
+    });
 
     fireEvent.click(screen.getByLabelText(label("chat.pinTooltip")));
     await waitFor(() =>
@@ -1773,10 +1761,15 @@ describe("owned ChatPage route identity", () => {
     await screen.findByText(
       (_, element) => element?.textContent === "scoped needle",
     );
-    expect(chatApiMock.searchChats).toHaveBeenCalledWith("needle", "agent-b");
+    expect(chatApiMock.searchChats).toHaveBeenCalledWith("needle", {
+      without_project: true,
+      archived: false,
+      view: "user",
+      offset: 0,
+    });
   });
 
-  it("reloads the open history drawer when the selected agent changes", async () => {
+  it("resets the open history drawer when navigating to another saved chat", async () => {
     chatApiMock.listChats
       .mockResolvedValueOnce({
         data: [
@@ -1847,28 +1840,22 @@ describe("owned ChatPage route identity", () => {
     expect(
       screen.getByPlaceholderText(label("chat.chatListSearchPlaceholder")),
     ).toHaveValue("");
-    expect(chatApiMock.listChats).toHaveBeenNthCalledWith(
-      1,
-      {
-        offset: 0,
-        limit: 10,
-        archived: false,
-        sort_by: "updated_at",
-        sort_order: "desc",
-      },
-      "agent-a",
-    );
-    expect(chatApiMock.listChats).toHaveBeenNthCalledWith(
-      2,
-      {
-        offset: 0,
-        limit: 10,
-        archived: false,
-        sort_by: "updated_at",
-        sort_order: "desc",
-      },
-      "agent-b",
-    );
+    expect(chatApiMock.listChats).toHaveBeenNthCalledWith(1, {
+      without_project: true,
+      offset: 0,
+      limit: 10,
+      archived: false,
+      sort_by: "updated_at",
+      sort_order: "desc",
+    });
+    expect(chatApiMock.listChats).toHaveBeenNthCalledWith(2, {
+      without_project: true,
+      offset: 0,
+      limit: 10,
+      archived: false,
+      sort_by: "updated_at",
+      sort_order: "desc",
+    });
   });
 
   it("uses the metadata title from Rust chat history", async () => {
@@ -1932,7 +1919,7 @@ describe("owned ChatPage route identity", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("updates a new chat title from the submitted user input", async () => {
+  it("updates the same Chat title from the actual submitter even after changing the draft Agent", async () => {
     let resolveHistory!: (value: unknown) => void;
     chatApiMock.getChat.mockReturnValue(
       new Promise((resolve) => {
@@ -1948,7 +1935,7 @@ describe("owned ChatPage route identity", () => {
       window.dispatchEvent(
         new CustomEvent("rua-chat-submitted", {
           detail: {
-            agentId: "default",
+            agentId: "actual-first-submitter",
             chatId: "lazy-chat-title",
             title: "给我说个冷笑话",
           },
@@ -1961,7 +1948,7 @@ describe("owned ChatPage route identity", () => {
       window.dispatchEvent(
         new CustomEvent("rua-chat-submitted", {
           detail: {
-            agentId: "default",
+            agentId: "actual-first-submitter",
             chatId: "lazy-chat-title",
             title: "第二轮不应该改标题",
           },
@@ -3403,8 +3390,7 @@ describe("owned ChatPage route identity", () => {
       const drawer = await screen.findByRole("dialog");
       await within(drawer).findByText("Archive candidate");
       expect(chatApiMock.listChats).toHaveBeenLastCalledWith(
-        expect.objectContaining({ archived: false }),
-        "agent-b",
+        expect.objectContaining({ without_project: true, archived: false }),
       );
       fireEvent.click(
         within(drawer).getByLabelText(label("projects.chat.archive")),
@@ -3437,8 +3423,11 @@ describe("owned ChatPage route identity", () => {
       );
       await within(drawer).findByText("Archive candidate");
       expect(chatApiMock.listChats).toHaveBeenLastCalledWith(
-        expect.objectContaining({ archived: true, view: "all" }),
-        "agent-b",
+        expect.objectContaining({
+          without_project: true,
+          archived: true,
+          view: "all",
+        }),
       );
       expect(
         within(drawer).queryByLabelText(label("projects.chat.clearArchive")),
@@ -3468,8 +3457,7 @@ describe("owned ChatPage route identity", () => {
       );
       await within(drawer).findByText("Archive candidate");
       expect(chatApiMock.listChats).toHaveBeenLastCalledWith(
-        expect.objectContaining({ archived: false }),
-        "agent-b",
+        expect.objectContaining({ without_project: true, archived: false }),
       );
       expect(
         within(drawer).getByLabelText(label("chat.pinTooltip")),
@@ -3517,11 +3505,11 @@ describe("owned ChatPage route identity", () => {
     await waitFor(() =>
       expect(chatApiMock.listChats).toHaveBeenLastCalledWith(
         expect.objectContaining({
+          without_project: true,
           archived: true,
           view: "all",
           search: "needle",
         }),
-        "default",
       ),
     );
     expect(
@@ -3535,8 +3523,7 @@ describe("owned ChatPage route identity", () => {
     );
     await waitFor(() =>
       expect(chatApiMock.listChats).toHaveBeenLastCalledWith(
-        expect.objectContaining({ archived: false }),
-        "default",
+        expect.objectContaining({ without_project: true, archived: false }),
       ),
     );
     await act(async () =>
@@ -3594,7 +3581,12 @@ describe("owned ChatPage route identity", () => {
     const drawerResult = await screen.findByText(
       (_, element) => element?.textContent === "文件 search result",
     );
-    expect(chatApiMock.searchChats).toHaveBeenCalledWith("文件", "default");
+    expect(chatApiMock.searchChats).toHaveBeenCalledWith("文件", {
+      without_project: true,
+      archived: false,
+      view: "user",
+      offset: 0,
+    });
     expect(screen.queryByText("Active chat")).not.toBeInTheDocument();
 
     fireEvent.click(drawerResult);
@@ -3604,7 +3596,7 @@ describe("owned ChatPage route identity", () => {
       cardIndex: 3,
       query: "文件",
       conversationId: "chat-hit",
-      ownerKey: "default",
+      ownerKey: "chat",
     });
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
@@ -3670,7 +3662,12 @@ describe("owned ChatPage route identity", () => {
     expect(
       screen.getByPlaceholderText(label("chat.chatListSearchPlaceholder")),
     ).toHaveValue("");
-    expect(chatApiMock.searchChats).toHaveBeenCalledWith("needle", "default");
+    expect(chatApiMock.searchChats).toHaveBeenCalledWith("needle", {
+      without_project: true,
+      archived: false,
+      view: "user",
+      offset: 0,
+    });
     expect(chatApiMock.listChats).toHaveBeenCalledTimes(2);
   });
 
@@ -3690,7 +3687,12 @@ describe("owned ChatPage route identity", () => {
     );
 
     await screen.findByText(label("chat.noSearchResults"));
-    expect(chatApiMock.searchChats).toHaveBeenCalledWith("missing", "default");
+    expect(chatApiMock.searchChats).toHaveBeenCalledWith("missing", {
+      without_project: true,
+      archived: false,
+      view: "user",
+      offset: 0,
+    });
   });
 
   it("ignores stale chat search responses when the query changes", async () => {
@@ -3718,7 +3720,12 @@ describe("owned ChatPage route identity", () => {
       },
     );
     await waitFor(() =>
-      expect(chatApiMock.searchChats).toHaveBeenCalledWith("old", "default"),
+      expect(chatApiMock.searchChats).toHaveBeenCalledWith("old", {
+        without_project: true,
+        archived: false,
+        view: "user",
+        offset: 0,
+      }),
     );
 
     fireEvent.change(
@@ -3728,7 +3735,12 @@ describe("owned ChatPage route identity", () => {
       },
     );
     await waitFor(() =>
-      expect(chatApiMock.searchChats).toHaveBeenCalledWith("fresh", "default"),
+      expect(chatApiMock.searchChats).toHaveBeenCalledWith("fresh", {
+        without_project: true,
+        archived: false,
+        view: "user",
+        offset: 0,
+      }),
     );
 
     await act(async () => {
@@ -3894,9 +3906,9 @@ describe("owned ChatPage route identity", () => {
     const randomUUID = vi
       .spyOn(crypto, "randomUUID")
       .mockReturnValue("lazy-after-delete");
-    localStorage.setItem("rua_last_chat_id_default", "active-chat");
+    localStorage.setItem("rua_last_chat_id_no-project", "active-chat");
     localStorage.setItem(
-      "rua_recent_chat_ids_default",
+      "rua_recent_chat_ids_no-project",
       JSON.stringify(["active-chat", "older-chat"]),
     );
     chatApiMock.listChats.mockResolvedValue({

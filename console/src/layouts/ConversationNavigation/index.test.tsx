@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chatApi } from "@/api/modules/chat";
 import { projectChatsApi } from "@/api/modules/projectChats";
 import { projectsApi } from "@/api/modules/projects";
-import type { ChatSpec } from "@/api/types";
+import type { ChatSearchResponse, ChatSpec } from "@/api/types";
 import { useAgentStore } from "@/stores/agentStore";
 import { openChatDraft } from "@/pages/Chat/chatNavigation";
 import { projectChatExecutionAgent } from "@/pages/Projects/projectChatNavigation";
@@ -23,7 +23,6 @@ import {
 import { readDraftChatContext } from "@/pages/Chat/chatContext";
 import { loadDraftConversationId } from "@/pages/Chat/conversationLifecycle";
 import ConversationNavigation from "./index";
-import { registerProjectNavigationAgent } from "../conversationNavigationAgent";
 
 vi.mock("@/api/modules/chat", () => ({
   chatApi: {
@@ -54,7 +53,9 @@ vi.mock("react-i18next", () => ({
             "navigation.independentChats": "Independent chats",
             "navigation.newConversation": "New chat",
             "navigation.search": "Search chats",
-            "navigation.searchScope": "Search scope",
+            "navigation.discovery": "Chat discovery",
+            "navigation.projectFilter": "Project filter",
+            "navigation.agentFilter": "Agent filter",
             "navigation.newInGroup": "New in {{name}}",
             "navigation.groupActions": "Actions for {{name}}",
             "navigation.conversationActions": "Actions for {{name}}",
@@ -110,6 +111,7 @@ function chat(id: string, name = id, pinned = false): ChatSpec {
   };
 }
 const savedHeaders = new Map<string, ChatSpec>();
+const emptySearch: ChatSearchResponse = { results: [], offset: 0, limit: 20, total: 0, next_offset: null };
 const standaloneMetadata = vi.fn<typeof chatApi.getMetadata>();
 
 function savedPath(
@@ -167,10 +169,14 @@ beforeEach(() => {
     project("one"),
     project("two"),
   ]);
-  vi.mocked(chatApi.listChats).mockImplementation(async (_params, id) => ({
-    data: [chat(`${id}-current`, `${id} chat`)],
-    total: 1,
-  }));
+  vi.mocked(chatApi.listChats).mockResolvedValue({
+    data: ["alpha", "beta"].map((id) => ({
+      ...chat(`${id}-current`, `${id} chat`),
+      agent_id: id,
+      project_id: null,
+    })),
+    total: 2,
+  });
   vi.mocked(projectChatsApi.listChats).mockImplementation(async (id) => ({
     data: [chat(`${id}-current`, `${id} chat`)],
     total: 1,
@@ -187,8 +193,8 @@ beforeEach(() => {
   vi.mocked(projectChatsApi.getMetadata).mockRejectedValue(
     new Error("Chat not found"),
   );
-  vi.mocked(chatApi.searchChats).mockResolvedValue({ results: [] });
-  vi.mocked(projectChatsApi.searchChats).mockResolvedValue({ results: [] });
+  vi.mocked(chatApi.searchChats).mockResolvedValue(emptySearch);
+  vi.mocked(projectChatsApi.searchChats).mockResolvedValue(emptySearch);
 });
 
 describe("ConversationNavigation", () => {
@@ -448,8 +454,12 @@ describe("ConversationNavigation", () => {
     expect(activeChat).toHaveAttribute("aria-current", "page");
     expect(chatApi.listChats).toHaveBeenCalledTimes(1);
     expect(chatApi.listChats).toHaveBeenCalledWith(
-      expect.objectContaining({ offset: 0, limit: 5, view: "user" }),
-      "alpha",
+      expect.objectContaining({
+        offset: 0,
+        limit: 5,
+        view: "user",
+        without_project: true,
+      }),
     );
     expect(projectChatsApi.listChats).not.toHaveBeenCalled();
     fireEvent.click(
@@ -479,8 +489,9 @@ describe("ConversationNavigation", () => {
       ),
     );
     expect(
-      screen.queryByRole("button", { name: "alpha chat" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("button", { name: "alpha chat" }),
+    ).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("button", { name: "beta chat" })).toBeVisible();
     rerender(
       <ConversationNavigation
         location={{
@@ -497,69 +508,52 @@ describe("ConversationNavigation", () => {
     expect(onNavigate).toHaveBeenLastCalledWith("/chats/beta-current");
   });
 
-  it("follows the visible Project Agent without changing the standalone Agent preference", async () => {
+  it("keeps both standalone Agents visible and uses only the current selector for New chat", async () => {
     const onNavigate = vi.fn();
-    const releaseA = registerProjectNavigationAgent({
-      projectId: "one",
-      chatId: "one-current",
-      agentId: "beta",
-    });
     const view = render(
       <ConversationNavigation
-        location={{ pathname: savedPath("one-current", "one"), search: "" }}
-        onNavigate={onNavigate}
-      />,
-    );
-    await screen.findByRole("button", { name: "beta chat" });
-    expect(
-      screen.queryByRole("button", { name: "alpha chat" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Agent beta", exact: true }),
-    ).not.toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: "New in Independent chats" }),
-    );
-    expect(onNavigate.mock.lastCall?.[0]).toBe(
-      `/chats/${loadDraftConversationId("no-project")}`,
-    );
-    expect(
-      readDraftChatContext(loadDraftConversationId("no-project")!),
-    ).toEqual({ agentId: "alpha", projectId: null });
-    expect(useAgentStore.getState().selectedAgent).toBe("alpha");
-    let releaseB!: () => void;
-    act(() => {
-      releaseB = registerProjectNavigationAgent({
-        projectId: "one",
-        chatId: "one-current",
-        agentId: "alpha",
-      });
-    });
-    await screen.findByRole("button", { name: "alpha chat" });
-    expect(
-      screen.queryByRole("button", { name: "beta chat" }),
-    ).not.toBeInTheDocument();
-    expect(useAgentStore.getState().selectedAgent).toBe("alpha");
-    act(() => releaseA());
-    expect(screen.getByRole("button", { name: "alpha chat" })).toBeVisible();
-    view.rerender(
-      <ConversationNavigation
         location={{
-          pathname: savedPath("two-current", "two", "beta"),
+          pathname: savedPath("one-current", "one", "beta"),
           search: "",
         }}
         onNavigate={onNavigate}
       />,
     );
-    await screen.findByRole("button", { name: "beta chat" });
-    expect(
-      screen.queryByRole("button", { name: "alpha chat" }),
-    ).not.toBeInTheDocument();
-    view.unmount();
-    releaseB();
+    await screen.findByRole("button", { name: "one chat" });
+    const alpha = screen.getByRole("button", { name: "alpha chat" });
+    const beta = screen.getByRole("button", { name: "beta chat" });
+    expect(alpha).toBeVisible();
+    expect(beta).toBeVisible();
+    const create = screen.getByRole("button", {
+      name: "New in Independent chats",
+    });
+    fireEvent.click(create);
+    const id = loadDraftConversationId("no-project")!;
+    expect(readDraftChatContext(id)).toEqual({
+      agentId: "alpha",
+      projectId: null,
+    });
+    expect(onNavigate).toHaveBeenLastCalledWith(`/chats/${id}`);
+    act(() => useAgentStore.getState().setSelectedAgent("beta"));
+    fireEvent.click(create);
+    expect(onNavigate).toHaveBeenLastCalledWith(`/chats/${id}`);
+    expect(readDraftChatContext(id)).toEqual({
+      agentId: "beta",
+      projectId: null,
+    });
+    view.rerender(
+      <ConversationNavigation
+        location={{ pathname: savedPath("two-current", "two"), search: "" }}
+        onNavigate={onNavigate}
+      />,
+    );
+    await screen.findByRole("button", { name: "two chat" });
+    expect(screen.getByRole("button", { name: "alpha chat" })).toBe(alpha);
+    expect(screen.getByRole("button", { name: "beta chat" })).toBe(beta);
+    expect(chatApi.listChats).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the loaded standalone group through a same-Agent Project route handoff", async () => {
+  it("keeps the standalone group loaded while resolving a Project Chat header", async () => {
     const props = { onNavigate: vi.fn() };
     const view = render(
       <ConversationNavigation
@@ -580,23 +574,14 @@ describe("ConversationNavigation", () => {
       />,
     );
     expect(standaloneRow.isConnected).toBe(true);
-    expect(standaloneRow).not.toBeVisible();
+    expect(standaloneRow).toBeVisible();
     await act(async () => nextHeader.resolve(savedHeaders.get("one-current")!));
-    let release!: () => void;
-    act(() => {
-      release = registerProjectNavigationAgent({
-        projectId: "one",
-        chatId: "one-current",
-        agentId: "alpha",
-      });
-    });
     expect(screen.getByRole("button", { name: "alpha chat" })).toBe(
       standaloneRow,
     );
     expect(standaloneRow).toBeVisible();
     expect(chatApi.listChats).toHaveBeenCalledTimes(loadCount);
     view.unmount();
-    release();
   });
 
   it("opens the current project without inventing a saved row absent from its active list", async () => {
@@ -887,7 +872,7 @@ describe("ConversationNavigation", () => {
   });
 
   it.each(["agent", "project"] as const)(
-    "paginates %s chats past repeated pins and hides Load more when complete",
+    "counts pinned %s chats in the page and hides Load more when complete",
     async (kind) => {
       const list =
         kind === "project" ? projectChatsApi.listChats : chatApi.listChats;
@@ -897,7 +882,7 @@ describe("ConversationNavigation", () => {
           total: 3,
         })
         .mockResolvedValueOnce({
-          data: [chat("pin", "Pinned chat", true), chat("next", "Next chat")],
+          data: [chat("next", "Next chat")],
           total: 3,
         });
       render(
@@ -916,8 +901,14 @@ describe("ConversationNavigation", () => {
       await screen.findByRole("button", { name: "Next chat" });
       expect(list).toHaveBeenLastCalledWith(
         ...(kind === "project"
-          ? ["one", expect.objectContaining({ offset: 1, limit: 20 })]
-          : [expect.objectContaining({ offset: 1, limit: 20 }), "alpha"]),
+          ? ["one", expect.objectContaining({ offset: 2, limit: 20 })]
+          : [
+              expect.objectContaining({
+                offset: 2,
+                limit: 20,
+                without_project: true,
+              }),
+            ]),
       );
       expect(screen.getAllByTitle("Pinned chat")).toHaveLength(1);
       expect(
@@ -1055,10 +1046,12 @@ describe("ConversationNavigation", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("searches the selected complete scope and discards results from the previous scope", async () => {
-    const oldSearch = deferred<{ results: [] }>();
+  it("discards stale global search results after applying Project and Agent filters", async () => {
+    const oldSearch = deferred<ChatSearchResponse>();
     vi.mocked(chatApi.searchChats).mockReturnValueOnce(oldSearch.promise);
-    vi.mocked(projectChatsApi.searchChats).mockResolvedValue({
+    vi.mocked(chatApi.searchChats).mockResolvedValue({
+      ...emptySearch,
+      total: 1,
       results: [
         {
           chat_id: "found/chat",
@@ -1082,26 +1075,180 @@ describe("ConversationNavigation", () => {
       target: { value: "needle" },
     });
     await waitFor(() =>
-      expect(chatApi.searchChats).toHaveBeenCalledWith("needle", "alpha"),
+      expect(chatApi.searchChats).toHaveBeenCalledWith(
+        "needle",
+        expect.objectContaining({
+          offset: 0,
+          limit: 20,
+          view: "user",
+          archived: false,
+        }),
+      ),
     );
-    const searchScope = screen.getByRole("combobox", { name: "Search scope" });
-    expect(searchScope.tagName).not.toBe("SELECT");
-    fireEvent.click(searchScope);
-    fireEvent.click(await screen.findByRole("option", { name: "Project two" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Project filter" }), {
+      target: { value: "project:two" },
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "Agent filter" }), {
+      target: { value: "beta" },
+    });
     await screen.findByRole("button", { name: /Found in project/ });
-    await act(async () => oldSearch.resolve({ results: [] }));
+    await act(async () => oldSearch.resolve(emptySearch));
     fireEvent.click(screen.getByRole("button", { name: /Found in project/ }));
-    expect(projectChatsApi.searchChats).toHaveBeenCalledWith("two", "needle");
+    expect(chatApi.searchChats).toHaveBeenLastCalledWith(
+      "needle",
+      expect.objectContaining({
+        project_id: "two",
+        agent_id: "beta",
+        view: "user",
+        archived: false,
+      }),
+    );
     expect(onNavigate).toHaveBeenLastCalledWith("/chats/found%2Fchat");
     expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
     expect(
       JSON.parse(sessionStorage.getItem("rua_search_scroll_target")!),
     ).toMatchObject({
       conversationId: "found/chat",
-      ownerKey: "project:two",
+      ownerKey: "chat",
       cardIndex: 4,
     });
   });
+
+  it("discovers archived Projects through their fixed filter and keeps their Chats read-only", async () => {
+    const archived = { ...project("done"), lifecycle: "archived" as const };
+    vi.mocked(projectsApi.list).mockImplementation(async (lifecycle) =>
+      lifecycle === "all" ? [project("one"), archived] : [project("one")],
+    );
+    vi.mocked(chatApi.listChats).mockImplementation(async (params) => {
+      const data =
+        params?.project_id === "done"
+          ? [{ ...chat("saved"), project_id: "done" }]
+          : [];
+      return { data, total: data.length };
+    });
+    const onNavigate = vi.fn();
+    render(
+      <ConversationNavigation
+        location={{ pathname: "/settings", search: "" }}
+        onNavigate={onNavigate}
+      />,
+    );
+    await screen.findByRole("button", { name: "Project one" });
+    expect(
+      screen.queryByRole("button", { name: "Project done" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Search chats" }));
+    const region = screen.getByRole("region", { name: "Chat discovery" });
+    const filter = within(region).getByLabelText("Project filter");
+    expect(
+      within(filter).getByRole("option", { name: /Project done/ }),
+    ).toBeInTheDocument();
+    fireEvent.change(filter, { target: { value: "project:done" } });
+    const row = await within(region).findByTitle("saved");
+    fireEvent.click(
+      within(region).getByRole("button", { name: /Actions for/ }),
+    );
+    await screen.findByRole("menuitem", {name: "navigation.manageConversations"});
+    expect(
+      screen.queryByRole("menuitem", { name: "common.rename" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("menuitem", { name: "projects.chat.archive" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(row);
+    expect(onNavigate).toHaveBeenCalledWith("/chats/saved");
+  });
+
+  it.each([
+    "during append",
+    "before append",
+    "when returning during append",
+  ] as const)(
+    "reconciles the filtered discovery pages when a refresh starts %s",
+    async (timing) => {
+      const deep = timing === "during append";
+      const count = deep ? 248 : 46;
+      const rows = Array.from({ length: count }, (_, n) => ({
+        ...chat(`row-${n}`),
+        agent_id: "alpha",
+        project_id: "one",
+      }));
+      rows.push({
+        ...chat("other-project"),
+        agent_id: "alpha",
+        project_id: "two",
+      });
+      const stale = deferred<{ data: ChatSpec[]; total: number }>();
+      let delayNext = false;
+      const requests: { offset: number; limit: number }[] = [];
+      vi.mocked(chatApi.listChats).mockImplementation(async (params = {}) => {
+        if (!params.agent_id || !params.project_id)
+          return { data: [], total: 0 };
+        const { offset = 0, limit = 20 } = params;
+        requests.push({ offset, limit });
+        if (delayNext) {
+          delayNext = false;
+          return stale.promise;
+        }
+        const matching = rows.filter(
+          (row) =>
+            row.project_id === params.project_id &&
+            row.agent_id === params.agent_id,
+        );
+        return {
+          data: matching.slice(offset, offset + limit),
+          total: matching.length,
+        };
+      });
+      render(
+        <ConversationNavigation
+          location={{ pathname: "/settings", search: "" }}
+          onNavigate={vi.fn()}
+        />,
+      );
+      await screen.findByRole("button", { name: "Project one", exact: true });
+      fireEvent.click(screen.getByRole("button", { name: "Search chats" }));
+      const region = screen.getByRole("region", { name: "Chat discovery" });
+      fireEvent.change(within(region).getByLabelText("Project filter"), {
+        target: { value: "project:one" },
+      });
+      fireEvent.change(within(region).getByLabelText("Agent filter"), {
+        target: { value: "alpha" },
+      });
+      await within(region).findByTitle("row-19");
+
+      if (deep) {
+        for (let last = 39; last < 220; last += 20) {
+          fireEvent.click(within(region).getByText("Load more"));
+          await within(region).findByTitle(`row-${last}`);
+        }
+      }
+      delayNext = true;
+      if (timing !== "before append") {
+        fireEvent.click(within(region).getByText("Load more"));
+        rows[0].agent_id = "beta";
+        if (deep)
+          act(() =>
+            invalidateConversationNavigation({ chatId: "row-0" }, false, "one"),
+          );
+        else act(() => window.dispatchEvent(new Event("rua:foreground")));
+      } else {
+        act(() => window.dispatchEvent(new Event("rua:foreground")));
+        rows[0].agent_id = "beta";
+        fireEvent.click(within(region).getByText("Load more"));
+      }
+      await act(async () => stale.resolve({ data: [], total: 0 }));
+      const expected = deep ? 240 : 40;
+      await within(region).findByTitle(`row-${expected}`);
+      expect(within(region).queryByTitle("row-0")).not.toBeInTheDocument();
+      expect(
+        within(region).queryByTitle("other-project"),
+      ).not.toBeInTheDocument();
+      expect(region.querySelectorAll("[data-chat-id]")).toHaveLength(expected);
+      expect(requests.every((request) => request.limit <= 200)).toBe(true);
+      if (deep) expect(requests).toContainEqual({ offset: 200, limit: 40 });
+    },
+  );
 
   it("does not present a lazy draft as a saved conversation", async () => {
     const draftId = openChatDraft();

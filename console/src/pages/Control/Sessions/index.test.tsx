@@ -367,7 +367,7 @@ describe("SessionsPage", () => {
       loading: false,
       page: 1,
       pageSize: 1,
-      unpinnedTotal: 2,
+      total: 2,
       updateSession: updateSessionMock,
       deleteSession: deleteSessionMock,
       fetchSessions: fetchSessionsMock,
@@ -402,13 +402,11 @@ describe("SessionsPage", () => {
     expect(screen.queryByText("2 selected")).not.toBeInTheDocument();
     expect(screen.queryByText("Submit session drawer")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open b" }));
-    expect(navigateMock).toHaveBeenLastCalledWith(
-      "/projects/project-1/chats/b",
-    );
+    expect(navigateMock).toHaveBeenLastCalledWith("/chats/b");
     fireEvent.click(screen.getByRole("button", { name: "Independent" }));
     expect(mockedUseSessions).toHaveBeenLastCalledWith(undefined, undefined);
     fireEvent.click(screen.getByRole("button", { name: "Open b" }));
-    expect(navigateMock).toHaveBeenLastCalledWith("/agents/default/chats/b");
+    expect(navigateMock).toHaveBeenLastCalledWith("/chats/b");
   });
 
   it("exports Project history through its owning namespace", async () => {
@@ -418,8 +416,7 @@ describe("SessionsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Select b" }));
     fireEvent.click(screen.getAllByRole("button", { name: "button" })[1]);
     await waitFor(() => expect(mockedSaveFile).toHaveBeenCalled());
-    expect(projectChatsApi.getChat).toHaveBeenCalledWith("project-1", "b");
-    expect(mockedApi.getChat).not.toHaveBeenCalled();
+    expect(mockedApi.getChat).toHaveBeenCalledWith("b");
   });
 
   it("edits and deletes sessions through the hook boundary", async () => {
@@ -445,7 +442,7 @@ describe("SessionsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Open b" }));
 
-    expect(navigateMock).toHaveBeenCalledWith("/agents/default/chats/b");
+    expect(navigateMock).toHaveBeenCalledWith("/chats/b");
   });
 
   it("refreshes and paginates via Rust session list pagination", async () => {
@@ -480,7 +477,7 @@ describe("SessionsPage", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "button" })[1]);
 
     await waitFor(() => {
-      expect(mockedApi.getChat).toHaveBeenCalledWith("b", "default");
+      expect(mockedApi.getChat).toHaveBeenCalledWith("b");
       expect(mockedSaveFile).toHaveBeenCalledWith(
         expect.any(Blob),
         expect.stringMatching(/^sessions-.*\.json$/),

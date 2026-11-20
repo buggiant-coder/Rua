@@ -1,18 +1,16 @@
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use rua_chat::TurnAgentAssignment;
 use rua_core::ChatAddress;
 use rua_session::{ChatSessionHeader, WorkspaceSessionStore};
 use serde::{Deserialize, Serialize};
 
-use crate::services::chat_index::{self, ChatIndexEntry};
+use crate::services::chat_index;
 use crate::services::conversation_authority::{
     ConversationInputPayload, FirstConversationSubmissionPersistenceContext,
 };
-use crate::services::conversation_authority_placement::{
-    ConversationAuthorityPlacement, CHAT_AUTHORITY_PLACEMENT_META_KEY,
-};
+use crate::services::conversation_authority_placement::ConversationAuthorityPlacement;
 
 pub const PROJECT_WORKING_DIRECTORY_META_KEY: &str = "project_working_directory_id";
 
@@ -159,7 +157,7 @@ pub async fn materialize_first_project_turn(
         input,
     )
     .await?;
-    materialize_staged_project_chat(scope_root, address, placement, |staging_root| async move {
+    materialize_staged_project_chat(scope_root, address, |staging_root| async move {
         stage_first_turn(
             &staging_root,
             address,
@@ -257,7 +255,7 @@ pub async fn materialize_project_chat_draft(
     placement: &ConversationAuthorityPlacement,
     snapshot: ProjectChatMaterializationSnapshot,
 ) -> Result<(), String> {
-    materialize_staged_project_chat(scope_root, address, placement, |staging_root| async move {
+    materialize_staged_project_chat(scope_root, address, |staging_root| async move {
         stage_project_chat_draft(&staging_root, address, selection, placement, snapshot).await
     })
     .await
@@ -266,7 +264,6 @@ pub async fn materialize_project_chat_draft(
 async fn materialize_staged_project_chat<F, Fut>(
     scope_root: &Path,
     address: &ChatAddress,
-    placement: &ConversationAuthorityPlacement,
     stage: F,
 ) -> Result<(), String>
 where
@@ -283,7 +280,7 @@ where
                 .await
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| "staged Project Chat header is missing".to_string())?;
-            project_chat_index_entry(&header, placement)
+            rua_chat::project_chat_header(&header, None).map_err(|error| error.to_string())
         },
     )
     .await
@@ -315,6 +312,7 @@ pub async fn update_project_chat(
             rua_chat::ChatListUpdate {
                 title: update.name.clone(),
                 pinned: update.pinned,
+                pin_order: update.pin_order,
                 tag: update.tag,
                 archived: update.archived,
             },
@@ -324,65 +322,56 @@ pub async fn update_project_chat(
     let mut chat = crate::endpoints::chats::chat_spec_from_common_chat(scope_root, &common_chat)
         .await
         .map_err(|error| error.to_string())?;
-    if let Some(pin_order) = update.pin_order {
-        chat.pin_order = pin_order;
-    }
-    if let Some(collaboration_mode) = update.collaboration_mode {
-        chat.collaboration_mode = collaboration_mode;
-    }
-
-    if update.collaboration_mode.is_some() {
-        let store = WorkspaceSessionStore::new(scope_root);
-        let mut header = store
-            .load_chat_header(address.chat_id().as_str())
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("Project Chat header not found: {}", address.chat_id()))?;
-        let previous_epoch = header
-            .extra
-            .get(crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY)
-            .and_then(|value| value.get("epoch"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
-        header.extra.insert(
-            rua_core::CHAT_COLLABORATION_MODE_META_KEY.to_string(),
+    let Some(collaboration_mode) = update.collaboration_mode else {
+        return Ok(chat);
+    };
+    chat.collaboration_mode = collaboration_mode;
+    let store = WorkspaceSessionStore::new(scope_root);
+    let mut header = store
+        .load_chat_header(address.chat_id().as_str())
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Project Chat header not found: {}", address.chat_id()))?;
+    let previous_epoch = header
+        .extra
+        .get(crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY)
+        .and_then(|value| value.get("epoch"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    header.extra.insert(
+        rua_core::CHAT_COLLABORATION_MODE_META_KEY.to_string(),
+        serde_json::json!(chat.collaboration_mode),
+    );
+    if let Some(configuration) = header
+        .extra
+        .get_mut(crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY)
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        configuration.insert(
+            "collaboration_mode".to_string(),
             serde_json::json!(chat.collaboration_mode),
         );
-        if let Some(configuration) = header
+        configuration.insert(
+            "epoch".to_string(),
+            serde_json::json!(format!("hook-config-{}", uuid::Uuid::new_v4())),
+        );
+    }
+    header.metadata.last_activity_at = chat.updated_at.to_rfc3339();
+    if let (Some(epoch), Some(configuration)) = (
+        previous_epoch.as_deref(),
+        header
             .extra
-            .get_mut(crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY)
-            .and_then(serde_json::Value::as_object_mut)
-        {
-            configuration.insert(
-                "collaboration_mode".to_string(),
-                serde_json::json!(chat.collaboration_mode),
-            );
-            configuration.insert(
-                "epoch".to_string(),
-                serde_json::json!(format!("hook-config-{}", uuid::Uuid::new_v4())),
-            );
-        }
-        header.metadata.last_activity_at = chat.updated_at.to_rfc3339();
-        if let (Some(epoch), Some(configuration)) = (
-            previous_epoch.as_deref(),
-            header
-                .extra
-                .get(crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY),
-        ) {
-            store
-                .replace_chat_configuration(
-                    address.chat_id().as_str(),
-                    epoch,
-                    configuration.clone(),
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-        }
+            .get(crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY),
+    ) {
         store
-            .save_chat_header(&header)
+            .replace_chat_configuration(address.chat_id().as_str(), epoch, configuration.clone())
             .await
             .map_err(|error| error.to_string())?;
     }
+    store
+        .save_chat_header(&header)
+        .await
+        .map_err(|error| error.to_string())?;
     chat_index::upsert(
         scope_root,
         crate::endpoints::chats::chat_to_index_entry(&chat),
@@ -550,41 +539,6 @@ async fn stage_project_chat_header(
         .map_err(|error| error.to_string())
 }
 
-fn project_chat_index_entry(
-    header: &ChatSessionHeader,
-    placement: &ConversationAuthorityPlacement,
-) -> Result<ChatIndexEntry, String> {
-    let created_at = parse_header_time(&header.metadata.created_at)?;
-    let updated_at = parse_header_time(&header.metadata.last_activity_at)?;
-    let mut meta = serde_json::Map::new();
-    meta.insert("agent_id".into(), serde_json::json!(header.agent_id));
-    meta.insert("project_id".into(), serde_json::json!(header.project_id));
-    meta.insert(
-        CHAT_AUTHORITY_PLACEMENT_META_KEY.to_string(),
-        serde_json::to_value(placement).map_err(|error| error.to_string())?,
-    );
-    if let Some(mode) = header.extra.get(rua_core::CHAT_COLLABORATION_MODE_META_KEY) {
-        meta.insert(
-            rua_core::CHAT_COLLABORATION_MODE_META_KEY.to_string(),
-            mode.clone(),
-        );
-    }
-    Ok(ChatIndexEntry {
-        id: header.chat_id.clone(),
-        name: header.metadata.title.clone(),
-        user_id: "default".to_string(),
-        channel: "console".to_string(),
-        created_at,
-        updated_at,
-        meta: serde_json::Value::Object(meta),
-        status: "idle".to_string(),
-        pinned: header.metadata.pinned,
-        pin_order: 0,
-        tag: header.tag,
-        archived: header.metadata.archived,
-    })
-}
-
 pub fn selection_from_header(
     header: &ChatSessionHeader,
 ) -> Result<ProjectChatAgentSelection, String> {
@@ -671,7 +625,7 @@ pub async fn switch_project_chat_agent_with_configuration(
     let gate = authority.transition_gate(address);
     let _transition = gate.lock().await;
     let store = WorkspaceSessionStore::new(scope_root);
-    let mut header = store
+    let header = store
         .load_chat_header(address.chat_id().as_str())
         .await
         .map_err(|error| error.to_string())?
@@ -695,6 +649,10 @@ pub async fn switch_project_chat_agent_with_configuration(
         project_agent_switch_blockers(address, &header, authority, approval_authority).await;
 
     if current.agent_id == next_agent.id {
+        rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope_root))
+            .repair_projection(address)
+            .await
+            .map_err(|error| error.to_string())?;
         return Ok(ProjectChatAgentState {
             selection: current,
             selected_agent_available: true,
@@ -717,39 +675,58 @@ pub async fn switch_project_chat_agent_with_configuration(
         committed_at,
         revision: next.revision,
     };
-    let events = header
+    let configuration_key = crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY;
+    let expected_epoch = header
         .extra
-        .entry(PROJECT_AGENT_SWITCH_EVENTS_META_KEY.to_string())
-        .or_insert_with(|| serde_json::Value::Array(Vec::new()))
-        .as_array_mut()
-        .ok_or_else(|| "Project Agent switch audit log is invalid".to_string())?;
-    events.push(serde_json::to_value(event).map_err(|error| error.to_string())?);
-    header.agent_id = next.agent_id.clone();
-    header.metadata.agent_id = next.agent_id.clone();
-    rua_chat::apply_chat_defaults(&mut header);
-    if let Some(configuration) = configuration {
-        let value = serde_json::to_value(configuration).map_err(|error| error.to_string())?;
-        if let Some(epoch) = header
-            .extra
-            .get(crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY)
-            .and_then(|value| value.get("epoch"))
-            .and_then(serde_json::Value::as_str)
-        {
-            store
-                .replace_chat_configuration(address.chat_id().as_str(), epoch, value.clone())
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        header.extra.insert(
-            crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY.to_string(),
-            value,
-        );
-    }
-    store
-        .save_chat_header(&header)
+        .get(configuration_key)
+        .and_then(|value| value.get("epoch"));
+    let configuration = configuration
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let event = serde_json::to_value(event).map_err(|error| error.to_string())?;
+    let updated = store
+        .try_update_chat_header(address.chat_id().as_str(), |latest| {
+            if latest.agent_id != expected_agent_id
+                || latest
+                    .extra
+                    .get(configuration_key)
+                    .and_then(|value| value.get("epoch"))
+                    != expected_epoch
+            {
+                return Err(rua_core::RuaError::Validation {
+                    message: "Chat configuration changed; reload before updating".into(),
+                });
+            }
+            latest
+                .extra
+                .entry(PROJECT_AGENT_SWITCH_EVENTS_META_KEY.to_string())
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+                .as_array_mut()
+                .ok_or_else(|| rua_core::RuaError::Validation {
+                    message: "Project Agent switch audit log is invalid".into(),
+                })?
+                .push(event);
+            latest.agent_id.clone_from(&next.agent_id);
+            latest.metadata.agent_id.clone_from(&next.agent_id);
+            rua_chat::apply_chat_defaults(latest);
+            if let Some(configuration) = configuration {
+                latest
+                    .extra
+                    .insert(configuration_key.to_owned(), configuration);
+            }
+            Ok(())
+        })
         .await
         .map_err(|error| error.to_string())?;
+    if !updated {
+        return Err(format!("Project Chat not found: {}", address.chat_id()));
+    }
 
+    rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope_root))
+        .repair_projection(address)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(ProjectChatAgentState {
         selection: next,
         selected_agent_available: true,
@@ -814,12 +791,6 @@ async fn project_agent_switch_blockers(
         blockers.push(ProjectAgentSwitchBlocker::ActiveAcpBinding);
     }
     blockers
-}
-
-fn parse_header_time(value: &str) -> Result<DateTime<Utc>, String> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|value| value.with_timezone(&Utc))
-        .map_err(|error| format!("invalid Project Chat timestamp: {error}"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

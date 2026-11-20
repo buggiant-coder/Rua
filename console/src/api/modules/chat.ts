@@ -77,6 +77,37 @@ function chatHistoryPath(chatId: string, options?: GetChatOptions): string {
   return `/chats/${encodeURIComponent(chatId)}${query ? `?${query}` : ""}`;
 }
 
+export type ChatDiscoveryParams = {
+  agent_id?: string;
+  project_id?: string;
+  without_project?: boolean;
+  archived?: boolean;
+  view?: "user" | "collaboration" | "all";
+  offset?: number;
+  limit?: number;
+};
+
+export type ChatListParams = ChatDiscoveryParams &
+  Partial<ChatListSort> & {
+    user_id?: string;
+    channel?: string;
+    search?: string;
+    tag?: ChatTag;
+    source_chat_id?: string;
+    executor?: string;
+    status?: string;
+  };
+
+function chatQueryParams(params?: ChatListParams): URLSearchParams {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params ?? {})) {
+    if (value == null) continue;
+    const text = String(value).trim();
+    if (text) query.set(key, text);
+  }
+  return query;
+}
+
 export const chatApi = {
   getRunningConfig: (chatId: string, _agentId?: string) =>
     request<ChatRunningConfig>(
@@ -187,47 +218,15 @@ export const chatApi = {
     );
   },
   listChats: async (
-    params?: {
-      user_id?: string;
-      channel?: string;
-      search?: string;
-      tag?: ChatTag;
-      offset?: number;
-      limit?: number;
-      view?: "user" | "collaboration" | "all";
-      archived?: boolean;
-      source_chat_id?: string;
-      executor?: string;
-      status?: string;
-    } & Partial<ChatListSort>,
-    agentId?: string,
+    params?: ChatListParams,
   ): Promise<{ data: ChatSpec[]; total: number }> => {
-    const searchParams = new URLSearchParams();
-    if (agentId) searchParams.append("agent_id", agentId);
-    if (params?.user_id) searchParams.append("user_id", params.user_id);
-    if (params?.channel) searchParams.append("channel", params.channel);
-    if (params?.search?.trim())
-      searchParams.append("search", params.search.trim());
-    if (params?.tag) searchParams.append("tag", params.tag);
-    if (params?.offset != null)
-      searchParams.append("offset", String(params.offset));
-    if (params?.limit != null)
-      searchParams.append("limit", String(params.limit));
-    if (params?.view) searchParams.append("view", params.view);
-    if (params?.archived != null)
-      searchParams.append("archived", String(params.archived));
-    if (params?.source_chat_id)
-      searchParams.append("source_chat_id", params.source_chat_id);
-    if (params?.executor) searchParams.append("executor", params.executor);
-    if (params?.status) searchParams.append("status", params.status);
-    if (params?.sort_by) searchParams.append("sort_by", params.sort_by);
-    if (params?.sort_order)
-      searchParams.append("sort_order", params.sort_order);
+    const searchParams = chatQueryParams(params);
     const query = searchParams.toString();
     const response = await fetch(
       getApiUrl(`/chats${query ? `?${query}` : ""}`),
       {
         headers: buildAuthHeaders(),
+        cache: "no-store",
       },
     );
     if (!response.ok)
@@ -421,10 +420,9 @@ export const chatApi = {
       },
     ),
 
-  searchChats: (query: string, agentId?: string) =>
-    request<ChatSearchResponse>(
-      `/chats/search?q=${encodeURIComponent(query)}${
-        agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ""
-      }`,
-    ),
+  searchChats: (query: string, params?: ChatDiscoveryParams) => {
+    const searchParams = chatQueryParams(params);
+    searchParams.set("q", query);
+    return request<ChatSearchResponse>(`/chats/search?${searchParams}`);
+  },
 };

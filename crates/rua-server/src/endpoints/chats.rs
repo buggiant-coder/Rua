@@ -124,6 +124,16 @@ async fn publish_evergreen_chat_snapshot(state: &AppState, ws_dir: &Path, chat_i
     .await;
 }
 
+async fn publish_updated_chat(state: &AppState, ws_dir: &Path, chat: &ChatSpecDto) {
+    publish_chat_index_upsert(
+        state,
+        &chat.id,
+        serde_json::to_value(chat).unwrap_or_default(),
+    )
+    .await;
+    publish_evergreen_chat_snapshot(state, ws_dir, &chat.id).await;
+}
+
 fn default_status() -> String {
     "idle".to_string()
 }
@@ -227,7 +237,11 @@ async fn normalize_chat_model_thinking(state: &AppState, model: &mut ChatModelDt
 }
 
 #[derive(Debug, Deserialize)]
-struct ListChatsParams {
+pub(super) struct ListChatsParams {
+    #[serde(default)]
+    pub(super) q: Option<String>,
+    #[serde(default)]
+    without_project: bool,
     #[serde(default)]
     agent_id: Option<String>,
     #[serde(default)]
@@ -260,7 +274,46 @@ struct ListChatsParams {
     archived: Option<bool>,
 }
 
-pub(crate) fn default_conversation_view() -> rua_session::chat_index::ChatConversationView {
+impl ListChatsParams {
+    pub(super) fn into_query(
+        self,
+        route_project: Option<&str>,
+    ) -> Result<rua_chat::ChatListQuery, ApiError> {
+        if self.without_project && (self.project_id.is_some() || route_project.is_some()) {
+            return Err(ApiError::BadRequest(
+                "project_id and without_project=true cannot be combined".to_string(),
+            ));
+        }
+        if route_project
+            .zip(self.project_id.as_deref())
+            .is_some_and(|(route, filter)| route != filter)
+        {
+            return Err(ApiError::BadRequest(
+                "project_id must match the requested Project".to_string(),
+            ));
+        }
+        Ok(rua_chat::ChatListQuery {
+            project_id: route_project.map(str::to_owned).or(self.project_id),
+            without_project: self.without_project,
+            agent_id: self.agent_id,
+            user_id: self.user_id,
+            channel: self.channel,
+            search: self.search,
+            tag: self.tag,
+            conversation_view: self.view,
+            source_chat_id: self.source_chat_id,
+            executor: self.executor,
+            status: self.status,
+            sort_by: self.sort_by,
+            sort_order: self.sort_order,
+            offset: self.offset.unwrap_or(0),
+            limit: self.limit.unwrap_or(50).clamp(1, 200),
+            archived: Some(self.archived.unwrap_or(false)),
+        })
+    }
+}
+
+fn default_conversation_view() -> rua_session::chat_index::ChatConversationView {
     rua_session::chat_index::ChatConversationView::User
 }
 
@@ -627,7 +680,7 @@ async fn list_chats_root(
     State(state): State<AppState>,
     Query(params): Query<ListChatsParams>,
 ) -> Response {
-    list_chats_core(&state, state.chat_workspace().as_path(), params).await
+    list_chats_core(&state, params, None).await
 }
 
 async fn create_chat_root(
@@ -1363,7 +1416,7 @@ async fn remote_conversation_control_if_needed(
     .map_err(|error| chat_command_delivery_error(error, "remote Conversation control"))
 }
 
-pub(crate) async fn populate_collaboration_source_availability(
+async fn populate_collaboration_source_availability(
     rua_root: &Path,
     chats: &mut [ChatSpecDto],
 ) -> Result<(), String> {
@@ -1383,37 +1436,17 @@ pub(crate) async fn populate_collaboration_source_availability(
     Ok(())
 }
 
-async fn list_chats_core(state: &AppState, ws_dir: &Path, params: ListChatsParams) -> Response {
-    tracing::info!(
-        target: "diag.session",
-        offset = ?params.offset,
-        limit = ?params.limit,
-        user_id = ?params.user_id,
-        channel = ?params.channel,
-        ws_dir = %ws_dir.display(),
-        "[DIAG-session] list_chats_core ENTER",
-    );
-
-    let offset = params.offset.unwrap_or(0);
-    let limit = params.limit.unwrap_or(50).clamp(1, 200);
-    let page = match rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(ws_dir))
-        .list(rua_chat::ChatListQuery {
-            agent_id: params.agent_id,
-            project_id: params.project_id,
-            user_id: params.user_id,
-            channel: params.channel,
-            search: params.search,
-            tag: params.tag,
-            conversation_view: params.view,
-            source_chat_id: params.source_chat_id,
-            executor: params.executor,
-            status: params.status,
-            sort_by: params.sort_by,
-            sort_order: params.sort_order,
-            offset,
-            limit,
-            archived: params.archived,
-        })
+pub(super) async fn list_chats_core(
+    state: &AppState,
+    params: ListChatsParams,
+    route_project: Option<&str>,
+) -> Response {
+    let query = match params.into_query(route_project) {
+        Ok(query) => query,
+        Err(error) => return error.into_response(),
+    };
+    let page = match rua_chat::ChatService::new(&state.rua_root)
+        .list(query)
         .await
     {
         Ok(page) => page,
@@ -1528,6 +1561,9 @@ pub(crate) fn chat_session_header(chat: &ChatSpecDto, agent_id: &str) -> ChatSes
         preview: None,
     });
     header.project_id = chat.project_id.clone();
+    header.user_id.clone_from(&chat.user_id);
+    header.channel.clone_from(&chat.channel);
+    header.pin_order = chat.pin_order;
     header.tag = chat.tag;
     copy_chat_activity_to_header_extra(&chat.meta, &mut header.extra);
     for key in [
@@ -2595,7 +2631,11 @@ async fn update_chat_core(
         }
     }
     let mut listing_persisted_by_common_chat = false;
-    if body.name.is_some() || body.pinned.is_some() || body.tag.is_some() || body.archived.is_some()
+    if body.name.is_some()
+        || body.pinned.is_some()
+        || body.pin_order.is_some()
+        || body.tag.is_some()
+        || body.archived.is_some()
     {
         let address = rua_core::ChatAddress::new(chat_id);
         match rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(ws_dir))
@@ -2604,6 +2644,7 @@ async fn update_chat_core(
                 rua_chat::ChatListUpdate {
                     title: body.name.clone(),
                     pinned: body.pinned,
+                    pin_order: body.pin_order,
                     tag: body.tag,
                     archived: body.archived,
                 },
@@ -2612,6 +2653,13 @@ async fn update_chat_core(
         {
             Ok(common_chat) => match chat_spec_from_common_chat(ws_dir, &common_chat).await {
                 Ok(common_spec) => {
+                    // Listing changes are already committed and projected under the
+                    // Chat lock. Rewriting an older DTO here can undo an Agent switch.
+                    if body.collaboration_mode.is_none() && !model_update_requested {
+                        publish_updated_chat(state, ws_dir, &common_spec).await;
+                        return Json(common_spec).into_response();
+                    }
+                    chat.agent_id = common_spec.agent_id;
                     chat.name = common_spec.name;
                     chat.pinned = common_spec.pinned;
                     chat.tag = common_spec.tag;
@@ -2725,9 +2773,7 @@ async fn update_chat_core(
     }
 
     if non_model_update_requested || !model_update_requested || !model_persisted_by_authority {
-        let updated_val = serde_json::to_value(&updated).unwrap_or_default();
-        publish_chat_index_upsert(state, chat_id, updated_val).await;
-        publish_evergreen_chat_snapshot(state, ws_dir, chat_id).await;
+        publish_updated_chat(state, ws_dir, &updated).await;
     }
 
     (StatusCode::OK, Json(updated)).into_response()
@@ -3351,22 +3397,46 @@ async fn update_pin_order_core(
     items: Vec<PinOrderItem>,
     state: &AppState,
 ) -> Response {
-    let index_items = items
+    let orders: std::collections::BTreeMap<_, _> = items
         .into_iter()
         .filter_map(|item| Some((item.id?, item.pin_order?)))
-        .collect::<Vec<_>>();
-    if let Err(e) = chat_index::update_pin_order(ws_dir, index_items.clone())
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to update chat pin order index: {e}")))
-    {
-        return e.into_response();
+        .collect();
+    for chat_id in orders.keys() {
+        if let Err(message) = crate::services::console_chat::resolve_chat_id(chat_id) {
+            return ApiError::BadRequest(message).into_response();
+        }
     }
+    let index_items: Vec<_> = orders.into_iter().collect();
+    let store = WorkspaceSessionStore::new(ws_dir);
+    // Acquire each Chat once, in ID order, so overlapping reorder requests
+    // commit their Session ranks and SQLite page order in the same sequence.
+    let mut guards = Vec::with_capacity(index_items.len());
+    for (chat_id, _) in &index_items {
+        guards.push(store.lock_chat_storage(chat_id).await);
+    }
+    for (chat_id, pin_order) in &index_items {
+        let mut header = match store.load_chat_header(chat_id).await {
+            Ok(Some(header)) => header,
+            Ok(None) => continue,
+            Err(error) => return ApiError::from(error).into_response(),
+        };
+        if header.pin_order != *pin_order {
+            header.pin_order = *pin_order;
+            if let Err(error) = store.save_chat_header(&header).await {
+                return ApiError::from(error).into_response();
+            }
+        }
+    }
+    if let Err(error) = chat_index::update_pin_order(ws_dir, index_items.clone()).await {
+        return ApiError::Internal(format!("Failed to update chat pin order index: {error}"))
+            .into_response();
+    }
+    drop(guards);
 
     for item in &index_items {
         if let Ok(Some(entry)) = chat_index::get(ws_dir, &item.0).await {
             let chat = chat_from_index_entry(entry);
-            let chat_val = serde_json::to_value(&chat).unwrap_or_default();
-            publish_chat_index_upsert(state, &chat.id, chat_val).await;
+            publish_updated_chat(state, ws_dir, &chat).await;
         }
     }
 

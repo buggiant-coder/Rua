@@ -295,7 +295,7 @@ async fn chat_index_round_trip_uses_chat_id_as_its_only_identity() {
 }
 
 #[test]
-fn pinned_chats_are_included_on_every_unpinned_page() {
+fn pinned_and_unpinned_chats_share_one_stable_page_boundary() {
     let workspace = tempfile::tempdir().unwrap();
     let now = chrono::Utc::now();
     for (id, minutes_ago, pinned) in [
@@ -330,9 +330,12 @@ fn pinned_chats_are_included_on_every_unpinned_page() {
             .iter()
             .map(|entry| entry.id.as_str())
             .collect::<Vec<_>>(),
-        vec!["chat-pinned", "chat-new"]
+        vec!["chat-pinned"]
     );
 
+    assert_eq!(first.total, 3);
+    let third = chat_index::list_sync(workspace.path(), Default::default(), 2, 1).unwrap();
+    assert_eq!(third.entries[0].id, "chat-old");
     let second = chat_index::list_sync(workspace.path(), Default::default(), 1, 1).unwrap();
     assert_eq!(
         second
@@ -340,7 +343,7 @@ fn pinned_chats_are_included_on_every_unpinned_page() {
             .iter()
             .map(|entry| entry.id.as_str())
             .collect::<Vec<_>>(),
-        vec!["chat-pinned", "chat-old"]
+        vec!["chat-new"]
     );
 }
 

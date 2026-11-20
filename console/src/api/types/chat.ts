@@ -262,4 +262,8 @@ export interface ChatSearchResult {
 
 export interface ChatSearchResponse {
   results: ChatSearchResult[];
+  offset: number;
+  limit: number;
+  total: number;
+  next_offset: number | null;
 }

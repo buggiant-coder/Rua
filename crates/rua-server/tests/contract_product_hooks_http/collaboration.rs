@@ -2234,7 +2234,7 @@ async fn chat_lists_separate_user_and_collaboration_views_and_keep_deleted_sourc
     let users = request(
         &test.app,
         Method::GET,
-        "/api/agents/default/chats?view=user",
+        "/api/chats?agent_id=default&view=user",
         None,
     )
     .await;
@@ -2250,7 +2250,7 @@ async fn chat_lists_separate_user_and_collaboration_views_and_keep_deleted_sourc
         &test.app,
         Method::GET,
         &format!(
-            "/api/agents/default/chats?view=collaboration&source_chat_id={}",
+            "/api/chats?agent_id=default&view=collaboration&source_chat_id={}",
             source.address.chat_id()
         ),
         None,
@@ -2295,7 +2295,7 @@ async fn chat_lists_separate_user_and_collaboration_views_and_keep_deleted_sourc
         request(
             &test.app,
             Method::GET,
-            "/api/agents/default/chats?view=collaboration",
+            "/api/chats?agent_id=default&view=collaboration",
             None,
         )
         .await,
@@ -2317,7 +2317,7 @@ async fn chat_lists_separate_user_and_collaboration_views_and_keep_deleted_sourc
         request(
             &test.app,
             Method::GET,
-            "/api/agents/default/chats?view=collaboration",
+            "/api/chats?agent_id=default&view=collaboration",
             None,
         )
         .await,

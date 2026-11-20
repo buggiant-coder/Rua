@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { chatApi } from "@/api/modules/chat";
-import type { ConversationApiTarget } from "@/api/modules/conversation";
 import type {
   ChatSpec,
   ConversationBackgroundWorkView,
@@ -19,10 +18,7 @@ export function collaborationAddressKey(address: TaskChatAddress): string {
   return address.chat_id;
 }
 
-async function listSourceCollaborations(
-  _target: ConversationApiTarget,
-  chatId: string,
-) {
+async function listSourceCollaborations(chatId: string) {
   const chats: ChatSpec[] = [];
   let offset = 0;
   while (true) {
@@ -45,20 +41,17 @@ async function listSourceCollaborations(
 
 export function useCollaborationActivity({
   open,
-  target,
   chatId,
   backgroundWork,
 }: {
   open: boolean;
-  target: ConversationApiTarget;
   chatId?: string;
   backgroundWork?: ConversationBackgroundWorkView | null;
 }) {
-  const scopeKey = JSON.stringify([target, chatId]);
   const [snapshot, setSnapshot] = useState<{
-    key: string;
+    chatId?: string;
     rows: Awaited<ReturnType<typeof listSourceCollaborations>>;
-  }>({ key: "", rows: [] });
+  }>({ rows: [] });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
@@ -75,9 +68,9 @@ export function useCollaborationActivity({
       inFlight = true;
       setLoading(true);
       try {
-        const rows = await listSourceCollaborations(target, chatId);
+        const rows = await listSourceCollaborations(chatId);
         if (stopped) return;
-        setSnapshot({ key: scopeKey, rows });
+        setSnapshot({ chatId, rows });
         setError(null);
       } catch (cause) {
         if (!stopped)
@@ -102,11 +95,11 @@ export function useCollaborationActivity({
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [open, target, chatId, scopeKey, refresh, backgroundKey]);
+  }, [open, chatId, refresh, backgroundKey]);
 
   const collaborations = useMemo(() => {
     const rows = new Map<string, CollaborationActivity>();
-    for (const { chat, address } of snapshot.key === scopeKey
+    for (const { chat, address } of snapshot.chatId === chatId
       ? snapshot.rows
       : []) {
       const key = collaborationAddressKey(address);
@@ -134,7 +127,7 @@ export function useCollaborationActivity({
         (b.chat?.updated_at ?? "").localeCompare(a.chat?.updated_at ?? "") ||
         a.key.localeCompare(b.key),
     );
-  }, [snapshot, scopeKey, backgroundWork]);
+  }, [snapshot, chatId, backgroundWork]);
 
   return {
     collaborations,

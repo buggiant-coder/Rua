@@ -43,8 +43,8 @@ const taskApiMock = vi.hoisted(() => ({
   sendInput: vi.fn(),
   getFullResult: vi.fn(),
   activityPath: vi.fn(
-    (target: { agentId: string }, chatId: string) =>
-      `/agents/${target.agentId}/chats/${chatId}/tasks/activity`,
+    (_target: ConversationApiTarget, chatId: string) =>
+      `/chats/${chatId}/tasks/activity`,
   ),
 }));
 
@@ -84,7 +84,6 @@ function taskFixture(
     spec: {
       owner: {
         chat_address: {
-          scope: { kind: "agent", agent_id: "agent-a" },
           chat_id: "chat-a",
         },
       },
@@ -261,14 +260,12 @@ describe("TaskActivityDrawer", () => {
   const child = (
     id: string,
     status: "idle" | "running",
-    source: Record<string, unknown> = {
-      scope: { kind: "agent", agent_id: "agent-a" },
+    source: { chat_id: string } = {
       chat_id: "chat-a",
     },
   ): ChatSpec => ({
     id,
     name: `Collaboration ${id}`,
-    session_id: id,
     user_id: "user",
     channel: "console",
     created_at: null,
@@ -290,20 +287,14 @@ describe("TaskActivityDrawer", () => {
     collaborationApiMock.agents.mockResolvedValue({
       agents: [{ id: "agent-a" }, { id: "agent-b" }],
     });
-    collaborationApiMock.chats.mockImplementation(async (_params, agentId) => ({
-      data:
-        agentId === "agent-b"
-          ? [
-              child("child-running", "running"),
-              child("child-ended", "idle"),
-              child("unrelated", "running", {
-                scope: { kind: "agent", agent_id: "other" },
-                chat_id: "chat-a",
-              }),
-            ]
-          : [],
-      total: agentId === "agent-b" ? 3 : 0,
-    }));
+    collaborationApiMock.chats.mockResolvedValue({
+      data: [
+        child("child-running", "running"),
+        child("child-ended", "idle"),
+        child("unrelated", "running", { chat_id: "other-source" }),
+      ],
+      total: 3,
+    });
     renderDrawer([taskFixture("completed")]);
     const active = await screen.findByRole("region", { name: "In progress" });
     await waitFor(() =>
@@ -324,7 +315,7 @@ describe("TaskActivityDrawer", () => {
     ).not.toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: "Open collaboration chat" }),
-    ).toHaveAttribute("href", "/agents/agent-b/chats/child-running");
+    ).toHaveAttribute("href", "/chats/child-running");
     expect(
       screen.queryByRole("button", { name: "Cancel task" }),
     ).not.toBeInTheDocument();
@@ -333,22 +324,20 @@ describe("TaskActivityDrawer", () => {
         source_chat_id: "chat-a",
         view: "collaboration",
       }),
-      "agent-b",
     );
   });
 
   it("keeps idle collaboration ended regardless of delivery facts and uses project navigation", async () => {
     const address = {
-      scope: { kind: "project" as const, project_id: "project-a" },
       chat_id: "child-project",
     };
-    const source = { scope: address.scope, chat_id: "chat-a" };
-    collaborationApiMock.projectChats.mockResolvedValue({
+    const source = { chat_id: "chat-a" };
+    collaborationApiMock.chats.mockResolvedValue({
       data: [child("child-project", "idle", source)],
       total: 1,
     });
     renderDrawer([], "device-a", {
-      target: { scope: "project", projectId: "project-a" },
+      target: { projectId: "project-a" },
       backgroundWork: {
         suppressed: false,
         items: [
@@ -371,20 +360,19 @@ describe("TaskActivityDrawer", () => {
     expect(within(ended).getAllByRole("button")).toHaveLength(1);
     expect(
       screen.getByRole("link", { name: "Open collaboration chat" }),
-    ).toHaveAttribute("href", "/projects/project-a/chats/child-project");
+    ).toHaveAttribute("href", "/chats/child-project");
     expect(screen.queryByText("request-1")).toBeNull();
     expect(screen.queryByText("request-2")).toBeNull();
     await waitFor(() =>
-      expect(collaborationApiMock.projectChats).toHaveBeenCalledWith(
-        "project-a",
+      expect(collaborationApiMock.chats).toHaveBeenCalledWith(
         expect.objectContaining({ source_chat_id: "chat-a" }),
       ),
     );
     expect(collaborationApiMock.agents).not.toHaveBeenCalled();
   });
 
-  it("still shows pending collaboration when the catalog fails and reports the error", async () => {
-    collaborationApiMock.agents.mockRejectedValue(
+  it("still shows pending collaboration when listing fails and reports the error", async () => {
+    collaborationApiMock.chats.mockRejectedValue(
       new Error("catalog unavailable"),
     );
     renderDrawer([taskFixture("completed")], "device-a", {
@@ -396,7 +384,6 @@ describe("TaskActivityDrawer", () => {
             id: "request-live",
             status: "running",
             chat: {
-              scope: { kind: "agent", agent_id: "agent-b" },
               chat_id: "child-live",
             },
           },
@@ -405,7 +392,7 @@ describe("TaskActivityDrawer", () => {
     });
     expect(
       await screen.findByRole("link", { name: "Open collaboration chat" }),
-    ).toHaveAttribute("href", "/agents/agent-b/chats/child-live");
+    ).toHaveAttribute("href", "/chats/child-live");
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "catalog unavailable",
     );
@@ -516,9 +503,9 @@ describe("TaskActivityDrawer", () => {
       expect(JSON.parse(parameters.textContent!)).toEqual(
         task.spec.runner.arguments,
       );
-      expect(
-        dialog.querySelector(".rua-task-list-command")?.textContent,
-      ).toBe(command);
+      expect(dialog.querySelector(".rua-task-list-command")?.textContent).toBe(
+        command,
+      );
       expect(taskApiMock.sendInput).not.toHaveBeenCalled();
       expect(taskApiMock.retryTask).not.toHaveBeenCalled();
     },
@@ -643,7 +630,7 @@ describe("TaskActivityDrawer", () => {
     fireEvent.click(confirmCancel);
     await waitFor(() =>
       expect(taskApiMock.cancelTask).toHaveBeenCalledWith(
-        { scope: "agent", agentId: "agent-a" },
+        { agentId: "agent-a" },
         "chat-a",
         running.task_id,
       ),
@@ -675,7 +662,7 @@ describe("TaskActivityDrawer", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Watch" }));
     await waitFor(() =>
       expect(taskApiMock.watchTask).toHaveBeenCalledWith(
-        { scope: "agent", agentId: "agent-a" },
+        { agentId: "agent-a" },
         "chat-a",
         running.task_id,
       ),
@@ -685,7 +672,7 @@ describe("TaskActivityDrawer", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Send" }));
     await waitFor(() =>
       expect(taskApiMock.sendInput).toHaveBeenCalledWith(
-        { scope: "agent", agentId: "agent-a" },
+        { agentId: "agent-a" },
         "chat-a",
         running.task_id,
         { type: "text", text: "change direction" },
@@ -716,7 +703,7 @@ describe("TaskActivityDrawer", () => {
     );
     await waitFor(() =>
       expect(taskApiMock.sendInput).toHaveBeenCalledWith(
-        { scope: "agent", agentId: "agent-a" },
+        { agentId: "agent-a" },
         "chat-a",
         running.task_id,
         { type: "close_stdin" },

@@ -27,13 +27,16 @@ fn projection_header() -> ChatSessionHeader {
 }
 
 #[test]
-fn header_projection_preserves_listing_fields_and_replaces_session_fields() {
-    let header = projection_header();
+fn header_projection_restores_durable_listing_fields_and_preserves_runtime_status() {
+    let mut header = projection_header();
+    header.user_id = "owner".into();
+    header.channel = "voice".into();
+    header.pin_order = 7;
     let mut previous = rua_chat::project_chat_header(&header, None).unwrap();
-    previous.user_id = "owner".into();
-    previous.channel = "voice".into();
+    previous.user_id = "stale".into();
+    previous.channel = "stale".into();
     previous.status = "running".into();
-    previous.pin_order = 7;
+    previous.pin_order = 1;
     previous.name = "stale title".into();
     previous.pinned = false;
     previous.archived = false;
@@ -69,6 +72,45 @@ fn header_projection_rejects_invalid_timestamps_and_index_metadata() {
     let mut previous = rua_chat::project_chat_header(&header, None).unwrap();
     previous.meta = serde_json::json!([]);
     assert!(rua_chat::project_chat_header(&header, Some(previous)).is_err());
+}
+
+#[tokio::test]
+async fn rebuilt_index_exposes_saved_listing_while_agent_configuration_is_unavailable() {
+    let root = tempfile::tempdir().unwrap();
+    let mut header = projection_header();
+    header.user_id = "photographer".into();
+    header.channel = "photos".into();
+    header.pin_order = 17;
+    let address = ChatAddress::new(&header.chat_id);
+    let workspace = ChatStore::resolve(root.path(), address);
+    let store = WorkspaceSessionStore::new(workspace.root());
+    store.save_chat_header(&header).await.unwrap();
+    // A replica can receive the Session and configuration head before its snapshot.
+    tokio::fs::write(
+        store.configuration_head_path(&header.chat_id),
+        br#"{"epoch":"snapshot-in-transit"}"#,
+    )
+    .await
+    .unwrap();
+    assert!(store.load_chat_header(&header.chat_id).await.is_err());
+
+    let service = ChatService::new(root.path());
+    for _ in 0..2 {
+        service.rebuild_index().await.unwrap();
+        let page = service
+            .list(ChatListQuery {
+                user_id: Some("photographer".into()),
+                channel: Some("photos".into()),
+                archived: Some(true),
+                limit: 10,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.entries[0].id, header.chat_id);
+        assert_eq!(page.entries[0].pin_order, 17);
+    }
 }
 
 #[tokio::test]
@@ -433,7 +475,7 @@ async fn rename_and_pin_commit_session_then_update_index_projection() {
     let address = ChatAddress::new("018f5f61-c461-7a11-b24d-8f52af0f4362");
     let scope_store = ChatStore::resolve(root.path(), address.clone());
     let session_store = WorkspaceSessionStore::new(scope_store.root());
-    let header = ChatSessionHeader::new(ChatMetadata {
+    let mut header = ChatSessionHeader::new(ChatMetadata {
         chat_id: address.chat_id().to_string(),
         agent_id: "agent-a".to_string(),
         title: "Old title".to_string(),
@@ -443,6 +485,7 @@ async fn rename_and_pin_commit_session_then_update_index_projection() {
         archived: false,
         preview: None,
     });
+    header.pin_order = 11;
     session_store
         .save_chat_header(&header)
         .await
@@ -476,6 +519,7 @@ async fn rename_and_pin_commit_session_then_update_index_projection() {
             ChatListUpdate {
                 title: Some("New title".to_string()),
                 pinned: Some(true),
+                pin_order: None,
                 tag: Some(rua_chat::ChatTag::Yellow),
                 archived: None,
             },
@@ -586,6 +630,7 @@ async fn failed_projection_leaves_session_committed_and_public_repair_rebuilds_i
             ChatListUpdate {
                 title: Some("Committed title".to_string()),
                 pinned: Some(true),
+                pin_order: None,
                 tag: None,
                 archived: None,
             },
@@ -884,20 +929,34 @@ async fn search_filters_current_agent_and_project_before_pagination() {
                 header.agent_id = agent.into();
                 header.metadata.agent_id = agent.into();
                 header.project_id = project.map(str::to_string);
+                header.metadata.pinned = id == "c";
             })
+            .await
+            .unwrap();
+        service
+            .repair_projection(&ChatAddress::new(id))
             .await
             .unwrap();
     }
     let query = |agent: Option<&str>, project: Option<&str>| ChatSearchQuery {
-        agent_id: agent.map(str::to_string),
-        project_id: project.map(str::to_string),
         query: "assistant-second".into(),
-        offset: 0,
-        limit: 1,
+        chats: ChatListQuery {
+            agent_id: agent.map(str::to_string),
+            project_id: project.map(str::to_string),
+            limit: 1,
+            ..Default::default()
+        },
     };
     let all = service.search(query(None, None)).await.unwrap();
     assert_eq!(all.total, 3);
     assert_eq!(all.results.len(), 1);
+    assert_eq!(all.results[0].chat_id, "c");
+    let mut second = query(None, None);
+    second.chats.offset = 1;
+    assert_ne!(
+        service.search(second).await.unwrap().results[0].chat_id,
+        "c"
+    );
     let project = service
         .search(query(None, Some("project-a")))
         .await
@@ -1066,6 +1125,7 @@ async fn combined_agent_and_project_lifecycle_uses_one_chat_service() {
                 ChatListUpdate {
                     title: Some("Unified lifecycle".to_string()),
                     pinned: Some(true),
+                    pin_order: None,
                     tag: None,
                     archived: None,
                 },
@@ -1135,11 +1195,11 @@ async fn combined_agent_and_project_lifecycle_uses_one_chat_service() {
         assert!(
             service
                 .search(ChatSearchQuery {
-                    agent_id: None,
-                    project_id: None,
                     query: "unified".to_string(),
-                    offset: 0,
-                    limit: 10,
+                    chats: ChatListQuery {
+                        limit: 10,
+                        ..Default::default()
+                    },
                 },)
                 .await
                 .unwrap()

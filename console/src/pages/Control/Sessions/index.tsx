@@ -67,10 +67,12 @@ interface SessionsPageProps {
 
 export async function loader(): Promise<SessionsInitialData> {
   const agentId = routeAgentId();
-  const response = await api.listChats(
-    { offset: 0, limit: SESSIONS_PAGE_SIZE },
-    agentId,
-  );
+  const response = await api.listChats({
+    offset: 0,
+    limit: SESSIONS_PAGE_SIZE,
+    agent_id: agentId,
+    without_project: true,
+  });
   return {
     agentId,
     sessions: response.data as Session[],
@@ -135,7 +137,7 @@ function ScopedSessionsPage({
     loading,
     page,
     pageSize,
-    unpinnedTotal,
+    total,
     updateSession,
     deleteSession,
     fetchSessions,
@@ -414,11 +416,11 @@ function ScopedSessionsPage({
               onDelete={handleDelete}
               t={t}
             />
-            {!searchTitle.trim() && unpinnedTotal > pageSize && (
+            {!searchTitle.trim() && total > pageSize && (
               <div className={styles.paginationRow}>
                 <Pagination
                   current={page}
-                  total={unpinnedTotal}
+                  total={total}
                   pageSize={pageSize}
                   onChange={(nextPage) => void fetchSessions(nextPage)}
                 />

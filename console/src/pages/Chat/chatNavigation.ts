@@ -5,37 +5,19 @@ import { saveDraftChatContext } from "./chatContext";
 import {
   chatDraftScope,
   forgetConversation,
-  lastConversationKey,
   loadDraftConversationId,
   loadLastConversationId,
   loadRecentConversationIds,
-  recentConversationsKey,
   rememberConversation,
   resolveOrCreateDraftConversationId,
 } from "./conversationLifecycle";
 
-export function lastChatKey(agentId: string): string {
-  return lastConversationKey(agentId);
+export function saveLastChatId(chatId: string): void {
+  rememberConversation(chatDraftScope(), chatId);
 }
 
-export function recentChatKey(agentId: string): string {
-  return recentConversationsKey(agentId);
-}
-
-export function loadLastChatId(agentId: string): string | null {
-  return loadLastConversationId(agentId);
-}
-
-export function loadRecentChatIds(agentId: string): string[] {
-  return loadRecentConversationIds(agentId);
-}
-
-export function saveLastChatId(agentId: string, chatId: string): void {
-  rememberConversation(agentId, chatId);
-}
-
-export function forgetChatId(agentId: string, chatId: string): void {
-  forgetConversation(agentId, chatId);
+export function forgetChatId(chatId: string): void {
+  forgetConversation(chatDraftScope(), chatId);
 }
 
 export function createLazyChatId(): string {
@@ -58,10 +40,10 @@ export function openChatDraft(
   return chatId;
 }
 
-export function resolveChatEntry(agentId: string): string {
+export function resolveChatEntry(): string {
   return (
-    loadLastChatId(agentId) ??
-    loadRecentChatIds(agentId)[0] ??
+    loadLastConversationId(chatDraftScope()) ??
+    loadRecentConversationIds(chatDraftScope())[0] ??
     loadDraftConversationId(chatDraftScope()) ??
     openChatDraft()
   );

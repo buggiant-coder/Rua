@@ -1461,7 +1461,7 @@ describe("ProjectChatPage", () => {
       2,
       "project-1",
       {
-        offset: 1,
+        offset: 2,
         limit: 20,
         archived: false,
         sort_by: "updated_at",
@@ -1471,22 +1471,43 @@ describe("ProjectChatPage", () => {
     );
   });
 
-  it("debounces Project Chat search through the server API", async () => {
+  it("pages matching messages in the Project drawer without losing earlier hits", async () => {
     projectChatsApiMock.listChats.mockResolvedValueOnce({
       data: [chatSpec("chat-1", "Initial"), chatSpec("chat-2", "Fix race")],
       total: 2,
     });
-    projectChatsApiMock.searchChats.mockResolvedValueOnce({
-      results: [
-        {
-          chat_id: "chat-2",
-          chat_name: "Fix race",
-          card_index: 0,
-          role: "user",
-          snippet: "fix race",
-        },
-      ],
-    });
+    projectChatsApiMock.searchChats
+      .mockResolvedValueOnce({
+        total: 2,
+        offset: 0,
+        limit: 1,
+        next_offset: 1,
+        results: [
+          {
+            chat_id: "chat-2",
+            chat_name: "Fix race",
+            card_index: 0,
+            role: "user",
+            snippet: "fix race",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        total: 2,
+        offset: 1,
+        limit: 1,
+        next_offset: null,
+        results: [
+          {
+            chat_id: "chat-2",
+            chat_name: "Fix race",
+            message_id: "later",
+            card_index: 4,
+            role: "assistant",
+            snippet: "A later reply",
+          },
+        ],
+      });
 
     renderPage({
       project,
@@ -1509,7 +1530,19 @@ describe("ProjectChatPage", () => {
     expect(projectChatsApiMock.searchChats).toHaveBeenLastCalledWith(
       "project-1",
       "fix race",
+      0,
     );
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("A later reply")).toBeVisible();
+    expect(screen.getAllByText("Fix race")).toHaveLength(2);
+    expect(projectChatsApiMock.searchChats).toHaveBeenLastCalledWith(
+      "project-1",
+      "fix race",
+      1,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Load more" }),
+    ).not.toBeInTheDocument();
   });
 
   it("renames and pins only after API success while preserving API ordering", async () => {
@@ -1885,10 +1918,10 @@ describe("ProjectChatPage", () => {
     }
   });
 
-  it("opens independent chats for the global Agent without changing the Project Chat", async () => {
+  it("opens the most recent standalone Chat across Agents while preserving the Project Chat", async () => {
     useAgentStore.setState({ selectedAgent: "agent-independent" });
-    saveLastChatId("agent-independent", "other-agent-chat");
-    saveLastChatId("default", "current-agent-chat");
+    saveLastChatId("other-agent-chat");
+    saveLastChatId("current-agent-chat");
     renderPage({
       project,
       chatId: "project-chat",
@@ -1899,7 +1932,7 @@ describe("ProjectChatPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Standalone chats" }));
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/chats/other-agent-chat",
+        "/chats/current-agent-chat",
       ),
     );
     expect(useAgentStore.getState().selectedAgent).toBe("agent-independent");

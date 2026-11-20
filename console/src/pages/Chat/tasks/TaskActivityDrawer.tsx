@@ -583,7 +583,6 @@ export default function TaskActivityDrawer({
   const [taskInput, setTaskInput] = useState("");
   const collaborationActivity = useCollaborationActivity({
     open,
-    target: taskTarget,
     chatId,
     backgroundWork,
   });

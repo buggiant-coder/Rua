@@ -54,7 +54,7 @@ describe("projectChatsApi", () => {
 
     expect(buildAuthHeaders).toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/projects/project%2Fone/chats?offset=20&limit=10&search=fix+race&tag=none",
+      "/api/chats?offset=20&limit=10&search=fix+race&tag=none&project_id=project%2Fone",
       {
         headers: { "X-Test": "1" },
         cache: "no-store",
@@ -70,7 +70,7 @@ describe("projectChatsApi", () => {
 
     await expect(
       projectChatsApi.listChats("project-1", { offset: 0, limit: 20 }),
-    ).rejects.toThrow("Failed to list Project Chats: 503");
+    ).rejects.toThrow("Failed to list chats: 503");
   });
 
   it("patches only requested Project Chat management fields", async () => {

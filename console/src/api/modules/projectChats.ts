@@ -1,6 +1,5 @@
 import { request } from "../request";
-import { buildAuthHeaders } from "../authHeaders";
-import { getApiUrl } from "../config";
+import { chatApi, type ChatListParams } from "./chat";
 import type {
   ACPChatEnterRequest,
   ACPChatEnterResponse,
@@ -14,7 +13,6 @@ import type {
   AcpHistoryPreviewResponse,
   ChatRunningConfig,
   ChatHistory,
-  ChatSearchResponse,
   ChatSpec,
   ChatTag,
   AgentCollaborationMode,
@@ -36,19 +34,11 @@ import type {
   ApprovalSnapshot,
 } from "./console";
 import type { ProjectChatAgentState } from "../types/project";
-import type { ChatListSort } from "../types/chatListSort";
 
-export type ProjectChatListParams = Partial<ChatListSort> & {
-  offset?: number;
-  limit?: number;
-  search?: string;
-  tag?: ChatTag;
-  view?: "user" | "collaboration" | "all";
-  archived?: boolean;
-  source_chat_id?: string;
-  executor?: string;
-  status?: string;
-};
+export type ProjectChatListParams = Omit<
+  ChatListParams,
+  "project_id" | "without_project"
+>;
 
 export type ProjectChatUpdate = {
   archived?: boolean;
@@ -110,50 +100,6 @@ function projectChatChildPath(
   return `${projectChatPath(projectId, chatId)}/${child}`;
 }
 
-function projectChatsPath(
-  projectId: string,
-  params?: ProjectChatListParams,
-): string {
-  const searchParams = new URLSearchParams();
-  if (params?.archived != null) {
-    searchParams.set("archived", String(params.archived));
-  }
-  if (params?.offset != null) {
-    searchParams.set("offset", String(params.offset));
-  }
-  if (params?.limit != null) {
-    searchParams.set("limit", String(params.limit));
-  }
-  if (params?.search?.trim()) {
-    searchParams.set("search", params.search.trim());
-  }
-  if (params?.tag) {
-    searchParams.set("tag", params.tag);
-  }
-  if (params?.view) {
-    searchParams.set("view", params.view);
-  }
-  if (params?.source_chat_id) {
-    searchParams.set("source_chat_id", params.source_chat_id);
-  }
-  if (params?.executor) {
-    searchParams.set("executor", params.executor);
-  }
-  if (params?.status) {
-    searchParams.set("status", params.status);
-  }
-  if (params?.sort_by) {
-    searchParams.set("sort_by", params.sort_by);
-  }
-  if (params?.sort_order) {
-    searchParams.set("sort_order", params.sort_order);
-  }
-  const query = searchParams.toString();
-  return `/projects/${encodeURIComponent(projectId)}/chats${
-    query ? `?${query}` : ""
-  }`;
-}
-
 function historyPath(
   projectId: string,
   chatId: string,
@@ -203,36 +149,17 @@ export const projectChatsApi = {
       projectChatChildPath(projectId, chatId, "llm-debug-capture"),
       { method: "DELETE" },
     ),
-  listChats: async (
-    projectId: string,
-    params?: ProjectChatListParams,
-  ): Promise<{ data: ChatSpec[]; total: number }> => {
-    const response = await fetch(
-      getApiUrl(projectChatsPath(projectId, params)),
-      {
-        headers: buildAuthHeaders(),
-        cache: "no-store",
-      },
-    );
-    if (!response.ok) {
-      throw new Error(`Failed to list Project Chats: ${response.status}`);
-    }
-    const data = (await response.json()) as ChatSpec[];
-    const total = Number.parseInt(
-      response.headers.get("X-Total-Count") || "0",
-      10,
-    );
-    return { data, total: Number.isFinite(total) ? total : 0 };
-  },
+  listChats: (projectId: string, params?: ProjectChatListParams) =>
+    chatApi.listChats({ ...params, project_id: projectId }),
 
   searchChats: (projectId: string, query: string, offset = 0, limit = 50) =>
-    request<ChatSearchResponse>(
-      `/projects/${encodeURIComponent(
-        projectId,
-      )}/chats/search?q=${encodeURIComponent(
-        query,
-      )}&offset=${offset}&limit=${limit}`,
-    ),
+    chatApi.searchChats(query, {
+      project_id: projectId,
+      view: "user",
+      archived: false,
+      offset,
+      limit,
+    }),
 
   getChat: (projectId: string, chatId: string, options?: GetChatOptions) =>
     request<ChatHistory>(historyPath(projectId, chatId, options)),

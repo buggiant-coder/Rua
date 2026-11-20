@@ -79,11 +79,9 @@ export default function ProjectChatsDrawer({
       setError(null);
 
       try {
-        const result = await projectChatsApi.listChats(projectId, {
-          offset,
-          limit,
+        const filters = {
           archived,
-          view: archived ? "all" : conversationView,
+          view: archived ? ("all" as const) : conversationView,
           ...(!archived &&
           conversationView === "collaboration" &&
           collaborationFilters.sourceChatId.trim()
@@ -107,19 +105,30 @@ export default function ProjectChatsDrawer({
           ...(!archived && conversationView === "user" && tagFilter
             ? { tag: tagFilter }
             : {}),
-        });
-        if (requestVersion !== requestVersionRef.current) return false;
+        };
+        let next = offset;
+        let total: number;
+        const rows: ChatSpec[] = [];
+        do {
+          const requested = Math.min(200, offset + limit - next);
+          const page = await projectChatsApi.listChats(projectId, {
+            ...filters,
+            offset: next,
+            limit: requested,
+          });
+          if (requestVersion !== requestVersionRef.current) return false;
+          rows.push(...page.data);
+          next += page.data.length;
+          total = page.total;
+          if (page.data.length < requested) break;
+        } while (next < offset + limit && next < total);
 
-        for (const chat of result.data) {
-          knownChatsRef.current.set(chat.id, chat);
-        }
+        for (const chat of rows) knownChatsRef.current.set(chat.id, chat);
         setChats((current) =>
-          append ? appendUniqueChats(current, result.data) : result.data,
+          append ? appendUniqueChats(current, rows) : rows,
         );
-        setTotal(result.total);
-        setNextOffset(
-          offset + result.data.filter((chat) => !chat.pinned).length,
-        );
+        setTotal(total);
+        setNextOffset(next);
         return true;
       } catch (loadError) {
         if (requestVersion !== requestVersionRef.current) return false;
@@ -155,7 +164,8 @@ export default function ProjectChatsDrawer({
   }, [loadChats]);
 
   const searchChats = useCallback(
-    (query: string) => projectChatsApi.searchChats(projectId, query),
+    (query: string, offset: number) =>
+      projectChatsApi.searchChats(projectId, query, offset),
     [projectId],
   );
 
@@ -367,9 +377,7 @@ export default function ProjectChatsDrawer({
         }
         setChats((current) => current.filter((item) => item.id !== chat.id));
         setTotal((current) => Math.max(0, current - 1));
-        setNextOffset((current) =>
-          Math.max(0, current - (chat.pinned ? 0 : 1)),
-        );
+        setNextOffset((current) => Math.max(0, current - 1));
         onChatDeleted(chat, remainingKnownChats);
       } catch (deleteError) {
         toast.error(errorMessage(deleteError, t("projects.chat.deleteFailed")));
@@ -389,8 +397,7 @@ export default function ProjectChatsDrawer({
 
   const isSearchActive =
     !archived && conversationView === "user" && searchInput.trim().length > 0;
-  const hasMore =
-    nextOffset + chats.filter((chat) => chat.pinned).length < total;
+  const hasMore = nextOffset < total;
 
   const changeArchive = async (chat: ChatSpec) => {
     if (readOnly || clearingRef.current || pendingChatIds.has(chat.id)) return;
@@ -489,7 +496,6 @@ export default function ProjectChatsDrawer({
       searchContent={
         isSearchActive ? (
           <ChatSearchResults
-            ownerKey={"project:" + projectId}
             query={searchInput}
             search={searchChats}
             onResultClick={(chatId, title) =>

@@ -1,25 +1,13 @@
+use super::chats::ListChatsParams;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Deserialize;
 
 use crate::endpoints::dto::{ChatSearchResponse, ChatSearchResult};
 use crate::errors::ApiError;
 use crate::state::AppState;
-
-#[derive(Debug, Deserialize)]
-struct SearchParams {
-    agent_id: Option<String>,
-    project_id: Option<String>,
-    #[serde(default)]
-    q: Option<String>,
-    #[serde(default)]
-    limit: Option<u64>,
-    #[serde(default)]
-    offset: Option<u64>,
-}
 
 pub fn root_router() -> Router<AppState> {
     Router::new().route("/chats/search", get(search_root))
@@ -27,32 +15,23 @@ pub fn root_router() -> Router<AppState> {
 
 async fn search_root(
     State(state): State<AppState>,
-    Query(params): Query<SearchParams>,
+    Query(params): Query<ListChatsParams>,
 ) -> Response {
-    let query = params.q.as_deref().unwrap_or("").trim().to_string();
-    let offset = params.offset.unwrap_or(0) as usize;
-    let limit = params.limit.unwrap_or(50).clamp(1, 200) as usize;
+    search_chats(&state, params, None).await
+}
 
-    if query.is_empty() {
-        let resp = ChatSearchResponse {
-            results: vec![],
-            offset,
-            limit,
-            total: 0,
-            next_offset: None,
-            extra: serde_json::Map::new(),
-        };
-        return (StatusCode::OK, Json(resp)).into_response();
-    }
-
+pub(super) async fn search_chats(
+    state: &AppState,
+    mut params: ListChatsParams,
+    route_project: Option<&str>,
+) -> Response {
+    let query = params.q.take().unwrap_or_default();
+    let chats = match params.into_query(route_project) {
+        Ok(query) => query,
+        Err(error) => return error.into_response(),
+    };
     let saved = match rua_chat::ChatService::new(&state.rua_root)
-        .search(rua_chat::ChatSearchQuery {
-            agent_id: params.agent_id,
-            project_id: params.project_id,
-            query,
-            offset,
-            limit,
-        })
+        .search(rua_chat::ChatSearchQuery { query, chats })
         .await
     {
         Ok(result) => result,
@@ -64,7 +43,6 @@ async fn search_root(
     let results: Vec<ChatSearchResult> = saved
         .results
         .into_iter()
-        .filter(|hit| hit.message.role == "user" || hit.message.role == "assistant")
         .map(|hit| ChatSearchResult {
             chat_id: hit.chat_id,
             chat_name: hit.title,

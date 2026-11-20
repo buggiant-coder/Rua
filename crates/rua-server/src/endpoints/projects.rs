@@ -1,13 +1,12 @@
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
-use rua_core::{ChatAddress, ProjectId};
+use rua_core::ProjectId;
 use rua_project::{ProjectDescriptor, ProjectLifecycle};
 use serde::{Deserialize, Serialize};
 
-use crate::endpoints::dto;
 use crate::errors::ApiError;
 use crate::services::device_command_bus::{
     ConversationControlDeviceAction, ConversationControlDeviceResponse, DeviceCommandDeliveryError,
@@ -200,46 +199,6 @@ struct ProjectChatAgentSwitchRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct ProjectChatListQuery {
-    #[serde(default)]
-    offset: Option<u64>,
-    #[serde(default)]
-    limit: Option<u64>,
-    #[serde(default)]
-    search: Option<String>,
-    #[serde(default)]
-    tag: Option<rua_chat::ChatTag>,
-    #[serde(default)]
-    sort_by: rua_chat::ChatSortField,
-    #[serde(default)]
-    sort_order: rua_chat::SortOrder,
-    #[serde(default = "super::chats::default_conversation_view")]
-    view: rua_session::chat_index::ChatConversationView,
-    #[serde(default)]
-    source_chat_id: Option<String>,
-    #[serde(default)]
-    executor: Option<String>,
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    archived: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProjectChatSearchQuery {
-    #[serde(default)]
-    q: String,
-    #[serde(default)]
-    offset: usize,
-    #[serde(default = "default_project_chat_search_limit")]
-    limit: usize,
-}
-
-const fn default_project_chat_search_limit() -> usize {
-    50
-}
-
-#[derive(Debug, Deserialize)]
 pub(crate) struct ProjectChatDeleteQuery {
     #[serde(default)]
     force: bool,
@@ -262,27 +221,21 @@ async fn list_projects(
         Ok(projects) => projects,
         Err(error) => return ApiError::Internal(error.to_string()).into_response(),
     };
-    let workspace = state.chat_workspace();
-    let has_index = workspace.as_path().join("chat-index.sqlite").is_file();
-    let mut entries = Vec::with_capacity(projects.len());
-    for project in projects {
-        let filter = rua_session::chat_index::ChatIndexFilter {
-            project_id: Some(project.project_id.to_string()),
-            ..Default::default()
-        };
-        let last_activity_at = if has_index {
-            match crate::services::chat_index::list(workspace.as_path(), filter, 0, 1).await {
-                Ok(page) => page.entries.first().map(|entry| entry.updated_at),
-                Err(error) => return ApiError::Internal(error).into_response(),
-            }
-        } else {
-            None
-        };
-        entries.push(ProjectListEntry {
+    let activity = match rua_session::chat_index::project_last_activity(
+        state.chat_workspace().as_path(),
+    )
+    .await
+    {
+        Ok(activity) => activity,
+        Err(error) => return ApiError::Internal(error).into_response(),
+    };
+    let entries = projects
+        .into_iter()
+        .map(|project| ProjectListEntry {
+            last_activity_at: activity.get(project.project_id.as_str()).copied(),
             project,
-            last_activity_at,
-        });
-    }
+        })
+        .collect();
     Json(ProjectListResponse { projects: entries }).into_response()
 }
 
@@ -760,137 +713,36 @@ async fn rename_project(
     }
 }
 
+fn require_discovery_project(state: &AppState, project_id: &str) -> Result<(), ApiError> {
+    match state.project_catalog.get(&ProjectId::new(project_id)) {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(ApiError::NotFound(format!(
+            "Project not found: {project_id}"
+        ))),
+        Err(error) => Err(ApiError::Internal(error.to_string())),
+    }
+}
+
 async fn list_project_chats(
     State(state): State<AppState>,
     Path(project_id): Path<String>,
-    Query(query): Query<ProjectChatListQuery>,
+    Query(params): Query<super::chats::ListChatsParams>,
 ) -> Response {
-    let project_id = ProjectId::new(project_id);
-    match state.project_catalog.get(&project_id) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return ApiError::NotFound(format!("Project not found: {project_id}")).into_response();
-        }
-        Err(error) => return ApiError::Internal(error.to_string()).into_response(),
+    if let Err(error) = require_discovery_project(&state, &project_id) {
+        return error.into_response();
     }
-    let scope_root = rua_core::RuaRoot::new(&state.rua_root)
-        .chat_workspace()
-        .as_path()
-        .to_path_buf();
-    let page =
-        match rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(&scope_root))
-            .list(rua_chat::ChatListQuery {
-                project_id: Some(project_id.to_string()),
-                agent_id: None,
-                user_id: None,
-                channel: None,
-                search: query.search,
-                tag: query.tag,
-                conversation_view: query.view,
-                source_chat_id: query.source_chat_id,
-                executor: query.executor,
-                status: query.status,
-                sort_by: query.sort_by,
-                sort_order: query.sort_order,
-                offset: query.offset.unwrap_or(0),
-                limit: query.limit.unwrap_or(50).clamp(1, 200),
-                archived: Some(query.archived.unwrap_or(false)),
-            })
-            .await
-        {
-            Ok(page) => page,
-            Err(error) => return ApiError::Internal(error.to_string()).into_response(),
-        };
-    let mut chats = page
-        .entries
-        .into_iter()
-        .map(crate::endpoints::chats::chat_from_index_entry)
-        .collect::<Vec<_>>();
-    if let Err(error) = crate::endpoints::chats::populate_collaboration_source_availability(
-        &state.rua_root,
-        &mut chats,
-    )
-    .await
-    {
-        return ApiError::Internal(error).into_response();
-    }
-    for chat in &mut chats {
-        chat.status = state
-            .conversation_authority
-            .active_turn(&ChatAddress::new(&chat.id))
-            .await
-            .as_ref()
-            .map(|turn| turn.status_hint().to_string())
-            .unwrap_or_else(|| "idle".to_string());
-    }
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "X-Total-Count",
-        HeaderValue::from_str(&page.total.to_string())
-            .unwrap_or_else(|_| HeaderValue::from_static("0")),
-    );
-    (StatusCode::OK, headers, Json(chats)).into_response()
+    super::chats::list_chats_core(&state, params, Some(&project_id)).await
 }
 
 async fn search_project_chats(
     State(state): State<AppState>,
     Path(project_id): Path<String>,
-    Query(query): Query<ProjectChatSearchQuery>,
+    Query(params): Query<super::chats::ListChatsParams>,
 ) -> Response {
-    let project_id = ProjectId::new(project_id);
-    match state.project_catalog.get(&project_id) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return ApiError::NotFound(format!("Project not found: {project_id}")).into_response();
-        }
-        Err(error) => return ApiError::Internal(error.to_string()).into_response(),
+    if let Err(error) = require_discovery_project(&state, &project_id) {
+        return error.into_response();
     }
-    let scope_root = rua_core::RuaRoot::new(&state.rua_root)
-        .chat_workspace()
-        .as_path()
-        .to_path_buf();
-    let saved =
-        match rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(&scope_root))
-            .search(rua_chat::ChatSearchQuery {
-                project_id: Some(project_id.to_string()),
-                agent_id: None,
-                query: query.q,
-                offset: query.offset,
-                limit: query.limit.clamp(1, 100),
-            })
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => return ApiError::Internal(error.to_string()).into_response(),
-        };
-    let results = saved
-        .results
-        .into_iter()
-        .filter(|hit| hit.message.role == "user" || hit.message.role == "assistant")
-        .map(|hit| dto::ChatSearchResult {
-            chat_id: hit.chat_id,
-            chat_name: hit.title,
-            card_index: hit.message.sequence.saturating_sub(1) as usize,
-            role: hit.message.role,
-            snippet: hit.snippet,
-            message_id: hit.message.message_id,
-            turn_id: hit.message.turn_id,
-            sequence: hit.message.sequence,
-            span_start_sequence: hit.span.start_sequence,
-            span_end_sequence: hit.span.end_sequence,
-            preview: hit.preview.map(|preview| preview.text),
-            extra: serde_json::Map::new(),
-        })
-        .collect();
-    Json(dto::ChatSearchResponse {
-        results,
-        offset: saved.offset,
-        limit: saved.limit,
-        total: saved.total,
-        next_offset: saved.next_offset,
-        extra: serde_json::Map::new(),
-    })
-    .into_response()
+    super::chat_search::search_chats(&state, params, Some(&project_id)).await
 }
 
 #[derive(serde::Deserialize)]
@@ -1019,7 +871,7 @@ struct ProjectChatArchiveDeleteQuery {
     #[serde(default)]
     force: bool,
     #[serde(flatten)]
-    filter: ProjectChatListQuery,
+    filter: super::chats::ListChatsParams,
 }
 
 async fn delete_archived_project_chats(
@@ -1045,34 +897,24 @@ async fn delete_archived_project_chats(
         return ApiError::Conflict("source Device identity is unavailable".to_string())
             .into_response();
     };
-    let scope_root = rua_core::RuaRoot::new(&state.rua_root)
-        .chat_workspace()
-        .as_path()
-        .to_path_buf();
-    let page =
-        match rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(&scope_root))
-            .list(rua_chat::ChatListQuery {
-                project_id: Some(project_id.to_string()),
-                agent_id: None,
-                user_id: None,
-                channel: None,
-                search: query.filter.search,
-                tag: query.filter.tag,
-                conversation_view: query.filter.view,
-                source_chat_id: query.filter.source_chat_id,
-                executor: query.filter.executor,
-                status: query.filter.status,
-                sort_by: rua_chat::ChatSortField::UpdatedAt,
-                sort_order: rua_chat::SortOrder::Desc,
-                offset: 0,
-                limit: i64::MAX as u64,
-                archived: Some(true),
-            })
-            .await
-        {
-            Ok(page) => page,
-            Err(error) => return ApiError::Internal(error.to_string()).into_response(),
-        };
+    let filters = match query.filter.into_query(Some(project_id.as_str())) {
+        Ok(filters) => filters,
+        Err(error) => return error.into_response(),
+    };
+    let page = match rua_chat::ChatService::new(&state.rua_root)
+        .list(rua_chat::ChatListQuery {
+            sort_by: rua_chat::ChatSortField::UpdatedAt,
+            sort_order: rua_chat::SortOrder::Desc,
+            archived: Some(true),
+            offset: 0,
+            limit: i64::MAX as u64,
+            ..filters
+        })
+        .await
+    {
+        Ok(page) => page,
+        Err(error) => return ApiError::Internal(error.to_string()).into_response(),
+    };
     let mut deleted = Vec::new();
     let mut skipped = Vec::new();
     for entry in page.entries {

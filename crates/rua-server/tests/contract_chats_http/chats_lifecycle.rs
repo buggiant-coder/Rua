@@ -3610,7 +3610,7 @@ async fn chat_list_reads_sqlite_index_with_pinning_and_pagination() {
             .and_then(|v| v.to_str().ok()),
         Some("3")
     );
-    assert_eq!(ids(&read_json(page).await), vec!["chat-pinned", "chat-new"]);
+    assert_eq!(ids(&read_json(page).await), vec!["chat-pinned"]);
 
     let page_from_index = request(
         &app.app,
@@ -3628,10 +3628,7 @@ async fn chat_list_reads_sqlite_index_with_pinning_and_pagination() {
             .and_then(|v| v.to_str().ok()),
         Some("3")
     );
-    assert_eq!(
-        ids(&read_json(page_from_index).await),
-        vec!["chat-pinned", "chat-old"]
-    );
+    assert_eq!(ids(&read_json(page_from_index).await), vec!["chat-new"]);
 
     delete_agent(&app.app, agent_id).await;
 }

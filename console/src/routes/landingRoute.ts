@@ -1,6 +1,5 @@
 import { redirect, type LoaderFunctionArgs } from "react-router-dom";
-import { resolveAgentChatPath } from "@/pages/Chat/conversationAddress";
-import { useAgentStore } from "@/stores/agentStore";
+import { resolveStandaloneChatPath } from "@/pages/Chat/conversationAddress";
 import { lastChatPath } from "./lastChatRoute";
 import { requireRouteAccess } from "./routeAuth";
 
@@ -10,6 +9,5 @@ export async function landingLoader({ request }: LoaderFunctionArgs) {
   if (chatPath) {
     return redirect(chatPath);
   }
-  const { selectedAgent } = useAgentStore.getState();
-  return redirect(resolveAgentChatPath(selectedAgent || "default"));
+  return redirect(resolveStandaloneChatPath());
 }

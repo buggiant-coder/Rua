@@ -2,10 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createLazyChatId,
   forgetChatId,
-  lastChatKey,
-  loadLastChatId,
-  loadRecentChatIds,
-  recentChatKey,
   openChatDraft,
   resolveChatEntry,
   saveLastChatId,
@@ -17,6 +13,8 @@ import {
   chatDraftScope,
   clearDraftConversation,
   isDraftConversation,
+  loadLastConversationId,
+  loadRecentConversationIds,
 } from "./conversationLifecycle";
 
 describe("chatNavigation", () => {
@@ -26,51 +24,55 @@ describe("chatNavigation", () => {
     sessionStorage.clear();
   });
 
-  it("keeps last-chat ids isolated per selected Rust agent", () => {
-    saveLastChatId("agent-a", "chat-a");
-    saveLastChatId("agent-b", "chat-b");
-
-    expect(lastChatKey("agent-a")).toBe("rua_last_chat_id_agent-a");
-    expect(recentChatKey("agent-a")).toBe("rua_recent_chat_ids_agent-a");
-    expect(loadLastChatId("agent-a")).toBe("chat-a");
-    expect(loadLastChatId("agent-b")).toBe("chat-b");
-    expect(loadRecentChatIds("agent-a")).toEqual(["chat-a"]);
-    expect(loadRecentChatIds("agent-b")).toEqual(["chat-b"]);
+  it("keeps one ordered standalone history across Agent selections", () => {
+    useAgentStore.setState({ selectedAgent: "agent-a" });
+    saveLastChatId("chat-a");
+    useAgentStore.setState({ selectedAgent: "agent-b" });
+    saveLastChatId("chat-b");
+    expect(loadLastConversationId(chatDraftScope())).toBe("chat-b");
+    expect(loadRecentConversationIds(chatDraftScope())).toEqual([
+      "chat-b",
+      "chat-a",
+    ]);
+    expect(loadRecentConversationIds(chatDraftScope("project-one"))).toEqual(
+      [],
+    );
   });
 
-  it("resolves chat entry from stored agent history before creating a lazy id", () => {
+  it("resolves chat entry from stored standalone history before creating a lazy id", () => {
     const randomUUID = vi
       .spyOn(crypto, "randomUUID")
       .mockReturnValue("lazy-chat");
-    saveLastChatId("agent-a", "stored-chat");
+    saveLastChatId("stored-chat");
 
-    expect(resolveChatEntry("agent-a")).toBe("stored-chat");
+    expect(resolveChatEntry()).toBe("stored-chat");
     expect(randomUUID).not.toHaveBeenCalled();
-    expect(resolveChatEntry("agent-b")).toBe("lazy-chat");
+    forgetChatId("stored-chat");
+    expect(resolveChatEntry()).toBe("lazy-chat");
   });
 
-  it("clears only the matching selected-agent chat id", () => {
-    saveLastChatId("agent-a", "chat-a");
+  it("clears only the matching standalone chat id", () => {
+    saveLastChatId("chat-a");
 
-    forgetChatId("agent-a", "other-chat");
-    expect(loadLastChatId("agent-a")).toBe("chat-a");
+    forgetChatId("other-chat");
+    expect(loadLastConversationId(chatDraftScope())).toBe("chat-a");
 
-    forgetChatId("agent-a", "chat-a");
-    expect(loadLastChatId("agent-a")).toBeNull();
+    forgetChatId("chat-a");
+    expect(loadLastConversationId(chatDraftScope())).toBeNull();
   });
 
   it("falls back to the next recent chat when the active hint is forgotten", () => {
     const randomUUID = vi
       .spyOn(crypto, "randomUUID")
       .mockReturnValue("lazy-chat");
-    saveLastChatId("agent-a", "older-chat");
-    saveLastChatId("agent-a", "newer-chat");
+    saveLastChatId("older-chat");
+    saveLastChatId("newer-chat");
 
-    forgetChatId("agent-a", "newer-chat");
+    forgetChatId("newer-chat");
 
-    expect(loadLastChatId("agent-a")).toBeNull();
-    expect(loadRecentChatIds("agent-a")).toEqual(["older-chat"]);
-    expect(resolveChatEntry("agent-a")).toBe("older-chat");
+    expect(loadLastConversationId(chatDraftScope())).toBeNull();
+    expect(loadRecentConversationIds(chatDraftScope())).toEqual(["older-chat"]);
+    expect(resolveChatEntry()).toBe("older-chat");
     expect(randomUUID).not.toHaveBeenCalled();
   });
 
@@ -86,10 +88,9 @@ describe("chatNavigation", () => {
         throw new Error("storage disabled");
       });
 
-    expect(() => saveLastChatId("", "chat")).not.toThrow();
-    expect(() => saveLastChatId("agent-a", "")).not.toThrow();
-    expect(() => saveLastChatId("agent-a", "chat-a")).not.toThrow();
-    expect(loadLastChatId("agent-a")).toBeNull();
+    expect(() => saveLastChatId("")).not.toThrow();
+    expect(() => saveLastChatId("chat-a")).not.toThrow();
+    expect(loadLastConversationId(chatDraftScope())).toBeNull();
 
     expect(setSpy).toHaveBeenCalledTimes(1);
     expect(getSpy).toHaveBeenCalledTimes(1);
@@ -112,7 +113,7 @@ describe("chatNavigation", () => {
       projectId: null,
     });
     useAgentStore.setState({ selectedAgent: "agent-b" });
-    expect(resolveChatEntry("agent-b")).toBe(id);
+    expect(resolveChatEntry()).toBe(id);
     expect(readDraftChatContext(id)?.agentId).toBe("agent-a");
     expect(openChatDraft()).toBe(id);
     expect(readDraftChatContext(id)).toEqual({

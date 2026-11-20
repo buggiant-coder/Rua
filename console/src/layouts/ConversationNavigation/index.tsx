@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -28,12 +29,10 @@ import {
   Plus,
   Search,
   SquarePen,
-  X,
 } from "lucide-react";
 
 import type { DropdownItem } from "@/ui/Dropdown";
 import { chatApi } from "@/api/modules/chat";
-import { projectChatsApi } from "@/api/modules/projectChats";
 import { projectsApi } from "@/api/modules/projects";
 import { devicesApi, type DeviceDto } from "@/api/modules/sync";
 import { useProjectSidebar } from "@/pages/Projects/useProjectSidebar";
@@ -46,9 +45,10 @@ import {
   readDraftChatContext,
   type ChatContext,
 } from "@/pages/Chat/chatContext";
-import type { ChatSearchResult } from "@/api/types";
+import ChatDiscovery from "./ChatDiscovery";
 import type { ProjectDescriptor } from "@/api/types/project";
 import {
+  chatPath,
   conversationPath,
   type ConversationAddress,
 } from "@/pages/Chat/conversationAddress";
@@ -62,7 +62,6 @@ import {
   requestNewConversation,
 } from "../conversationNavigationEvents";
 import {
-  scopeAddress,
   scopeKey,
   useConversationGroup,
   type NavigationScope,
@@ -81,6 +80,8 @@ import {
 import styles from "./index.module.less";
 import type { ProjectSort } from "./projectSort";
 
+const independentScope = { kind: "standalone" } as const;
+
 const EXPANDED_KEY = "rua_navigation_expanded_groups";
 const SCROLL_KEY = "rua_navigation_scroll";
 const REVEALED_PATH_KEY = "rua_navigation_revealed_chat";
@@ -93,9 +94,7 @@ function readExpanded(pathname: string): string[] {
       return current
         ? [
             "independent",
-            scopeKey(
-              scopeFromContext(readDraftChatContext(current.chatId), "default"),
-            ),
+            scopeKey(scopeFromContext(readDraftChatContext(current.chatId))),
           ]
         : ["independent"];
     }
@@ -108,20 +107,17 @@ function readExpanded(pathname: string): string[] {
   }
 }
 
-function scopeFromContext(
-  context: ChatContext | null,
-  selectedAgent: string,
-): NavigationScope {
+function scopeFromContext(context: ChatContext | null): NavigationScope {
   return context?.projectId
     ? { kind: "project", id: context.projectId }
-    : { kind: "agent", id: context?.agentId ?? selectedAgent };
+    : independentScope;
 }
 
 async function managementPath(scope: NavigationScope): Promise<string> {
   const path =
     scope.kind === "project"
       ? await resolveProjectChatPath(scope.id)
-      : conversationPath(scopeAddress(scope, resolveChatEntry(scope.id)));
+      : chatPath(resolveChatEntry());
   return `${path}?conversations=1`;
 }
 
@@ -135,15 +131,14 @@ export default function ConversationNavigation({
   onNavigate,
 }: Props) {
   const { t, i18n } = useTranslation();
-  const agents = useAgentStore((state) => state.agents);
-  const selectedAgent = useAgentStore((state) => state.selectedAgent);
-  const catalogLoading = useAgentStore((state) => state.catalogLoading);
-  const catalogError = useAgentStore((state) => state.catalogError);
   const ensureCatalogLoaded = useAgentStore(
     (state) => state.ensureCatalogLoaded,
   );
-  const refreshCatalog = useAgentStore((state) => state.refreshCatalog);
-  const [projects, setProjects] = useState<ProjectDescriptor[]>([]);
+  const [projectCatalog, setProjectCatalog] = useState<ProjectDescriptor[]>([]);
+  const projects = useMemo(
+    () => projectCatalog.filter((project) => project.lifecycle === "active"),
+    [projectCatalog],
+  );
   const sidebar = useProjectSidebar(
     projects,
     i18n?.resolvedLanguage || i18n?.language || "zh",
@@ -175,13 +170,10 @@ export default function ConversationNavigation({
     readExpanded(location.pathname),
   );
   const [searchOpen, setSearchOpen] = useState(false);
-  const [searchScopeKey, setSearchScopeKey] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const restoringScroll = useRef<number | null>(null);
   const clickedRow = useRef<{ element: HTMLElement; top: number } | null>(null);
-  const independentListRef = useRef<HTMLDivElement>(null);
   const restoreScroll = useCallback(() => {
     const scroll = scrollRef.current;
     if (!scroll) return;
@@ -253,7 +245,7 @@ export default function ConversationNavigation({
       disposed = true;
     };
   }, [currentChatId, currentIsDraft]);
-  const currentScope = scopeFromContext(currentContext, selectedAgent);
+  const currentScope = scopeFromContext(currentContext);
   const currentKey = scopeKey(currentScope);
   const currentPath = current ? conversationPath(current) : null;
   const lastRevealedPath = useRef<string | null | undefined>(undefined);
@@ -264,31 +256,6 @@ export default function ConversationNavigation({
       lastRevealedPath.current = null;
     }
   }
-  const independentAgentId = current ? currentContext?.agentId : selectedAgent;
-  const [displayedIndependentAgentId, setDisplayedIndependentAgentId] =
-    useState(independentAgentId);
-  useLayoutEffect(() => {
-    if (
-      !independentAgentId ||
-      independentAgentId === displayedIndependentAgentId
-    )
-      return;
-    // Keep the old space while the new Agent's first page is loading.
-    const list = independentListRef.current;
-    if (list) list.style.minHeight = `${list.getBoundingClientRect().height}px`;
-    setDisplayedIndependentAgentId(independentAgentId);
-  }, [independentAgentId, displayedIndependentAgentId]);
-  const independentReady = useCallback(() => {
-    if (independentListRef.current)
-      independentListRef.current.style.minHeight = "";
-    restoreScroll();
-  }, [restoreScroll]);
-  const independentAgent = agents.find(
-    (agent) => agent.id === independentAgentId,
-  );
-  const independentScope: NavigationScope | null = independentAgentId
-    ? { kind: "agent", id: independentAgentId }
-    : null;
   const currentScopeName =
     currentScope.kind === "project"
       ? projects.find((project) => project.project_id === currentScope.id)
@@ -307,10 +274,10 @@ export default function ConversationNavigation({
     setProjectsLoading(true);
     setProjectsError(null);
     try {
-      const result = await projectsApi.list("active");
+      const result = await projectsApi.list("all");
       if (request === projectRequest.current) {
         projectsLoaded.current = true;
-        setProjects(result);
+        setProjectCatalog(result);
       }
     } catch (error) {
       if (request === projectRequest.current)
@@ -377,11 +344,6 @@ export default function ConversationNavigation({
   }, [createProjectOpen]);
 
   useEffect(() => {
-    setSearchOpen(false);
-    setSearchQuery("");
-  }, [currentKey]);
-
-  useEffect(() => {
     if (previousPath.current === location.pathname) return;
     previousPath.current = location.pathname;
     restoringScroll.current = null;
@@ -398,15 +360,7 @@ export default function ConversationNavigation({
     try {
       sessionStorage.setItem(REVEALED_PATH_KEY, currentPath);
     } catch {}
-    setExpanded((keys) =>
-      Array.from(
-        new Set([
-          ...keys,
-          ...(currentKey.startsWith("agent:") ? ["independent"] : []),
-          currentKey,
-        ]),
-      ),
-    );
+    setExpanded((keys) => Array.from(new Set([...keys, currentKey])));
   }, [currentKey, currentPath, currentContext]);
 
   useEffect(() => {
@@ -449,30 +403,11 @@ export default function ConversationNavigation({
     const chatId = openChatDraft(
       scope.kind === "project" ? scope.id : undefined,
     );
-    onNavigate(conversationPath(scopeAddress(scope, chatId)));
+    onNavigate(chatPath(chatId));
   };
   const manage = (scope: NavigationScope) => {
     void managementPath(scope).then(onNavigate);
   };
-  const scopes = [
-    ...(independentScope
-      ? [
-          {
-            scope: independentScope,
-            name: `${t("navigation.independentChats")} · ${
-              independentAgent?.name || independentAgentId
-            }`,
-          },
-        ]
-      : []),
-    ...sortedProjects.map((project) => ({
-      scope: { kind: "project" as const, id: project.project_id },
-      name: project.display_name,
-    })),
-  ];
-  const searchScope = scopes.find(
-    (item) => scopeKey(item.scope) === searchScopeKey,
-  );
   const independentOpen = expanded.includes("independent");
 
   const announceMove = async (operation: Promise<boolean>) => {
@@ -631,51 +566,12 @@ export default function ConversationNavigation({
           type="button"
           className={styles.toolButton}
           aria-expanded={searchOpen}
-          onClick={() => {
-            setSearchScopeKey(currentKey);
-            setSearchOpen((value) => !value);
-          }}
+          onClick={() => setSearchOpen((value) => !value)}
         >
           <Search size={17} />
           <span>{t("navigation.search")}</span>
         </button>
       </div>
-      {searchOpen && (
-        <div className={styles.searchControls}>
-          <div className={styles.searchScopeRow}>
-            <Select
-              className={styles.scopeSelect}
-              aria-label={t("navigation.searchScope")}
-              value={searchScope ? searchScopeKey : undefined}
-              placeholder={t("navigation.searchScope")}
-              onChange={(value) => {
-                if (value) setSearchScopeKey(value);
-              }}
-              options={scopes.map((item) => ({
-                value: scopeKey(item.scope),
-                label: item.name,
-              }))}
-            />
-            <button
-              type="button"
-              className={styles.iconButton}
-              aria-label={t("navigation.closeSearch")}
-              onClick={() => setSearchOpen(false)}
-            >
-              <X size={16} />
-            </button>
-          </div>
-          <input
-            autoFocus
-            type="search"
-            aria-label={t("navigation.search")}
-            placeholder={t("navigation.searchPlaceholder")}
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-          />
-          <p>{t("navigation.searchHint")}</p>
-        </div>
-      )}
       <div
         className={styles.scroll}
         data-sidebar-scroll
@@ -709,19 +605,20 @@ export default function ConversationNavigation({
         }}
       >
         <div ref={contentRef}>
-          {searchOpen && searchQuery.trim() && searchScope && (
-            <ScopedSearch
-              scope={searchScope.scope}
-              query={searchQuery}
+          {searchOpen && (
+            <ChatDiscovery
+              projects={projectCatalog}
+              current={current}
+              getCurrentAddress={getCurrentAddress}
+              onClose={() => setSearchOpen(false)}
               onNavigate={(path) => {
                 restoringScroll.current = null;
                 setSearchOpen(false);
-                setSearchQuery("");
                 onNavigate(path);
               }}
             />
           )}
-          <div hidden={Boolean(searchOpen && searchQuery.trim())}>
+          <div hidden={searchOpen}>
             <section className={styles.group}>
               <div className={styles.groupHeader}>
                 <button
@@ -743,50 +640,29 @@ export default function ConversationNavigation({
                   aria-label={t("navigation.newInGroup", {
                     name: t("navigation.independentChats"),
                   })}
-                  disabled={!independentScope}
-                  onClick={() => independentScope && newChat(independentScope)}
+                  onClick={() => newChat(independentScope)}
                 >
                   <Plus size={16} />
                 </button>
               </div>
-              <div
-                ref={independentListRef}
-                hidden={!independentOpen}
-                aria-hidden={!independentScope || undefined}
-                style={{ visibility: independentScope ? undefined : "hidden" }}
-              >
-                {catalogLoading && (
-                  <p className={styles.status}>{t("common.loading")}</p>
-                )}
-                {catalogError && (
-                  <LoadError
-                    error={catalogError}
-                    onRetry={() => void refreshCatalog().catch(() => {})}
-                  />
-                )}
-                {displayedIndependentAgentId && (
-                  <ConversationGroup
-                    key={`agent:${displayedIndependentAgentId}`}
-                    scope={{ kind: "agent", id: displayedIndependentAgentId }}
-                    name={independentAgent?.name || independentAgentId || ""}
-                    open={independentOpen}
-                    hideHeader
-                    current={
-                      currentContext &&
-                      currentKey === `agent:${displayedIndependentAgentId}`
-                        ? current
-                        : null
-                    }
-                    getCurrentAddress={getCurrentAddress}
-                    onToggle={() => {}}
-                    onNew={() => independentScope && newChat(independentScope)}
-                    onManage={() =>
-                      independentScope && manage(independentScope)
-                    }
-                    onNavigate={onNavigate}
-                    onReady={independentReady}
-                  />
-                )}
+              <div hidden={!independentOpen}>
+                <ConversationGroup
+                  scope={independentScope}
+                  name={t("navigation.independentChats")}
+                  open={independentOpen}
+                  hideHeader
+                  current={
+                    currentContext && currentScope.kind === "standalone"
+                      ? current
+                      : null
+                  }
+                  getCurrentAddress={getCurrentAddress}
+                  onToggle={() => {}}
+                  onNew={() => newChat(independentScope)}
+                  onManage={() => manage(independentScope)}
+                  onNavigate={onNavigate}
+                  onReady={restoreScroll}
+                />
               </div>
             </section>
             <div className={styles.sectionLabel}>
@@ -1060,7 +936,7 @@ export default function ConversationNavigation({
           project={projectAction.project}
           onClose={() => setProjectAction(null)}
           onSaved={(updated) => {
-            setProjects((current) =>
+            setProjectCatalog((current) =>
               current.map((project) =>
                 project.project_id === updated.project_id ? updated : project,
               ),
@@ -1081,9 +957,9 @@ export default function ConversationNavigation({
           project={projectAction.project}
           onClose={() => setProjectAction(null)}
           onArchived={(updated) => {
-            setProjects((current) =>
-              current.filter(
-                (project) => project.project_id !== updated.project_id,
+            setProjectCatalog((current) =>
+              current.map((project) =>
+                project.project_id === updated.project_id ? updated : project,
               ),
             );
             setProjectAction(null);
@@ -1126,7 +1002,7 @@ export default function ConversationNavigation({
         onClose={() => setCreateProjectOpen(false)}
         onCreated={(outcome) => {
           setCreateProjectOpen(false);
-          setProjects((current) => [
+          setProjectCatalog((current) => [
             ...current.filter(
               (project) => project.project_id !== outcome.project.project_id,
             ),
@@ -1293,101 +1169,6 @@ function ConversationGroup({
         )}
       </div>
     </section>
-  );
-}
-
-function ScopedSearch({
-  scope,
-  query,
-  onNavigate,
-}: {
-  scope: NavigationScope;
-  query: string;
-  onNavigate: (path: string) => void;
-}) {
-  const { t } = useTranslation();
-  const [results, setResults] = useState<ChatSearchResult[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [revision, setRevision] = useState(0);
-  const requestRef = useRef(0);
-  const { kind, id } = scope;
-  useEffect(() => {
-    const request = ++requestRef.current;
-    setResults([]);
-    setError(null);
-    setLoading(true);
-    const timer = window.setTimeout(() => {
-      const search =
-        kind === "project"
-          ? projectChatsApi.searchChats(id, query.trim())
-          : chatApi.searchChats(query.trim(), id);
-      void search
-        .then((response) => {
-          if (request === requestRef.current) setResults(response.results);
-        })
-        .catch((cause) => {
-          if (request === requestRef.current)
-            setError(cause instanceof Error ? cause.message : String(cause));
-        })
-        .finally(() => {
-          if (request === requestRef.current) setLoading(false);
-        });
-    }, 300);
-    return () => {
-      window.clearTimeout(timer);
-      requestRef.current += 1;
-    };
-  }, [id, kind, query, revision]);
-  return (
-    <div className={styles.searchResults}>
-      {loading && (
-        <p className={styles.status} role="status">
-          {t("common.loading")}
-        </p>
-      )}
-      {error && (
-        <LoadError
-          error={error}
-          onRetry={() => setRevision((value) => value + 1)}
-        />
-      )}
-      {!loading && !error && results.length === 0 && (
-        <p className={styles.status}>{t("chat.search.noResults")}</p>
-      )}
-      {!loading && results.length >= 50 && (
-        <p className={styles.status}>{t("navigation.searchLimit")}</p>
-      )}
-      {results.map((result, index) => (
-        <button
-          type="button"
-          className={styles.searchResult}
-          key={`${result.chat_id}:${index}`}
-          onClick={() => {
-            try {
-              sessionStorage.setItem(
-                "rua_search_scroll_target",
-                JSON.stringify({
-                  cardIndex: result.card_index,
-                  query: query.trim(),
-                  messageId: result.message_id,
-                  turnId: result.turn_id,
-                  conversationId: result.chat_id,
-                  ownerKey: kind === "project" ? `project:${id}` : id,
-                }),
-              );
-            } catch {
-              /* Browser storage is optional. */
-            }
-            onNavigate(conversationPath(scopeAddress(scope, result.chat_id)));
-            window.dispatchEvent(new Event("rua-search-scroll"));
-          }}
-        >
-          <span>{result.chat_name || t("navigation.untitled")}</span>
-          <small>{result.snippet}</small>
-        </button>
-      ))}
-    </div>
   );
 }
 

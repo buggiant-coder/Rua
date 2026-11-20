@@ -14,6 +14,7 @@ import { chatApi } from "@/api/modules/chat";
 import { projectChatsApi } from "@/api/modules/projectChats";
 import type { ChatSpec, ChatTag, ChatUpdateRequest } from "@/api/types";
 import {
+  chatPath,
   conversationPath,
   type ConversationAddress,
 } from "@/pages/Chat/conversationAddress";
@@ -30,7 +31,7 @@ import {
   beginConversationMetadataUpdate,
   publishConversationDeleted,
 } from "../conversationNavigationEvents";
-import { scopeAddress, type NavigationScope } from "./useConversationGroups";
+import type { NavigationScope } from "./useConversationGroups";
 import styles from "./index.module.less";
 import {
   clearConversationActivity,
@@ -42,6 +43,7 @@ const tags: ChatTag[] = ["none", "red", "yellow", "green"];
 type Props = {
   scope: NavigationScope;
   chat: ChatSpec;
+  readOnly?: boolean;
   current: ConversationAddress | null;
   getCurrentAddress: () => ConversationAddress | null;
   onManage: () => void;
@@ -52,6 +54,7 @@ type Props = {
 export default function ConversationRow({
   scope,
   chat,
+  readOnly = false,
   current,
   getCurrentAddress,
   onManage,
@@ -70,7 +73,7 @@ export default function ConversationRow({
     };
   }, []);
   const title = chat.name?.trim() || t("navigation.untitled");
-  const address = scopeAddress(scope, chat.id);
+  const address = { chatId: chat.id };
   const projectId = scope.kind === "project" ? scope.id : null;
   const path = conversationPath(address);
   const activityStatus = useConversationActivityStatus(address);
@@ -104,7 +107,7 @@ export default function ConversationRow({
       const updated =
         scope.kind === "project"
           ? await projectChatsApi.updateChat(scope.id, chat.id, updates)
-          : await chatApi.updateChat(chat.id, updates, scope.id);
+          : await chatApi.updateChat(chat.id, updates);
       mutation.commit(updated);
     } catch (error) {
       mutation.rollback();
@@ -172,8 +175,8 @@ export default function ConversationRow({
         }
         discardProjectChatLocalState(scope.id, chat.id);
       } else {
-        await chatApi.deleteChat(chat.id, scope.id);
-        forgetChatId(scope.id, chat.id);
+        await chatApi.deleteChat(chat.id);
+        forgetChatId(chat.id);
         clearDraftConversation(chatDraftScope(), chat.id);
         drafts.clear(`chat:${chat.id}`);
       }
@@ -196,7 +199,7 @@ export default function ConversationRow({
         const result =
           scope.kind === "project"
             ? await projectChatsApi.listChats(scope.id, params)
-            : await chatApi.listChats(params, scope.id);
+            : await chatApi.listChats({ ...params, without_project: true });
         remaining = result.data.filter(
           (item) => item.id !== chat.id && !item.archived,
         );
@@ -213,7 +216,7 @@ export default function ConversationRow({
       const nextId =
         latest?.id ??
         openChatDraft(scope.kind === "project" ? scope.id : undefined);
-      onNavigate(conversationPath(scopeAddress(scope, nextId)));
+      onNavigate(chatPath(nextId));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
     } finally {
@@ -221,6 +224,11 @@ export default function ConversationRow({
     }
   };
 
+  const manageAction = {
+    key: "manage",
+    label: t("navigation.manageConversations"),
+    onClick: onManage,
+  };
   return (
     <div
       className={`${styles.chatRow} ${active ? styles.active : ""}`}
@@ -262,7 +270,7 @@ export default function ConversationRow({
         onOpenChange={setMenuOpen}
         overlayClassName={styles.rowMenu}
         dropdownRender={(menu) =>
-          chat.archived ? (
+          chat.archived || readOnly ? (
             menu
           ) : (
             <>
@@ -294,13 +302,17 @@ export default function ConversationRow({
           )
         }
         items={
-          chat.archived
+          readOnly
+            ? [manageAction]
+            : chat.archived
             ? [
                 {
-                  key: "manage",
-                  label: t("navigation.manageConversations"),
-                  onClick: onManage,
+                  key: "restore",
+                  label: t("projects.chat.restore"),
+                  disabled: pending,
+                  onClick: () => void update({ archived: false }),
                 },
+                manageAction,
               ]
             : [
                 {
@@ -330,11 +342,7 @@ export default function ConversationRow({
                   disabled: pending,
                   onClick: () => void update({ archived: true }),
                 },
-                {
-                  key: "manage",
-                  label: t("navigation.manageConversations"),
-                  onClick: onManage,
-                },
+                manageAction,
                 { type: "divider" },
                 {
                   key: "delete",

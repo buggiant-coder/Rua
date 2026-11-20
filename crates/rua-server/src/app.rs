@@ -255,6 +255,7 @@ pub async fn serve(options: ServerOptions) -> anyhow::Result<()> {
     let startup_ctx = StartupContext {
         profile: options.profile.to_string(),
     };
+    crate::services::chat_metadata_store::rebuild_chat_index(&state).await?;
     state.lifecycle.start_all(&startup_ctx).await?;
     state
         .conversation_input_intake

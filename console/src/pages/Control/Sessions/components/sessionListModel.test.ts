@@ -41,6 +41,19 @@ describe("session list model", () => {
     expect(formatTime(null)).toBe("N/A");
   });
 
+  it("keeps pin order ahead of the selected page sort", () => {
+    const rows = [
+      baseSession({ id: "aaa", name: "A" }),
+      baseSession({ id: "pin-2", pinned: true, pin_order: 2, name: "B" }),
+      baseSession({ id: "pin-1", pinned: true, pin_order: 1, name: "C" }),
+    ];
+    expect(ids(filterAndSortSessions(rows, "", "name", "asc"))).toEqual([
+      "pin-1",
+      "pin-2",
+      "aaa",
+    ]);
+  });
+
   it("sorts default sessions by updated_at activity with newest first", () => {
     const sessions = [
       baseSession({

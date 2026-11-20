@@ -390,7 +390,8 @@
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  > input {
+  input,
+  select {
     width: 100%;
     min-width: 0;
     color: var(--text);
@@ -400,24 +401,20 @@
     padding: 7px 8px;
     font-size: 12px;
   }
-  input {
-    margin-top: 6px;
-  }
-  p {
-    font-size: 11px;
-    line-height: 1.5;
-    color: var(--text-mute);
-    margin: 5px 0 0;
-  }
 }
 .searchScopeRow {
   display: flex;
   align-items: center;
   gap: 4px;
 }
-.scopeSelect {
-  flex: 1;
-  min-width: 0;
+.discoveryFilters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  margin-top: 6px;
+  select:last-child {
+    grid-column: 1 / -1;
+  }
 }
 .sortCheck {
   display: inline-flex;

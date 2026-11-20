@@ -16,7 +16,7 @@ describe("landingRoute", () => {
 
   it("redirects to the selected Agent's complete last Chat address", async () => {
     useAgentStore.setState({ selectedAgent: "agent-b" });
-    localStorage.setItem("rua_last_chat_id_agent-b", "chat-2");
+    localStorage.setItem("rua_last_chat_id_no-project", "chat-2");
 
     const response = await landingLoader({
       request: new Request("http://localhost/"),

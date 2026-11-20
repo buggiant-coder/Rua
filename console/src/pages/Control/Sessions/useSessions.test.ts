@@ -116,13 +116,10 @@ describe("useSessions", () => {
         chats = chats.filter((chat) => chat.id !== "a");
       };
       listSessionsMock.mockImplementation(list);
-      vi.mocked(chatApi.listChats).mockImplementation(
-        async (_params, agentId) =>
-          agentId === "other"
-            ? { data: [session("unrelated")], total: 1 }
-            : list(),
+      vi.mocked(chatApi.listChats).mockImplementation(list);
+      vi.mocked(projectChatsApi.listChats).mockImplementation(async (id) =>
+        id === "other" ? { data: [session("unrelated")], total: 1 } : list(),
       );
-      vi.mocked(projectChatsApi.listChats).mockImplementation(list);
       deleteSessionMock.mockImplementation(remove);
       vi.mocked(projectChatsApi.deleteChat).mockImplementation(async () => {
         await remove();
@@ -134,17 +131,19 @@ describe("useSessions", () => {
           kind === "project" ? "project-1" : undefined,
         ),
         sidebar: useConversationGroup(
-          { kind, id: kind === "agent" ? "agent-1" : "project-1" },
+          kind === "project"
+            ? { kind, id: "project-1" }
+            : { kind: "standalone" },
           true,
         ),
-        other: useConversationGroup({ kind: "agent", id: "other" }, true),
+        other: useConversationGroup({ kind: "project", id: "other" }, true),
       }));
       await waitFor(() => expect(result.current.sidebar.chats).toHaveLength(2));
       await waitFor(() => expect(result.current.other.chats).toHaveLength(1));
       const otherCalls = () =>
         vi
-          .mocked(chatApi.listChats)
-          .mock.calls.filter(([, id]) => id === "other").length;
+          .mocked(projectChatsApi.listChats)
+          .mock.calls.filter(([id]) => id === "other").length;
       const before = otherCalls();
       await act(async () => {
         expect(await result.current.history.deleteSession("a")).toBe(true);
@@ -184,7 +183,9 @@ describe("useSessions", () => {
             kind === "project" ? "project-1" : undefined,
           ),
           sidebar: useConversationGroup(
-            { kind, id: kind === "agent" ? "agent-1" : "project-1" },
+            kind === "project"
+              ? { kind, id: "project-1" }
+              : { kind: "standalone" },
             expanded,
           ),
         }),
@@ -285,10 +286,12 @@ describe("useSessions", () => {
     const seed = { agentId: "other", sessions: [session("stale")], total: 1 };
     const { result } = renderHook(() => useSessions(seed));
     await waitFor(() => expect(result.current.sessions[0]?.id).toBe("a"));
-    expect(listSessionsMock).toHaveBeenCalledWith(
-      { offset: 0, limit: 10 },
-      "agent-1",
-    );
+    expect(listSessionsMock).toHaveBeenCalledWith({
+      offset: 0,
+      limit: 10,
+      agent_id: "agent-1",
+      without_project: true,
+    });
   });
   beforeEach(() => {
     vi.clearAllMocks();
@@ -304,22 +307,23 @@ describe("useSessions", () => {
     batchDeleteSessionsMock.mockResolvedValue({});
   });
 
-  it("loads the first page through the selected Rust agent scope and derives unpinned total", async () => {
+  it("loads the first page through the selected Rust agent scope and counts pinned rows in the total", async () => {
     const { result } = renderHook(() => useSessions());
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(listSessionsMock).toHaveBeenCalledWith(
-      { offset: 0, limit: 10 },
-      "agent-1",
-    );
+    expect(listSessionsMock).toHaveBeenCalledWith({
+      offset: 0,
+      limit: 10,
+      agent_id: "agent-1",
+      without_project: true,
+    });
     expect(result.current.sessions.map((item) => item.id)).toEqual([
       "a",
       "b",
       "c",
     ]);
     expect(result.current.total).toBe(12);
-    expect(result.current.unpinnedTotal).toBe(11);
     expect(result.current.page).toBe(1);
   });
 
@@ -335,10 +339,12 @@ describe("useSessions", () => {
       await result.current.fetchSessions(3);
     });
 
-    expect(listSessionsMock).toHaveBeenLastCalledWith(
-      { offset: 20, limit: 10 },
-      "agent-1",
-    );
+    expect(listSessionsMock).toHaveBeenLastCalledWith({
+      offset: 20,
+      limit: 10,
+      agent_id: "agent-1",
+      without_project: true,
+    });
     expect(result.current.page).toBe(3);
     expect(result.current.sessions.map((item) => item.id)).toEqual(["page-3"]);
   });
@@ -370,10 +376,12 @@ describe("useSessions", () => {
       await expect(result.current.deleteSession("a")).resolves.toBe(true);
     });
     expect(deleteSessionMock).toHaveBeenCalledWith("a", "agent-1");
-    expect(listSessionsMock).toHaveBeenLastCalledWith(
-      { offset: 0, limit: 10 },
-      "agent-1",
-    );
+    expect(listSessionsMock).toHaveBeenLastCalledWith({
+      offset: 0,
+      limit: 10,
+      agent_id: "agent-1",
+      without_project: true,
+    });
     expect(result.current.sessions.map((item) => item.id)).toEqual([
       "b",
       "c",
@@ -391,10 +399,12 @@ describe("useSessions", () => {
       ).resolves.toBe(true);
     });
     expect(batchDeleteSessionsMock).toHaveBeenCalledWith(["b", "c"], "agent-1");
-    expect(listSessionsMock).toHaveBeenLastCalledWith(
-      { offset: 0, limit: 10 },
-      "agent-1",
-    );
+    expect(listSessionsMock).toHaveBeenLastCalledWith({
+      offset: 0,
+      limit: 10,
+      agent_id: "agent-1",
+      without_project: true,
+    });
     expect(result.current.sessions.map((item) => item.id)).toEqual(["d"]);
     expect(result.current.total).toBe(9);
     expect(toastMock.success).toHaveBeenCalledWith(
@@ -423,10 +433,12 @@ describe("useSessions", () => {
       await expect(result.current.deleteSession("page-3")).resolves.toBe(true);
     });
 
-    expect(listSessionsMock).toHaveBeenLastCalledWith(
-      { offset: 10, limit: 10 },
-      "agent-1",
-    );
+    expect(listSessionsMock).toHaveBeenLastCalledWith({
+      offset: 10,
+      limit: 10,
+      agent_id: "agent-1",
+      without_project: true,
+    });
     expect(result.current.page).toBe(2);
     expect(result.current.sessions.map((item) => item.id)).toEqual([
       "page-2-a",

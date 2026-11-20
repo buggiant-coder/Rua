@@ -41,7 +41,7 @@ vi.mock("@/ui", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/ui")>()),
   Modal: { confirm: vi.fn() },
 }));
-const chat: ChatSpec = {
+const exampleChat: ChatSpec = {
   id: "chat-one",
   name: "Example",
   user_id: "fixture",
@@ -51,9 +51,7 @@ const chat: ChatSpec = {
   tag: "none",
 };
 const address: ConversationAddress = {
-  scope: "project",
-  projectId: "project-one",
-  chatId: chat.id,
+  chatId: exampleChat.id,
 };
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -69,7 +67,7 @@ function show(
 ) {
   const props = {
     scope: { kind: "project" as const, id: "project-one" },
-    chat,
+    chat: exampleChat,
     current: address,
     getCurrentAddress: () => address,
     onManage: vi.fn(),
@@ -92,7 +90,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(Modal.confirm).mockResolvedValue(true);
   vi.mocked(projectChatsApi.listChats).mockResolvedValue({
-    data: [{ ...chat, id: "remaining" }],
+    data: [{ ...exampleChat, id: "remaining" }],
     total: 1,
   });
 });
@@ -105,27 +103,25 @@ describe("ConversationRow deletion", () => {
       )
       .mockResolvedValueOnce({
         deleted: true,
-        chat_id: chat.id,
+        chat_id: exampleChat.id,
         was_busy: true,
       });
     const props = show();
     await clickDelete();
     await waitFor(() =>
-      expect(props.onNavigate).toHaveBeenCalledWith(
-        "/projects/project-one/chats/remaining",
-      ),
+      expect(props.onNavigate).toHaveBeenCalledWith("/chats/remaining"),
     );
     expect(projectChatsApi.deleteChat).toHaveBeenNthCalledWith(
       1,
       "project-one",
-      chat.id,
+      exampleChat.id,
       false,
     );
     expect(Modal.confirm).toHaveBeenCalledTimes(2);
     expect(projectChatsApi.deleteChat).toHaveBeenNthCalledWith(
       2,
       "project-one",
-      chat.id,
+      exampleChat.id,
       true,
     );
   });
@@ -153,16 +149,20 @@ describe("ConversationRow deletion", () => {
     const props = show({ getCurrentAddress: () => current });
     await clickDelete();
     await waitFor(() => expect(projectChatsApi.deleteChat).toHaveBeenCalled());
-    current = { scope: "agent", agentId: "other", chatId: "other-chat" };
+    current = { chatId: "other-chat" };
     await act(async () =>
-      result.resolve({ deleted: true, chat_id: chat.id, was_busy: false }),
+      result.resolve({
+        deleted: true,
+        chat_id: exampleChat.id,
+        was_busy: false,
+      }),
     );
-    expect(props.onRemoved).toHaveBeenCalledWith(chat.id);
+    expect(props.onRemoved).toHaveBeenCalledWith(exampleChat.id);
     expect(props.onNavigate).not.toHaveBeenCalled();
     expect(projectChatsApi.listChats).not.toHaveBeenCalled();
   });
   it("keeps a pinned conversation undeletable", async () => {
-    show({ chat: { ...chat, pinned: true } });
+    show({ chat: { ...exampleChat, pinned: true } });
     const action = await screen.findByRole("menuitem", {
       name: "navigation.unpinBeforeDelete",
     });
@@ -195,8 +195,15 @@ function GroupRows({ scope }: { scope: NavigationScope }) {
   );
 }
 
-describe.each(["agent", "project"] as const)("%s sidebar metadata", (kind) => {
-  const scope: NavigationScope = { kind, id: "scope-one" };
+const groups = ["standalone", "project"] as const;
+describe.each(groups)("%s sidebar metadata", (kind) => {
+  const scope: NavigationScope =
+    kind === "project" ? { kind, id: "scope-one" } : { kind };
+  const chat: ChatSpec = {
+    ...exampleChat,
+    project_id: scope.id,
+    agent_id: "agent-one",
+  };
   const list =
     kind === "project" ? projectChatsApi.listChats : chatApi.listChats;
   const update =
@@ -219,10 +226,7 @@ describe.each(["agent", "project"] as const)("%s sidebar metadata", (kind) => {
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     expect(marker()).toHaveAttribute("data-tag", "red");
   });
-  const scopedAddress: ConversationAddress =
-    kind === "project"
-      ? { scope: "project", projectId: scope.id, chatId: chat.id }
-      : { scope: "agent", agentId: scope.id, chatId: chat.id };
+  const scopedAddress: ConversationAddress = { chatId: chat.id };
 
   it("rolls back only the failed tag while preserving a concurrent title change", async () => {
     const pending = deferred<ChatSpec>();
@@ -302,7 +306,7 @@ describe.each(["agent", "project"] as const)("%s sidebar metadata", (kind) => {
     await act(async () => pin.resolve(pinned));
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     expect(order()).toEqual([chat.id, "newer"]);
-    // The next page must restart at zero: the server has moved this item out of ordinary rows.
+    // The next page must restart at zero: the pin changes the sorted page boundary.
     vi.mocked(list).mockResolvedValue({
       data: [pinned, newer, oldest],
       total: 3,
@@ -312,7 +316,13 @@ describe.each(["agent", "project"] as const)("%s sidebar metadata", (kind) => {
     expect(list).toHaveBeenLastCalledWith(
       ...(kind === "project"
         ? [scope.id, expect.objectContaining({ offset: 0, limit: 22 })]
-        : [expect.objectContaining({ offset: 0, limit: 22 }), scope.id]),
+        : [
+            expect.objectContaining({
+              offset: 0,
+              limit: 22,
+              without_project: true,
+            }),
+          ]),
     );
     expect(order()).toEqual([chat.id, "newer", "oldest"]);
     expect(
@@ -353,7 +363,10 @@ describe.each(["agent", "project"] as const)("%s sidebar metadata", (kind) => {
       "red",
     );
     act(() =>
-      publishConversationMetadata(scopedAddress, { ...chat, tag: "green" }),
+      publishConversationMetadata(scopedAddress, {
+        ...chat,
+        tag: "green",
+      }),
     );
     await act(async () => pending.resolve({ ...chat, tag: "red" }));
     expect(view.container.querySelector("[data-chat-marker]")).toHaveAttribute(
@@ -397,7 +410,9 @@ describe.each(["agent", "project"] as const)("%s sidebar metadata", (kind) => {
       const view = render(<GroupRows scope={scope} />);
       await screen.findByTitle("Example");
       fireEvent.click(
-        screen.getByRole("button", { name: "navigation.conversationActions" }),
+        screen.getByRole("button", {
+          name: "navigation.conversationActions",
+        }),
       );
       fireEvent.click(
         await screen.findByRole("button", { name: "chat.tag.red" }),
@@ -417,6 +432,27 @@ describe.each(["agent", "project"] as const)("%s sidebar metadata", (kind) => {
       ).toHaveAttribute("data-tag", "green");
     },
   );
+  it("keeps a pending edit outside the loaded sidebar page when refreshed", async () => {
+    vi.mocked(list).mockResolvedValue({ data: [chat], total: 1 });
+    render(<GroupRows scope={scope} />);
+    await screen.findByTitle("Example");
+    const unseen = { ...chat, id: "other-chat", name: "Outside page" };
+    let edit!: ReturnType<typeof beginConversationMetadataUpdate>;
+    await act(async () => {
+      edit = beginConversationMetadataUpdate({ chatId: unseen.id }, unseen, {
+        tag: "red",
+      });
+      invalidateConversationNavigation(
+        { chatId: unseen.id },
+        false,
+        chat.project_id,
+      );
+    });
+    expect(screen.queryByTitle(unseen.name)).not.toBeInTheDocument();
+    act(() => edit.rollback());
+    expect(screen.queryByTitle(unseen.name)).not.toBeInTheDocument();
+  });
+
   it("does not recreate a confirmed row absent from a refreshed active list", async () => {
     vi.mocked(list).mockResolvedValue({ data: [chat], total: 1 });
     vi.mocked(update).mockResolvedValue({ ...chat, tag: "red" });

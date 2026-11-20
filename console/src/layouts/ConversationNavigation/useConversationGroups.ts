@@ -4,28 +4,20 @@ import { chatApi } from "@/api/modules/chat";
 import { projectChatsApi } from "@/api/modules/projectChats";
 import type { ChatSpec } from "@/api/types";
 import { DEFAULT_CHAT_LIST_SORT } from "@/api/types/chatListSort";
-import type { ConversationAddress } from "@/pages/Chat/conversationAddress";
 import {
   subscribeConversationNavigation,
   subscribeConversationMetadata,
 } from "../conversationNavigationEvents";
 
 export type NavigationScope =
-  | { kind: "agent"; id: string }
+  | { kind: "standalone"; id?: undefined }
   | { kind: "project"; id: string };
 
 export const PAGE_SIZE = 20;
 const INITIAL_PAGE_SIZE = 5;
 
 export function scopeKey(scope: NavigationScope): string {
-  return `${scope.kind}:${scope.id}`;
-}
-
-export function scopeAddress(
-  _scope: NavigationScope,
-  chatId: string,
-): ConversationAddress {
-  return { chatId };
+  return scope.kind === "project" ? `project:${scope.id}` : "independent";
 }
 
 const metadataFields = [
@@ -103,7 +95,7 @@ export function useConversationGroup(
         (overlay) =>
           overlay.fields.has("pinned") || overlay.fields.has("archived"),
       );
-      // Pin/unpin changes the ordinary-chat offset. Rebuild its prefix until acknowledged.
+      // Pin and archive changes can reorder the loaded prefix. Refresh it before appending.
       const appendPage = append && !membershipChanged;
       const offset = appendPage ? offsetRef.current : 0;
       const params = {
@@ -132,15 +124,16 @@ export function useConversationGroup(
           const page =
             kind === "project"
               ? await projectChatsApi.listChats(id, pageParams)
-              : await chatApi.listChats(pageParams, id);
+              : await chatApi.listChats({
+                  ...pageParams,
+                  without_project: true,
+                });
           if (request !== requestRef.current) return;
           for (const chat of page.data) incomingPages.set(chat.id, chat);
-          const ordinaryCount = page.data.filter((chat) => !chat.pinned).length;
-          next += ordinaryCount;
+          next += page.data.length;
           total = page.total;
-          pageHasMore =
-            next + page.data.filter((chat) => chat.pinned).length < total;
-          if (ordinaryCount < pageParams.limit) break;
+          pageHasMore = page.data.length > 0 && next < total;
+          if (page.data.length < pageParams.limit) break;
         } while (!appendPage && next < offset + params.limit && pageHasMore);
         const result = { data: [...incomingPages.values()], total };
         const incoming = new Map(result.data.map((chat) => [chat.id, chat]));
@@ -206,11 +199,12 @@ export function useConversationGroup(
     () =>
       subscribeConversationMetadata((_address, chat, change) => {
         const belongsToGroup =
-          kind === "project"
-            ? chat.project_id === id
-            : !chat.project_id && chat.agent_id === id;
+          kind === "project" ? chat.project_id === id : !chat.project_id;
         if (!belongsToGroup) return;
-        const overlay = overlays.current.get(chat.id) ?? {
+        const previousOverlay = overlays.current.get(chat.id);
+        if (!previousOverlay && !chats.some((item) => item.id === chat.id))
+          return;
+        const overlay = previousOverlay ?? {
           chat,
           fields: new Map<MetadataField, FieldUpdate>(),
         };
@@ -271,7 +265,7 @@ export function useConversationGroup(
           );
         });
       }),
-    [id, kind],
+    [chats, id, kind],
   );
 
   useEffect(() => {

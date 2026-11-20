@@ -22,6 +22,6 @@ export function addressFromChatPath(
   }
 }
 
-export function resolveAgentChatPath(agentId: string): string {
-  return chatPath(resolveChatEntry(agentId));
+export function resolveStandaloneChatPath(): string {
+  return chatPath(resolveChatEntry());
 }

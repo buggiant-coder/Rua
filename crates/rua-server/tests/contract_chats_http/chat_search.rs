@@ -193,6 +193,7 @@ async fn chat_search_filters_by_selected_agent_and_respects_limit() {
         path_chat_id,
         vec![
             text_message("u1", "user", "needle appears in filtered chat"),
+            text_message("t1", "tool", "needle inside a tool result"),
             text_message("a1", "assistant", "second needle should be hidden by limit"),
         ],
     )
@@ -234,6 +235,20 @@ async fn chat_search_filters_by_selected_agent_and_respects_limit() {
         .unwrap_or_default()
         .contains("filtered chat"));
 
+    let second = request(
+        &app.app,
+        Method::GET,
+        &format!("/api/chats/search?agent_id={filter_agent}&q=needle&offset=1&limit=1"),
+        None,
+        None,
+    )
+    .await;
+    let second = read_json(second).await;
+    assert_eq!(second["total"], 2);
+    assert_eq!(second["results"][0]["message_id"], "a1");
+    assert_eq!(second["results"][0]["sequence"], 3);
+    assert!(second["next_offset"].is_null());
+
     let empty = request(
         &app.app,
         Method::GET,
@@ -250,4 +265,24 @@ async fn chat_search_filters_by_selected_agent_and_respects_limit() {
 
     delete_agent(&app.app, filter_agent).await;
     delete_agent(&app.app, header_agent).await;
+}
+
+#[tokio::test]
+async fn chat_list_and_search_reject_conflicting_project_filters_even_without_search_text() {
+    let app = build_app();
+    for path in ["/api/chats", "/api/chats/search"] {
+        let response = request(
+            &app.app,
+            Method::GET,
+            &format!("{path}?project_id=photos&without_project=true"),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(read_json(response).await["detail"]
+            .as_str()
+            .unwrap()
+            .contains("without_project"));
+    }
 }

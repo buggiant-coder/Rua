@@ -8,8 +8,7 @@ import SyncNowButton from "../components/SyncNowButton";
 import ThemeToggleButton from "../components/ThemeToggleButton";
 import { NAV_GROUPS, type NavItem } from "./navGroups";
 import ConversationNavigation from "./ConversationNavigation";
-import { resolveAgentChatPath } from "@/pages/Chat/conversationAddress";
-import { useAgentStore } from "@/stores/agentStore";
+import { resolveStandaloneChatPath } from "@/pages/Chat/conversationAddress";
 import styles from "./NavigationPanel.module.less";
 
 interface NavigationLocation {
@@ -55,7 +54,6 @@ export default function NavigationPanel({
   onNavigate,
 }: NavigationPanelProps) {
   const { t } = useTranslation();
-  const selectedAgent = useAgentStore((state) => state.selectedAgent);
   const [mode, setMode] = useState<"chats" | "more">(() => {
     try {
       return sessionStorage.getItem("rua_navigation_mode") === "more"
@@ -155,7 +153,7 @@ export default function NavigationPanel({
             setMode("chats");
             if (!addressFromChatPath(location.pathname)) {
               onNavigate(
-                lastChatPath.current ?? resolveAgentChatPath(selectedAgent),
+                lastChatPath.current ?? resolveStandaloneChatPath(),
               );
             }
           }}

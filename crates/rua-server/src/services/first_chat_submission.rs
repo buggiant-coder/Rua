@@ -55,6 +55,20 @@ pub(crate) async fn persist_first_agent_submission(
                     .map_err(|error| error.to_string())?;
                 staging_store
                     .update_chat_header(address.chat_id().as_str(), |header| {
+                        if let Some(user_id) = input
+                            .extra
+                            .get("user_id")
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            header.user_id = user_id.to_owned();
+                        }
+                        if let Some(channel) = input
+                            .extra
+                            .get("channel")
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            header.channel = channel.to_owned();
+                        }
                         let mut activity = serde_json::Value::Object(header.extra.clone());
                         crate::services::chat_device_activity::apply_chat_created(
                             &mut activity,
@@ -93,31 +107,12 @@ pub(crate) async fn persist_first_agent_submission(
                     placement,
                 )
                 .await?;
-                let mut index = chat_index::get(&staging_root, address.chat_id().as_str())
-                    .await?
-                    .ok_or_else(|| "staged Agent Chat index entry is missing".to_string())?;
-                crate::services::chat_device_activity::apply_chat_created(
-                    &mut index.meta,
-                    &crate::services::chat_device_activity::ChatDeviceActivityUpdate {
-                        device_id: Some(placement.device_id.clone()),
-                        host_profile: String::new(),
-                    },
-                );
-                if let Some(user) = input
-                    .extra
-                    .get("user_id")
-                    .and_then(serde_json::Value::as_str)
-                {
-                    index.user_id = user.to_string();
-                }
-                if let Some(channel) = input
-                    .extra
-                    .get("channel")
-                    .and_then(serde_json::Value::as_str)
-                {
-                    index.channel = channel.to_string();
-                }
-                Ok(index)
+                let header = staging_store
+                    .load_chat_header(address.chat_id().as_str())
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "staged Chat header is missing".to_string())?;
+                rua_chat::project_chat_header(&header, None).map_err(|error| error.to_string())
             })
             .await?;
             if let Err(error) = crate::services::chat_media::ChatMediaService::confirm_staged_media(

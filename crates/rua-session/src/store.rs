@@ -699,6 +699,18 @@ pub struct SavedConversationSearchResult {
     pub next_offset: Option<usize>,
 }
 
+impl SavedConversationSearchResult {
+    pub fn empty(offset: usize, limit: usize) -> Self {
+        Self {
+            results: Vec::new(),
+            offset,
+            limit,
+            total: 0,
+            next_offset: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SavedConversationSearchHit {
     pub chat_id: String,
@@ -738,6 +750,12 @@ pub struct ChatSessionHeader {
     /// Fixed at Chat creation and independent of the selected Agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    #[serde(default = "default_chat_user_id")]
+    pub user_id: String,
+    #[serde(default = "default_chat_channel")]
+    pub channel: String,
+    #[serde(default)]
+    pub pin_order: i64,
     pub metadata: ChatMetadata,
     #[serde(default)]
     pub tag: ChatTag,
@@ -762,6 +780,9 @@ impl ChatSessionHeader {
             chat_id: metadata.chat_id.clone(),
             agent_id: metadata.agent_id.clone(),
             project_id: None,
+            user_id: default_chat_user_id(),
+            channel: default_chat_channel(),
+            pin_order: 0,
             metadata,
             tag: ChatTag::default(),
             active_checkpoint_id: None,
@@ -772,6 +793,14 @@ impl ChatSessionHeader {
             extra: serde_json::Map::new(),
         }
     }
+}
+
+fn default_chat_user_id() -> String {
+    "default".into()
+}
+
+fn default_chat_channel() -> String {
+    "console".into()
 }
 
 fn default_chat_schema_version() -> u32 {
@@ -1059,24 +1088,38 @@ impl WorkspaceSessionStore {
         Ok(())
     }
 
-    pub async fn load_chat_header(&self, chat_id: &str) -> Result<Option<ChatSessionHeader>> {
+    /// Reads the durable header without resolving the Agent configuration snapshot.
+    pub async fn load_stored_chat_header(
+        &self,
+        chat_id: &str,
+    ) -> Result<Option<ChatSessionHeader>> {
         let path = self.chat_header_path(chat_id);
-        if !path.exists() {
-            return Ok(None);
-        }
-        let content =
-            tokio::fs::read_to_string(&path)
-                .await
-                .map_err(|e| rua_core::RuaError::Io {
-                    message: format!("failed to read chat session header {}: {e}", path.display()),
-                })?;
-        let mut header: ChatSessionHeader =
-            serde_json::from_str(&content).map_err(|e| rua_core::RuaError::Io {
+        let content = match tokio::fs::read_to_string(&path).await {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(rua_core::RuaError::Io {
+                    message: format!(
+                        "failed to read chat session header {}: {error}",
+                        path.display()
+                    ),
+                })
+            }
+        };
+        serde_json::from_str(&content)
+            .map(Some)
+            .map_err(|error| rua_core::RuaError::Io {
                 message: format!(
-                    "failed to parse chat session header {}: {e}",
+                    "failed to parse chat session header {}: {error}",
                     path.display()
                 ),
-            })?;
+            })
+    }
+
+    pub async fn load_chat_header(&self, chat_id: &str) -> Result<Option<ChatSessionHeader>> {
+        let Some(mut header) = self.load_stored_chat_header(chat_id).await? else {
+            return Ok(None);
+        };
         header.extra.remove("projection_cache");
         if header.extra.remove("runtime_notes").is_some() {
             tracing::warn!(
@@ -1293,13 +1336,25 @@ impl WorkspaceSessionStore {
         chat_id: &str,
         update: impl FnOnce(&mut ChatSessionHeader),
     ) -> Result<bool> {
+        self.try_update_chat_header(chat_id, |header| {
+            update(header);
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn try_update_chat_header(
+        &self,
+        chat_id: &str,
+        update: impl FnOnce(&mut ChatSessionHeader) -> Result<()>,
+    ) -> Result<bool> {
         let write_lock = self.chat_write_lock(chat_id);
         let _guard = write_lock.lock().await;
         let Some(mut header) = self.load_chat_header(chat_id).await? else {
             return Ok(false);
         };
         let previous = header.extra.get("hook_configuration").cloned();
-        update(&mut header);
+        update(&mut header)?;
         if header.extra.get("hook_configuration") != previous.as_ref() {
             if let Some(configuration) = header.extra.get("hook_configuration") {
                 let expected = self.load_configuration_head(chat_id).await?;
@@ -3315,25 +3370,14 @@ impl WorkspaceSessionStore {
         &self,
         request: SavedConversationSearchRequest,
     ) -> Result<SavedConversationSearchResult> {
-        let query = request.query.trim().to_lowercase();
-        if query.is_empty() || request.limit == 0 {
-            return Ok(SavedConversationSearchResult {
-                results: Vec::new(),
-                offset: request.offset,
-                limit: request.limit,
-                total: 0,
-                next_offset: None,
-            });
+        if request.query.trim().is_empty() || request.limit == 0 {
+            return Ok(SavedConversationSearchResult::empty(
+                request.offset,
+                request.limit,
+            ));
         }
-        let matcher = TextMatcher::new(TextSearchQuery::literal(query)).map_err(|e| {
-            rua_core::RuaError::Io {
-                message: format!("failed to build saved conversation search matcher: {e}"),
-            }
-        })?;
-
         let headers = self.list_chat_headers(0, usize::MAX).await?;
-        let mut matches = Vec::new();
-        for header in headers
+        let headers = headers
             .into_iter()
             .filter(|header| {
                 request
@@ -3354,19 +3398,58 @@ impl WorkspaceSessionStore {
                     .get(crate::collaboration::COLLABORATION_META_KEY)
                     .is_some_and(Value::is_object)
             })
-        {
+            .collect();
+        self.search_conversation_headers(
+            headers,
+            &request.query,
+            request.offset,
+            request.limit,
+            |_| true,
+        )
+        .await
+    }
+
+    /// Search the effective messages of candidates in the order chosen by discovery.
+    pub async fn search_conversation_headers(
+        &self,
+        headers: Vec<ChatSessionHeader>,
+        query: &str,
+        offset: usize,
+        limit: usize,
+        include_message: impl Fn(&MessageLogEntry) -> bool,
+    ) -> Result<SavedConversationSearchResult> {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() || limit == 0 {
+            return Ok(SavedConversationSearchResult::empty(offset, limit));
+        }
+        let matcher = TextMatcher::new(TextSearchQuery::literal(query)).map_err(|e| {
+            rua_core::RuaError::Io {
+                message: format!("failed to build saved conversation search matcher: {e}"),
+            }
+        })?;
+
+        let mut total = 0;
+        let mut results = Vec::new();
+        for header in headers {
             let index = self.load_turn_index(&header.chat_id).await?;
             let messages = self
                 .read_active_messages_for_index(&header.chat_id, &header, &index, 1)
                 .await?;
             for message in messages {
+                if !include_message(&message) {
+                    continue;
+                }
                 let Some(text) = conversation_message_text(&message) else {
                     continue;
                 };
                 if !matcher.is_match(&text) {
                     continue;
                 }
-                matches.push(SavedConversationSearchHit {
+                total += 1;
+                if total <= offset || results.len() >= limit {
+                    continue;
+                }
+                results.push(SavedConversationSearchHit {
                     chat_id: header.chat_id.clone(),
                     title: header.metadata.title.clone(),
                     preview: header.metadata.preview.clone(),
@@ -3385,21 +3468,13 @@ impl WorkspaceSessionStore {
             }
         }
 
-        let total = matches.len();
-        let results: Vec<_> = matches
-            .into_iter()
-            .skip(request.offset)
-            .take(request.limit)
-            .collect();
-        let consumed = request.offset.saturating_add(results.len());
-        let next_offset = (consumed < total).then_some(consumed);
-
+        let end = offset.saturating_add(results.len());
         Ok(SavedConversationSearchResult {
             results,
-            offset: request.offset,
-            limit: request.limit,
+            offset,
+            limit,
             total,
-            next_offset,
+            next_offset: (end < total).then_some(end),
         })
     }
 

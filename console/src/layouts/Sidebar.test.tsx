@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Sidebar from "./Sidebar";
+import { saveLastChatId } from "@/pages/Chat/chatNavigation";
 
 const onNavigateMock = vi.fn();
 
@@ -8,6 +9,8 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) =>
       ({
+        "common.more": "More",
+        "navigation.backToConversations": "Back to conversations",
         "group.main": "Main",
         "nav.agents": "Agents",
         "nav.chat": "Chat",
@@ -73,6 +76,8 @@ vi.mock("./navGroups", () => ({
 describe("Sidebar", () => {
   beforeEach(() => {
     onNavigateMock.mockReset();
+    sessionStorage.clear();
+    localStorage.clear();
   });
 
   it("renders the same navigation panel content as mobile mode", () => {
@@ -97,7 +102,8 @@ describe("Sidebar", () => {
   });
 
   it("keeps navigation state outside the panel and reports selections", () => {
-    localStorage.setItem("rua_last_chat_id_default", "chat-1");
+    const id = "00000000-0000-4000-8000-000000000340";
+    saveLastChatId(id);
     render(
       <Sidebar
         location={{ pathname: "/skills", search: "" }}
@@ -105,33 +111,34 @@ describe("Sidebar", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
     const skillsButton = screen.getByRole("button", { name: /Skills/ });
     expect(skillsButton.className).toContain("navItemActive");
 
-    fireEvent.click(screen.getByRole("button", { name: /Chat/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to conversations" }));
 
-    expect(onNavigateMock).toHaveBeenCalledWith("/agents/default/chats/chat-1");
+    expect(onNavigateMock).toHaveBeenCalledWith(`/chats/${id}`);
     expect(
       screen.getByRole("complementary", { name: "navigation" }),
     ).toBeVisible();
   });
 
-  it("does not highlight agent management on an agent chat route", () => {
+  it("opens More on a saved Chat without highlighting Agent management or moving the Chat", () => {
     render(
       <Sidebar
         location={{
-          pathname: "/agents/default/chats/chat-1",
+          pathname: "/chats/00000000-0000-4000-8000-000000000340",
           search: "",
         }}
         onNavigate={onNavigateMock}
       />,
     );
 
-    expect(screen.getByRole("button", { name: /Chat/ }).className).toContain(
-      "navItemActive",
-    );
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
     expect(
       screen.getByRole("button", { name: /Agents/ }).className,
     ).not.toContain("navItemActive");
+    fireEvent.click(screen.getByRole("button", { name: "Back to conversations" }));
+    expect(onNavigateMock).not.toHaveBeenCalled();
   });
 });

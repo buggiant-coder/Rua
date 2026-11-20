@@ -707,9 +707,19 @@ Turn assignments. This does not introduce a historical-participant filter.
 
 Unified discovery does not change archive/visibility policies or flatten
 collaboration Chats into ordinary user-visible results. Preserve the separation
-between authoritative Chat state and rebuildable list projections. The physical
-index layout and query implementation remain open. Browser-local unmaterialized
-drafts do not become durable list/search rows just because their IDs exist (D32).
+between authoritative Chat state and rebuildable list projections. Browser-local
+unmaterialized drafts first enter discovery when their first submission succeeds (D32).
+
+The unified list reads the shared Chat Index. Agent, fixed Project membership,
+archive and conversation-view filters apply before counting or paging. Omitted
+Project membership selects all Projects and standalone Chats. An explicit
+standalone filter selects only Chats without a Project. Pinned Chats participate
+in the same pagination as other Chats, with Chat ID breaking ordering ties.
+Transcript search uses the same candidate order and counts visible matching
+messages. On startup, Rua rebuilds local discovery rows from saved Session
+headers, including current Agent, membership and pin order, and honors deletion
+intents and synchronized tombstones. Opening a Chat resolves its configuration
+and history separately.
 
 ### D32 - Fix Project at draft creation and preserve lazy materialization and input caching
 

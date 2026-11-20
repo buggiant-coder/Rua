@@ -4,8 +4,7 @@ use chrono::{DateTime, Utc};
 use rua_core::{ChatAddress, ChatStore, Result, RuaRoot, WorkspaceRoot};
 use rua_session::{
     chat_index, ChatMetadata, ChatSessionHeader, MessageLogEntry, NewConversationMessage,
-    NewConversationTurn, SavedConversationSearchRequest, SavedConversationSearchResult,
-    TurnIndexRecord, WorkspaceSessionStore,
+    NewConversationTurn, SavedConversationSearchResult, TurnIndexRecord, WorkspaceSessionStore,
 };
 use serde::{Deserialize, Serialize};
 
@@ -164,6 +163,7 @@ pub enum ChatSetting {
 pub struct ChatListUpdate {
     pub title: Option<String>,
     pub pinned: Option<bool>,
+    pub pin_order: Option<i64>,
     pub tag: Option<ChatTag>,
     pub archived: Option<bool>,
 }
@@ -177,17 +177,15 @@ pub struct ChatHistoryQuery {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatSearchQuery {
-    pub agent_id: Option<String>,
-    pub project_id: Option<String>,
     pub query: String,
-    pub offset: usize,
-    pub limit: usize,
+    pub chats: ChatListQuery,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChatListQuery {
     pub agent_id: Option<String>,
     pub project_id: Option<String>,
+    pub without_project: bool,
     pub user_id: Option<String>,
     pub channel: Option<String>,
     pub search: Option<String>,
@@ -373,13 +371,7 @@ impl ChatService {
             });
         }
         if updates_agent {
-            let header = session_store
-                .load_chat_header(address.chat_id().as_str())
-                .await?
-                .ok_or_else(|| rua_core::RuaError::Io {
-                    message: format!("Chat Session File disappeared after update: {address}"),
-                })?;
-            project_header(scope_root, &header).await?;
+            return self.repair_projection(address).await;
         }
         self.load(address)
             .await?
@@ -411,6 +403,9 @@ impl ChatService {
                 if let Some(pinned) = update.pinned {
                     header.metadata.pinned = pinned;
                 }
+                if let Some(pin_order) = update.pin_order {
+                    header.pin_order = pin_order;
+                }
                 if let Some(tag) = update.tag {
                     header.tag = tag;
                 }
@@ -429,18 +424,7 @@ impl ChatService {
                 id: address.to_string(),
             });
         }
-        let header = session_store
-            .load_chat_header(address.chat_id().as_str())
-            .await?
-            .ok_or_else(|| rua_core::RuaError::Io {
-                message: format!("Chat Session File disappeared after update: {address}"),
-            })?;
-        project_header(scope_root, &header).await?;
-        self.load(address)
-            .await?
-            .ok_or_else(|| rua_core::RuaError::Io {
-                message: format!("Chat Session File disappeared after projection: {address}"),
-            })
+        self.repair_projection(address).await
     }
 
     pub async fn replace_placeholder_title(
@@ -476,23 +460,43 @@ impl ChatService {
                 id: address.to_string(),
             });
         }
-        let header = session_store
-            .load_chat_header(address.chat_id().as_str())
-            .await?
-            .ok_or_else(|| rua_core::RuaError::Io {
-                message: format!("Chat Session File disappeared after update: {address}"),
-            })?;
-        project_header(scope_root, &header).await?;
-        self.load(address)
-            .await?
-            .ok_or_else(|| rua_core::RuaError::Io {
-                message: format!("Chat Session File disappeared after projection: {address}"),
-            })
+        self.repair_projection(address).await
+    }
+
+    /// Reconstruct local Chat rows from Session headers. Replica rows without a
+    /// local Session are left in place. This maintenance path never reads turns.
+    pub async fn rebuild_index(&self) -> Result<()> {
+        self.rebuild_index_for_live_sessions(|_| Ok(true)).await
+    }
+
+    /// The host supplies its synchronized deletion state before publishing rows.
+    pub async fn rebuild_index_for_live_sessions(
+        &self,
+        is_live: impl Fn(&ChatSessionHeader) -> Result<bool>,
+    ) -> Result<()> {
+        let scope_root = self.workspace.as_path();
+        let store = WorkspaceSessionStore::new(scope_root);
+        for header in store.list_chat_headers(0, usize::MAX).await? {
+            let _guard = store.lock_chat_storage(&header.chat_id).await;
+            if let Some(current) = store.load_stored_chat_header(&header.chat_id).await? {
+                if is_live(&current)? {
+                    project_header(scope_root, &current).await?;
+                } else {
+                    chat_index::delete(scope_root, &header.chat_id)
+                        .await
+                        .map_err(chat_index_error)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub async fn repair_projection(&self, address: &ChatAddress) -> Result<Chat> {
         let scope_root = self.workspace.as_path();
         let session_store = WorkspaceSessionStore::new(scope_root);
+        let _guard = session_store
+            .lock_chat_storage(address.chat_id().as_str())
+            .await;
         let header = session_store
             .load_chat_header(address.chat_id().as_str())
             .await?
@@ -629,6 +633,8 @@ impl ChatService {
             preview: None,
         });
         branch_header.project_id = source_header.project_id;
+        branch_header.user_id = source_header.user_id;
+        branch_header.channel = source_header.channel;
         branch_header.extra = source_header.extra;
         store.save_chat_header(&branch_header).await?;
 
@@ -685,7 +691,6 @@ impl ChatService {
                 })?;
         if let Some(mut projection) = source_projection {
             projection.status = "idle".to_string();
-            projection.pin_order = 0;
             let projection = project_chat_header(&branch_header, Some(projection))?;
             chat_index::upsert(scope_root, projection)
                 .await
@@ -905,13 +910,28 @@ impl ChatService {
     }
 
     pub async fn search(&self, query: ChatSearchQuery) -> Result<SavedConversationSearchResult> {
-        WorkspaceSessionStore::new(self.workspace.as_path())
-            .search_saved_conversations(SavedConversationSearchRequest {
-                agent_id: query.agent_id,
-                project_id: query.project_id,
-                query: query.query,
-                offset: query.offset,
-                limit: query.limit,
+        let offset = query.chats.offset as usize;
+        let limit = query.chats.limit as usize;
+        if query.query.trim().is_empty() || limit == 0 {
+            return Ok(SavedConversationSearchResult::empty(offset, limit));
+        }
+        let candidates = self
+            .list(ChatListQuery {
+                offset: 0,
+                limit: u64::MAX,
+                ..query.chats
+            })
+            .await?;
+        let store = WorkspaceSessionStore::new(self.workspace.as_path());
+        let mut headers = Vec::new();
+        for candidate in candidates.entries {
+            if let Some(header) = store.load_stored_chat_header(&candidate.id).await? {
+                headers.push(header);
+            }
+        }
+        store
+            .search_conversation_headers(headers, &query.query, offset, limit, |message| {
+                matches!(message.role.as_str(), "user" | "assistant")
             })
             .await
     }
@@ -923,6 +943,7 @@ impl ChatService {
             chat_index::ChatIndexFilter {
                 agent_id: query.agent_id,
                 project_id: query.project_id,
+                without_project: query.without_project,
                 user_id: query.user_id,
                 channel: query.channel,
                 search: query.search,
@@ -1156,13 +1177,16 @@ async fn project_header(scope_root: &Path, header: &ChatSessionHeader) -> Result
     let existing = chat_index::get(scope_root, &header.chat_id)
         .await
         .map_err(chat_index_error)?;
-    let projection = project_chat_header(header, existing)?;
+    let projection = project_chat_header(header, existing.clone())?;
+    if existing.as_ref() == Some(&projection) {
+        return Ok(());
+    }
     chat_index::upsert(scope_root, projection)
         .await
         .map_err(chat_index_error)
 }
 
-/// Projects Session-owned fields while preserving index-only listing state.
+/// Projects durable Session fields while preserving transient index state and extensions.
 pub fn project_chat_header(
     header: &ChatSessionHeader,
     existing: Option<chat_index::ChatIndexRecord>,
@@ -1172,8 +1196,8 @@ pub fn project_chat_header(
     let mut projection = existing.unwrap_or_else(|| chat_index::ChatIndexRecord {
         id: header.chat_id.clone(),
         name: header.metadata.title.clone(),
-        user_id: "default".to_string(),
-        channel: "console".to_string(),
+        user_id: header.user_id.clone(),
+        channel: header.channel.clone(),
         created_at,
         updated_at,
         meta: serde_json::Value::Object(Default::default()),
@@ -1185,6 +1209,9 @@ pub fn project_chat_header(
     });
     projection.id = header.chat_id.clone();
     projection.name = header.metadata.title.clone();
+    projection.user_id.clone_from(&header.user_id);
+    projection.channel.clone_from(&header.channel);
+    projection.pin_order = header.pin_order;
     projection.created_at = created_at;
     projection.updated_at = updated_at;
     let mut meta =
@@ -1197,6 +1224,9 @@ pub fn project_chat_header(
             })?;
     meta.remove(rua_session::collaboration::COLLABORATION_META_KEY);
     meta.extend(header.extra.clone());
+    // Configuration snapshots and selection audit history are loaded when opening a Chat.
+    meta.remove("hook_configuration");
+    meta.remove("project_agent_switch_events");
     meta.insert(
         "agent_id".into(),
         serde_json::Value::String(header.agent_id.clone()),

@@ -5,7 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
   type SetStateAction,
   type UIEvent,
 } from "react";
@@ -64,7 +63,8 @@ import type {
   ConversationListView,
   ModelSlot,
 } from "@/api/types";
-import type { ChatSearchResult, ChatSpec, ChatTag } from "@/api/types";
+import ChatSearchResults from "./ChatSearchResults";
+import type { ChatSpec, ChatTag } from "@/api/types";
 import type { ACPChatStatus } from "@/api/types";
 import {
   DEFAULT_CHAT_LIST_SORT,
@@ -181,21 +181,6 @@ function formatChatDate(raw: string | null | undefined): string {
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return "";
   return date.toLocaleString();
-}
-
-function highlightSnippet(snippet: string, query: string): ReactNode {
-  const trimmed = query.trim();
-  if (!trimmed) return snippet;
-  const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const matcher = new RegExp(`(${escaped})`, "gi");
-  return snippet.split(matcher).map((part, index) => {
-    if (part.toLowerCase() !== trimmed.toLowerCase()) return part;
-    return (
-      <mark key={`${part}-${index}`} className="rua-owned-search-mark">
-        {part}
-      </mark>
-    );
-  });
 }
 
 const REMOTE_TARGET_NOTICE_KEY = "rua:remote-target-first-use-notice";
@@ -353,116 +338,13 @@ function deviceDisplayName(device: DeviceDto): string {
   );
 }
 
-interface OwnedChatSearchResultsProps {
-  query: string;
-  agentId: string;
-  onResultClick: (chatId: string, title?: string) => void;
-}
-
-function OwnedChatSearchResults({
-  query,
-  agentId,
-  onResultClick,
-}: OwnedChatSearchResultsProps) {
-  const { t } = useTranslation();
-  const [results, setResults] = useState<ChatSearchResult[]>([]);
-  const [loading, setLoading] = useState(false);
-  const seqRef = useRef(0);
-
-  useEffect(() => {
-    const trimmed = query.trim();
-    const seq = ++seqRef.current;
-    if (!trimmed) {
-      setResults([]);
-      setLoading(false);
-      return;
-    }
-
-    setLoading(true);
-    const timer = window.setTimeout(() => {
-      chatApi
-        .searchChats(trimmed, agentId)
-        .then((response) => {
-          if (seq !== seqRef.current) return;
-          setResults(response.results || []);
-        })
-        .catch((err) => {
-          if (seq !== seqRef.current) return;
-          toast.error(err instanceof Error ? err.message : String(err));
-          setResults([]);
-        })
-        .finally(() => {
-          if (seq === seqRef.current) setLoading(false);
-        });
-    }, 300);
-
-    return () => window.clearTimeout(timer);
-  }, [agentId, query]);
-
-  const trimmed = query.trim();
-  if (!trimmed) return null;
-  if (loading) {
-    return (
-      <div className="rua-owned-chat-search-spinner">
-        <Spinner size="sm" />
-      </div>
-    );
-  }
-  if (results.length === 0) {
-    return (
-      <div className="rua-owned-chat-empty-list">
-        {t("chat.noSearchResults")}
-      </div>
-    );
-  }
-
-  return (
-    <>
-      <div className="rua-owned-chat-search-count">
-        {t("chat.searchResultCount", { count: results.length })}
-      </div>
-      {results.map((result, index) => (
-        <button
-          key={`${result.chat_id}-${result.card_index}-${index}`}
-          type="button"
-          className="rua-owned-chat-search-result"
-          onClick={() => {
-            sessionStorage.setItem(
-              "rua_search_scroll_target",
-              JSON.stringify({
-                cardIndex: result.card_index,
-                query: trimmed,
-                messageId: result.message_id,
-                turnId: result.turn_id,
-                conversationId: result.chat_id,
-                ownerKey: agentId,
-              }),
-            );
-            onResultClick(
-              result.chat_id,
-              result.chat_name?.trim() || undefined,
-            );
-            window.dispatchEvent(new Event("rua-search-scroll"));
-          }}
-        >
-          <div className="rua-owned-chat-search-header">
-            <span className="rua-owned-chat-search-title">
-              {result.chat_name || result.chat_id}
-            </span>
-            <Tag
-              color={result.role === "user" ? "primary" : "success"}
-              style={{ marginRight: 0 }}
-            >
-              {result.role}
-            </Tag>
-          </div>
-          <div className="rua-owned-chat-search-snippet">
-            {highlightSnippet(result.snippet, trimmed)}
-          </div>
-        </button>
-      ))}
-    </>
-  );
+function searchStandaloneChats(query: string, offset: number) {
+  return chatApi.searchChats(query, {
+    without_project: true,
+    view: "user",
+    archived: false,
+    offset,
+  });
 }
 
 const OPTION_SECTION_STORAGE_KEY = "rua:chat-option-section-open";
@@ -1086,8 +968,8 @@ export function AgentChatPage({
   }, [agentId, chatId]);
 
   useEffect(() => {
-    if (chatId && !conversationLazy) saveLastChatId(selectedAgent, chatId);
-  }, [chatId, selectedAgent, conversationLazy]);
+    if (chatId && !conversationLazy) saveLastChatId(chatId);
+  }, [chatId, conversationLazy]);
 
   const chatPlacement = useMemo(
     () =>
@@ -1175,6 +1057,7 @@ export function AgentChatPage({
         if (history.agent_id) setExecutionAgent(history.agent_id);
         const navigationKey = JSON.stringify([
           sourceChatKey,
+          history.agent_id,
           history.title,
           history.status,
         ]);
@@ -1241,14 +1124,10 @@ export function AgentChatPage({
   useEffect(() => {
     const onSubmitted = (event: Event) => {
       const detail = (event as CustomEvent<ChatSubmittedEventDetail>).detail;
-      if (detail?.agentId && detail?.chatId) {
+      if (detail?.chatId) {
         clearDraftConversation(chatDraftScope(), detail.chatId);
       }
-      if (
-        detail?.agentId === selectedAgent &&
-        detail.chatId === effectiveChatId &&
-        detail.title.trim()
-      ) {
+      if (detail?.chatId === effectiveChatId && detail.title.trim()) {
         const chatKey = `chat:${detail.chatId}`;
         if (chatHasUserMessagesRef.current[chatKey]) {
           return;
@@ -1263,7 +1142,7 @@ export function AgentChatPage({
     return () => {
       window.removeEventListener(CHAT_SUBMITTED_EVENT, onSubmitted);
     };
-  }, [effectiveChatId, selectedAgent]);
+  }, [effectiveChatId]);
 
   const loadSessions = useCallback(
     async (page = 1, mode: SessionLoadMode = "replace") => {
@@ -1276,41 +1155,39 @@ export function AgentChatPage({
       }
       try {
         const offset = (page - 1) * CHAT_DRAWER_PAGE_SIZE;
-        const { data, total } = await chatApi.listChats(
-          {
-            offset,
-            limit: CHAT_DRAWER_PAGE_SIZE,
-            archived: sessionsArchived,
-            ...(sessionsArchived
-              ? { view: "all" as const }
-              : conversationView === "collaboration"
-              ? { view: "collaboration" as const }
-              : {}),
-            ...(!sessionsArchived &&
-            conversationView === "collaboration" &&
-            collaborationFilters.sourceChatId.trim()
-              ? { source_chat_id: collaborationFilters.sourceChatId.trim() }
-              : {}),
-            ...(!sessionsArchived &&
-            conversationView === "collaboration" &&
-            collaborationFilters.executor.trim()
-              ? { executor: collaborationFilters.executor.trim() }
-              : {}),
-            ...(!sessionsArchived &&
-            conversationView === "collaboration" &&
-            collaborationFilters.status
-              ? { status: collaborationFilters.status }
-              : {}),
-            ...(sessionListSearch ? { search: sessionListSearch } : {}),
-            ...sessionSort,
-            ...(!sessionsArchived &&
-            conversationView === "user" &&
-            sessionTagFilter
-              ? { tag: sessionTagFilter }
-              : {}),
-          },
-          selectedAgent,
-        );
+        const { data, total } = await chatApi.listChats({
+          without_project: true,
+          offset,
+          limit: CHAT_DRAWER_PAGE_SIZE,
+          archived: sessionsArchived,
+          ...(sessionsArchived
+            ? { view: "all" as const }
+            : conversationView === "collaboration"
+            ? { view: "collaboration" as const }
+            : {}),
+          ...(!sessionsArchived &&
+          conversationView === "collaboration" &&
+          collaborationFilters.sourceChatId.trim()
+            ? { source_chat_id: collaborationFilters.sourceChatId.trim() }
+            : {}),
+          ...(!sessionsArchived &&
+          conversationView === "collaboration" &&
+          collaborationFilters.executor.trim()
+            ? { executor: collaborationFilters.executor.trim() }
+            : {}),
+          ...(!sessionsArchived &&
+          conversationView === "collaboration" &&
+          collaborationFilters.status
+            ? { status: collaborationFilters.status }
+            : {}),
+          ...(sessionListSearch ? { search: sessionListSearch } : {}),
+          ...sessionSort,
+          ...(!sessionsArchived &&
+          conversationView === "user" &&
+          sessionTagFilter
+            ? { tag: sessionTagFilter }
+            : {}),
+        });
         if (requestSeq !== sessionsRequestSeqRef.current) return;
         setSessionsPage(page);
         setSessionsTotal(total);
@@ -1339,7 +1216,6 @@ export function AgentChatPage({
       sessionsArchived,
       collaborationFilters,
       conversationView,
-      selectedAgent,
       sessionSort,
       sessionTagFilter,
     ],
@@ -1624,7 +1500,7 @@ export function AgentChatPage({
 
   const handleChatDeleted = useCallback(
     async (deletedChatId: string, remainingKnownChats: ChatSpec[]) => {
-      forgetChatId(selectedAgent, deletedChatId);
+      forgetChatId(deletedChatId);
       clearDraftConversation(chatDraftScope(), deletedChatId);
       drafts.clear(`chat:${deletedChatId}`);
       setSessions((items) => items.filter((item) => item.id !== deletedChatId));
@@ -1633,7 +1509,7 @@ export function AgentChatPage({
       const targetChatId =
         remainingKnownChats.find(
           (chat) => chat.id !== deletedChatId && !chat.archived,
-        )?.id ?? resolveChatEntry(selectedAgent);
+        )?.id ?? resolveChatEntry();
       const ready = await prepareChatTransition(selectedAgent, targetChatId);
       if (ready) {
         navigateWithPageTransition(navigate, chatPath(targetChatId), {
@@ -1655,7 +1531,7 @@ export function AgentChatPage({
         );
         return true;
       }),
-    [effectiveChatId, handleChatDeleted, selectedAgent],
+    [effectiveChatId, handleChatDeleted],
   );
 
   const deleteChat = async (chat: ChatSpec) => {
@@ -2209,9 +2085,9 @@ export function AgentChatPage({
           })}
           searchContent={
             isSessionSearchActive ? (
-              <OwnedChatSearchResults
+              <ChatSearchResults
+                search={searchStandaloneChats}
                 query={sessionSearch}
-                agentId={selectedAgent}
                 onResultClick={(id) => switchToChat(id)}
               />
             ) : undefined

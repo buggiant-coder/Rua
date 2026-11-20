@@ -2803,8 +2803,11 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
         authority
             .publish_project_agent_state_snapshot(&address, &meta, state.clone())
             .await;
-        self.session_sync
-            .emit_evergreen_chat_snapshot(&scope_root, &address)
+        let record = crate::services::chat_metadata_store::load_chat_record(&scope_root, chat_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Chat disappeared after Agent selection: {chat_id}"))?;
+        self.publish_authority_chat_metadata_for(&scope_root, &address, &record)
             .await;
         self.remote_input_delivery
             .spawn_priority_sync_to_device(source_device_id);

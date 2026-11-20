@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import api from "../../../api";
 import { projectChatsApi } from "@/api/modules/projectChats";
 import { invalidateConversationNavigation } from "@/layouts/conversationNavigationEvents";
@@ -35,11 +35,6 @@ export function useSessions(
     invalidateConversationNavigation({ chatId }, false, projectId ?? null);
   };
 
-  const pinnedCount = useMemo(() => {
-    return sessions.filter((session) => session.pinned).length;
-  }, [sessions]);
-  const unpinnedTotal = Math.max(0, total - pinnedCount);
-
   const fetchSessions = useCallback(
     async (nextPage = 1) => {
       const currentRequest = ++requestId.current;
@@ -51,7 +46,11 @@ export function useSessions(
         };
         const response = projectId
           ? await projectChatsApi.listChats(projectId, params)
-          : await api.listChats(params, selectedAgent);
+          : await api.listChats({
+              ...params,
+              agent_id: selectedAgent,
+              without_project: true,
+            });
         if (currentRequest === requestId.current && response) {
           setPage(nextPage);
           setTotal(response.total);
@@ -103,6 +102,7 @@ export function useSessions(
       setSessions((items) =>
         items.map((s) => (s.id === chatId ? (result as Session) : s)),
       );
+      invalidateNavigation(chatId);
       toast.success(t("sessions.saveSuccess"));
       return true;
     } catch (error) {
@@ -172,7 +172,6 @@ export function useSessions(
     page,
     pageSize: SESSIONS_PAGE_SIZE,
     total,
-    unpinnedTotal,
     fetchSessions,
     updateSession,
     deleteSession,

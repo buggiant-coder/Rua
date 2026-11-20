@@ -1,13 +1,18 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 
-import type { ChatSearchResult } from "@/api/types";
+import type { ChatSearchResponse, ChatSearchResult } from "@/api/types";
 import { Spinner, toast } from "@/ui";
 
 type ChatSearchResultsProps = {
-  ownerKey: string;
   query: string;
-  search: (query: string) => Promise<{ results: ChatSearchResult[] }>;
+  search: (query: string, offset: number) => Promise<ChatSearchResponse>;
   onResultClick: (chatId: string, title?: string) => void;
 };
 
@@ -27,46 +32,76 @@ function highlightSnippet(snippet: string, query: string): ReactNode {
   );
 }
 
+export function openChatSearchResult(
+  result: ChatSearchResult,
+  query: string,
+  navigate: (chatId: string, title?: string) => void,
+) {
+  try {
+    sessionStorage.setItem(
+      "rua_search_scroll_target",
+      JSON.stringify({
+        cardIndex: result.card_index,
+        messageId: result.message_id,
+        turnId: result.turn_id,
+        conversationId: result.chat_id,
+        ownerKey: "chat",
+        query,
+      }),
+    );
+  } catch {}
+  navigate(result.chat_id, result.chat_name?.trim() || undefined);
+  window.dispatchEvent(new Event("rua-search-scroll"));
+}
+
 export default function ChatSearchResults({
-  ownerKey,
   query,
   search,
   onResultClick,
 }: ChatSearchResultsProps) {
   const { t } = useTranslation();
   const [results, setResults] = useState<ChatSearchResult[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
   const seqRef = useRef(0);
+  const trimmed = query.trim();
+  const load = useCallback(
+    async (offset: number) => {
+      const seq = ++seqRef.current;
+      setLoading(true);
+      try {
+        const page = await search(trimmed, offset);
+        if (seq !== seqRef.current) return;
+        setResults((current) =>
+          offset ? [...current, ...page.results] : page.results,
+        );
+        setNextOffset(page.next_offset);
+        setTotal(page.total);
+      } catch (error) {
+        if (seq === seqRef.current)
+          toast.error(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (seq === seqRef.current) setLoading(false);
+      }
+    },
+    [search, trimmed],
+  );
 
   useEffect(() => {
-    const trimmed = query.trim();
-    const seq = ++seqRef.current;
-    if (!trimmed) {
-      setResults([]);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    const timer = window.setTimeout(() => {
-      search(trimmed)
-        .then((response) => {
-          if (seq === seqRef.current) setResults(response.results || []);
-        })
-        .catch((error) => {
-          if (seq !== seqRef.current) return;
-          toast.error(error instanceof Error ? error.message : String(error));
-          setResults([]);
-        })
-        .finally(() => {
-          if (seq === seqRef.current) setLoading(false);
-        });
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [query, search]);
+    setResults([]);
+    setNextOffset(null);
+    setLoading(Boolean(trimmed));
+    if (!trimmed) return;
+    const timer = window.setTimeout(() => void load(0), 300);
+    return () => {
+      window.clearTimeout(timer);
+      seqRef.current += 1;
+    };
+  }, [load, trimmed]);
 
-  const trimmed = query.trim();
   if (!trimmed) return null;
-  if (loading) {
+  if (loading && results.length === 0) {
     return (
       <div className="rua-owned-chat-search-spinner">
         <Spinner size="sm" />
@@ -76,45 +111,28 @@ export default function ChatSearchResults({
   if (results.length === 0) {
     return (
       <div className="rua-owned-chat-search-empty">
-        {t("chat.search.noResults")}
+        {t("chat.noSearchResults")}
       </div>
     );
   }
   return (
     <div className="rua-owned-chat-search-results">
       <div className="rua-owned-chat-search-count">
-        {t("chat.search.resultCount", { count: results.length })}
+        {t("chat.searchResultCount", { count: total })}
       </div>
       {results.map((result, index) => (
         <button
           key={`${result.chat_id}-${result.card_index}-${index}`}
           type="button"
           className="rua-owned-chat-search-result"
-          onClick={() => {
-            sessionStorage.setItem(
-              "rua_search_scroll_target",
-              JSON.stringify({
-                cardIndex: result.card_index,
-                query: trimmed,
-                messageId: result.message_id,
-                turnId: result.turn_id,
-                conversationId: result.chat_id,
-                ownerKey,
-              }),
-            );
-            onResultClick(
-              result.chat_id,
-              result.chat_name?.trim() || undefined,
-            );
-            window.dispatchEvent(new Event("rua-search-scroll"));
-          }}
+          onClick={() => openChatSearchResult(result, trimmed, onResultClick)}
         >
           <div className="rua-owned-chat-search-result-header">
             <span className="rua-owned-chat-search-result-title">
               {result.chat_name || result.chat_id}
             </span>
             <span className="rua-owned-chat-search-result-role">
-              {result.role === "user" ? t("chat.user") : t("chat.assistant")}
+              {result.role}
             </span>
           </div>
           <div className="rua-owned-chat-search-snippet">
@@ -122,6 +140,15 @@ export default function ChatSearchResults({
           </div>
         </button>
       ))}
+      {nextOffset != null && (
+        <button
+          type="button"
+          disabled={loading}
+          onClick={() => void load(nextOffset)}
+        >
+          {t("projects.chat.loadMore")}
+        </button>
+      )}
     </div>
   );
 }

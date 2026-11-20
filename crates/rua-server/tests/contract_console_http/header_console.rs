@@ -373,6 +373,7 @@ async fn agent_chat_history_reads_current_configuration_without_chat_index_row()
             rua_chat::ChatListUpdate {
                 title: Some("Session-owned title".to_string()),
                 pinned: None,
+                pin_order: None,
                 tag: None,
                 archived: None,
             },

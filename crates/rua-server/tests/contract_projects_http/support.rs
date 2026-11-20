@@ -64,3 +64,22 @@ pub async fn json(response: Response) -> Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
 }
+
+pub async fn wait_for_chat_idle(state: &rua_server::AppState, chat_id: &str) {
+    let address = rua_core::ChatAddress::new(chat_id);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if state
+                .conversation_authority
+                .active_turn(&address)
+                .await
+                .is_none()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("Project Chat did not become idle");
+}

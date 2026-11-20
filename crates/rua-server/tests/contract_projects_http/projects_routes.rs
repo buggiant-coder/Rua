@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use super::support::{build_app, json as response_json, local_device_id, request};
+use super::support::{
+    build_app, json as response_json, local_device_id, request, wait_for_chat_idle,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conflicting_project_writes_preserve_saved_membership_and_history() {
@@ -411,6 +413,17 @@ async fn project_list_activity_comes_from_chat_index_without_reading_history() {
         tag: rua_session::ChatTag::None,
         archived: false,
     };
+    rua_session::chat_index::insert(
+        scope.root(),
+        rua_session::chat_index::ChatIndexRecord {
+            id: "00000000-0000-4000-8000-000000000813".to_string(),
+            pinned: true,
+            updated_at: project.created_at,
+            ..chat.clone()
+        },
+    )
+    .await
+    .unwrap();
     rua_session::chat_index::insert(scope.root(), chat)
         .await
         .unwrap();
@@ -3218,25 +3231,6 @@ fn snapshot_directory(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut output = Vec::new();
     visit(root, root, &mut output);
     output
-}
-
-async fn wait_for_chat_idle(state: &rua_server::AppState, chat_id: &str) {
-    let address = rua_core::ChatAddress::new(chat_id);
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
-            if state
-                .conversation_authority
-                .active_turn(&address)
-                .await
-                .is_none()
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("Project Chat did not become idle");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

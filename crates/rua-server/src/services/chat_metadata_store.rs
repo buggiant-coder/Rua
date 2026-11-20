@@ -251,6 +251,9 @@ pub(crate) async fn stage_synced_chat_metadata(
 }
 
 fn sync_header_metadata(header: &mut rua_session::ChatSessionHeader, chat: &ChatMetadataRecord) {
+    header.user_id.clone_from(&chat.user_id);
+    header.channel.clone_from(&chat.channel);
+    header.pin_order = chat.pin_order;
     header.metadata.archived = chat.archived;
     header.metadata.title = chat.name.clone();
     header.metadata.pinned = chat.pinned;
@@ -324,6 +327,36 @@ pub(crate) fn chat_header_from_metadata_record(
         .map(str::to_owned);
     sync_header_metadata(&mut header, chat);
     header
+}
+
+pub(crate) async fn rebuild_chat_index(state: &AppState) -> rua_core::Result<()> {
+    let intents =
+        crate::services::chat_deletion::ChatDeleteIntentStore::from_rua_root(&state.rua_root);
+    let projects = state.rua_root.join("projects");
+    rua_chat::ChatService::new(&state.rua_root)
+        .rebuild_index_for_live_sessions(|header| {
+            let address = ChatAddress::new(&header.chat_id);
+            let cursor_id = rua_sync::sync_registry::sync_cursor_record_id(
+                rua_sync::chat_adapter::CHAT_DOMAIN,
+                &rua_sync::chat_adapter::index_record_id(&address),
+            );
+            let deleted = state
+                .sidecar_store
+                .get_cursor(&cursor_id)
+                .map_err(|error| rua_core::RuaError::Io {
+                    message: error.to_string(),
+                })?
+                .is_some_and(|cursor| cursor.state == rua_sync::sidecar::RecordState::Tombstoned)
+                || intents
+                    .load(&address)
+                    .map_err(|message| rua_core::RuaError::Io { message })?
+                    .is_some()
+                || header.project_id.as_ref().is_some_and(|id| {
+                    rua_project::project_tombstone_exists(&projects, &rua_core::ProjectId::new(id))
+                });
+            Ok(!deleted)
+        })
+        .await
 }
 
 async fn save_authority_placement_sidecars(

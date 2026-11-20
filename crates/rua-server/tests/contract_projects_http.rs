@@ -12,3 +12,6 @@ mod support;
 
 #[path = "contract_projects_http/resource_editor.rs"]
 mod resource_editor;
+
+#[path = "contract_projects_http/unified_discovery.rs"]
+mod unified_discovery;
