@@ -670,12 +670,39 @@ async fn selected_other_device_never_opens_or_edits_a_local_namesake() {
         .await
         .unwrap();
     assert!(read.is_error);
-    assert_eq!(read.metadata["file_location"]["device_id"], "phone");
+    let location = &read.metadata["file_location"];
+    assert_eq!(location["device_id"], "phone");
+    assert_eq!(location["execution_device_id"], "desktop");
+    assert_eq!(location["dispatched"], false);
+    assert!(read.text_content().contains("no route"));
     assert!(!read.text_content().contains("original"));
     let edit=EditFileTool.call(json!({"patch":format!("*** Begin Patch\n*** Update File: {}\n@@\n-original\n+new\n*** End Patch",path.display()),"device_id":"phone"}),ctx).await.unwrap();
     assert!(edit.is_error);
     assert_eq!(edit.metadata["file_location"]["path"], json!(path));
     assert_eq!(std::fs::read_to_string(path).unwrap(), "original\n");
+}
+
+#[tokio::test]
+async fn explicit_device_requires_a_valid_target_and_a_known_execution_device() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("photo.txt"), "local contents").unwrap();
+    for (target, reason) in [
+        (json!("phone"), "execution device ID is unknown"),
+        (json!(" "), "device_id must be a nonempty string"),
+        (json!(42), "device_id must be a nonempty string"),
+    ] {
+        let result = ReadFileTool
+            .call(
+                json!({"file_path":"photo.txt","device_id":target}),
+                make_ctx(&root),
+            )
+            .await
+            .unwrap();
+        assert!(result.is_error);
+        assert!(result.text_content().contains(reason));
+        assert_eq!(result.metadata["file_location"]["dispatched"], false);
+        assert!(!result.text_content().contains("local contents"));
+    }
 }
 
 #[tokio::test]

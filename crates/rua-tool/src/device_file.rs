@@ -10,7 +10,11 @@ use crate::error::ToolError;
 use crate::fs::WorkspaceFs;
 
 pub(crate) fn device_id_parameter() -> Value {
-    json!({"type":"string","minLength":1,"description":"Stable execution Device ID. Omit for the current Device. If a location is unavailable, report the missing scope, continue independent work, and defer edits that require a complete comparison."})
+    json!({
+        "type": "string",
+        "minLength": 1,
+        "description": "Stable ID of the device that holds the requested path. Omit to use the current execution device. If a location is unavailable, report the missing scope, continue independent work, and defer edits that require a complete comparison.",
+    })
 }
 
 // The model adapter displays RuaError through Display. Retain the original
@@ -63,12 +67,28 @@ pub(crate) async fn call(
         path.into_iter().collect()
     };
     if let Some(device) = target {
-        if device
-            .as_str()
-            .is_none_or(|id| id.is_empty() || Some(id) != ctx.local_device_id.as_deref())
-        {
-            let location = json!({"device_id":device,"paths":paths,"path":paths.first(),"coverage":"unavailable"});
-            let mut result=ToolResult::error(&call_id,format!("Location unavailable: {location}. Report this missing scope and defer edits that depend on it."));
+        let requested = device.as_str().filter(|id| !id.trim().is_empty());
+        let execution = ctx
+            .local_device_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty());
+        let problem = match (requested, execution) {
+            (None, _) => Some("device_id must be a nonempty string"),
+            (_, None) => Some("the execution device ID is unknown"),
+            (Some(target), Some(local)) if target != local => {
+                Some("this file tool has no route to the requested device")
+            }
+            _ => None,
+        };
+        if let Some(reason) = problem {
+            let location = json!({
+                "device_id": requested, "execution_device_id": execution,
+                "paths": paths, "path": paths.first(), "coverage": "unavailable", "dispatched": false,
+            });
+            let mut result = ToolResult::error(
+                &call_id,
+                format!("{tool} was not dispatched: {reason}. Location {location}. Report this missing scope and defer edits that depend on it."),
+            );
             result.metadata.insert("file_location".into(), location);
             return Ok(result);
         }
