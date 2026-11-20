@@ -594,6 +594,8 @@ async fn edit_file_reports_files_committed_before_a_write_failure() {
     assert!(result.is_error);
     assert!(text(&result).contains("partially applying the patch"));
     assert!(text(&result).contains("M first.txt"));
+    assert!(text(&result).contains("locked/second.txt"));
+    assert!(!text(&result).contains(root.path().to_str().unwrap()));
     assert_eq!(
         result.metadata["file_edit_committed_paths"],
         json!(["M first.txt"])
@@ -656,6 +658,49 @@ async fn directory_pages_keep_the_device_and_skip_previously_returned_names() {
         "requested_scope"
     );
     assert!(!tail.metadata.contains_key("continuation"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn edit_stops_and_reports_an_unconfirmed_write_when_the_directory_cannot_be_flushed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let limited = root.path().join("write-only");
+    std::fs::create_dir(&limited).unwrap();
+    std::fs::set_permissions(&limited, std::fs::Permissions::from_mode(0o300)).unwrap();
+    let can_open_directory = std::fs::File::open(&limited).is_ok();
+    if can_open_directory {
+        std::fs::set_permissions(&limited, std::fs::Permissions::from_mode(0o700)).unwrap();
+        return; // A privileged process bypasses this permission failure.
+    }
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("desktop".into());
+    let patch = "*** Begin Patch\n*** Add File: first.txt\n+first\n*** Add File: write-only/current.txt\n+current\n*** Add File: last.txt\n+last\n*** End Patch";
+    let result = EditFileTool.call(patch_arg(patch), ctx).await;
+    std::fs::set_permissions(&limited, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let result = result.unwrap();
+    assert!(result.is_error, "{}", result.text_content());
+    assert_eq!(
+        result.metadata["file_edit_committed_paths"],
+        json!(["A first.txt"])
+    );
+    assert_eq!(
+        result.metadata["file_edit_unconfirmed_path"],
+        json!(limited.join("current.txt").canonicalize().unwrap())
+    );
+    assert_eq!(result.metadata["file_location"]["coverage"], "partial");
+    assert!(result.text_content().contains("write-only/current.txt"));
+    assert!(result.text_content().contains("not confirmed"));
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("first.txt")).unwrap(),
+        "first\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(limited.join("current.txt")).unwrap(),
+        "current\n"
+    );
+    assert!(!root.path().join("last.txt").exists());
 }
 
 #[tokio::test]

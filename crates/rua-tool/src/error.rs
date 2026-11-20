@@ -58,6 +58,9 @@ pub enum ToolError {
     #[error("atomic write failed for {}: {message}", path.display())]
     AtomicWriteFailed { path: PathBuf, message: String },
 
+    #[error("write outcome unconfirmed for {}: {message}", path.display())]
+    WriteOutcomeUnconfirmed { path: PathBuf, message: String },
+
     #[error("result store error: {message}")]
     ResultStore { message: String },
 

@@ -78,6 +78,13 @@ impl EditFileTool {
             Err(PatchApplyError::Tool(error)) => return Err(error),
             Err(PatchApplyError::Commit(failure)) => {
                 let mut result = ToolResult::error(&ctx.trace_id, failure.model_message());
+                if let Some(path) = failure.unconfirmed_path {
+                    let public_path = ctx.workspace_fs.public_path(Path::new(&path));
+                    result.metadata.insert(
+                        "file_edit_unconfirmed_path".into(),
+                        serde_json::json!(public_path),
+                    );
+                }
                 result.metadata.insert(
                     "file_edit_committed_paths".to_string(),
                     serde_json::json!(failure.committed),
@@ -127,24 +134,35 @@ impl From<ToolError> for PatchApplyError {
 struct PatchCommitFailure {
     message: String,
     committed: Vec<String>,
+    unconfirmed_path: Option<String>,
 }
 
 impl PatchCommitFailure {
     fn model_message(&self) -> String {
-        if self.committed.is_empty() {
-            return format!(
-                "edit commit failed before any file was changed: {}",
+        let mut body = match &self.unconfirmed_path {
+            Some(path) => format!(
+                "edit stopped at {path}. The write result is not confirmed: {}",
                 self.message
-            );
+            ),
+            None if self.committed.is_empty() => {
+                return format!(
+                    "edit commit failed before any file was changed: {}",
+                    self.message
+                )
+            }
+            None => format!(
+                "edit commit failed after partially applying the patch: {}",
+                self.message
+            ),
+        };
+        if !self.committed.is_empty() {
+            body.push_str("\nAlready updated files:\n");
+            body.push_str(&self.committed.join("\n"));
         }
-
-        format!(
-            "edit commit failed after partially applying the patch: {}\n\
-             Already updated files:\n{}\n\
-             Do not retry the full patch without re-reading these files.",
-            self.message,
-            self.committed.join("\n")
-        )
+        body.push_str(
+            "\nLater patch entries were not attempted. Re-read the affected files before retrying.",
+        );
+        body
     }
 }
 
@@ -441,7 +459,7 @@ async fn commit_patch_hunks(
                     }
                 }
                 if let Err(error) = atomic_write(resolved, content.as_bytes(), true).await {
-                    return Err(commit_failure(error.to_string(), committed));
+                    return Err(commit_write_failure(path, error, committed));
                 }
                 update_recorded_mtime(resolved).await;
                 added.push(path.clone());
@@ -459,7 +477,10 @@ async fn commit_patch_hunks(
                         return Err(commit_failure(message, committed));
                     }
                     Err(PatchApplyError::Tool(error)) => {
-                        return Err(commit_failure(error.to_string(), committed));
+                        return Err(commit_failure(
+                            format!("failed to verify {path}: {error}"),
+                            committed,
+                        ));
                     }
                     Err(PatchApplyError::Commit(_)) => {
                         unreachable!("reading a file cannot commit changes")
@@ -472,7 +493,7 @@ async fn commit_patch_hunks(
                     ));
                 }
                 if let Err(error) = atomic_write(resolved, new_content.as_bytes(), false).await {
-                    return Err(commit_failure(error.to_string(), committed));
+                    return Err(commit_write_failure(path, error, committed));
                 }
                 update_recorded_mtime(resolved).await;
                 modified.push(path.clone());
@@ -485,7 +506,27 @@ async fn commit_patch_hunks(
 }
 
 fn commit_failure(message: String, committed: Vec<String>) -> PatchApplyError {
-    PatchApplyError::Commit(PatchCommitFailure { message, committed })
+    PatchApplyError::Commit(PatchCommitFailure {
+        message,
+        committed,
+        unconfirmed_path: None,
+    })
+}
+
+fn commit_write_failure(path: &str, error: ToolError, committed: Vec<String>) -> PatchApplyError {
+    match error {
+        ToolError::WriteOutcomeUnconfirmed { message, .. } => {
+            PatchApplyError::Commit(PatchCommitFailure {
+                message,
+                committed,
+                unconfirmed_path: Some(path.to_owned()),
+            })
+        }
+        ToolError::AtomicWriteFailed { message, .. } => {
+            commit_failure(format!("could not write {path}: {message}"), committed)
+        }
+        error => commit_failure(format!("could not write {path}: {error}"), committed),
+    }
 }
 
 async fn resolve_existing_file(
