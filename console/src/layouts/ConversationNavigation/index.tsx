@@ -52,14 +52,8 @@ import {
   conversationPath,
   type ConversationAddress,
 } from "@/pages/Chat/conversationAddress";
-import {
-  resolveChatEntry,
-  resolveOrCreateDraftChatId,
-} from "@/pages/Chat/chatNavigation";
-import {
-  createProjectChat,
-  resolveProjectChatPath,
-} from "@/pages/Projects/projectChatNavigation";
+import { resolveChatEntry, openChatDraft } from "@/pages/Chat/chatNavigation";
+import { resolveProjectChatPath } from "@/pages/Projects/projectChatNavigation";
 import { useAgentStore } from "@/stores/agentStore";
 import { Dropdown, Select, Modal, TextInput, toast } from "@/ui";
 import {
@@ -80,12 +74,16 @@ import {
 import SidebarDragHandle, { type SidebarDropTarget } from "./SidebarDragHandle";
 import ConversationRow from "./ConversationRow";
 import CurrentArchivedConversation from "./CurrentArchivedConversation";
-import { isDraftConversation } from "@/pages/Chat/conversationLifecycle";
+import {
+  chatDraftScope,
+  isDraftConversation,
+} from "@/pages/Chat/conversationLifecycle";
 import styles from "./index.module.less";
 import type { ProjectSort } from "./projectSort";
 
 const EXPANDED_KEY = "rua_navigation_expanded_groups";
 const SCROLL_KEY = "rua_navigation_scroll";
+const REVEALED_PATH_KEY = "rua_navigation_revealed_chat";
 
 function readExpanded(pathname: string): string[] {
   try {
@@ -220,17 +218,21 @@ export default function ConversationNavigation({
   const draftContext = currentChatId
     ? readDraftChatContext(currentChatId)
     : null;
+  const projectAgent = useSyncExternalStore(
+    subscribeProjectNavigationAgent,
+    getProjectNavigationAgent,
+  );
   const currentContext =
-    headerContext?.chatId === currentChatId
+    projectAgent && projectAgent.chatId === currentChatId
+      ? projectAgent
+      : headerContext?.chatId === currentChatId
       ? headerContext?.context ?? null
       : draftContext;
   const currentIsDraft = Boolean(
     draftContext &&
       currentChatId &&
       isDraftConversation(
-        draftContext.projectId
-          ? `project:${draftContext.projectId}`
-          : draftContext.agentId,
+        chatDraftScope(draftContext.projectId),
         currentChatId,
       ),
   );
@@ -254,15 +256,15 @@ export default function ConversationNavigation({
   const currentScope = scopeFromContext(currentContext, selectedAgent);
   const currentKey = scopeKey(currentScope);
   const currentPath = current ? conversationPath(current) : null;
-  const lastRevealedPath = useRef<string | null>(null);
-  const projectAgent = useSyncExternalStore(
-    subscribeProjectNavigationAgent,
-    getProjectNavigationAgent,
-  );
-  const independentAgentId =
-    current && projectAgent?.chatId === current.chatId
-      ? projectAgent.agentId
-      : currentContext?.agentId ?? selectedAgent;
+  const lastRevealedPath = useRef<string | null | undefined>(undefined);
+  if (lastRevealedPath.current === undefined) {
+    try {
+      lastRevealedPath.current = sessionStorage.getItem(REVEALED_PATH_KEY);
+    } catch {
+      lastRevealedPath.current = null;
+    }
+  }
+  const independentAgentId = current ? currentContext?.agentId : selectedAgent;
   const [displayedIndependentAgentId, setDisplayedIndependentAgentId] =
     useState(independentAgentId);
   useLayoutEffect(() => {
@@ -393,6 +395,9 @@ export default function ConversationNavigation({
     )
       return;
     lastRevealedPath.current = currentPath;
+    try {
+      sessionStorage.setItem(REVEALED_PATH_KEY, currentPath);
+    } catch {}
     setExpanded((keys) =>
       Array.from(
         new Set([
@@ -433,14 +438,17 @@ export default function ConversationNavigation({
         : [...keys, key],
     );
   const newChat = (scope: NavigationScope) => {
-    if (current && scopeKey(scope) === currentKey) {
-      requestNewConversation(current);
+    if (
+      current &&
+      currentContext &&
+      scopeKey(scope) === currentKey &&
+      requestNewConversation(current)
+    ) {
       return;
     }
-    const chatId =
-      scope.kind === "project"
-        ? createProjectChat(scope.id)
-        : resolveOrCreateDraftChatId(scope.id);
+    const chatId = openChatDraft(
+      scope.kind === "project" ? scope.id : undefined,
+    );
     onNavigate(conversationPath(scopeAddress(scope, chatId)));
   };
   const manage = (scope: NavigationScope) => {
@@ -610,7 +618,10 @@ export default function ConversationNavigation({
           className={styles.toolButton}
           aria-label={t("navigation.newConversation")}
           title={t("navigation.newInGroup", { name: currentScopeName })}
-          onClick={() => newChat(currentScope)}
+          onClick={() => {
+            if (current && !currentContext) requestNewConversation(current);
+            else newChat(currentScope);
+          }}
         >
           <SquarePen size={17} />
           <span>{t("navigation.newConversation")}</span>
@@ -1183,7 +1194,7 @@ function ConversationGroup({
   const currentOutsideList =
     current &&
     !isDraftConversation(
-      scope.kind === "agent" ? scope.id : `project:${scope.id}`,
+      chatDraftScope(scope.kind === "project" ? scope.id : null),
       current.chatId,
     ) &&
     !chats.some((chat) => chat.id === current.chatId)

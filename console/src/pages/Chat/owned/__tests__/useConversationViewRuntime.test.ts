@@ -1365,7 +1365,7 @@ describe("useConversationViewRuntime", () => {
       cwd: "/workspace",
       resume_session_id: "resume-1",
     };
-    saveDraftConversationAcp("agent-a", "lazy-chat", selection);
+    saveDraftConversationAcp("no-project", "lazy-chat", selection);
     const { result } = renderHook(() =>
       useConversationViewRuntime({
         address: { chatId: "lazy-chat" },

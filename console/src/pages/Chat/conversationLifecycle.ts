@@ -107,6 +107,10 @@ const RECENT_CHAT_LIMIT = 20;
 
 export type ConversationScope = string;
 
+export function chatDraftScope(projectId?: string | null): string {
+  return projectId ? `project:${projectId}` : "no-project";
+}
+
 export function lastConversationKey(scope: ConversationScope): string {
   return `${LAST_CHAT_PREFIX}${scope}`;
 }
@@ -290,15 +294,16 @@ export function clearDraftConversationModel(
 
 export function resolveOrCreateDraftConversationId(
   scope: ConversationScope,
+  inheritedModel?: ModelSlot | null,
 ): string {
   const existing = loadDraftConversationId(scope);
   const id = existing || crypto.randomUUID();
   if (!existing) saveDraftConversationId(scope, id);
   if (!loadDraftConversationModel(scope, id)) {
     try {
-      const model = JSON.parse(
-        localStorage.getItem(LAST_CONVERSATION_MODEL_KEY) || "null",
-      );
+      const model =
+        inheritedModel ??
+        JSON.parse(localStorage.getItem(LAST_CONVERSATION_MODEL_KEY) || "null");
       if (
         typeof model?.provider_id === "string" &&
         model.provider_id &&
@@ -310,14 +315,6 @@ export function resolveOrCreateDraftConversationId(
     } catch {}
   }
   return id;
-}
-
-export function resolveConversationEntry(scope: ConversationScope): string {
-  return (
-    loadLastConversationId(scope) ||
-    loadRecentConversationIds(scope)[0] ||
-    resolveOrCreateDraftConversationId(scope)
-  );
 }
 
 export function materializeConversation(

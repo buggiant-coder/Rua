@@ -4,6 +4,7 @@ import {
   INITIAL_CHAT_TURN_PAGE_SIZE,
   primeChatViewCache,
 } from "./owned/useConversationViewRuntime";
+import { chatDraftScope } from "./conversationLifecycle";
 import { resolveConversationRoute } from "./conversationRouteController";
 
 let preparationGeneration = 0;
@@ -31,7 +32,7 @@ export async function prepareChatTransition(
     let history: ChatHistory | null;
     try {
       const route = await resolveConversationRoute({
-        scope: agentId,
+        scope: chatDraftScope(),
         conversationId: chatId,
         loadHistory: () =>
           chatApi.getChat(chatId, {

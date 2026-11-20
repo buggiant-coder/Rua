@@ -1,5 +1,4 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AgentSwitchPopover from "./index";
 
@@ -50,25 +49,6 @@ vi.mock("../../stores/agentStore", () => ({
   }),
 }));
 
-vi.mock("@/ui/Popover", () => ({
-  default: ({
-    children,
-    content,
-    placement,
-    onOpenChange,
-  }: {
-    children?: ReactNode;
-    content?: ReactNode;
-    placement?: string;
-    onOpenChange?: (open: boolean) => void;
-  }) => (
-    <div data-placement={placement}>
-      <div onClick={() => onOpenChange?.(true)}>{children}</div>
-      <div>{content}</div>
-    </div>
-  ),
-}));
-
 vi.mock("@/ui/Toast", () => ({
   default: {
     error: toastErrorMock,
@@ -109,20 +89,25 @@ describe("AgentSwitchPopover", () => {
       "DDisabledDisabled",
     ]);
     expect(screen.getAllByText("Switch agent")).toHaveLength(2);
-    expect(screen.getByText("Current Agent")).toBeVisible();
+    await waitFor(() =>
+      expect(screen.getByText("Current Agent")).toBeVisible(),
+    );
     expect(screen.getAllByText("Disabled")).toHaveLength(2);
   });
 
-  it("marks the selected agent and switches only to enabled agents", () => {
+  it("marks the selected agent and switches only to enabled agents", async () => {
     render(
       <AgentSwitchPopover placement="top-end">
         <button type="button">trigger</button>
       </AgentSwitchPopover>,
     );
 
-    expect(screen.getByTestId("active-agent")).toBeVisible();
+    fireEvent.click(screen.getByText("trigger"));
+    await waitFor(() =>
+      expect(screen.getByTestId("active-agent")).toBeVisible(),
+    );
     const disabledOption = screen.getByRole("button", {
-      name: "DisabledDisabled",
+      name: /Disabled\s*Disabled/,
     });
     fireEvent.click(disabledOption);
     expect(setSelectedAgentMock).not.toHaveBeenCalledWith("disabled");
@@ -131,6 +116,9 @@ describe("AgentSwitchPopover", () => {
     fireEvent.click(screen.getByText("Coder"));
     expect(setSelectedAgentMock).toHaveBeenCalledWith("coder");
     expect(toastSuccessMock).toHaveBeenCalledWith("Switched agent");
+    await waitFor(() =>
+      expect(screen.queryByText("Coder")).not.toBeInTheDocument(),
+    );
   });
 
   it("reports agent loading failures without switching state", async () => {

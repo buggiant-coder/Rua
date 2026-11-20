@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import * as drafts from "../Chat/drafts";
+import { readDraftChatContext } from "../Chat/chatContext";
 import ProjectsPage, { loader } from "./index";
 import { subscribeConversationNavigation } from "@/layouts/conversationNavigationEvents";
 import {
@@ -16,7 +17,6 @@ import {
   lastProjectId,
   projectChatDraftKey,
   rememberProjectChat,
-  setProjectLastSelectedAgent,
 } from "./projectChatNavigation";
 
 const { devicesApiMock, projectChatsApiMock, projectsApiMock, toastMock } =
@@ -201,17 +201,20 @@ describe("ProjectsPage", () => {
     });
     expect(await screen.findByText("rua")).toBeVisible();
     expect(toastMock.success).toHaveBeenCalledWith("Project created");
-    expect(navigationChanged).toHaveBeenCalledExactlyOnceWith(undefined);
+    expect(navigationChanged).toHaveBeenCalledExactlyOnceWith(
+      undefined,
+      false,
+      undefined,
+    );
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/projects/project-1/chats/lazy-project-chat",
+        "/chats/lazy-project-chat",
       ),
     );
-    expect(
-      sessionStorage.getItem(
-        "rua_project_lazy_chat_project-1:lazy-project-chat",
-      ),
-    ).toBeNull();
+    expect(readDraftChatContext("lazy-project-chat")?.projectId).toBe(
+      "project-1",
+    );
+    expect(lastProjectChatId("project-1")).toBeNull();
   });
 
   it("browses from home when the directory input is empty", async () => {
@@ -299,7 +302,7 @@ describe("ProjectsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "View" }));
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/projects/project-existing/chats/duplicate-lazy-chat",
+        "/chats/duplicate-lazy-chat",
       ),
     );
   });
@@ -350,7 +353,7 @@ describe("ProjectsPage", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/projects/project-active/chats/chat-saved",
+        "/chats/chat-saved",
       ),
     );
     expect(projectChatsApiMock.getChat).not.toHaveBeenCalled();
@@ -389,7 +392,11 @@ describe("ProjectsPage", () => {
       expect(projectsApiMock.archive).toHaveBeenCalledWith("project-active"),
     );
     expect((await screen.findAllByText("Archived")).length).toBeGreaterThan(0);
-    expect(navigationChanged).toHaveBeenCalledExactlyOnceWith(undefined);
+    expect(navigationChanged).toHaveBeenCalledExactlyOnceWith(
+      undefined,
+      false,
+      undefined,
+    );
   });
 
   it("restores the last valid Project and Chat from the unqualified entry", async () => {
@@ -413,7 +420,7 @@ describe("ProjectsPage", () => {
     expect(response).toBeInstanceOf(Response);
     expect((response as Response).status).toBe(302);
     expect((response as Response).headers.get("Location")).toBe(
-      "/projects/project-active/chats/chat-saved",
+      "/chats/chat-saved",
     );
     expect(devicesApiMock.listDevices).not.toHaveBeenCalled();
   });
@@ -437,7 +444,7 @@ describe("ProjectsPage", () => {
     } as never);
 
     expect((response as Response).headers.get("Location")).toBe(
-      "/projects/project-active/chats/restored-lazy-chat",
+      "/chats/restored-lazy-chat",
     );
   });
 
@@ -484,7 +491,7 @@ describe("ProjectsPage", () => {
     );
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/projects/project-archived/chats/chat-saved",
+        "/chats/chat-saved",
       ),
     );
     expect(screen.queryByText(/Restore/)).not.toBeInTheDocument();
@@ -501,7 +508,6 @@ describe("ProjectsPage", () => {
       updated_at: "2026-08-01T00:00:00Z",
     };
     rememberProjectChat(archivedProject.project_id, "chat-saved");
-    setProjectLastSelectedAgent(archivedProject.project_id, "code");
     drafts.save(
       projectChatDraftKey(archivedProject.project_id, "chat-saved"),
       "delete me",

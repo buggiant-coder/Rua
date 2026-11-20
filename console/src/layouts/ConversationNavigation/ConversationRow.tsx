@@ -17,15 +17,12 @@ import {
   conversationPath,
   type ConversationAddress,
 } from "@/pages/Chat/conversationAddress";
+import { forgetChatId, openChatDraft } from "@/pages/Chat/chatNavigation";
+import { discardProjectChatLocalState } from "@/pages/Projects/projectChatNavigation";
 import {
-  clearDraftChatId,
-  forgetChatId,
-  resolveOrCreateDraftChatId,
-} from "@/pages/Chat/chatNavigation";
-import {
-  createProjectChat,
-  discardProjectChatLocalState,
-} from "@/pages/Projects/projectChatNavigation";
+  chatDraftScope,
+  clearDraftConversation,
+} from "@/pages/Chat/conversationLifecycle";
 import * as drafts from "@/pages/Chat/drafts";
 import { Dropdown, Modal, TextInput, toast } from "@/ui";
 import {
@@ -74,6 +71,7 @@ export default function ConversationRow({
   }, []);
   const title = chat.name?.trim() || t("navigation.untitled");
   const address = scopeAddress(scope, chat.id);
+  const projectId = scope.kind === "project" ? scope.id : null;
   const path = conversationPath(address);
   const activityStatus = useConversationActivityStatus(address);
   const active = current !== null && conversationPath(current) === path;
@@ -96,7 +94,12 @@ export default function ConversationRow({
   const update = async (updates: ChatUpdateRequest) => {
     if (pendingRef.current) return;
     begin();
-    const mutation = beginConversationMetadataUpdate(address, chat, updates);
+    const mutation = beginConversationMetadataUpdate(
+      address,
+      chat,
+      updates,
+      projectId,
+    );
     try {
       const updated =
         scope.kind === "project"
@@ -171,12 +174,12 @@ export default function ConversationRow({
       } else {
         await chatApi.deleteChat(chat.id, scope.id);
         forgetChatId(scope.id, chat.id);
-        clearDraftChatId(scope.id, chat.id);
-        drafts.clear(`${scope.id}:${chat.id}`);
+        clearDraftConversation(chatDraftScope(), chat.id);
+        drafts.clear(`chat:${chat.id}`);
       }
       clearConversationActivity(address);
       onRemoved(chat.id);
-      invalidateConversationNavigation(address);
+      invalidateConversationNavigation(address, false, projectId);
       const stillCurrent = () => {
         const latest = getCurrentAddress();
         return latest !== null && conversationPath(latest) === path;
@@ -209,9 +212,7 @@ export default function ConversationRow({
       );
       const nextId =
         latest?.id ??
-        (scope.kind === "project"
-          ? createProjectChat(scope.id)
-          : resolveOrCreateDraftChatId(scope.id));
+        openChatDraft(scope.kind === "project" ? scope.id : undefined);
       onNavigate(conversationPath(scopeAddress(scope, nextId)));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));

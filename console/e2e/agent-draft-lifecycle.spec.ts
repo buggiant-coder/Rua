@@ -1,95 +1,45 @@
 import { expect, test } from "@playwright/test";
+import { mockConsoleTransport } from "./fixtures/consoleTransport";
 
 for (const operation of ["submit", "submit-fails", "upload", "acp"] as const) {
-  test(`draft target stays local until ${operation} creates on the target`, async ({
+  test(`restores the draft execution device before ${operation}`, async ({
     page,
   }) => {
-    const chatId = "00000000-0000-4000-8000-000000000911";
-    const calls: { path: string; method: string; body: unknown }[] = [];
-    let created = false;
-    let releaseCreation!: () => void;
+    const model = { provider_id: "fixture", model: "chosen-model" };
+    const mediaId = "00000000-0000-4000-8000-000000000912";
+    const writes: string[] = [];
+    const requests: Record<string, unknown>[] = [];
+    let chatId = "";
+    let accepted = false;
     let releaseSubmission!: () => void;
-    const creationGate = new Promise<void>((resolve) => {
-      releaseCreation = resolve;
-    });
     const submissionGate = new Promise<void>((resolve) => {
       releaseSubmission = resolve;
     });
-    const model = { provider_id: "fixture", model: "chosen-model" };
-    await page.addInitScript(
-      ({ chatId, model }) => {
-        localStorage.setItem("language", "en");
-        localStorage.setItem("rua_draft_chat_id_default", chatId);
-        sessionStorage.setItem(
-          `rua_draft_chat_model_default:${chatId}`,
-          JSON.stringify(model),
-        );
-        sessionStorage.setItem(
-          `rua_draft_chat_device_default:${chatId}`,
-          "desktop",
-        );
-        const original = window.fetch.bind(window);
-        window.fetch = (input, init) => {
-          const url =
-            typeof input === "string"
-              ? input
-              : input instanceof URL
-              ? input.href
-              : input.url;
-          if (url.includes("/console/live"))
-            return Promise.resolve(
-              new Response(
-                new ReadableStream({
-                  start(controller) {
-                    controller.enqueue(
-                      new TextEncoder().encode(": connected\n\n"),
-                    );
-                  },
-                }),
-                { headers: { "Content-Type": "text/event-stream" } },
-              ),
-            );
-          return original(input, init);
-        };
-      },
-      { chatId, model },
-    );
-    await page.route("**/api/**", async (route) => {
-      if (!new URL(route.request().url()).pathname.startsWith("/api/"))
-        return route.continue();
-      const path = new URL(route.request().url()).pathname.replace(
-        /^\/api/,
-        "",
+    await page.addInitScript((model) => {
+      localStorage.setItem("language", "en");
+      localStorage.setItem(
+        "rua_last_conversation_model",
+        JSON.stringify(model),
       );
-      const method = route.request().method();
-      const body = route
-        .request()
-        .headers()
-        ["content-type"]?.includes("application/json")
-        ? route.request().postDataJSON()
-        : null;
-      calls.push({ path, method, body });
+    }, model);
+    await mockConsoleTransport(page);
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (!url.pathname.startsWith("/api/")) return route.continue();
+      const path = url.pathname.slice(4);
       const json = (value: unknown) => route.fulfill({ json: value });
-      if (path === "/platform/lifecycle" || path.endsWith("/events"))
-        return route.fulfill({
-          contentType: "text/event-stream",
-          body: ": connected\n\n",
-        });
-      if (path === "/auth/status")
-        return json({ enabled: false, has_users: false });
+      if (request.method() !== "GET" && path.startsWith("/chats/"))
+        writes.push(path);
+      if (path === "/auth/status") return json({ enabled: false });
       if (path === "/agents")
         return json({
-          agents: [
-            {
-              id: "default",
-              name: "Default",
-              enabled: true,
-              workspace_dir: "/test",
-            },
-          ],
+          agents: [{ id: "default", name: "Default", enabled: true }],
         });
-      if (path === "/sync/status")
-        return json({ enabled: true, paired: true, peer_count: 1 });
+      if (path === "/projects") return json({ projects: [] });
+      if (path === "/project-sidebar")
+        return json({ revision: "1", sort: "manual", items: {} });
+      if (path === "/sync/status") return json({ enabled: true, paired: true });
       if (path === "/sync/devices/status")
         return json({ revocation_state: "active", is_revoked: false });
       if (path === "/sync/devices")
@@ -119,18 +69,69 @@ for (const operation of ["submit", "submit-fails", "upload", "acp"] as const) {
             extra_models: [],
           },
         ]);
-      if (path.endsWith("/materialize")) {
-        if (operation === "submit" || operation === "submit-fails")
-          await creationGate;
+      if (path === "/chats")
+        return json(
+          accepted
+            ? [{ id: chatId, agent_id: "default", name: "First input" }]
+            : [],
+        );
+      if (chatId && path === `/chats/${chatId}/console/submit`) {
+        const body = request.postDataJSON();
+        requests.push(body);
+        await submissionGate;
         if (operation === "submit-fails")
-          return route.fulfill({
-            status: 503,
-            json: { detail: "target offline" },
+          return json({
+            accepted: false,
+            mode: "rejected",
+            detail: "Target rejected the first input",
           });
-        expect(body).toEqual({ device_id: "desktop", model });
-        created = true;
+        accepted = true;
         return json({
+          accepted: true,
+          mode: "started",
+          chat_id: chatId,
+          input_id: "input-1",
+          submission_id: body.submission_id,
+          device_delivery_id: "delivery-1",
+          device_delivery_sequence: 1,
+          target_device_id: "desktop",
+        });
+      }
+      if (
+        chatId &&
+        path === `/chats/${chatId}/media` &&
+        request.method() === "POST"
+      )
+        return json({
+          media_ref: `media/${mediaId}`,
+          media_id: mediaId,
+          mime_type: "text/plain",
+          byte_size: 5,
+          original_filename: "note.txt",
+        });
+      if (path.endsWith("/acp/runners"))
+        return json([
+          {
+            key: "test",
+            command: "test-runner",
+            enabled: true,
+            installed: true,
+          },
+        ]);
+      if (path.endsWith("/acp/sessions")) return json([]);
+      if (chatId && path === `/chats/${chatId}`) {
+        if (!accepted)
+          return route.fulfill({
+            status: 404,
+            json: { detail: "Chat not found" },
+          });
+        return json({
+          id: chatId,
+          agent_id: "default",
+          project_id: null,
           model,
+          status: "idle",
+          messages: [],
           meta: {
             authority_placement: {
               device_id: "desktop",
@@ -139,175 +140,93 @@ for (const operation of ["submit", "submit-fails", "upload", "acp"] as const) {
           },
         });
       }
-      if (path.endsWith("/console/submit")) {
-        if (operation === "submit") await submissionGate;
-        expect(created).toBe(true);
-        return json({
-          accepted: true,
-          mode: "started",
-          chat_id: chatId,
-          input_id: "input-1",
-          submission_id: "submission-1",
-          device_delivery_id: "delivery-1",
-          device_delivery_sequence: 1,
-          target_device_id: "desktop",
-        });
-      }
-      if (path.endsWith("/media") && method === "POST") {
-        expect(created).toBe(true);
-        return json({
-          media_ref: "media/00000000-0000-4000-8000-000000000912",
-          media_id: "00000000-0000-4000-8000-000000000912",
-          mime_type: "text/plain",
-          byte_size: 5,
-          authority_epoch: "0000000000000002000000000000000000000000",
-          original_filename: "note.txt",
-        });
-      }
-      if (path.endsWith("/acp/runners"))
-        return json([
-          {
-            key: "test",
-            name: "Test Runner",
-            enabled: true,
-            installed: true,
-            availability: "available",
-          },
-        ]);
-      if (path.endsWith("/acp/sessions")) return json([]);
-      if (path.endsWith("/acp/enter")) {
-        expect(created).toBe(true);
-        return json({
-          message: "entered",
-          status: {
-            active: true,
-            runner: "test",
-            session_id: "acp-1",
-            target_device_id: "desktop",
-          },
-        });
-      }
-      if (path.endsWith(`/chats/${chatId}`))
-        return json({
-          status: "idle",
-          messages: [],
-          model,
-          ...(created
-            ? {
-                meta: {
-                  authority_placement: {
-                    device_id: "desktop",
-                    authority_epoch: "0000000000000002000000000000000000000000",
-                  },
-                },
-              }
-            : {}),
-        });
-      if (path.endsWith("/chats")) return json({ chats: [], total: 0 });
-      if (path.includes("approvals") || path.includes("permissions"))
+      if (path.includes("/approvals") || path.includes("/permissions"))
         return json({ pending: [], resolved: [] });
-      if (path.endsWith("/activity"))
-        return json({ status: "idle", active_turn: null });
-      if (path.includes("/channels")) return json([]);
-      if (path.includes("/tasks")) return json({ tasks: [] });
-      if (path.endsWith("/status")) return json({ active: false });
       if (
-        path.includes("/skills") ||
+        path.includes("/channels") ||
         path.includes("/templates") ||
-        path.includes("/runners")
+        path.includes("/providers")
       )
         return json([]);
       return json({});
     });
-    await page.goto(`/agents/default/chats/${chatId}`);
-    const input = page.locator(".rua-owned-composer textarea");
-    await expect(input).toBeVisible();
-    await expect(page.locator(".rua-owned-composer")).toContainText(
-      "Desktop",
-    );
-    expect(
-      calls.filter(
-        (call) =>
-          call.path.endsWith("/materialize") ||
-          call.path.endsWith("/authority-placement"),
-      ),
-    ).toEqual([]);
-    let suffix: string;
-    if (operation === "submit" || operation === "submit-fails") {
-      await input.fill("first input");
-      await input.press("Enter");
-      await expect(page.locator(".rua-chat-message--user")).toContainText(
-        "first input",
-      );
-      await expect(input).toHaveValue("");
-      await expect(page.locator(".rua-owned-composer")).toContainText(
-        "Desktop",
-      );
-      await expect(page.locator(".rua-chat-remote-pending")).toContainText(
-        /Delivering|Sending/,
-      );
-      expect(calls.some((call) => call.path.endsWith("/console/submit"))).toBe(
-        false,
-      );
-      releaseCreation();
-      if (operation === "submit-fails") {
-        await expect(input).toHaveValue("first input");
-        await expect(page.locator(".rua-chat-remote-pending")).toHaveCount(0);
-        expect(
-          calls.some((call) => call.path.endsWith("/console/submit")),
-        ).toBe(false);
-        return;
-      }
-      await expect
-        .poll(() => calls.some((call) => call.path.endsWith("/console/submit")))
-        .toBe(true);
-      await expect(page.locator(".rua-chat-message--user")).toContainText(
-        "first input",
-      );
-      await expect(page.locator(".rua-owned-composer")).toContainText(
-        "Desktop",
-      );
-      releaseSubmission();
-      await expect(page.locator(".rua-chat-remote-pending")).toContainText(
-        "Delivered, waiting for result",
-      );
-      await expect(page.locator(".rua-chat-message--user")).toHaveCount(1);
-      await expect(page.locator(".rua-owned-composer")).toContainText(
-        "Desktop",
-      );
-      suffix = "/console/submit";
-    } else if (operation === "upload") {
-      await page.locator('input[type="file"]').setInputFiles({
+
+    await page.goto("/");
+    await expect(page).toHaveURL(/\/chats\/[a-f0-9-]{36}$/);
+    chatId = new URL(page.url()).pathname.split("/").at(-1)!;
+    const composer = page.locator(".rua-owned-composer");
+    const input = composer.locator("textarea");
+    const device = composer.locator(".rua-chat-device-chip");
+    await device.click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: /Desktop/i })
+      .click();
+    await expect(device).toContainText("Desktop");
+    await page.reload();
+    await expect(device).toContainText("Desktop");
+    expect(writes).toEqual([]);
+
+    if (operation === "upload") {
+      await composer.locator('input[type="file"]').setInputFiles({
         name: "note.txt",
         mimeType: "text/plain",
         buffer: Buffer.from("hello"),
       });
-      suffix = "/media";
-    } else {
-      await page.getByRole("button", { name: "More", exact: true }).click();
+      await expect(composer).toContainText("note.txt");
+      expect(writes).toEqual([`/chats/${chatId}/media`]);
+    }
+    if (operation === "acp") {
+      await page
+        .getByRole("main")
+        .getByRole("button", { name: "More", exact: true })
+        .click();
       await page
         .getByRole("menuitem", { name: "Enter ACP pass-through", exact: true })
         .click();
-      await expect(page.locator(".rua-acp-enter-dialog")).toBeVisible();
-      expect(created).toBe(false);
-      await page
-        .locator(".rua-acp-enter-dialog")
-        .getByRole("button", { name: "New", exact: true })
-        .click();
-      suffix = "/acp/enter";
+      const dialog = page.locator(".rua-acp-enter-dialog");
+      await dialog.getByRole("button", { name: "New", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      expect(writes).toEqual([]);
     }
-    await expect
-      .poll(() =>
-        calls.some(
-          (call) => call.path.endsWith(suffix) && call.method === "POST",
-        ),
-      )
-      .toBe(true);
-    expect(
-      calls.filter((call) => call.path.endsWith("/materialize")),
-    ).toHaveLength(1);
-    expect(
-      calls.filter((call) => call.path.endsWith("/authority-placement")),
-    ).toHaveLength(0);
+
+    await input.fill("first input");
+    await input.press("Enter");
+    await expect.poll(() => requests.length).toBe(1);
+    expect(requests[0]).toMatchObject({
+      chat_id: chatId,
+      agent_id: "default",
+      target_device_id: "desktop",
+      model,
+    });
+    if (operation === "acp")
+      expect(requests[0].initial_acp).toMatchObject({ runner: "test" });
+    if (operation === "upload")
+      expect(JSON.stringify(requests[0].input)).toContain(`media/${mediaId}`);
+    await expect(page.locator(".rua-chat-message--user")).toContainText(
+      "first input",
+    );
+    await expect(input).toHaveValue("");
+    await expect(page.locator(".rua-chat-remote-pending")).toContainText(
+      /Delivering|Sending/,
+    );
+    releaseSubmission();
+
+    if (operation === "submit-fails") {
+      await expect(input).toHaveValue("first input");
+      await expect(page.locator(".rua-chat-remote-pending")).toHaveCount(0);
+      await page.reload();
+      await expect(input).toHaveValue("first input");
+      await expect(device).toContainText("Desktop");
+    } else {
+      await expect(page.locator(".rua-chat-remote-pending")).toContainText(
+        "Delivered, waiting for result",
+      );
+      await expect(page.locator(".rua-chat-message--user")).toHaveCount(1);
+    }
+    expect(writes).toEqual([
+      ...(operation === "upload" ? [`/chats/${chatId}/media`] : []),
+      `/chats/${chatId}/console/submit`,
+    ]);
   });
 }

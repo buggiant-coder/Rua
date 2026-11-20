@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Check } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAgentStore } from "../../stores/agentStore";
@@ -25,8 +25,10 @@ export default function AgentSwitchPopover({
     setSelectedAgent,
     ensureCatalogLoaded,
   } = useAgentStore();
-  const handleOpenChange = (open: boolean) => {
-    if (!open || !ensureCatalogLoaded) return;
+  const [open, setOpen] = useState(false);
+  const handleOpenChange = (nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (!nextOpen || !ensureCatalogLoaded) return;
     void ensureCatalogLoaded().catch((err) => {
       console.error("Failed to load agents:", err);
       toast.error(t("agent.loadFailed"));
@@ -39,6 +41,7 @@ export default function AgentSwitchPopover({
       toast.warning(t("agent.cannotSwitchToDisabled"));
       return;
     }
+    setOpen(false);
     setSelectedAgent?.(agentId);
     onAgentChange?.(agentId);
     toast.success(t("agent.switchSuccess"));
@@ -95,6 +98,7 @@ export default function AgentSwitchPopover({
       trigger="click"
       placement={placement}
       overlayClassName={styles.popover}
+      open={open}
       onOpenChange={handleOpenChange}
     >
       {children}

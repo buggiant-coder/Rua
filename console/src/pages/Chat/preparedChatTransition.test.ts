@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { draftChatKey } from "./chatNavigation";
+import { chatDraftScope, draftConversationKey } from "./conversationLifecycle";
 import {
   cancelPreparedChatTransition,
   prepareChatTransition,
@@ -29,7 +29,7 @@ describe("prepareChatTransition", () => {
   });
 
   it("treats a local draft as ready without requesting history", async () => {
-    localStorage.setItem(draftChatKey("agent-a"), "draft-a");
+    localStorage.setItem(draftConversationKey(chatDraftScope()), "draft-a");
 
     await expect(prepareChatTransition("agent-a", "draft-a")).resolves.toBe(
       true,
@@ -68,7 +68,9 @@ describe("prepareChatTransition", () => {
       true,
     );
 
-    expect(localStorage.getItem(draftChatKey("agent-a"))).toBeNull();
+    expect(
+      localStorage.getItem(draftConversationKey(chatDraftScope())),
+    ).toBeNull();
     expect(primeChatViewCacheMock).toHaveBeenCalledWith(
       "agent-a",
       "chat-lazy",

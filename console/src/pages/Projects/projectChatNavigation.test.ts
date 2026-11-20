@@ -1,25 +1,24 @@
 import { chatPath } from "../Chat/conversationAddress";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as drafts from "../Chat/drafts";
+import { useAgentStore } from "@/stores/agentStore";
 import {
-  loadDraftChatId,
-  loadDraftChatModel,
-  saveDraftChatModel,
-} from "../Chat/chatNavigation";
+  loadDraftConversationId,
+  loadDraftConversationModel,
+  saveDraftConversationModel,
+} from "../Chat/conversationLifecycle";
+import { openChatDraft } from "../Chat/chatNavigation";
 import {
   clearProjectChatDraftState,
-  createProjectChat,
   discardProjectLocalState,
   lastProjectChatId,
   lastProjectId,
-  projectLastSelectedAgent,
   projectChatDraftKey,
   projectChatExecutionAgent,
   materializeProjectChat,
   rememberProjectChat,
   resolveProjectChatPath,
   setProjectChatDraftAgent,
-  setProjectLastSelectedAgent,
 } from "./projectChatNavigation";
 
 const { projectChatsApiMock } = vi.hoisted(() => ({
@@ -37,34 +36,56 @@ describe("projectChatNavigation", () => {
     sessionStorage.clear();
     localStorage.clear();
     vi.restoreAllMocks();
+    useAgentStore.setState({ selectedAgent: "default" });
     vi.clearAllMocks();
   });
 
-  it("uses one browser-local recent Agent hint per Project", () => {
-    setProjectLastSelectedAgent("project-1", "code");
-    vi.spyOn(crypto, "randomUUID").mockReturnValue("project-chat-2");
-
-    const chatId = createProjectChat("project-1");
-
-    expect(projectLastSelectedAgent("project-1")).toBe("code");
-    expect(projectLastSelectedAgent("project-2")).toBeNull();
+  it("uses the current global Agent on each explicit New Chat while preserving the Project draft", () => {
+    useAgentStore.getState().setSelectedAgent("code");
+    const chatId = openChatDraft("project-1");
     expect(projectChatExecutionAgent("project-1", chatId)).toBe("code");
+
+    const model = {
+      provider_id: "local",
+      model: "detail",
+      thinking_strength: "high" as const,
+    };
+    saveDraftConversationModel("project:project-1", chatId, model);
+    const attachment = {
+      id: "image",
+      type: "image" as const,
+      name: "p.png",
+      url: "/media/p",
+    };
+    const key = projectChatDraftKey("project-1", chatId);
+    drafts.save(key, "keep me", [attachment]);
+    useAgentStore.getState().setSelectedAgent("research");
+    expect(
+      openChatDraft("project-1", { provider_id: "other", model: "source" }),
+    ).toBe(chatId);
+    expect(projectChatExecutionAgent("project-1", chatId)).toBe("research");
+    expect(loadDraftConversationModel("project:project-1", chatId)).toEqual(
+      model,
+    );
+    expect(drafts.loadDraft(key)).toEqual({
+      text: "keep me",
+      attachments: [attachment],
+    });
   });
 
   it("changes only the Project Chat draft assignment", () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue("project-chat-3");
-    const chatId = createProjectChat("project-1");
+    const chatId = openChatDraft("project-1");
 
     setProjectChatDraftAgent("project-1", chatId, "qa");
 
     expect(projectChatExecutionAgent("project-1", chatId)).toBe("qa");
-    expect(projectLastSelectedAgent("project-1")).toBeNull();
   });
 
   it("creates a URL identity with an independent default Agent", () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue("project-chat-1");
 
-    const chatId = createProjectChat("project-1");
+    const chatId = openChatDraft("project-1");
 
     expect(chatId).toBe("project-chat-1");
     expect(projectChatExecutionAgent("project-1", chatId)).toBe("default");
@@ -81,9 +102,9 @@ describe("projectChatNavigation", () => {
       .mockReturnValueOnce("project-chat-1")
       .mockReturnValueOnce("project-chat-2");
 
-    const firstChatId = createProjectChat("project-1");
+    const firstChatId = openChatDraft("project-1");
     drafts.save(projectChatDraftKey("project-1", firstChatId), "pending work");
-    const secondChatId = createProjectChat("project-1");
+    const secondChatId = openChatDraft("project-1");
 
     expect(secondChatId).toBe(firstChatId);
     expect(drafts.load(projectChatDraftKey("project-1", firstChatId))).toBe(
@@ -96,10 +117,10 @@ describe("projectChatNavigation", () => {
     vi.spyOn(crypto, "randomUUID")
       .mockReturnValueOnce("project-chat-1")
       .mockReturnValueOnce("project-chat-2");
-    const firstChatId = createProjectChat("project-1");
+    const firstChatId = openChatDraft("project-1");
     drafts.save(projectChatDraftKey("project-1", firstChatId), "keep me");
 
-    const secondChatId = createProjectChat("project-1");
+    const secondChatId = openChatDraft("project-1");
 
     expect(secondChatId).toBe(firstChatId);
     expect(drafts.load(projectChatDraftKey("project-1", firstChatId))).toBe(
@@ -107,14 +128,26 @@ describe("projectChatNavigation", () => {
     );
   });
 
+  it("remembers a reopened Project without applying New Chat to its existing draft", async () => {
+    useAgentStore.getState().setSelectedAgent("code");
+    const first = openChatDraft("project-1");
+    useAgentStore.getState().setSelectedAgent("research");
+    openChatDraft("project-2");
+    expect(await resolveProjectChatPath("project-1")).toBe(chatPath(first));
+    expect(lastProjectId()).toBe("project-1");
+    expect(projectChatExecutionAgent("project-1", first)).toBe("code");
+    expect(useAgentStore.getState().selectedAgent).toBe("research");
+  });
+
   it("creates a new lazy URL identity after materialization", () => {
     vi.spyOn(crypto, "randomUUID")
       .mockReturnValueOnce("project-chat-1")
       .mockReturnValueOnce("project-chat-2");
-    const firstChatId = createProjectChat("project-1", "agent-a");
+    const firstChatId = openChatDraft("project-1");
 
     clearProjectChatDraftState("project-1", firstChatId);
-    const secondChatId = createProjectChat("project-1", "agent-b");
+    useAgentStore.getState().setSelectedAgent("agent-b");
+    const secondChatId = openChatDraft("project-1");
 
     expect(secondChatId).toBe("project-chat-2");
     expect(secondChatId).not.toBe(firstChatId);
@@ -128,18 +161,18 @@ describe("projectChatNavigation", () => {
       .mockReturnValueOnce("project-chat-1")
       .mockReturnValueOnce("project-chat-2");
 
-    const first = createProjectChat("project-1", "agent-a");
-    const second = createProjectChat("project-2", "agent-b");
+    const first = openChatDraft("project-1");
+    const second = openChatDraft("project-2");
 
-    expect(createProjectChat("project-1")).toBe(first);
-    expect(createProjectChat("project-2")).toBe(second);
+    expect(openChatDraft("project-1")).toBe(first);
+    expect(openChatDraft("project-2")).toBe(second);
   });
 
   it("clears pre-submit Agent, model, and composer drafts after materialization", () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue("project-chat-1");
-    const chatId = createProjectChat("project-1");
+    const chatId = openChatDraft("project-1");
     drafts.save(projectChatDraftKey("project-1", chatId), "pending work");
-    saveDraftChatModel("project:project-1", chatId, {
+    saveDraftConversationModel("project:project-1", chatId, {
       provider_id: "dashscope",
       model: "qwen-plus",
     });
@@ -147,23 +180,23 @@ describe("projectChatNavigation", () => {
     materializeProjectChat("project-1", chatId);
     clearProjectChatDraftState("project-1", chatId);
 
-    expect(loadDraftChatId("project:project-1")).toBeNull();
+    expect(loadDraftConversationId("project:project-1")).toBeNull();
     expect(projectChatExecutionAgent("project-1", chatId)).toBe("default");
-    expect(loadDraftChatModel("project:project-1", chatId)).toBeNull();
+    expect(loadDraftConversationModel("project:project-1", chatId)).toBeNull();
     expect(drafts.load(projectChatDraftKey("project-1", chatId))).toBe("");
     expect(lastProjectChatId("project-1")).toBe(chatId);
   });
 
   it("stores the pre-submit model through the existing Chat draft path", () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue("project-chat-model");
-    const chatId = createProjectChat("project-1");
+    const chatId = openChatDraft("project-1");
 
-    saveDraftChatModel("project:project-1", chatId, {
+    saveDraftConversationModel("project:project-1", chatId, {
       provider_id: "dashscope",
       model: "qwen-max",
     });
 
-    expect(loadDraftChatModel("project:project-1", chatId)).toEqual({
+    expect(loadDraftConversationModel("project:project-1", chatId)).toEqual({
       provider_id: "dashscope",
       model: "qwen-max",
     });
@@ -172,9 +205,8 @@ describe("projectChatNavigation", () => {
 
   it("clears every browser-local hint and draft owned by a deleted Project", () => {
     rememberProjectChat("project-1", "chat-materialized");
-    setProjectLastSelectedAgent("project-1", "code");
     vi.spyOn(crypto, "randomUUID").mockReturnValue("chat-lazy");
-    createProjectChat("project-1");
+    openChatDraft("project-1");
     drafts.save(
       projectChatDraftKey("project-1", "chat-materialized"),
       "materialized draft",
@@ -185,7 +217,6 @@ describe("projectChatNavigation", () => {
 
     expect(lastProjectId()).toBeNull();
     expect(lastProjectChatId("project-1")).toBeNull();
-    expect(projectLastSelectedAgent("project-1")).toBeNull();
     expect(
       drafts.load(projectChatDraftKey("project-1", "chat-materialized")),
     ).toBe("");

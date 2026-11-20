@@ -294,9 +294,7 @@ async fn prepare_chat_submission(
         body.extra
             .get("agent_id")
             .and_then(serde_json::Value::as_str),
-        body.extra
-            .get("project_id")
-            .and_then(serde_json::Value::as_str),
+        crate::services::chat_context::requested_project(body.extra.get("project_id"))?,
     )
     .await?;
     body.extra

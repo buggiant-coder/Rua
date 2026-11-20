@@ -25,7 +25,7 @@ pub(crate) async fn persist_first_agent_submission(
     placement: &ConversationAuthorityPlacement,
     snapshot: AgentChatMaterializationSnapshot,
 ) -> Result<(), String> {
-    let media_ids = validate_submission_media(scope_root, address, input).await?;
+    let media_ids = validate_submission_media(scope_root, address, None, input).await?;
     let store = WorkspaceSessionStore::new(scope_root);
     let indexed = chat_index::get(scope_root, address.chat_id().as_str()).await?;
     let header = store
@@ -206,6 +206,7 @@ where
 pub(crate) async fn validate_submission_media(
     root: &Path,
     address: &ChatAddress,
+    project_id: Option<&str>,
     input: &ConversationInputPayload,
 ) -> Result<Vec<String>, String> {
     let mut ids = Vec::new();
@@ -222,7 +223,7 @@ pub(crate) async fn validate_submission_media(
                             .strip_prefix("media/")
                             .ok_or("invalid media reference")?;
                         uuid::Uuid::parse_str(id).map_err(|_| "invalid media identity")?;
-                        validate_staged_media_address(&media_dir, id, address).await?;
+                        validate_staged_media(&media_dir, id, address, Some(project_id)).await?;
                         crate::services::remote_conversation_input::media_fingerprint(
                             &media_dir.join(id),
                         )
@@ -236,10 +237,11 @@ pub(crate) async fn validate_submission_media(
     Ok(ids)
 }
 
-pub(crate) async fn validate_staged_media_address(
+pub(crate) async fn validate_staged_media(
     media_dir: &Path,
     id: &str,
     address: &ChatAddress,
+    requested_project: Option<Option<&str>>,
 ) -> Result<(), String> {
     let marker = media_dir.join(format!(".staged-{id}.json"));
     let bytes = match tokio::fs::read(marker).await {
@@ -247,16 +249,16 @@ pub(crate) async fn validate_staged_media_address(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(format!("read staging marker for media {id}: {error}")),
     };
-    #[derive(serde::Deserialize)]
-    struct StagedMedia {
-        address: ChatAddress,
-    }
-    let staged: StagedMedia = serde_json::from_slice(&bytes)
+    let staged: crate::services::chat_media::StagedChatMedia = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid staging marker for media {id}: {error}"))?;
     if staged.address != *address {
         return Err(format!("media {id} is staged for a different Chat"));
     }
-    Ok(())
+    crate::services::chat_context::check_project_membership(
+        staged.project_id.as_deref(),
+        requested_project,
+    )
+    .map_err(|e| e.to_string())
 }
 
 pub(crate) async fn append_accepted_submission(

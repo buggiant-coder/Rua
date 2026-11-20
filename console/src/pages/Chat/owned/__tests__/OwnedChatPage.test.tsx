@@ -13,6 +13,7 @@ import {
   Routes,
   useLocation,
   useNavigate,
+  useParams,
   useNavigationType,
 } from "react-router-dom";
 import { ModalProvider, ToastProvider } from "@/ui";
@@ -20,6 +21,8 @@ import i18n from "@/i18n";
 import { useAgentStore } from "@/stores/agentStore";
 import { __resetMobileDetectionForTests } from "@/utils/isMobile";
 import ChatPage from "../../index";
+import { readDraftChatContext } from "../../chatContext";
+import { openChatDraft } from "../../chatNavigation";
 import { conversationApi } from "@/api/modules/conversation";
 import { rememberProjectChat } from "@/pages/Projects/projectChatNavigation";
 import {
@@ -89,8 +92,7 @@ const taskApiMock = vi.hoisted(() => ({
   retryTask: vi.fn(),
   getFullResult: vi.fn(),
   activityPath: vi.fn(
-    (target: { agentId: string }, chatId: string) =>
-      `/agents/${target.agentId}/chats/${chatId}/tasks/activity`,
+    (_target: unknown, chatId: string) => `/chats/${chatId}/tasks/activity`,
   ),
 }));
 
@@ -153,6 +155,7 @@ vi.mock("../OwnedConversationSurface", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   function OwnedConversationSurfaceMock({
     address,
+    executionAgentId: agentId,
     onHistoryChange,
     authorityPlacementDeviceId,
     currentDeviceId,
@@ -161,7 +164,8 @@ vi.mock("../OwnedConversationSurface", async () => {
     composerLeftTools,
     onSubmitAccepted,
   }: {
-    address: { scope: "agent"; agentId: string; chatId: string };
+    address: { chatId: string };
+    executionAgentId: string;
     onHistoryChange?: (history: unknown) => void;
     authorityPlacementDeviceId?: string | null;
     currentDeviceId?: string | null;
@@ -170,7 +174,7 @@ vi.mock("../OwnedConversationSurface", async () => {
     composerLeftTools?: React.ReactNode;
     onSubmitAccepted?: () => void;
   }) {
-    const { chatId: conversationId, agentId } = address;
+    const { chatId: conversationId } = address;
     ownedSurfaceHistoryChangeMock(onHistoryChange);
     ownedSurfaceHistoryRegistrationMock(conversationId, onHistoryChange);
     React.useEffect(() => {
@@ -179,15 +183,13 @@ vi.mock("../OwnedConversationSurface", async () => {
         onHistoryChange?.({ status: "idle", messages: [] });
         return;
       }
-      void chatApiMock
-        .getChat(conversationId, agentId ?? "default")
-        .then((history) => {
-          if (!cancelled) onHistoryChange?.(history);
-        });
+      void chatApiMock.getChat(conversationId).then((history) => {
+        if (!cancelled) onHistoryChange?.(history);
+      });
       return () => {
         cancelled = true;
       };
-    }, [agentId, conversationId, onHistoryChange]);
+    }, [conversationId, onHistoryChange]);
 
     ownedSurfaceRenderMock(
       conversationId,
@@ -195,7 +197,7 @@ vi.mock("../OwnedConversationSurface", async () => {
       currentDeviceId ?? null,
     );
     return (
-      <div data-testid="owned-surface">
+      <div data-testid="owned-surface" data-agent={agentId}>
         {conversationId || "none"}
         <span
           data-testid="active-acp-runner"
@@ -228,23 +230,15 @@ function LocationProbe() {
 
 function NavigationProbe() {
   const navigate = useNavigate();
-  const location = useLocation();
-  const chatId = location.pathname.split("/").at(-1) || "chat-1";
   return (
     <>
       <button type="button" onClick={() => navigate("/skills")}>
         go skills
       </button>
-      <button
-        type="button"
-        onClick={() => navigate("/agents/default/chats/return-chat")}
-      >
+      <button type="button" onClick={() => navigate("/chats/return-chat")}>
         go default chat
       </button>
-      <button
-        type="button"
-        onClick={() => navigate(`/agents/agent-b/chats/${chatId}`)}
-      >
+      <button type="button" onClick={() => navigate("/chats/agent-b-chat")}>
         go agent b chat
       </button>
     </>
@@ -324,6 +318,30 @@ function runningConfig() {
   };
 }
 
+const savedAgents: Record<string, string> = {
+  "agent-a-chat": "agent-a",
+  "agent-b-chat": "agent-b",
+};
+
+function TestChatRoute() {
+  const { chatId } = useParams();
+  if (!chatId) throw new Error("Expected a Chat ID");
+  return (
+    <>
+      <LocationProbe />
+      <ChatPage
+        key={chatId}
+        chatId={chatId}
+        agentId={
+          readDraftChatContext(chatId)?.agentId ??
+          savedAgents[chatId] ??
+          "default"
+        }
+      />
+    </>
+  );
+}
+
 function renderChat(initialPath: string) {
   return render(
     <ToastProvider>
@@ -331,19 +349,7 @@ function renderChat(initialPath: string) {
         <MemoryRouter initialEntries={[initialPath]}>
           <NavigationProbe />
           <Routes>
-            <Route
-              path="/agents/:agentId/chats/:chatId"
-              element={
-                <>
-                  <LocationProbe />
-                  <ChatPage />
-                </>
-              }
-            />
-            <Route
-              path="/projects/:projectId/chats/:chatId"
-              element={<LocationProbe />}
-            />
+            <Route path="/chats/:chatId" element={<TestChatRoute />} />
             <Route path="/skills" element={<div>skills page</div>} />
           </Routes>
         </MemoryRouter>
@@ -521,7 +527,7 @@ describe("owned ChatPage route identity", () => {
 
   it("keeps desktop conversation management closed until opened as an overlay", async () => {
     vi.spyOn(window, "innerWidth", "get").mockReturnValue(1280);
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
     expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(chatApiMock.listChats).not.toHaveBeenCalled();
@@ -543,17 +549,17 @@ describe("owned ChatPage route identity", () => {
   });
 
   it("opens conversation management from navigation and consumes only its query parameter", async () => {
-    renderChat("/agents/default/chats/chat-1?conversations=1&keep=yes#latest");
+    renderChat("/chats/chat-1?conversations=1&keep=yes#latest");
     expect(await screen.findByRole("dialog")).toHaveTextContent(
       label("navigation.manageConversations"),
     );
     expect(screen.getByTestId("location")).toHaveTextContent(
-      "/agents/default/chats/chat-1?keep=yes#latest",
+      "/chats/chat-1?keep=yes#latest",
     );
   });
 
   it("shows the independent scope in the shared project selector", async () => {
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
     expect(
       screen.getByRole("button", { name: label("projects.selectProject") }),
     ).toHaveTextContent(label("navigation.independentChats"));
@@ -563,12 +569,10 @@ describe("owned ChatPage route identity", () => {
   });
 
   it("refreshes selector projects for catalog changes without reloading them on chat changes", async () => {
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
     await waitFor(() => expect(projectsApiMock.list).toHaveBeenCalledOnce());
     act(() =>
       invalidateConversationNavigation({
-        scope: "agent",
-        agentId: "default",
         chatId: "chat-1",
       }),
     );
@@ -609,7 +613,7 @@ describe("owned ChatPage route identity", () => {
     };
     projectsApiMock.list.mockResolvedValue([project]);
     rememberProjectChat("project-a", "project-chat");
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
     fireEvent.click(
       screen.getByRole("button", { name: label("projects.selectProject") }),
     );
@@ -618,20 +622,20 @@ describe("owned ChatPage route identity", () => {
     );
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/projects/project-a/chats/project-chat",
+        "/chats/project-chat",
       ),
     );
     expect(chatApiMock.updateChat).not.toHaveBeenCalled();
   });
 
-  it("applies sidebar titles only to the full current scope and keeps them during stale live updates", async () => {
+  it("applies sidebar titles only to the current Chat ID and keeps them during stale live updates", async () => {
     const history = {
       messages: [{ role: "user", content: "Hello" }],
       title: "Original title",
       status: "running",
     };
     chatApiMock.getChat.mockResolvedValue(history);
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
     await screen.findByText("Original title");
     const onHistoryChange = ownedSurfaceHistoryChangeMock.mock.calls.at(
       -1,
@@ -648,27 +652,14 @@ describe("owned ChatPage route identity", () => {
     const unsubscribe = subscribeConversationNavigation(listener);
     try {
       act(() =>
-        publishConversationMetadata(
-          { scope: "project", projectId: "project-a", chatId: "chat-1" },
-          updated,
-        ),
+        publishConversationMetadata({ chatId: "project-chat" }, updated),
       );
       expect(screen.getByText("Original title")).toBeVisible();
-      act(() =>
-        publishConversationMetadata(
-          { scope: "agent", agentId: "another-agent", chatId: "chat-1" },
-          updated,
-        ),
-      );
+      act(() => publishConversationMetadata({ chatId: "other-chat" }, updated));
       expect(screen.getByText("Original title")).toBeVisible();
       listener.mockClear();
       const historyReadCount = chatApiMock.getChat.mock.calls.length;
-      act(() =>
-        publishConversationMetadata(
-          { scope: "agent", agentId: "default", chatId: "chat-1" },
-          updated,
-        ),
-      );
+      act(() => publishConversationMetadata({ chatId: "chat-1" }, updated));
       expect(screen.getByText("Sidebar title")).toBeVisible();
       expect(listener).toHaveBeenCalledOnce();
       expect(chatApiMock.getChat).toHaveBeenCalledTimes(historyReadCount);
@@ -684,7 +675,7 @@ describe("owned ChatPage route identity", () => {
       expect(screen.getByText("Sidebar title")).toBeVisible();
       act(() =>
         publishConversationMetadata(
-          { scope: "agent", agentId: "default", chatId: "chat-1" },
+          { chatId: "chat-1" },
           { ...updated, name: "Second sidebar title" },
         ),
       );
@@ -700,7 +691,7 @@ describe("owned ChatPage route identity", () => {
         let mutation!: ReturnType<typeof beginConversationMetadataUpdate>;
         act(() => {
           mutation = beginConversationMetadataUpdate(
-            { scope: "agent", agentId: "default", chatId: "chat-1" },
+            { chatId: "chat-1" },
             updated,
             updates,
           );
@@ -718,7 +709,7 @@ describe("owned ChatPage route identity", () => {
     const listener = vi.fn();
     const unsubscribe = subscribeConversationNavigation(listener);
     try {
-      renderChat("/agents/default/chats/chat-1");
+      renderChat("/chats/chat-1");
       await act(async () => {});
       const onHistoryChange = ownedSurfaceHistoryChangeMock.mock.calls.at(
         -1,
@@ -730,11 +721,11 @@ describe("owned ChatPage route identity", () => {
         status: "running",
       };
       act(() => onHistoryChange(history));
-      expect(listener).toHaveBeenLastCalledWith({
-        scope: "agent",
-        agentId: "default",
-        chatId: "chat-1",
-      });
+      expect(listener).toHaveBeenLastCalledWith(
+        { chatId: "chat-1" },
+        false,
+        null,
+      );
       listener.mockClear();
       act(() =>
         onHistoryChange({
@@ -753,15 +744,15 @@ describe("owned ChatPage route identity", () => {
     }
   });
 
-  it("passes /agents/default/chats/:id directly to the owned conversation surface", () => {
-    renderChat("/agents/default/chats/chat-1");
+  it("passes /chats/:id directly to the owned conversation surface", () => {
+    renderChat("/chats/chat-1");
 
     expect(screen.getByTestId("owned-surface")).toHaveTextContent("chat-1");
     expect(screen.getByTestId("model-selector")).toHaveTextContent("chat-1");
   });
 
   it("opens Chat-scoped Task activity without synthesizing transcript cards", async () => {
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(
       screen.getByRole("button", { name: label("chat.tasks.title") }),
@@ -771,7 +762,7 @@ describe("owned ChatPage route identity", () => {
     expect(within(drawer).getByText(label("chat.tasks.title"))).toBeVisible();
     await waitFor(() =>
       expect(taskApiMock.listTasks).toHaveBeenCalledWith(
-        { scope: "agent", agentId: "default" },
+        { agentId: "default" },
         "chat-1",
         {
           limit: 200,
@@ -793,7 +784,7 @@ describe("owned ChatPage route identity", () => {
       },
     });
 
-    renderChat("/agents/default/chats/draft-chat");
+    renderChat("/chats/draft-chat");
 
     await waitFor(() => {
       expect(ownedSurfaceRenderMock).toHaveBeenLastCalledWith(
@@ -831,7 +822,7 @@ describe("owned ChatPage route identity", () => {
       },
     });
 
-    renderChat("/agents/default/chats/local-only");
+    renderChat("/chats/local-only");
 
     await waitFor(() => expect(devicesApiMock.listDevices).toHaveBeenCalled());
     expect(
@@ -851,7 +842,7 @@ describe("owned ChatPage route identity", () => {
       },
     });
 
-    renderChat("/agents/default/chats/chat-remote");
+    renderChat("/chats/chat-remote");
 
     await waitFor(() => expect(chatApiMock.getChat).toHaveBeenCalled());
     expect(
@@ -874,7 +865,7 @@ describe("owned ChatPage route identity", () => {
       },
     });
 
-    renderChat("/agents/default/chats/chat-remote-target");
+    renderChat("/chats/chat-remote-target");
 
     await waitFor(() => expect(chatApiMock.getChat).toHaveBeenCalled());
     expect(screen.queryByText(/这是一个远程对话/)).not.toBeInTheDocument();
@@ -890,7 +881,7 @@ describe("owned ChatPage route identity", () => {
       meta: {},
     });
 
-    renderChat("/agents/default/chats/chat-unavailable");
+    renderChat("/chats/chat-unavailable");
 
     await waitFor(() => expect(chatApiMock.getChat).toHaveBeenCalled());
     expect(
@@ -907,7 +898,7 @@ describe("owned ChatPage route identity", () => {
       meta: {},
     });
 
-    renderChat("/agents/default/chats/chat-unavailable");
+    renderChat("/chats/chat-unavailable");
 
     await waitFor(() => expect(chatApiMock.getChat).toHaveBeenCalled());
     expect(acpApiMock.chatStatus).not.toHaveBeenCalled();
@@ -927,7 +918,7 @@ describe("owned ChatPage route identity", () => {
       },
     });
 
-    renderChat("/agents/default/chats/chat-target-local");
+    renderChat("/chats/chat-target-local");
 
     await waitFor(() => expect(chatApiMock.getChat).toHaveBeenCalled());
     expect(
@@ -949,7 +940,7 @@ describe("owned ChatPage route identity", () => {
       },
     });
 
-    renderChat("/agents/default/chats/chat-remote-active");
+    renderChat("/chats/chat-remote-active");
 
     await waitFor(() => expect(chatApiMock.getChat).toHaveBeenCalled());
     expect(
@@ -983,7 +974,7 @@ describe("owned ChatPage route identity", () => {
       return Promise.reject(new Error(`unexpected fetch ${String(url)}`));
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     await waitFor(() =>
       expect(consoleFetchMock).toHaveBeenCalledWith(
@@ -1077,7 +1068,7 @@ describe("owned ChatPage route identity", () => {
       },
     );
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
     await waitFor(() => expect(activitySignals).toHaveLength(1));
 
     Object.defineProperty(document, "hidden", {
@@ -1100,7 +1091,7 @@ describe("owned ChatPage route identity", () => {
   });
 
   it("renders the complete Agent Chat route without a resolution frame", () => {
-    renderChat("/agents/default/chats/paint-chat");
+    renderChat("/chats/paint-chat");
 
     expect(ownedSurfaceRenderMock.mock.calls[0]?.[0]).toBe("paint-chat");
     expect(screen.getByTestId("owned-surface")).toHaveTextContent("paint-chat");
@@ -1108,7 +1099,7 @@ describe("owned ChatPage route identity", () => {
   });
 
   it("returns to the same agent's active chat without an empty first frame", async () => {
-    renderChat("/agents/default/chats/return-chat");
+    renderChat("/chats/return-chat");
     await waitFor(() =>
       expect(localStorage.getItem("rua_last_chat_id_default")).toBe(
         "return-chat",
@@ -1130,27 +1121,58 @@ describe("owned ChatPage route identity", () => {
   });
 
   it("remembers the active chat per selected agent", async () => {
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     await waitFor(() =>
       expect(localStorage.getItem("rua_last_chat_id_default")).toBe("chat-1"),
     );
   });
 
-  it("uses the URL Agent even when the browser preference points elsewhere", async () => {
+  it("opens a saved Chat with its own Agent and keeps the global preference", async () => {
     useAgentStore.setState({ selectedAgent: "agent-a" });
-    renderChat("/agents/agent-b/chats/agent-b-chat");
-
+    chatApiMock.getChat.mockResolvedValue({
+      agent_id: "agent-b",
+      messages: [],
+      status: "idle",
+    });
+    renderChat("/chats/agent-b-chat");
     await waitFor(() =>
-      expect(chatApiMock.getChat).toHaveBeenCalledWith(
-        "agent-b-chat",
+      expect(screen.getByTestId("owned-surface")).toHaveAttribute(
+        "data-agent",
         "agent-b",
       ),
     );
-    expect(useAgentStore.getState().selectedAgent).toBe("agent-b");
-    expect(localStorage.getItem("rua_last_chat_id_agent-b")).toBe(
-      "agent-b-chat",
+    expect(screen.getByLabelText(label("agent.switchAgent"))).toHaveTextContent(
+      "agent-b",
     );
+    expect(useAgentStore.getState().selectedAgent).toBe("agent-a");
+  });
+
+  it("follows the accepted header when the Selector changed while the first request was pending", async () => {
+    chatApiMock.getChat.mockResolvedValue({ status: "idle", messages: [] });
+    const id = openChatDraft();
+    renderChat(`/chats/${id}`);
+    act(() => useAgentStore.getState().setSelectedAgent("agent-b"));
+    fireEvent.click(screen.getByLabelText(label("chat.newChatTooltip")));
+    await waitFor(() =>
+      expect(screen.getByTestId("owned-surface")).toHaveAttribute(
+        "data-agent",
+        "agent-b",
+      ),
+    );
+    act(
+      () =>
+        ownedSurfaceHistoryChangeMock.mock.lastCall?.[0]({
+          agent_id: "default",
+          status: "idle",
+          messages: [],
+        }),
+    );
+    expect(screen.getByTestId("owned-surface")).toHaveAttribute(
+      "data-agent",
+      "default",
+    );
+    expect(useAgentStore.getState().selectedAgent).toBe("agent-b");
   });
 
   it("keeps the current chat visible until the selected chat is prepared", async () => {
@@ -1181,7 +1203,7 @@ describe("owned ChatPage route identity", () => {
       total: 1,
     });
 
-    renderChat("/agents/default/chats/chat-a");
+    renderChat("/chats/chat-a");
     await screen.findByText("Chat A title");
 
     fireEvent.click(
@@ -1190,9 +1212,7 @@ describe("owned ChatPage route identity", () => {
     await screen.findByText("Chat B listed title");
     fireEvent.click(screen.getByText("Chat B listed title"));
 
-    expect(screen.getByTestId("location")).toHaveTextContent(
-      "/agents/default/chats/chat-a",
-    );
+    expect(screen.getByTestId("location")).toHaveTextContent("/chats/chat-a");
     expect(document.querySelector(".rua-owned-chat-title")).toHaveTextContent(
       "Chat A title",
     );
@@ -1206,9 +1226,7 @@ describe("owned ChatPage route identity", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByTestId("location")).toHaveTextContent(
-        "/agents/default/chats/chat-b",
-      ),
+      expect(screen.getByTestId("location")).toHaveTextContent("/chats/chat-b"),
     );
     await screen.findByText("Chat B loaded title");
   });
@@ -1242,7 +1260,7 @@ describe("owned ChatPage route identity", () => {
       total: 1,
     });
 
-    renderChat("/agents/default/chats/chat-a");
+    renderChat("/chats/chat-a");
     await waitFor(() =>
       expect(screen.getByTestId("model-selector")).toHaveTextContent(
         "chat-a:model-1",
@@ -1292,13 +1310,13 @@ describe("owned ChatPage route identity", () => {
   it("starts a new lazy chat from the header action", async () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue("lazy-from-header");
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(screen.getByLabelText(label("chat.newChatTooltip")));
 
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/agents/default/chats/lazy-from-header",
+        "/chats/lazy-from-header",
       ),
     );
     expect(screen.getByTestId("owned-surface")).toHaveTextContent(
@@ -1320,7 +1338,7 @@ describe("owned ChatPage route identity", () => {
         model: { provider_id: "provider-a", model: "model-a" },
       });
 
-      renderChat("/agents/default/chats/chat-1");
+      renderChat("/chats/chat-1");
       await waitFor(() =>
         expect(screen.getByTestId("model-selector")).toHaveTextContent(
           "chat-1:model-a",
@@ -1333,8 +1351,6 @@ describe("owned ChatPage route identity", () => {
         act(() => {
           expect(
             requestNewConversation({
-              scope: "agent",
-              agentId: "default",
               chatId: "chat-1",
             }),
           ).toBe(true);
@@ -1343,7 +1359,7 @@ describe("owned ChatPage route identity", () => {
 
       await waitFor(() =>
         expect(screen.getByTestId("location")).toHaveTextContent(
-          "/agents/default/chats/lazy-with-model",
+          "/chats/lazy-with-model",
         ),
       );
       const selector = screen.getByTestId("model-selector");
@@ -1352,7 +1368,7 @@ describe("owned ChatPage route identity", () => {
       expect(
         JSON.parse(
           sessionStorage.getItem(
-            "rua_draft_chat_model_default:lazy-with-model",
+            "rua_draft_chat_model_no-project:lazy-with-model",
           ) || "{}",
         ),
       ).toMatchObject({ provider_id: "provider-a", model: "model-a" });
@@ -1364,7 +1380,7 @@ describe("owned ChatPage route identity", () => {
       expect(
         JSON.parse(
           sessionStorage.getItem(
-            "rua_draft_chat_model_default:lazy-with-model",
+            "rua_draft_chat_model_no-project:lazy-with-model",
           ) || "{}",
         ),
       ).toMatchObject({
@@ -1378,9 +1394,9 @@ describe("owned ChatPage route identity", () => {
     const randomUUID = vi
       .spyOn(crypto, "randomUUID")
       .mockReturnValue("should-not-be-used");
-    localStorage.setItem("rua_draft_chat_id_default", "draft-chat");
+    localStorage.setItem("rua_draft_chat_id_no-project", "draft-chat");
     sessionStorage.setItem(
-      "rua_input_draft_default:draft-chat",
+      "rua_input_draft_chat:draft-chat",
       "unfinished input",
     );
     chatApiMock.getChat.mockImplementation((chatId: string) =>
@@ -1396,41 +1412,41 @@ describe("owned ChatPage route identity", () => {
       ),
     );
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
     fireEvent.click(screen.getByLabelText(label("chat.newChatTooltip")));
 
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/agents/default/chats/draft-chat",
+        "/chats/draft-chat",
       ),
     );
     expect(randomUUID).not.toHaveBeenCalled();
-    expect(localStorage.getItem("rua_draft_chat_id_default")).toBe(
+    expect(localStorage.getItem("rua_draft_chat_id_no-project")).toBe(
       "draft-chat",
     );
-    expect(sessionStorage.getItem("rua_input_draft_default:draft-chat")).toBe(
+    expect(sessionStorage.getItem("rua_input_draft_chat:draft-chat")).toBe(
       "unfinished input",
     );
   });
 
   it("replaces a stale draft pointer after that Chat has materialized", async () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue("fresh-after-materialized");
-    localStorage.setItem("rua_draft_chat_id_default", "chat-1");
+    localStorage.setItem("rua_draft_chat_id_no-project", "chat-1");
     chatApiMock.getChat.mockResolvedValue({
       status: "idle",
       messages: [{ id: "user-1", role: "user", content: "already sent" }],
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     await waitFor(() =>
-      expect(localStorage.getItem("rua_draft_chat_id_default")).toBeNull(),
+      expect(localStorage.getItem("rua_draft_chat_id_no-project")).toBeNull(),
     );
     fireEvent.click(screen.getByLabelText(label("chat.newChatTooltip")));
 
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/agents/default/chats/fresh-after-materialized",
+        "/chats/fresh-after-materialized",
       ),
     );
   });
@@ -1451,7 +1467,7 @@ describe("owned ChatPage route identity", () => {
       total: 1,
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
@@ -1461,7 +1477,7 @@ describe("owned ChatPage route identity", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/agents/default/chats/lazy-from-drawer",
+        "/chats/lazy-from-drawer",
       ),
     );
     await waitFor(() =>
@@ -1487,7 +1503,7 @@ describe("owned ChatPage route identity", () => {
       total: 1,
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
@@ -1496,9 +1512,7 @@ describe("owned ChatPage route identity", () => {
     fireEvent.click(screen.getByText("Second chat"));
 
     await waitFor(() =>
-      expect(screen.getByTestId("location")).toHaveTextContent(
-        "/agents/default/chats/chat-2",
-      ),
+      expect(screen.getByTestId("location")).toHaveTextContent("/chats/chat-2"),
     );
   });
 
@@ -1530,7 +1544,7 @@ describe("owned ChatPage route identity", () => {
       total: 1,
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
@@ -1543,18 +1557,14 @@ describe("owned ChatPage route identity", () => {
     fireEvent.click(screen.getByText("Second chat"));
 
     expect(drawer.parentElement).toHaveClass("rua-ui-drawer-mask--visible");
-    expect(screen.getByTestId("location")).toHaveTextContent(
-      "/agents/default/chats/chat-1",
-    );
+    expect(screen.getByTestId("location")).toHaveTextContent("/chats/chat-1");
 
     await act(
       async () => finishPreparation?.({ status: "idle", messages: [] }),
     );
 
     await waitFor(() =>
-      expect(screen.getByTestId("location")).toHaveTextContent(
-        "/agents/default/chats/chat-2",
-      ),
+      expect(screen.getByTestId("location")).toHaveTextContent("/chats/chat-2"),
     );
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
@@ -1601,7 +1611,7 @@ describe("owned ChatPage route identity", () => {
         total: 12,
       });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
@@ -1662,7 +1672,7 @@ describe("owned ChatPage route identity", () => {
       total: 2,
     });
 
-    renderChat("/agents/default/chats/chat-unpinned");
+    renderChat("/chats/chat-unpinned");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
@@ -1726,7 +1736,7 @@ describe("owned ChatPage route identity", () => {
       ],
     });
 
-    renderChat("/agents/agent-b/chats/agent-b-chat");
+    renderChat("/chats/agent-b-chat");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
@@ -1806,7 +1816,7 @@ describe("owned ChatPage route identity", () => {
       ],
     });
 
-    renderChat("/agents/agent-a/chats/agent-a-chat");
+    renderChat("/chats/agent-a-chat");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
@@ -1887,7 +1897,7 @@ describe("owned ChatPage route identity", () => {
       ],
     });
 
-    renderChat("/agents/default/chats/chat-title");
+    renderChat("/chats/chat-title");
 
     await screen.findByText("Persisted metadata title");
     expect(screen.queryByText("First user question")).not.toBeInTheDocument();
@@ -1911,7 +1921,7 @@ describe("owned ChatPage route identity", () => {
       ],
     });
 
-    renderChat("/agents/default/chats/chat-string-title");
+    renderChat("/chats/chat-string-title");
 
     await screen.findByText(label("chat.untitled"));
     expect(
@@ -1930,7 +1940,7 @@ describe("owned ChatPage route identity", () => {
       }),
     );
 
-    renderChat("/agents/default/chats/lazy-chat-title");
+    renderChat("/chats/lazy-chat-title");
 
     await screen.findByText(label("chat.untitled"));
 
@@ -1967,7 +1977,7 @@ describe("owned ChatPage route identity", () => {
     expect(screen.queryByText(label("chat.untitled"))).not.toBeInTheDocument();
   });
 
-  it("ignores stale header title loads when the selected agent changes", async () => {
+  it("ignores stale header title loads after a different Chat opens", async () => {
     let resolveAgentA!: (value: unknown) => void;
     let resolveAgentB!: (value: unknown) => void;
     const agentAHistory = new Promise((resolve) => {
@@ -1976,24 +1986,20 @@ describe("owned ChatPage route identity", () => {
     const agentBHistory = new Promise((resolve) => {
       resolveAgentB = resolve;
     });
-    chatApiMock.getChat.mockImplementation(
-      (_chatId: string, agentId: string) =>
-        agentId === "agent-b" ? agentBHistory : agentAHistory,
+    chatApiMock.getChat.mockImplementation((chatId: string) =>
+      chatId === "agent-b-chat" ? agentBHistory : agentAHistory,
     );
 
-    renderChat("/agents/agent-a/chats/agent-a-chat");
+    renderChat("/chats/agent-a-chat");
 
     fireEvent.click(screen.getByText("go agent b chat"));
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/agents/agent-b/chats/agent-a-chat",
+        "/chats/agent-b-chat",
       ),
     );
     await waitFor(() =>
-      expect(chatApiMock.getChat).toHaveBeenCalledWith(
-        "agent-a-chat",
-        "agent-b",
-      ),
+      expect(chatApiMock.getChat).toHaveBeenCalledWith("agent-b-chat"),
     );
 
     await act(async () => {
@@ -2013,7 +2019,7 @@ describe("owned ChatPage route identity", () => {
       });
     });
     await screen.findByText("Fresh title");
-    expect(chatApiMock.getChat).toHaveBeenCalledWith("agent-a-chat", "agent-a");
+    expect(chatApiMock.getChat).toHaveBeenCalledWith("agent-a-chat");
   });
 
   it("keeps media-only user content untitled instead of stringifying blocks", async () => {
@@ -2032,7 +2038,7 @@ describe("owned ChatPage route identity", () => {
       ],
     });
 
-    renderChat("/agents/default/chats/chat-media-only");
+    renderChat("/chats/chat-media-only");
 
     await screen.findByText(label("chat.untitled"));
     expect(screen.queryByText(/preview\/a\.png/)).not.toBeInTheDocument();
@@ -2044,7 +2050,7 @@ describe("owned ChatPage route identity", () => {
     document.documentElement.classList.add("mobile-mode");
     chatApiMock.listChats.mockResolvedValue({ data: [], total: 0 });
 
-    renderChat("/agents/default/chats/chat-1?_mobile=1");
+    renderChat("/chats/chat-1?_mobile=1");
 
     await waitFor(() =>
       expect(
@@ -2072,13 +2078,17 @@ describe("owned ChatPage route identity", () => {
     const openPermissions = vi.fn();
     window.MobileRuntime = { openEnvironment, openPermissions };
     try {
-      renderChat("/agents/default/chats/chat-1?_mobile=1");
-      expect(screen.queryByText(label("common.mobileRuntime"))).not.toBeInTheDocument();
+      renderChat("/chats/chat-1?_mobile=1");
+      expect(
+        screen.queryByText(label("common.mobileRuntime")),
+      ).not.toBeInTheDocument();
       fireEvent.click(screen.getByLabelText(label("common.more")));
       fireEvent.click(await screen.findByText(label("common.mobileRuntime")));
       expect(openEnvironment).toHaveBeenCalledOnce();
       fireEvent.click(screen.getByLabelText(label("common.more")));
-      fireEvent.click(await screen.findByText(label("common.mobilePermissions")));
+      fireEvent.click(
+        await screen.findByText(label("common.mobilePermissions")),
+      );
       expect(openPermissions).toHaveBeenCalledOnce();
     } finally {
       delete window.MobileRuntime;
@@ -2086,10 +2096,14 @@ describe("owned ChatPage route identity", () => {
   });
 
   it("does not offer native environment management in a browser", async () => {
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
     fireEvent.click(screen.getByLabelText(label("common.more")));
-    expect(screen.queryByText(label("common.mobileRuntime"))).not.toBeInTheDocument();
-    expect(screen.queryByText(label("common.mobilePermissions"))).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(label("common.mobileRuntime")),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(label("common.mobilePermissions")),
+    ).not.toBeInTheDocument();
   });
 
   it("renders one model and thinking entry through the composer tools", async () => {
@@ -2104,7 +2118,7 @@ describe("owned ChatPage route identity", () => {
       },
     });
 
-    renderChat("/agents/default/chats/chat-reasoning");
+    renderChat("/chats/chat-reasoning");
 
     const selector = await screen.findByTestId("model-selector");
     expect(selector).toHaveTextContent("chat-reasoning:glm-5.2");
@@ -2133,7 +2147,7 @@ describe("owned ChatPage route identity", () => {
       total: 1,
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
@@ -2157,7 +2171,7 @@ describe("owned ChatPage route identity", () => {
   });
 
   it("stores chat block display defaults from the more menu", async () => {
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(screen.getByLabelText(label("common.more")));
     fireEvent.click(
@@ -2190,7 +2204,7 @@ describe("owned ChatPage route identity", () => {
   });
 
   it("places refresh before conversation options in the more menu", async () => {
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(screen.getByLabelText(label("common.more")));
 
@@ -2208,7 +2222,7 @@ describe("owned ChatPage route identity", () => {
   });
 
   it("saves selected-agent chat runtime options from the conversation options card", async () => {
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(screen.getByLabelText(label("common.more")));
     fireEvent.click(
@@ -2254,7 +2268,7 @@ describe("owned ChatPage route identity", () => {
       .spyOn(conversationApi, "previewConfiguration")
       .mockImplementation(() => new Promise(() => {}));
     try {
-      renderChat("/agents/default/chats/chat-1");
+      renderChat("/chats/chat-1");
       fireEvent.click(screen.getByLabelText(label("common.more")));
       fireEvent.click(
         await screen.findByRole("menuitem", {
@@ -2285,7 +2299,7 @@ describe("owned ChatPage route identity", () => {
       );
     const applySpy = vi.spyOn(conversationApi, "applyConfiguration");
     try {
-      renderChat("/agents/default/chats/chat-1");
+      renderChat("/chats/chat-1");
       fireEvent.click(screen.getByLabelText(label("common.more")));
       fireEvent.click(
         await screen.findByRole("menuitem", {
@@ -2332,7 +2346,7 @@ describe("owned ChatPage route identity", () => {
     );
     const defaults = { ...runningConfig(), max_iters: 42 };
     agentsApiMock.getAgentChatRunningDefaults.mockResolvedValue(defaults);
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
     fireEvent.click(screen.getByLabelText(label("common.more")));
     fireEvent.click(
       await screen.findByRole("menuitem", { name: label("chat.options.menu") }),
@@ -2380,7 +2394,7 @@ describe("owned ChatPage route identity", () => {
     chatApiMock.updateRunningConfig.mockRejectedValueOnce(
       new Error("authority unavailable"),
     );
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(screen.getByLabelText(label("common.more")));
     fireEvent.click(
@@ -2398,7 +2412,7 @@ describe("owned ChatPage route identity", () => {
   });
 
   it("groups maximum context length with context compaction", async () => {
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(screen.getByLabelText(label("common.more")));
     fireEvent.click(
@@ -2427,7 +2441,7 @@ describe("owned ChatPage route identity", () => {
   });
 
   it("gates only second-pass tool controls behind their independent switch", async () => {
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(screen.getByLabelText(label("common.more")));
     fireEvent.click(
@@ -2577,7 +2591,7 @@ describe("owned ChatPage route identity", () => {
   it("saves the complete Chat configuration snapshot", async () => {
     const config = runningConfig();
     chatApiMock.getRunningConfig.mockResolvedValue(config);
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(screen.getByLabelText(label("common.more")));
     fireEvent.click(
@@ -2612,7 +2626,7 @@ describe("owned ChatPage route identity", () => {
     };
     chatApiMock.getRunningConfig.mockResolvedValue(config);
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(screen.getByLabelText(label("common.more")));
     fireEvent.click(
@@ -2655,7 +2669,7 @@ describe("owned ChatPage route identity", () => {
       },
     ]);
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(screen.getByLabelText(label("common.more")));
     fireEvent.click(
@@ -2710,7 +2724,7 @@ describe("owned ChatPage route identity", () => {
       model: { provider_id: "provider-a", model: "model-a" },
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
     await waitFor(() =>
       expect(screen.getByTestId("model-selector")).toHaveTextContent(
         "chat-1:model-a",
@@ -2720,7 +2734,7 @@ describe("owned ChatPage route identity", () => {
     fireEvent.click(screen.getByLabelText(label("chat.newChatTooltip")));
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/agents/default/chats/lazy-authority-chat",
+        "/chats/lazy-authority-chat",
       ),
     );
     fireEvent.click(screen.getByTestId("model-selector"));
@@ -2738,7 +2752,7 @@ describe("owned ChatPage route identity", () => {
     expect(chatApiMock.materialize).not.toHaveBeenCalled();
     expect(
       sessionStorage.getItem(
-        "rua_draft_chat_device_default:lazy-authority-chat",
+        "rua_draft_chat_device_no-project:lazy-authority-chat",
       ),
     ).toBe("device-remote");
     expect(screen.getByTestId("model-selector")).toHaveTextContent(
@@ -2753,17 +2767,17 @@ describe("owned ChatPage route identity", () => {
   it("keeps draft choices until first input acceptance without calling materialize", async () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue("lazy-authority-chat");
     useAgentStore.getState().setSelectedAgent("default");
-    localStorage.setItem("rua_draft_chat_id_default", "lazy-authority-chat");
+    localStorage.setItem("rua_draft_chat_id_no-project", "lazy-authority-chat");
     sessionStorage.setItem(
-      "rua_draft_chat_model_default:lazy-authority-chat",
+      "rua_draft_chat_model_no-project:lazy-authority-chat",
       JSON.stringify({ provider_id: "provider-draft", model: "model-draft" }),
     );
     sessionStorage.setItem(
-      "rua_draft_chat_device_default:lazy-authority-chat",
+      "rua_draft_chat_device_no-project:lazy-authority-chat",
       "device-remote",
     );
     chatApiMock.getChat.mockResolvedValue({ status: "idle", messages: [] });
-    renderChat("/agents/default/chats/lazy-authority-chat");
+    renderChat("/chats/lazy-authority-chat");
     await waitFor(() =>
       expect(screen.getByTestId("model-selector")).toHaveAttribute(
         "data-draft-selection",
@@ -2773,7 +2787,7 @@ describe("owned ChatPage route identity", () => {
     expect(chatApiMock.materialize).not.toHaveBeenCalled();
     expect(
       sessionStorage.getItem(
-        "rua_draft_chat_model_default:lazy-authority-chat",
+        "rua_draft_chat_model_no-project:lazy-authority-chat",
       ),
     ).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "accept submission" }));
@@ -2785,7 +2799,7 @@ describe("owned ChatPage route identity", () => {
     );
     expect(
       sessionStorage.getItem(
-        "rua_draft_chat_model_default:lazy-authority-chat",
+        "rua_draft_chat_model_no-project:lazy-authority-chat",
       ),
     ).toBeNull();
     expect(chatApiMock.materialize).not.toHaveBeenCalled();
@@ -2839,7 +2853,7 @@ describe("owned ChatPage route identity", () => {
       },
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     await waitFor(() =>
       expect(ownedSurfaceRenderMock).toHaveBeenLastCalledWith(
@@ -2888,7 +2902,7 @@ describe("owned ChatPage route identity", () => {
       }),
     );
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(screen.getByLabelText(label("common.more")));
     fireEvent.click(
@@ -2945,10 +2959,7 @@ describe("owned ChatPage route identity", () => {
   });
 
   it("switches authority from one explicit device to another", async () => {
-    localStorage.setItem(
-      "rua:authority-switch-cache-notice-disabled",
-      "true",
-    );
+    localStorage.setItem("rua:authority-switch-cache-notice-disabled", "true");
     devicesApiMock.listDevices.mockResolvedValue([
       {
         device_id: "device-current",
@@ -2987,7 +2998,7 @@ describe("owned ChatPage route identity", () => {
       },
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     await waitFor(() =>
       expect(ownedSurfaceRenderMock).toHaveBeenLastCalledWith(
@@ -3065,7 +3076,7 @@ describe("owned ChatPage route identity", () => {
         },
       },
     });
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     await screen.findByRole("status");
     fireEvent.click(screen.getByLabelText(label("common.more")));
@@ -3130,7 +3141,7 @@ describe("owned ChatPage route identity", () => {
       target_device_id: "device-remote",
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveClass(
@@ -3174,7 +3185,7 @@ describe("owned ChatPage route identity", () => {
       },
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
     await waitFor(() => expect(chatApiMock.getChat).toHaveBeenCalled());
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(acpApiMock.chatStatus).not.toHaveBeenCalled();
@@ -3223,9 +3234,7 @@ describe("owned ChatPage route identity", () => {
       });
     });
 
-    expect(screen.getByRole("status")).toHaveClass(
-      "rua-owned-chat-acp-banner",
-    );
+    expect(screen.getByRole("status")).toHaveClass("rua-owned-chat-acp-banner");
     expect(screen.getByTestId("active-acp-runner")).toHaveAttribute(
       "data-runner",
       "codex",
@@ -3249,7 +3258,7 @@ describe("owned ChatPage route identity", () => {
       },
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveClass(
@@ -3302,7 +3311,7 @@ describe("owned ChatPage route identity", () => {
       },
     ]);
 
-    renderChat("/agents/default/chats/chat-target-remote");
+    renderChat("/chats/chat-target-remote");
 
     await waitFor(() => expect(chatApiMock.getChat).toHaveBeenCalled());
     fireEvent.click(screen.getByLabelText(label("common.more")));
@@ -3315,7 +3324,7 @@ describe("owned ChatPage route identity", () => {
 
     await waitFor(() =>
       expect(acpApiMock.listChatRunners).toHaveBeenCalledWith(
-        "default",
+        undefined,
         "chat-target-remote",
         "device-remote",
       ),
@@ -3353,7 +3362,7 @@ describe("owned ChatPage route identity", () => {
       },
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(screen.getByLabelText(label("common.more")));
     expect(
@@ -3387,7 +3396,7 @@ describe("owned ChatPage route identity", () => {
     const listener = vi.fn();
     const unsubscribe = subscribeConversationNavigation(listener);
     try {
-      renderChat("/agents/agent-b/chats/agent-b-chat");
+      renderChat("/chats/agent-b-chat");
       fireEvent.click(
         screen.getByLabelText(label("navigation.manageConversations")),
       );
@@ -3413,13 +3422,13 @@ describe("owned ChatPage route identity", () => {
         ).not.toBeInTheDocument(),
       );
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/agents/agent-b/chats/agent-b-chat",
+        "/chats/agent-b-chat",
       );
-      expect(listener).toHaveBeenCalledWith({
-        scope: "agent",
-        agentId: "agent-b",
-        chatId: "agent-b-chat",
-      });
+      expect(listener).toHaveBeenCalledWith(
+        { chatId: "agent-b-chat" },
+        false,
+        null,
+      );
 
       fireEvent.click(
         within(drawer).getByRole("tab", {
@@ -3486,7 +3495,7 @@ describe("owned ChatPage route identity", () => {
       if (params.archived) return { data: [archivedChat], total: 1 };
       return { data: [], total: 0 };
     });
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
     );
@@ -3569,7 +3578,7 @@ describe("owned ChatPage route identity", () => {
       ],
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
@@ -3590,9 +3599,7 @@ describe("owned ChatPage route identity", () => {
 
     fireEvent.click(drawerResult);
     expect(
-      JSON.parse(
-        sessionStorage.getItem("rua_search_scroll_target") ?? "null",
-      ),
+      JSON.parse(sessionStorage.getItem("rua_search_scroll_target") ?? "null"),
     ).toMatchObject({
       cardIndex: 3,
       query: "文件",
@@ -3601,7 +3608,7 @@ describe("owned ChatPage route identity", () => {
     });
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/agents/default/chats/chat-hit",
+        "/chats/chat-hit",
       ),
     );
   });
@@ -3632,7 +3639,7 @@ describe("owned ChatPage route identity", () => {
       ],
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
@@ -3651,7 +3658,7 @@ describe("owned ChatPage route identity", () => {
     fireEvent.click(result);
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/agents/default/chats/chat-hit",
+        "/chats/chat-hit",
       ),
     );
 
@@ -3670,7 +3677,7 @@ describe("owned ChatPage route identity", () => {
   it("shows the owned no-results state for an empty chat search response", async () => {
     chatApiMock.searchChats.mockResolvedValue({ results: [] });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
@@ -3699,7 +3706,7 @@ describe("owned ChatPage route identity", () => {
       .mockReturnValueOnce(oldSearch)
       .mockReturnValueOnce(freshSearch);
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
@@ -3772,7 +3779,7 @@ describe("owned ChatPage route identity", () => {
       ],
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(screen.getByLabelText(label("common.more")));
     fireEvent.click(await screen.findByText(label("chat.export.tooltip")));
@@ -3786,8 +3793,8 @@ describe("owned ChatPage route identity", () => {
     );
   });
 
-  it("handles sidebar deletion only for the active Agent scope and replaces the deleted route with an active sibling", async () => {
-    renderChat("/agents/default/chats/chat-1");
+  it("handles sidebar deletion only for the active Chat ID and replaces the deleted route with an active sibling", async () => {
+    renderChat("/chats/chat-1");
     await waitFor(() => expect(chatApiMock.getChat).toHaveBeenCalled());
     const remaining = [
       {
@@ -3809,48 +3816,30 @@ describe("owned ChatPage route identity", () => {
     ];
     act(() => {
       expect(
-        publishConversationDeleted(
-          { scope: "project", projectId: "project-1", chatId: "chat-1" },
-          remaining,
-        ),
+        publishConversationDeleted({ chatId: "project-chat" }, remaining),
       ).toBe(false);
       expect(
-        publishConversationDeleted(
-          { scope: "agent", agentId: "other", chatId: "chat-1" },
-          remaining,
-        ),
+        publishConversationDeleted({ chatId: "another-chat" }, remaining),
       ).toBe(false);
       expect(
-        publishConversationDeleted(
-          { scope: "agent", agentId: "default", chatId: "other-chat" },
-          remaining,
-        ),
+        publishConversationDeleted({ chatId: "other-chat" }, remaining),
       ).toBe(false);
     });
-    expect(screen.getByTestId("location")).toHaveTextContent(
-      "/agents/default/chats/chat-1",
-    );
-    sessionStorage.setItem("rua_input_draft_default:chat-1", "deleted draft");
+    expect(screen.getByTestId("location")).toHaveTextContent("/chats/chat-1");
+    sessionStorage.setItem("rua_input_draft_chat:chat-1", "deleted draft");
     act(() => {
-      expect(
-        publishConversationDeleted(
-          { scope: "agent", agentId: "default", chatId: "chat-1" },
-          remaining,
-        ),
-      ).toBe(true);
+      expect(publishConversationDeleted({ chatId: "chat-1" }, remaining)).toBe(
+        true,
+      );
     });
     await waitFor(() =>
-      expect(screen.getByTestId("location")).toHaveTextContent(
-        "/agents/default/chats/chat-2",
-      ),
+      expect(screen.getByTestId("location")).toHaveTextContent("/chats/chat-2"),
     );
     expect(screen.getByTestId("location")).toHaveAttribute(
       "data-navigation-type",
       "REPLACE",
     );
-    expect(
-      sessionStorage.getItem("rua_input_draft_default:chat-1"),
-    ).toBeNull();
+    expect(sessionStorage.getItem("rua_input_draft_chat:chat-1")).toBeNull();
     expect(chatApiMock.deleteChat).not.toHaveBeenCalled();
   });
 
@@ -3870,7 +3859,7 @@ describe("owned ChatPage route identity", () => {
       total: 1,
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
@@ -3895,7 +3884,7 @@ describe("owned ChatPage route identity", () => {
     );
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/agents/default/chats/lazy-after-delete",
+        "/chats/lazy-after-delete",
       ),
     );
     expect(window.confirm).not.toHaveBeenCalled();
@@ -3924,7 +3913,7 @@ describe("owned ChatPage route identity", () => {
       total: 1,
     });
 
-    renderChat("/agents/default/chats/active-chat");
+    renderChat("/chats/active-chat");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
@@ -3943,7 +3932,7 @@ describe("owned ChatPage route identity", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/agents/default/chats/older-chat",
+        "/chats/older-chat",
       ),
     );
     expect(randomUUID).not.toHaveBeenCalled();
@@ -3966,7 +3955,7 @@ describe("owned ChatPage route identity", () => {
       total: 1,
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
@@ -4012,7 +4001,7 @@ describe("owned ChatPage route identity", () => {
       total: 1,
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),
@@ -4047,7 +4036,7 @@ describe("owned ChatPage route identity", () => {
       total: 1,
     });
 
-    renderChat("/agents/default/chats/chat-1");
+    renderChat("/chats/chat-1");
 
     fireEvent.click(
       screen.getByLabelText(label("navigation.manageConversations")),

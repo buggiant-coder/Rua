@@ -1,22 +1,17 @@
-import { readDraftChatContext, saveDraftChatContext } from "./chatContext";
+import { useAgentStore } from "@/stores/agentStore";
 import type { ModelSlot } from "@/api/types";
+import { rememberProjectId } from "../Projects/projectSelection";
+import { saveDraftChatContext } from "./chatContext";
 import {
-  clearDraftConversation,
-  clearDraftConversationModel,
-  draftConversationKey,
-  draftConversationModelKey,
+  chatDraftScope,
   forgetConversation,
   lastConversationKey,
   loadDraftConversationId,
-  loadDraftConversationModel,
   loadLastConversationId,
   loadRecentConversationIds,
   recentConversationsKey,
   rememberConversation,
-  resolveConversationEntry,
   resolveOrCreateDraftConversationId,
-  saveDraftConversationId,
-  saveDraftConversationModel,
 } from "./conversationLifecycle";
 
 export function lastChatKey(agentId: string): string {
@@ -25,14 +20,6 @@ export function lastChatKey(agentId: string): string {
 
 export function recentChatKey(agentId: string): string {
   return recentConversationsKey(agentId);
-}
-
-export function draftChatKey(agentId: string): string {
-  return draftConversationKey(agentId);
-}
-
-export function draftChatModelKey(agentId: string, chatId: string): string {
-  return draftConversationModelKey(agentId, chatId);
 }
 
 export function loadLastChatId(agentId: string): string | null {
@@ -55,46 +42,27 @@ export function createLazyChatId(): string {
   return crypto.randomUUID();
 }
 
-export function loadDraftChatId(agentId: string): string | null {
-  return loadDraftConversationId(agentId);
-}
-
-export function saveDraftChatId(agentId: string, chatId: string): void {
-  saveDraftConversationId(agentId, chatId);
-}
-
-export function clearDraftChatId(agentId: string, chatId?: string): void {
-  clearDraftConversation(agentId, chatId);
-}
-
-export function loadDraftChatModel(
-  agentId: string,
-  chatId: string,
-): ModelSlot | null {
-  return loadDraftConversationModel(agentId, chatId);
-}
-
-export function saveDraftChatModel(
-  agentId: string,
-  chatId: string,
-  model: ModelSlot,
-): void {
-  saveDraftConversationModel(agentId, chatId, model);
-}
-
-export function clearDraftChatModel(agentId: string, chatId: string): void {
-  clearDraftConversationModel(agentId, chatId);
-}
-
-export function resolveOrCreateDraftChatId(agentId: string): string {
-  const chatId = resolveOrCreateDraftConversationId(agentId);
-  if (!readDraftChatContext(chatId)) saveDraftChatContext(chatId, { agentId });
+export function openChatDraft(
+  projectId?: string,
+  inheritedModel?: ModelSlot | null,
+): string {
+  const chatId = resolveOrCreateDraftConversationId(
+    chatDraftScope(projectId),
+    inheritedModel,
+  );
+  saveDraftChatContext(chatId, {
+    agentId: useAgentStore.getState().selectedAgent,
+    projectId,
+  });
+  if (projectId) rememberProjectId(projectId);
   return chatId;
 }
 
 export function resolveChatEntry(agentId: string): string {
-  const chatId = resolveConversationEntry(agentId);
-  if (loadDraftChatId(agentId) === chatId && !readDraftChatContext(chatId))
-    saveDraftChatContext(chatId, { agentId });
-  return chatId;
+  return (
+    loadLastChatId(agentId) ??
+    loadRecentChatIds(agentId)[0] ??
+    loadDraftConversationId(chatDraftScope()) ??
+    openChatDraft()
+  );
 }

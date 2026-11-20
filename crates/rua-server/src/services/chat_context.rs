@@ -12,6 +12,41 @@ pub struct ChatContext {
     pub project_id: Option<String>,
 }
 
+/// An absent field means the caller uses the saved membership. An explicit null asserts no Project.
+pub(crate) fn requested_project(
+    value: Option<&serde_json::Value>,
+) -> Result<Option<Option<&str>>, ApiError> {
+    match value {
+        None => Ok(None),
+        Some(serde_json::Value::Null) => Ok(Some(None)),
+        Some(serde_json::Value::String(id)) if !id.trim().is_empty() => Ok(Some(Some(id.trim()))),
+        Some(_) => Err(ApiError::BadRequest(
+            "project_id must be a Project ID or null".into(),
+        )),
+    }
+}
+
+pub(crate) fn check_project_membership(
+    saved: Option<&str>,
+    requested: Option<Option<&str>>,
+) -> Result<(), ApiError> {
+    if requested.is_some_and(|id| id != saved) {
+        return Err(ApiError::Conflict(
+            "Chat Project membership is fixed".into(),
+        ));
+    }
+    Ok(())
+}
+
+impl ChatContext {
+    pub(crate) fn validate_project_field(
+        &self,
+        value: Option<&serde_json::Value>,
+    ) -> Result<(), ApiError> {
+        check_project_membership(self.project_id.as_deref(), requested_project(value)?)
+    }
+}
+
 pub async fn load_chat_context(
     rua_root: &Path,
     chat_id: &str,
@@ -32,9 +67,10 @@ pub async fn resolve_submission_context(
     state: &AppState,
     chat_id: &str,
     draft_agent_id: Option<&str>,
-    draft_project_id: Option<&str>,
+    requested_project: Option<Option<&str>>,
 ) -> Result<ChatContext, ApiError> {
     let context = if let Some(context) = load_chat_context(&state.rua_root, chat_id).await? {
+        check_project_membership(context.project_id.as_deref(), requested_project)?;
         context
     } else {
         let agent_id = draft_agent_id
@@ -52,10 +88,7 @@ pub async fn resolve_submission_context(
         }
         ChatContext {
             agent_id: agent_id.to_string(),
-            project_id: draft_project_id
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string),
+            project_id: requested_project.flatten().map(str::to_string),
         }
     };
     if let Some(project_id) = context.project_id.as_deref() {

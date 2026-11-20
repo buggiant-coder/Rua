@@ -153,7 +153,10 @@ pub async fn materialize_first_project_turn(
     snapshot: ProjectChatMaterializationSnapshot,
 ) -> Result<(), String> {
     let media_ids = crate::services::first_chat_submission::validate_submission_media(
-        scope_root, address, input,
+        scope_root,
+        address,
+        Some(&snapshot.project_id),
+        input,
     )
     .await?;
     materialize_staged_project_chat(scope_root, address, placement, |staging_root| async move {

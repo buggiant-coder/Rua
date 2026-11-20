@@ -5,7 +5,7 @@ import {
   resolveConversationRoute,
 } from "./conversationRouteController";
 
-describe.each(["agent-1", "project:project-1"])(
+describe.each(["no-project", "project:project-1"])(
   "conversation route controller for %s",
   (scope) => {
     beforeEach(() => localStorage.clear());

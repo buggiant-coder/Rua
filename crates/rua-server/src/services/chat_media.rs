@@ -98,6 +98,12 @@ pub enum ChatMediaError {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ChatMediaService;
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StagedChatMedia {
+    pub address: ChatAddress,
+    pub project_id: Option<String>,
+}
+
 impl ChatMediaService {
     pub async fn collect_staged_scopes(
         &self,
@@ -130,7 +136,7 @@ impl ChatMediaService {
         &self,
         authority: &crate::services::conversation_authority::ConversationAuthority,
         rua_root: &Path,
-        address: ChatAddress,
+        draft: StagedChatMedia,
         bytes: Vec<u8>,
         mime_type: Option<String>,
         original_filename: Option<String>,
@@ -138,21 +144,21 @@ impl ChatMediaService {
         self.collect_expired_staged(
             authority,
             rua_root,
-            &address,
+            &draft.address,
             Duration::from_secs(24 * 60 * 60),
         )
         .await?;
         let stored = self
             .store(
                 rua_root,
-                address.clone(),
+                draft.address.clone(),
                 bytes,
                 mime_type,
                 original_filename,
             )
             .await?;
         let marker = media_dir(rua_root).join(format!(".staged-{}.json", stored.media_id));
-        rua_config::atomic_write_json(&marker, &serde_json::json!({"address": address}))
+        rua_config::atomic_write_json(&marker, &serde_json::json!(draft))
             .map_err(|error| io::Error::other(error.to_string()))?;
         Ok(stored)
     }
@@ -368,10 +374,11 @@ impl ChatMediaService {
     ) -> Result<OpenedChatMedia, ChatMediaError> {
         let media_id = MediaId::from_str(raw_media_id).map_err(|_| ChatMediaError::InvalidId)?;
         let media_dir = media_dir(rua_root);
-        crate::services::first_chat_submission::validate_staged_media_address(
+        crate::services::first_chat_submission::validate_staged_media(
             &media_dir,
             &media_id.to_string(),
             &address,
+            None,
         )
         .await
         .map_err(|_| ChatMediaError::NotFound)?;

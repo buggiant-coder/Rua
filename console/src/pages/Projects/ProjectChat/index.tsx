@@ -47,12 +47,13 @@ import LlmDebugCaptureControl from "@/pages/Chat/LlmDebugCaptureControl";
 import ChatHeader from "@/pages/Chat/ChatHeader";
 import ACPEnterDialog from "@/pages/Chat/ACPEnterDialog";
 import {
+  chatDraftScope,
   loadDraftConversationAcp,
   saveDraftConversationAcp,
 } from "@/pages/Chat/conversationLifecycle";
 import ModelSelector from "@/pages/Chat/ModelSelector";
 import ChatDeviceChip from "@/pages/Chat/ChatDeviceChip";
-import { saveDraftConversationModel } from "@/pages/Chat/conversationLifecycle";
+import { openChatDraft } from "@/pages/Chat/chatNavigation";
 import { historyProvesConversationMaterialized } from "@/pages/Chat/conversationRouteController";
 import {
   chatPath,
@@ -89,16 +90,12 @@ import { isMobile } from "@/utils/isMobile";
 import CreateProjectDialog from "../CreateProjectDialog";
 import {
   clearProjectChatDraftState,
-  createProjectChat,
   discardProjectChatLocalState,
-  projectConversationScope,
   projectChatDraftKey,
   projectChatExecutionAgent,
-  projectLastSelectedAgent,
   rememberProjectChat,
   resolveProjectChatPath,
   setProjectChatDraftAgent,
-  setProjectLastSelectedAgent,
 } from "../projectChatNavigation";
 import ProjectAgentSelector from "./ProjectAgentSelector";
 import ProjectChatsDrawer from "./ProjectChatsDrawer";
@@ -135,7 +132,7 @@ export default function ProjectChatPage({
     statefulOperationAccepted,
     authoritativeHistoryObserved,
   } = useConversationLifecycle({
-    scope: projectConversationScope(projectId),
+    scope: chatDraftScope(projectId),
     conversationId: chatId,
     unmaterialized: initialData.unmaterialized,
   });
@@ -143,7 +140,6 @@ export default function ProjectChatPage({
     ? projectAgentSelectionFromHistory(initialData.initialHistory)
     : null;
   const lastSelectionRevisionRef = useRef(initialSelection?.revision ?? -1);
-  const fallbackAgentId = projectLastSelectedAgent(projectId) || "default";
   const [history, setHistory] = useState<ChatHistory | null>(
     initialData.initialHistory ?? null,
   );
@@ -218,7 +214,7 @@ export default function ProjectChatPage({
       ? projectChatExecutionAgent(projectId, chatId)
       : initialData.initialHistory?.agent_id ??
         initialSelection?.agent_id ??
-        fallbackAgentId,
+        "default",
   );
   useLayoutEffect(
     () =>
@@ -229,9 +225,7 @@ export default function ProjectChatPage({
       }),
     [projectId, chatId, executionAgentId],
   );
-  const [agentResolved, setAgentResolved] = useState(
-    lazy || initialSelection !== null || fallbackAgentId.length > 0,
-  );
+  const [agentResolved, setAgentResolved] = useState(Boolean(executionAgentId));
   const [selectedAgentAvailable, setSelectedAgentAvailable] = useState(
     initialData.initialHistory?.meta?.project_chat_selected_agent_available ===
       true,
@@ -279,13 +273,10 @@ export default function ProjectChatPage({
   useEffect(() => {
     if (!agentsLoaded || !lazyRef.current) return;
     const current = projectChatExecutionAgent(projectId, chatId);
-    const valid = agents.some((agent) => agent.id === current && agent.enabled);
-    const next = valid ? current : "default";
-    if (next !== current) setProjectChatDraftAgent(projectId, chatId, next);
-    setExecutionAgentId(next);
+    setExecutionAgentId(current);
     setAgentResolved(true);
     setSelectedAgentAvailable(
-      agents.some((agent) => agent.id === next && agent.enabled),
+      agents.some((agent) => agent.id === current && agent.enabled),
     );
   }, [agents, agentsLoaded, chatId, lazyRef, projectId]);
 
@@ -342,12 +333,11 @@ export default function ProjectChatPage({
 
   const handleStatefulOperationAccepted = useCallback(() => {
     if (!lazyRef.current) return;
-    setProjectLastSelectedAgent(projectId, executionAgentId);
     statefulOperationAccepted();
-    invalidateConversationNavigation({ chatId });
+    invalidateConversationNavigation({ chatId }, false, projectId);
     clearProjectChatDraftState(projectId, chatId);
     setAgentResolved(true);
-  }, [chatId, executionAgentId, lazyRef, projectId, statefulOperationAccepted]);
+  }, [chatId, lazyRef, projectId, statefulOperationAccepted]);
 
   const handleHistoryChange = useCallback(
     (nextHistory: ChatHistory | null) => {
@@ -356,7 +346,6 @@ export default function ProjectChatPage({
 
       if (lazyRef.current) {
         if (!authoritativeHistoryObserved(nextHistory)) return;
-        setProjectLastSelectedAgent(projectId, executionAgentId);
         clearProjectChatDraftState(projectId, chatId);
         setAgentResolved(true);
       }
@@ -370,12 +359,15 @@ export default function ProjectChatPage({
         ]);
         if (navigationHistoryKeyRef.current !== navigationKey) {
           navigationHistoryKeyRef.current = navigationKey;
-          invalidateConversationNavigation({ chatId });
+          invalidateConversationNavigation({ chatId }, false, projectId);
         }
       }
       const agentState = projectAgentStateFromHistory(nextHistory);
-      const selection =
-        agentState?.selection ?? projectAgentSelectionFromHistory(nextHistory);
+      const selection = agentState?.selection;
+      if (!selection && nextHistory.agent_id) {
+        setExecutionAgentId(nextHistory.agent_id);
+        setAgentResolved(true);
+      }
       if (selection && selection.revision >= lastSelectionRevisionRef.current) {
         lastSelectionRevisionRef.current = selection.revision;
         setExecutionAgentId(selection.agent_id);
@@ -388,13 +380,7 @@ export default function ProjectChatPage({
       }
       setSwitchBlockers(projectAgentSwitchBlockersFromHistory(nextHistory));
     },
-    [
-      authoritativeHistoryObserved,
-      chatId,
-      executionAgentId,
-      lazyRef,
-      projectId,
-    ],
+    [authoritativeHistoryObserved, chatId, lazyRef, projectId],
   );
 
   const applyCommittedChatModel = useCallback((model: ChatHistory["model"]) => {
@@ -418,7 +404,7 @@ export default function ProjectChatPage({
     async (agentId: string) => {
       if (lazyRef.current) {
         setProjectChatDraftAgent(projectId, chatId, agentId);
-        setProjectLastSelectedAgent(projectId, agentId);
+        useAgentStore.getState().setSelectedAgent(agentId);
         setExecutionAgentId(agentId);
         setSelectedAgentAvailable(true);
         return;
@@ -436,7 +422,7 @@ export default function ProjectChatPage({
         setExecutionAgentId(state.selection.agent_id);
         setSelectedAgentAvailable(state.selected_agent_available);
         setSwitchBlockers(state.blockers);
-        setProjectLastSelectedAgent(projectId, state.selection.agent_id);
+        useAgentStore.getState().setSelectedAgent(state.selection.agent_id);
         toast.success(t("projects.chat.agentSwitched"));
       } catch (error) {
         toast.error(
@@ -477,17 +463,19 @@ export default function ProjectChatPage({
   );
 
   const createInheritedProjectChat = useCallback(() => {
-    const nextChatId = createProjectChat(projectId, executionAgentId);
-    const inheritedModel = lazy ? draftModel : history?.model ?? null;
-    if (inheritedModel) {
-      saveDraftConversationModel(
-        projectConversationScope(projectId),
-        nextChatId,
-        inheritedModel,
+    const nextChatId = openChatDraft(
+      projectId,
+      lazy ? draftModel : history?.model,
+    );
+    if (nextChatId === chatId) {
+      const agent = useAgentStore.getState().selectedAgent;
+      setExecutionAgentId(agent);
+      setSelectedAgentAvailable(
+        agents.some((item) => item.id === agent && item.enabled),
       );
     }
     return nextChatId;
-  }, [draftModel, executionAgentId, history?.model, lazy, projectId]);
+  }, [agents, chatId, draftModel, history?.model, lazy, projectId]);
 
   const handleNewChat = useCallback(() => {
     setDrawer(null);
@@ -518,7 +506,7 @@ export default function ProjectChatPage({
 
   const handleChatUpdated = useCallback(
     (chat: ChatSpec) => {
-      publishConversationMetadata({ chatId: chat.id }, chat);
+      publishConversationMetadata({ chatId: chat.id }, chat, projectId);
       if (chat.id !== chatId) return;
       setHistory((current) =>
         current ? { ...current, title: chat.name?.trim() || null } : current,
@@ -529,7 +517,7 @@ export default function ProjectChatPage({
 
   const handleChatDeleted = useCallback(
     (chat: ChatSpec, remainingKnownChats: ChatSpec[]) => {
-      invalidateConversationNavigation({ chatId: chat.id });
+      invalidateConversationNavigation({ chatId: chat.id }, false, projectId);
       discardProjectChatLocalState(projectId, chat.id);
       if (chat.id !== chatId) {
         rememberProjectChat(projectId, chatId);
@@ -785,7 +773,9 @@ export default function ProjectChatPage({
           projectDeviceLabel={projectDeviceLabel}
           onSelect={handleProjectSelect}
           onSelectIndependent={() =>
-            navigate(resolveAgentChatPath(executionAgentId))
+            navigate(
+              resolveAgentChatPath(useAgentStore.getState().selectedAgent),
+            )
           }
           onCreate={() => setCreateProjectOpen(true)}
           onOverview={() => navigate("/projects?overview=1")}
@@ -936,10 +926,12 @@ export default function ProjectChatPage({
       <ACPEnterDialog
         unmaterialized={lazy}
         draftSelection={
-          lazy ? loadDraftConversationAcp(`project:${projectId}`, chatId) : null
+          lazy
+            ? loadDraftConversationAcp(chatDraftScope(projectId), chatId)
+            : null
         }
         onDraftSelected={(selection) =>
-          saveDraftConversationAcp(`project:${projectId}`, chatId, selection)
+          saveDraftConversationAcp(chatDraftScope(projectId), chatId, selection)
         }
         open={acpEnterOpen}
         onClose={() => setAcpEnterOpen(false)}

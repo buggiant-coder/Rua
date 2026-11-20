@@ -23,22 +23,20 @@ afterEach(() => vi.unstubAllGlobals());
 import { historyProvesConversationMaterialized } from "../../Chat/conversationRouteController";
 
 import * as drafts from "../../Chat/drafts";
+import { openChatDraft, saveLastChatId } from "../../Chat/chatNavigation";
 import {
-  loadDraftChatModel,
-  saveDraftChatModel,
-  saveLastChatId,
-} from "../../Chat/chatNavigation";
-import {
-  createProjectChat,
   lastProjectChatId,
   projectChatDraftKey,
   projectChatExecutionAgent,
   rememberProjectChat,
-  setProjectLastSelectedAgent,
 } from "../projectChatNavigation";
 import ProjectChatPage from "./index";
 import { loader } from "../../Chat/route";
 import { ModalProvider, ToastProvider } from "@/ui";
+import {
+  loadDraftConversationModel,
+  saveDraftConversationModel,
+} from "@/pages/Chat/conversationLifecycle";
 import { useAgentStore } from "@/stores/agentStore";
 import {
   subscribeConversationNavigation,
@@ -390,7 +388,7 @@ describe("ProjectChat loader", () => {
 
   it("keeps a local draft lazy without loading remote history", async () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue("chat-local-draft");
-    createProjectChat("project-1");
+    openChatDraft("project-1");
 
     await expect(
       loader({
@@ -576,7 +574,7 @@ describe("ProjectChatPage", () => {
 
   it("mounts the production surface with the Project target and focus header", async () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue("chat-1");
-    createProjectChat(project.project_id);
+    openChatDraft(project.project_id);
 
     const { container } = renderPage({
       project,
@@ -706,7 +704,7 @@ describe("ProjectChatPage", () => {
         ),
       );
       expect(
-        loadDraftChatModel("project:project-1", "chat-new-from-header"),
+        loadDraftConversationModel("project:project-1", "chat-new-from-header"),
       ).toEqual({
         provider_id: "dashscope",
         model: "qwen-plus",
@@ -751,8 +749,8 @@ describe("ProjectChatPage", () => {
 
   it("materializes the Project draft model when the first Submit is accepted", async () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue("chat-model-handoff");
-    createProjectChat("project-1");
-    saveDraftChatModel("project:project-1", "chat-model-handoff", {
+    openChatDraft("project-1");
+    saveDraftConversationModel("project:project-1", "chat-model-handoff", {
       provider_id: "dashscope",
       model: "qwen-plus",
     });
@@ -811,7 +809,7 @@ describe("ProjectChatPage", () => {
 
   it("clears pre-submit state and draft after the first Submit is accepted", async () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue("chat-3");
-    createProjectChat(project.project_id);
+    openChatDraft(project.project_id);
     drafts.save(
       projectChatDraftKey(project.project_id, "chat-3"),
       "materialize me",
@@ -881,7 +879,6 @@ describe("ProjectChatPage", () => {
       }),
     );
 
-    setProjectLastSelectedAgent("project-1", "code");
     useAgentStore.setState({ selectedAgent: "ordinary-agent" });
     const page = renderPage({
       project,
@@ -938,9 +935,27 @@ describe("ProjectChatPage", () => {
       chatId: "chat-materialized",
       agentId: "code",
     });
-    expect(useAgentStore.getState().selectedAgent).toBe("ordinary-agent");
+    expect(useAgentStore.getState().selectedAgent).toBe("code");
     page.unmount();
     expect(getProjectNavigationAgent()).toBeNull();
+  });
+
+  it("adopts the accepted header Agent after a new selection on the same draft", async () => {
+    useAgentStore.getState().setSelectedAgent("code");
+    const chatId = openChatDraft(project.project_id);
+    renderPage({ project, chatId, initialHistory: null });
+    await waitFor(() =>
+      expect(surfaceProps.current?.executionAgentId).toBe("code"),
+    );
+    const observeHistory = surfaceProps.current?.onHistoryChange as (
+      history: unknown,
+    ) => void;
+    act(() =>
+      observeHistory({ agent_id: "default", messages: [], status: "idle" }),
+    );
+    expect(surfaceProps.current?.executionAgentId).toBe("default");
+    expect(surfaceProps.current?.unmaterialized).toBe(false);
+    expect(useAgentStore.getState().selectedAgent).toBe("code");
   });
 
   it("keeps a newer live Agent selection when stale Sync history arrives", async () => {
@@ -1073,7 +1088,7 @@ describe("ProjectChatPage", () => {
     expect(surfaceProps.current?.executionAgentId).toBe("deleted-agent");
   });
 
-  it("keeps the Project selector independent from the ordinary Agent selection", async () => {
+  it("applies an explicit Project draft selection to the global Agent preference", async () => {
     agentsApiMock.listAgents.mockResolvedValue({
       agents: [
         {
@@ -1092,9 +1107,9 @@ describe("ProjectChatPage", () => {
         },
       ],
     });
-    useAgentStore.getState().setSelectedAgent("ordinary-agent");
+    useAgentStore.getState().setSelectedAgent("default");
     vi.spyOn(crypto, "randomUUID").mockReturnValue("chat-independent");
-    createProjectChat(project.project_id);
+    openChatDraft(project.project_id);
 
     renderPage({
       project,
@@ -1110,14 +1125,14 @@ describe("ProjectChatPage", () => {
         screen.getByRole("button", { name: "Project Chat Agent" }),
       ).toHaveTextContent("Code Agent"),
     );
-    expect(useAgentStore.getState().selectedAgent).toBe("ordinary-agent");
+    expect(useAgentStore.getState().selectedAgent).toBe("code");
     expect(projectChatsApiMock.switchAgent).not.toHaveBeenCalled();
   });
 
-  it("falls back to Default Agent when the per-Project recent hint is invalid", async () => {
-    setProjectLastSelectedAgent(project.project_id, "missing-agent");
+  it("preserves an unavailable global Agent choice and blocks submission until a valid selection", async () => {
+    useAgentStore.getState().setSelectedAgent("missing-agent");
     vi.spyOn(crypto, "randomUUID").mockReturnValue("chat-invalid-hint");
-    createProjectChat(project.project_id);
+    openChatDraft(project.project_id);
 
     renderPage({
       project,
@@ -1125,16 +1140,18 @@ describe("ProjectChatPage", () => {
       initialHistory: null,
     });
 
-    expect(await screen.findByText("Default Agent")).toBeVisible();
+    await waitFor(() =>
+      expect(surfaceProps.current?.submitDisabled).toBe(true),
+    );
     expect(surfaceProps.current?.address).toEqual({
       chatId: "chat-invalid-hint",
     });
-    expect(surfaceProps.current?.executionAgentId).toBe("default");
+    expect(surfaceProps.current?.executionAgentId).toBe("missing-agent");
   });
 
   it("keeps right drawers mutually exclusive without replacing the conversation", async () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue("chat-drawers");
-    createProjectChat(project.project_id);
+    openChatDraft(project.project_id);
     renderPage({
       project,
       chatId: "chat-drawers",
@@ -1657,7 +1674,7 @@ describe("ProjectChatPage", () => {
     expect(lastProjectChatId("project-1")).toBe("chat-recent");
   });
 
-  it("handles final sidebar deletion in the matching Project and inherits its Agent and model with route replacement", async () => {
+  it("uses the global Agent and inherits the source model after final sidebar deletion", async () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue(
       "chat-inherited-after-sidebar-delete",
     );
@@ -1711,9 +1728,9 @@ describe("ProjectChatPage", () => {
         "project-1",
         "chat-inherited-after-sidebar-delete",
       ),
-    ).toBe("code");
+    ).toBe("default");
     expect(
-      loadDraftChatModel(
+      loadDraftConversationModel(
         "project:project-1",
         "chat-inherited-after-sidebar-delete",
       ),
@@ -1840,7 +1857,11 @@ describe("ProjectChatPage", () => {
       act(() => onHistoryChange({ messages: [], status: "idle" }));
       expect(listener).not.toHaveBeenCalled();
       fireEvent.click(screen.getByRole("button", { name: "Accept" }));
-      expect(listener).toHaveBeenLastCalledWith({ chatId: "new-chat" }, false);
+      expect(listener).toHaveBeenLastCalledWith(
+        { chatId: "new-chat" },
+        false,
+        "project-1",
+      );
       const materialized = {
         ...materializedHistory(),
         title: "First question",
@@ -1864,7 +1885,7 @@ describe("ProjectChatPage", () => {
     }
   });
 
-  it("opens independent chats for the current Project Agent without changing the ordinary preference", async () => {
+  it("opens independent chats for the global Agent without changing the Project Chat", async () => {
     useAgentStore.setState({ selectedAgent: "agent-independent" });
     saveLastChatId("agent-independent", "other-agent-chat");
     saveLastChatId("default", "current-agent-chat");
@@ -1878,7 +1899,7 @@ describe("ProjectChatPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Standalone chats" }));
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
-        "/chats/current-agent-chat",
+        "/chats/other-agent-chat",
       ),
     );
     expect(useAgentStore.getState().selectedAgent).toBe("agent-independent");
@@ -1906,7 +1927,7 @@ describe("ProjectChatPage", () => {
 
   it("switches Project and Chat through one canonical navigation", async () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue("chat-1");
-    createProjectChat(project.project_id);
+    openChatDraft(project.project_id);
     rememberProjectChat(secondProject.project_id, "chat-2");
     projectChatsApiMock.getChat.mockResolvedValue({
       messages: [],

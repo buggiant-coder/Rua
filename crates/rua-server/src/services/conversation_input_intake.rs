@@ -4034,13 +4034,27 @@ project_working_directory_id: Some(header.extra.get(crate::services::project_cha
             .map(|header| header.agent_id.clone())
             .unwrap_or_else(|| agent_id.to_string());
         let agent_id = selected_agent.as_str();
-        let project_id = match saved.as_ref() {
-            Some(header) => header.project_id.clone(),
-            None => request
-                .extra
-                .get("project_id")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string),
+        let requested_project =
+            crate::services::chat_context::requested_project(request.extra.get("project_id"));
+        let project_id = match requested_project.and_then(|requested| {
+            if let Some(header) = saved.as_ref() {
+                crate::services::chat_context::check_project_membership(
+                    header.project_id.as_deref(),
+                    requested,
+                )?;
+                Ok(header.project_id.clone())
+            } else {
+                Ok(requested.flatten().map(str::to_string))
+            }
+        }) {
+            Ok(project_id) => project_id,
+            Err(error) => {
+                return ConversationInputDeliveryOutcome::Rejected {
+                    detail: error.to_string(),
+                    target_device_id: None,
+                    failure_kind: Some("invalid_request".into()),
+                }
+            }
         };
         request
             .extra

@@ -7,16 +7,19 @@ import styles from "./index.module.less";
 
 export default function AgentBadge({
   onAgentChange,
+  agentId,
 }: {
+  agentId?: string;
   onAgentChange?: (agentId: string) => void;
 }) {
   const { t } = useTranslation();
   const { selectedAgent, agents } = useAgentStore();
 
-  const currentAgent = agents?.find((a) => a.id === selectedAgent);
+  const displayedAgent = agentId ?? selectedAgent;
+  const currentAgent = agents?.find((a) => a.id === displayedAgent);
   const label = currentAgent
     ? getAgentDisplayName(currentAgent)
-    : selectedAgent;
+    : displayedAgent;
 
   return (
     <AgentSwitchPopover placement="bottom-end" onAgentChange={onAgentChange}>

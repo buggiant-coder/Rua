@@ -288,6 +288,7 @@ impl RemoteConversationInputDelivery {
         let mut metadata = serde_json::Map::new();
         if params.materialize_conversation {
             for key in [
+                "project_id",
                 "collaboration_mode",
                 "harness_configuration",
                 "user_id",
@@ -383,6 +384,10 @@ impl RemoteConversationInputDelivery {
             == Some(true);
         let scope = ChatStore::resolve(&self.data_dir, request.address.clone());
         let media_dir = scope.root().join("media");
+        let project_id = request
+            .metadata
+            .get("project_id")
+            .and_then(serde_json::Value::as_str);
         for media in &request.media_requirements {
             let path = media_dir.join(&media.filename);
             if !path.is_file() {
@@ -395,10 +400,11 @@ impl RemoteConversationInputDelivery {
                 continue;
             }
             if first_submission {
-                crate::services::first_chat_submission::validate_staged_media_address(
+                crate::services::first_chat_submission::validate_staged_media(
                     &media_dir,
                     &media.filename,
                     &request.address,
+                    Some(project_id),
                 )
                 .await
                 .map_err(|detail| DeviceCommandDeliveryError::Rejected {
@@ -415,11 +421,7 @@ impl RemoteConversationInputDelivery {
                     &manager,
                     &crate::services::device_command_bus::ChatMediaPrepareCommand {
                         agent_id: request.agent_id.clone(),
-                        project_id: request
-                            .metadata
-                            .get("project_id")
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_string),
+                        project_id: project_id.map(str::to_owned),
                         sha256: Some(media.sha256.clone()),
                         first_submission,
                         command_id: operation_id.clone(),

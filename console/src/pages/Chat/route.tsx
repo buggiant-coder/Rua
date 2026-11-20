@@ -7,7 +7,7 @@ import type { ProjectDescriptor } from "@/api/types/project";
 import { AgentChatPage } from ".";
 import ProjectChatPage from "../Projects/ProjectChat";
 import { readDraftChatContext } from "./chatContext";
-import { isDraftConversation } from "./conversationLifecycle";
+import { chatDraftScope, isDraftConversation } from "./conversationLifecycle";
 import {
   INITIAL_CHAT_TURN_PAGE_SIZE,
   primeChatViewCache,
@@ -28,10 +28,8 @@ export async function loader({
   const chatId = params.chatId;
   if (!chatId) throw new Response("Chat ID is required", { status: 400 });
   const draft = readDraftChatContext(chatId);
-  const scope = draft?.projectId
-    ? `project:${draft.projectId}`
-    : draft?.agentId;
-  const isDraft = draft && scope && isDraftConversation(scope, chatId);
+  const isDraft =
+    draft && isDraftConversation(chatDraftScope(draft.projectId), chatId);
   const history = isDraft
     ? null
     : await chatApi.getChat(chatId, { turnLimit: INITIAL_CHAT_TURN_PAGE_SIZE });

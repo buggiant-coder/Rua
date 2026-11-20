@@ -1015,7 +1015,7 @@ function withActiveRegeneration(
   };
 }
 
-import { loadDraftConversationAcp } from "../conversationLifecycle";
+import { chatDraftScope, loadDraftConversationAcp } from "../conversationLifecycle";
 import {
   saveSubmitted,
   loadSubmitted,
@@ -1027,6 +1027,7 @@ type SubmitRequest = {
   project_working_directory_id?: string;
   agent_id?: string;
   project_id?: string;
+  target_device_id?: string;
   initial_acp?: import("../conversationLifecycle").DraftAcpSelection;
   input: Message[];
   submission_id: string;
@@ -2972,9 +2973,10 @@ export function useConversationViewRuntime({
         if (unmaterialized) {
           submitRequest.agent_id = agentAtCall;
           submitRequest.project_id = projectId;
+          if (targetAtSubmit) submitRequest.target_device_id = targetAtSubmit;
           submitRequest.initial_acp =
             loadDraftConversationAcp(
-              projectId ? `project:${projectId}` : agentAtCall,
+              chatDraftScope(projectId),
               conversationId,
             ) ?? undefined;
         }

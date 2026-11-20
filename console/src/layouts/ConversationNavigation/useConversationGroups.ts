@@ -205,7 +205,11 @@ export function useConversationGroup(
   useEffect(
     () =>
       subscribeConversationMetadata((_address, chat, change) => {
-        if ((kind === "agent" ? chat.agent_id : chat.project_id) !== id) return;
+        const belongsToGroup =
+          kind === "project"
+            ? chat.project_id === id
+            : !chat.project_id && chat.agent_id === id;
+        if (!belongsToGroup) return;
         const overlay = overlays.current.get(chat.id) ?? {
           chat,
           fields: new Map<MetadataField, FieldUpdate>(),
@@ -271,13 +275,20 @@ export function useConversationGroup(
   );
 
   useEffect(() => {
-    return subscribeConversationNavigation((_address, background) => {
-      if (background && loadingRef.current) return;
-      staleRef.current = true;
-      requestRef.current += 1;
-      loadingRef.current = false;
-      setRevision((value) => value + 1);
-    });
+    return subscribeConversationNavigation(
+      (_address, background, projectId) => {
+        if (
+          projectId !== undefined &&
+          projectId !== (kind === "project" ? id : null)
+        )
+          return;
+        if (background && loadingRef.current) return;
+        staleRef.current = true;
+        requestRef.current += 1;
+        loadingRef.current = false;
+        setRevision((value) => value + 1);
+      },
+    );
   }, [id, kind]);
 
   useEffect(() => {

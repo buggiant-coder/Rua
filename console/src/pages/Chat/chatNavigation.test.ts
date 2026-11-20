@@ -1,22 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  clearDraftChatId,
   createLazyChatId,
-  draftChatKey,
-  draftChatModelKey,
   forgetChatId,
   lastChatKey,
-  loadDraftChatId,
-  loadDraftChatModel,
   loadLastChatId,
   loadRecentChatIds,
   recentChatKey,
+  openChatDraft,
   resolveChatEntry,
-  resolveOrCreateDraftChatId,
-  saveDraftChatId,
-  saveDraftChatModel,
   saveLastChatId,
 } from "./chatNavigation";
+
+import { useAgentStore } from "@/stores/agentStore";
+import { readDraftChatContext } from "./chatContext";
+import {
+  chatDraftScope,
+  clearDraftConversation,
+  isDraftConversation,
+} from "./conversationLifecycle";
 
 describe("chatNavigation", () => {
   beforeEach(() => {
@@ -100,65 +101,35 @@ describe("chatNavigation", () => {
     expect(createLazyChatId()).toBe("lazy-chat");
   });
 
-  it("stores draft chat ids per agent under the draft prefix", () => {
-    expect(draftChatKey("agent-a")).toBe("rua_draft_chat_id_agent-a");
-    expect(loadDraftChatId("agent-a")).toBeNull();
-
-    saveDraftChatId("agent-a", "draft-a");
-    saveDraftChatId("agent-b", "draft-b");
-
-    expect(loadDraftChatId("agent-a")).toBe("draft-a");
-    expect(loadDraftChatId("agent-b")).toBe("draft-b");
-  });
-
-  it("returns existing draft or creates and persists a new one", () => {
+  it("reuses the no-Project draft across Agents without changing its input identity", () => {
     const randomUUID = vi
       .spyOn(crypto, "randomUUID")
       .mockReturnValue("fresh-draft");
-
-    expect(resolveOrCreateDraftChatId("agent-a")).toBe("fresh-draft");
-    expect(loadDraftChatId("agent-a")).toBe("fresh-draft");
-    expect(randomUUID).toHaveBeenCalledTimes(1);
-
-    randomUUID.mockReturnValue("should-not-be-used");
-    expect(resolveOrCreateDraftChatId("agent-a")).toBe("fresh-draft");
-    expect(randomUUID).toHaveBeenCalledTimes(1);
+    useAgentStore.setState({ selectedAgent: "agent-a" });
+    const id = openChatDraft();
+    expect(readDraftChatContext(id)).toEqual({
+      agentId: "agent-a",
+      projectId: null,
+    });
+    useAgentStore.setState({ selectedAgent: "agent-b" });
+    expect(resolveChatEntry("agent-b")).toBe(id);
+    expect(readDraftChatContext(id)?.agentId).toBe("agent-a");
+    expect(openChatDraft()).toBe(id);
+    expect(readDraftChatContext(id)).toEqual({
+      agentId: "agent-b",
+      projectId: null,
+    });
+    expect(randomUUID).toHaveBeenCalledOnce();
   });
 
-  it("routes resolveChatEntry fallback through the draft mechanism", () => {
-    vi.spyOn(crypto, "randomUUID").mockReturnValue("lazy-chat");
-
-    expect(resolveChatEntry("agent-b")).toBe("lazy-chat");
-    expect(loadDraftChatId("agent-b")).toBe("lazy-chat");
-    expect(resolveChatEntry("agent-b")).toBe("lazy-chat");
-  });
-
-  it("clears drafts unconditionally or only when the chat id matches", () => {
-    saveDraftChatId("agent-a", "draft-a");
-
-    clearDraftChatId("agent-a", "other-chat");
-    expect(loadDraftChatId("agent-a")).toBe("draft-a");
-
-    clearDraftChatId("agent-a", "draft-a");
-    expect(loadDraftChatId("agent-a")).toBeNull();
-
-    saveDraftChatId("agent-a", "draft-a2");
-    clearDraftChatId("agent-a");
-    expect(loadDraftChatId("agent-a")).toBeNull();
-  });
-
-  it("keeps a lazy chat model with its draft and clears both together", () => {
-    const model = { provider_id: "dashscope", model: "qwen-plus" };
-    saveDraftChatId("agent-a", "draft-a");
-    saveDraftChatModel("agent-a", "draft-a", model);
-
-    expect(draftChatModelKey("agent-a", "draft-a")).toBe(
-      "rua_draft_chat_model_agent-a:draft-a",
-    );
-    expect(loadDraftChatModel("agent-a", "draft-a")).toEqual(model);
-
-    clearDraftChatId("agent-a", "draft-a");
-    expect(loadDraftChatId("agent-a")).toBeNull();
-    expect(loadDraftChatModel("agent-a", "draft-a")).toBeNull();
+  it("clears only the matching draft, preserving other Project and existing Chat state", () => {
+    const first = openChatDraft();
+    const other = openChatDraft("project-1");
+    clearDraftConversation(chatDraftScope(), other);
+    expect(isDraftConversation(chatDraftScope(), first)).toBe(true);
+    clearDraftConversation(chatDraftScope(), first);
+    expect(readDraftChatContext(first)).toBeNull();
+    expect(isDraftConversation(chatDraftScope("project-1"), other)).toBe(true);
+    expect(openChatDraft()).not.toBe(first);
   });
 });

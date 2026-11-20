@@ -18,6 +18,86 @@ use std::sync::Arc;
 use super::support::{build_app, json as response_json, local_device_id, request};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conflicting_project_writes_preserve_saved_membership_and_history() {
+    let test = build_app();
+    let mut projects = Vec::new();
+    for name in ["A", "B"] {
+        let root = test._temp.path().join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        let response = request(
+            &test.app,
+            Method::POST,
+            "/api/projects",
+            Some(json!({
+                "resource_device_id":local_device_id(&test.state), "resource_root":root
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        projects.push(
+            response_json(response).await["project"]["project_id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    for project_id in [None, Some(&projects[0])] {
+        let chat_id = uuid::Uuid::new_v4().to_string();
+        let path = format!("/api/chats/{chat_id}");
+        let submit_path = format!("{path}/console/submit");
+        let submitted = request(
+            &test.app,
+            Method::POST,
+            &submit_path,
+            Some(json!({
+                "agent_id":"default", "project_id":project_id, "message":"first accepted input",
+            })),
+        )
+        .await;
+        assert_eq!(response_json(submitted).await["accepted"], true);
+        wait_for_chat_idle(&test.state, &chat_id).await;
+        let history = response_json(request(&test.app, Method::GET, &path, None).await).await;
+        assert_eq!(history["project_id"], json!(project_id));
+
+        for proposed in [Some(&projects[1]), None]
+            .into_iter()
+            .filter(|p| *p != project_id)
+        {
+            for (method, uri, body) in [
+                (
+                    Method::POST,
+                    &submit_path,
+                    json!({"project_id":proposed,"agent_id":"default","message":"conflicting first submit"}),
+                ),
+                (
+                    Method::PUT,
+                    &path,
+                    json!({"project_id":proposed,"name":"unwanted rename"}),
+                ),
+                (
+                    Method::PATCH,
+                    &path,
+                    json!({"project_id":proposed,"name":"unwanted rename"}),
+                ),
+            ] {
+                let response = request(&test.app, method.clone(), uri, Some(body)).await;
+                let status = response.status();
+                let error = response_json(response).await;
+                assert_eq!(status, StatusCode::CONFLICT, "{method} {uri}: {error}");
+                assert!(error["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Project membership"));
+            }
+        }
+        let reopened = response_json(request(&test.app, Method::GET, &path, None).await).await;
+        assert_eq!(reopened["project_id"], history["project_id"]);
+        assert_eq!(reopened["messages"], history["messages"]);
+        assert_eq!(reopened["title"], history["title"]);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn first_project_input_starts_acp_with_resource_cwd() {
     let test = build_app();
     test.state.wait_platform_initialization().await.unwrap();

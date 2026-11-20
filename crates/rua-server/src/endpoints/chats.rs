@@ -298,6 +298,8 @@ struct CreateChatBody {
 
 #[derive(Debug, Deserialize)]
 struct ChatUpdateBody {
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
@@ -677,11 +679,15 @@ async fn get_chat_agent(
 
 async fn update_chat_agent(
     State(state): State<AppState>,
-    ChatPath((agent_id, chat_id)): ChatPath<(String, String)>,
+    AxumPath(chat_id): AxumPath<String>,
+    context: crate::services::chat_context::ChatContext,
     Json(body): Json<ChatUpdateBody>,
 ) -> Response {
+    if let Err(error) = context.validate_project_field(body.extra.get("project_id")) {
+        return error.into_response();
+    }
     update_chat_core(
-        &agent_id,
+        &context.agent_id,
         state.chat_workspace().as_path(),
         &chat_id,
         body,
@@ -1443,7 +1449,7 @@ async fn create_chat_core(body: CreateChatBody, state: &AppState) -> Response {
         state,
         &chat_id,
         body.agent_id.as_deref(),
-        body.project_id.as_deref(),
+        Some(body.project_id.as_deref()),
     )
     .await
     {

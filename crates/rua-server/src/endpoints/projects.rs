@@ -893,22 +893,27 @@ async fn search_project_chats(
     .into_response()
 }
 
+#[derive(serde::Deserialize)]
+struct ProjectChatPatch {
+    #[serde(flatten)]
+    update: crate::services::project_chat::ProjectChatUpdate,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
+}
+
 async fn update_project_chat(
     State(state): State<AppState>,
     Path(chat_id): Path<String>,
-    Json(mut update): Json<crate::services::project_chat::ProjectChatUpdate>,
+    context: crate::services::chat_context::ChatContext,
+    Json(patch): Json<ProjectChatPatch>,
 ) -> Response {
-    let project_id =
-        match crate::services::chat_context::load_chat_context(&state.rua_root, &chat_id).await {
-            Ok(Some(context)) => match context.project_id {
-                Some(id) => id,
-                None => return ApiError::BadRequest("Chat has no Project".into()).into_response(),
-            },
-            Ok(None) => {
-                return ApiError::NotFound(format!("Chat not found: {chat_id}")).into_response()
-            }
-            Err(error) => return error.into_response(),
-        };
+    if let Err(error) = context.validate_project_field(patch.extra.get("project_id")) {
+        return error.into_response();
+    }
+    let Some(project_id) = context.project_id else {
+        return ApiError::BadRequest("Chat has no Project".into()).into_response();
+    };
+    let mut update = patch.update;
     let project_id = ProjectId::new(project_id);
     let project = match state.project_catalog.get(&project_id) {
         Ok(Some(project)) => project,

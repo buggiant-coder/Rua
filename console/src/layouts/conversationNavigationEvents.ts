@@ -24,15 +24,20 @@ export function requestNewConversation(address: ConversationAddress): boolean {
   return true;
 }
 
-type Listener = (address?: ConversationAddress, background?: boolean) => void;
+type Listener = (
+  address?: ConversationAddress,
+  background?: boolean,
+  projectId?: string | null,
+) => void;
 const listeners = new Set<Listener>();
 
-/** Refresh list projections after a Chat or Project mutation, never per token. */
+/** Project membership limits the lists to refresh. A missing hint refreshes every group. */
 export function invalidateConversationNavigation(
   address?: ConversationAddress,
   background = false,
+  projectId?: string | null,
 ) {
-  for (const listener of listeners) listener(address, background);
+  for (const listener of listeners) listener(address, background, projectId);
 }
 
 export function subscribeConversationNavigation(
@@ -61,9 +66,10 @@ const metadataListeners = new Set<MetadataListener>();
 export function publishConversationMetadata(
   address: ConversationAddress,
   chat: ChatSpec,
+  projectId = chat.project_id,
 ) {
   for (const listener of metadataListeners) listener(address, chat);
-  invalidateConversationNavigation(address);
+  invalidateConversationNavigation(address, false, projectId);
 }
 
 /** Apply pending fields immediately; only their matching write may confirm or undo them. */
@@ -71,6 +77,7 @@ export function beginConversationMetadataUpdate(
   address: ConversationAddress,
   chat: ChatSpec,
   updates: ChatUpdateRequest,
+  projectId = chat.project_id,
 ) {
   const token = ++metadataToken;
   const fields = Object.keys(updates) as (keyof ChatSpec)[];
@@ -82,7 +89,7 @@ export function beginConversationMetadataUpdate(
   return {
     commit(updated: ChatSpec) {
       emit(updated, "commit");
-      invalidateConversationNavigation(address);
+      invalidateConversationNavigation(address, false, projectId);
     },
     rollback() {
       emit(chat, "rollback");

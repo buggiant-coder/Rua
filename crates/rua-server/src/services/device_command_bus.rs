@@ -1860,13 +1860,15 @@ impl DeviceCommandHandler {
         if let Some(expected) = command.sha256.as_deref() {
             let path = media_dir.join(&command.media_id);
             if path.exists() {
-                if let Err(detail) =
-                    crate::services::first_chat_submission::validate_staged_media_address(
-                        &media_dir,
-                        &command.media_id,
-                        &command.address,
-                    )
-                    .await
+                if let Err(detail) = crate::services::first_chat_submission::validate_staged_media(
+                    &media_dir,
+                    &command.media_id,
+                    &command.address,
+                    command
+                        .first_submission
+                        .then_some(command.project_id.as_deref()),
+                )
+                .await
                 {
                     return DeviceCommandResponse::Rejected {
                         reason: "media_conflict".into(),
@@ -1921,10 +1923,13 @@ impl DeviceCommandHandler {
                 detail: "Chat Media transfer operation already exists".to_string(),
             };
         }
-        if let Err(detail) = crate::services::first_chat_submission::validate_staged_media_address(
+        if let Err(detail) = crate::services::first_chat_submission::validate_staged_media(
             &media_dir,
             &command.media_id,
             &command.address,
+            command
+                .first_submission
+                .then_some(command.project_id.as_deref()),
         )
         .await
         {
@@ -1938,7 +1943,10 @@ impl DeviceCommandHandler {
             let marker = media_dir.join(format!(".staged-{}.json", command.media_id));
             if let Err(error) = rua_config::atomic_write_json(
                 &marker,
-                &serde_json::json!({"address":command.address}),
+                &serde_json::json!(crate::services::chat_media::StagedChatMedia {
+                    address: command.address,
+                    project_id: command.project_id,
+                }),
             ) {
                 registry.abort(&command.operation_id);
                 return DeviceCommandResponse::Rejected {

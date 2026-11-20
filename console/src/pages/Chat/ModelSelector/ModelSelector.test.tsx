@@ -135,7 +135,7 @@ describe("ModelSelector", () => {
     mockUpdateProjectChat.mockResolvedValue({});
   });
 
-  it.each(["project:other-project", "independent-agent"])(
+  it.each(["project:other-project", "no-project"])(
     "carries the previous conversation model into a %s draft",
     async (scope) => {
       const model = {
@@ -320,8 +320,8 @@ describe("ModelSelector", () => {
     expect(mockSetActiveLlm).not.toHaveBeenCalled();
   });
 
-  it("commits a Project model only through the Project target", async () => {
-    mockUpdateProjectChat.mockResolvedValue({
+  it("commits a Project model to its saved Chat ID", async () => {
+    mockUpdateChat.mockResolvedValue({
       model: { provider_id: "dashscope", model: "qwen-max" },
     });
     const onChatModelChange = vi.fn();
@@ -330,7 +330,6 @@ describe("ModelSelector", () => {
         chatId="chat/one"
         chatModel={{ provider_id: "dashscope", model: "qwen-plus" }}
         target={{
-          scope: "project",
           projectId: "project/one",
           agentId: "default",
         }}
@@ -341,15 +340,15 @@ describe("ModelSelector", () => {
     await selectModel("Qwen Plus", "Qwen Max");
 
     await waitFor(() =>
-      expect(mockUpdateProjectChat).toHaveBeenCalledWith(
-        "project/one",
+      expect(mockUpdateChat).toHaveBeenCalledWith(
         "chat/one",
         {
           model: { provider_id: "dashscope", model: "qwen-max" },
         },
+        "default",
       ),
     );
-    expect(mockUpdateChat).not.toHaveBeenCalled();
+    expect(mockUpdateProjectChat).not.toHaveBeenCalled();
     expect(onChatModelChange).toHaveBeenCalledWith({
       provider_id: "dashscope",
       model: "qwen-max",
@@ -357,7 +356,7 @@ describe("ModelSelector", () => {
   });
 
   it("keeps the committed Project model when authority validation fails", async () => {
-    mockUpdateProjectChat.mockRejectedValueOnce(
+    mockUpdateChat.mockRejectedValueOnce(
       new Error("thinking strength is not supported"),
     );
     const onChatModelChange = vi.fn();
@@ -366,7 +365,6 @@ describe("ModelSelector", () => {
         chatId="chat/one"
         chatModel={{ provider_id: "dashscope", model: "qwen-plus" }}
         target={{
-          scope: "project",
           projectId: "project/one",
           agentId: "default",
         }}
@@ -384,7 +382,7 @@ describe("ModelSelector", () => {
     expect(onChatModelChange).not.toHaveBeenCalled();
     expect(screen.getAllByText("Qwen Plus").length).toBeGreaterThan(0);
     expect(mockSetActiveLlm).not.toHaveBeenCalled();
-    expect(mockUpdateChat).not.toHaveBeenCalled();
+    expect(mockUpdateProjectChat).not.toHaveBeenCalled();
   });
 
   it("keeps a Lazy Project model selection with a reserved chatId local to the draft Chat", async () => {
@@ -395,7 +393,6 @@ describe("ModelSelector", () => {
         chatModel={{ provider_id: "dashscope", model: "qwen-plus" }}
         draftSelection
         target={{
-          scope: "project",
           projectId: "project/one",
           agentId: "default",
         }}

@@ -108,21 +108,25 @@ async fn upload_media(state: AppState, address: ChatAddress, mut multipart: Mult
         Err(error) => return ApiError::Internal(error).into_response(),
     };
     if placement.is_none() {
-        if let Err(error) = crate::services::chat_context::resolve_submission_context(
+        let draft = match crate::services::chat_context::resolve_submission_context(
             &state,
             address.chat_id().as_str(),
             context.agent_id.as_deref(),
-            context.project_id.as_deref(),
+            context.project_id.as_deref().map(Some),
         )
         .await
         {
-            return error.into_response();
-        }
+            Ok(context) => crate::services::chat_media::StagedChatMedia {
+                address,
+                project_id: context.project_id,
+            },
+            Err(error) => return error.into_response(),
+        };
         return match ChatMediaService
             .store_staged(
                 &state.conversation_authority,
                 &state.rua_root,
-                address,
+                draft,
                 bytes,
                 mime_type,
                 filename,

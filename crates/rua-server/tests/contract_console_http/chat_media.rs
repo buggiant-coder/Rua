@@ -26,7 +26,10 @@ async fn staged_media_collection_preserves_materialized_chat_media() {
         .store_staged(
             &test.state.conversation_authority,
             &test.state.rua_root,
-            address.clone(),
+            rua_server::services::chat_media::StagedChatMedia {
+                address: address.clone(),
+                project_id: None,
+            },
             b"temporary".to_vec(),
             Some("text/plain".into()),
             None,
@@ -53,7 +56,10 @@ async fn staged_media_collection_preserves_materialized_chat_media() {
         .store_staged(
             &test.state.conversation_authority,
             &test.state.rua_root,
-            address.clone(),
+            rua_server::services::chat_media::StagedChatMedia {
+                address: address.clone(),
+                project_id: None,
+            },
             b"accepted".to_vec(),
             Some("text/plain".into()),
             None,
@@ -298,6 +304,28 @@ async fn project_draft_media_is_staged_until_submission() {
         .unwrap()
         .is_none());
     assert!(body.get("authority_epoch").is_none());
+    let before = request_json(
+        &test.app, Method::POST, &format!("/chats/{chat_id}/console/submit"),
+        serde_json::json!({
+            "agent_id": "default", "project_id": null,
+            "input": [{"role": "user", "content": [{"type": "image", "media_ref": body["media_ref"]}]}],
+        }),
+    ).await;
+    let before = read_json(before).await;
+    assert_eq!(before["accepted"], false, "{before}");
+    assert!(before["detail"]
+        .as_str()
+        .unwrap()
+        .contains("Project membership"));
+    assert!(WorkspaceSessionStore::new(scope.root())
+        .load_chat_header(chat_id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(rua_session::chat_index::get(scope.root(), chat_id)
+        .await
+        .unwrap()
+        .is_none());
     let submit = request_json(
         &test.app,
         Method::POST,
