@@ -10953,6 +10953,10 @@ struct InputConfirmationHandler {
 #[async_trait]
 impl DeviceSessionCommandHandler for InputConfirmationHandler {
     async fn handle_command(&self, payload: &[u8]) -> Result<Vec<u8>, String> {
+        self.inner.handle_command(payload).await
+    }
+
+    async fn handle_command_from(&self, peer: &str, payload: &[u8]) -> Result<Vec<u8>, String> {
         let envelope: serde_json::Value =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
         if envelope["command"] == "conversation_input" {
@@ -10960,7 +10964,7 @@ impl DeviceSessionCommandHandler for InputConfirmationHandler {
                 .map_err(|error| error.to_string())?;
             self.requests.lock().unwrap().push(request);
             tokio::time::sleep(self.before_acceptance).await;
-            let response = self.inner.handle_command(payload).await?;
+            let response = self.inner.handle_command_from(peer, payload).await?;
             if matches!(
                 serde_json::from_slice::<DeviceCommandResponse>(&response),
                 Ok(DeviceCommandResponse::Accepted(_))
@@ -10972,7 +10976,7 @@ impl DeviceSessionCommandHandler for InputConfirmationHandler {
             }
             Ok(response)
         } else {
-            self.inner.handle_command(payload).await
+            self.inner.handle_command_from(peer, payload).await
         }
     }
 }
@@ -11064,18 +11068,17 @@ impl RemoteInputConfirmationFixture {
         let chat_id = self.chat_id.clone();
         let body = serde_json::json!({
             "message": "one diagnostic input",
+            "agent_id": "default",
             "submission_id": self.submission_id,
-            "target_device_id": self.target.device_id,
-            "chat_model_slot": {"provider_id":"fixture","model":"model-a"},
+            "execution_directory": {"device_id": self.target.device_id},
+            "model": {"provider_id":"fixture","model":"model-a"},
         });
         async move {
             let response = app
                 .oneshot(
                     Request::builder()
                         .method(Method::POST)
-                        .uri(format!(
-                            "/api/agents/default/chats/{chat_id}/console/submit"
-                        ))
+                        .uri(format!("/api/chats/{chat_id}/console/submit"))
                         .header("content-type", "application/json")
                         .body(Body::from(serde_json::to_vec(&body).unwrap()))
                         .unwrap(),
@@ -11097,14 +11100,11 @@ impl RemoteInputConfirmationFixture {
     }
 
     async fn persisted_users(&self) -> Vec<rua_session::MessageLogEntry> {
-        let workspace = self
-            .target_state
-            .registry
-            .get_or_create("default")
-            .await
-            .unwrap()
-            .workspace_dir();
-        let store = WorkspaceSessionStore::new(workspace);
+        let scope = rua_core::ChatStore::resolve(
+            &self.target_state.rua_root,
+            ChatAddress::new(self.chat_id.clone()),
+        );
+        let store = WorkspaceSessionStore::new(scope.root());
         let turns = store
             .read_turn_range(&self.chat_id, 1, usize::MAX)
             .await
@@ -11128,6 +11128,128 @@ impl RemoteInputConfirmationFixture {
         self.source.runtime.shutdown().await.unwrap();
         self.target.runtime.shutdown().await.unwrap();
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conversation_control_requires_authenticated_source_and_local_target_for_approvals() {
+    let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
+    assert_eq!(fixture.submit().await["accepted"], true);
+    let address = ChatAddress::new(fixture.chat_id.clone());
+    let scope = rua_core::ChatStore::resolve(&fixture.target_state.rua_root, address.clone());
+    let placement =
+        rua_server::services::conversation_authority_target::load_chat_authority_placement_target(
+            scope.root(),
+            &fixture.chat_id,
+        )
+        .await
+        .unwrap();
+    let approvals = fixture.target_state.security.approval_authority();
+    let pending = approvals
+        .create_request(ApprovalRequestInput {
+            agent_id: "default".into(),
+            owner: rua_security::ApprovalOwner::chat(address.clone()),
+            turn_id: "turn-read".into(),
+            tool_call_id: "call-read".into(),
+            tool_name: "read".into(),
+            trigger: ApprovalTrigger::approval_mode("approval required"),
+            tool_call: ToolCallSnapshot {
+                display: "read example.txt".into(),
+                args: serde_json::json!({"file_path": "example.txt"}),
+            },
+        })
+        .await;
+    let snapshot = ConversationControlDeviceCommand {
+        command_id: "approval-snapshot".into(),
+        agent_id: "default".into(),
+        address,
+        source_device_id: fixture.source.device_id.clone(),
+        target_device_id: fixture.target.device_id.clone(),
+        authority_epoch: placement.authority_epoch,
+        action: ConversationControlDeviceAction::ApprovalSnapshot,
+    };
+    let response = deliver_conversation_control_via_session(
+        fixture.source.runtime.session_manager(),
+        &snapshot,
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    let ConversationControlDeviceResponse::ApprovalSnapshot { snapshot: view } = response else {
+        panic!("expected an approval snapshot");
+    };
+    assert_eq!(view["pending"][0]["id"], pending.id);
+
+    #[derive(serde::Serialize)]
+    struct Frame {
+        command: &'static str,
+        payload: ConversationControlDeviceCommand,
+    }
+    // Exercise the receive boundary with the cached, read-only snapshot.
+    for (peer, target, expected) in [
+        (
+            None,
+            &fixture.target.device_id,
+            "authenticated Device Session",
+        ),
+        (
+            Some("unrelated"),
+            &fixture.target.device_id,
+            "authenticated Device Session",
+        ),
+        (
+            Some(fixture.source.device_id.as_str()),
+            &fixture.source.device_id,
+            "does not match this device",
+        ),
+    ] {
+        let payload = serde_json::to_vec(&Frame {
+            command: "conversation_control",
+            payload: ConversationControlDeviceCommand {
+                target_device_id: target.clone(),
+                ..snapshot.clone()
+            },
+        })
+        .unwrap();
+        let handler = &fixture.handler.inner;
+        let reply = match peer {
+            Some(peer) => handler.handle_command_from(peer, &payload).await,
+            None => handler.handle_command(&payload).await,
+        }
+        .unwrap();
+        let reply: DeviceCommandResponse = serde_json::from_slice(&reply).unwrap();
+        assert!(
+            matches!(reply, DeviceCommandResponse::Rejected { ref reason, ref detail }
+            if reason == "invalid_conversation_control" && detail.contains(expected)),
+            "{reply:?}"
+        );
+    }
+    assert_eq!(
+        approvals.snapshot_at(&snapshot.address).await.pending[0].id,
+        pending.id
+    );
+    let response = deliver_conversation_control_via_session(
+        fixture.source.runtime.session_manager(),
+        &ConversationControlDeviceCommand {
+            command_id: "approve-once".into(),
+            action: ConversationControlDeviceAction::DecideApproval {
+                approval_id: pending.id.clone(),
+                decision: ConversationApprovalDecision::RunOnce {
+                    decided_by: "webui".into(),
+                },
+            },
+            ..snapshot
+        },
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    let ConversationControlDeviceResponse::ApprovalDecided { request } = response else {
+        panic!("expected an approval decision");
+    };
+    assert_eq!(request["id"], pending.id);
+    assert_eq!(request["status"], "approved");
+    assert!(request["authenticated_user_decision"].is_null());
+    fixture.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

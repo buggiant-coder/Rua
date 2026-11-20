@@ -1223,9 +1223,9 @@ impl std::fmt::Display for DeviceCommandBusError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidId(id) => write!(f, "invalid device command id: {id}"),
-            Self::UnauthenticatedSource => f.write_str(
-                "Project command source does not match its authenticated Device Session",
-            ),
+            Self::UnauthenticatedSource => {
+                f.write_str("command source does not match its authenticated Device Session")
+            }
             Self::InvalidSequence => {
                 write!(f, "device delivery sequence must be greater than zero")
             }
@@ -1513,13 +1513,22 @@ impl DeviceCommandHandler {
                 };
             }
         };
-        if let DeviceCommandEnvelope::Project(command) = &envelope {
-            if let Err(error) = command.validate_session_route(peer, &self.local_device_id) {
-                return DeviceCommandResponse::Rejected {
-                    reason: "invalid_project_route".into(),
-                    detail: error.to_string(),
-                };
+        let route = match &envelope {
+            DeviceCommandEnvelope::Project(command) => command
+                .validate_session_route(peer, &self.local_device_id)
+                .map_err(|error| ("invalid_project_route", error)),
+            DeviceCommandEnvelope::ConversationControl(command) => {
+                validate_session_source(peer, &command.source_device_id)
+                    .and_then(|()| command.validate_for_target(&self.local_device_id))
+                    .map_err(|error| ("invalid_conversation_control", error))
             }
+            _ => Ok(()),
+        };
+        if let Err((reason, error)) = route {
+            return DeviceCommandResponse::Rejected {
+                reason: reason.into(),
+                detail: error.to_string(),
+            };
         }
         let Some(key) = envelope.idempotency_key() else {
             return self.dispatch_envelope(envelope).await;
@@ -2657,12 +2666,6 @@ impl DeviceCommandHandler {
         &self,
         command: ConversationControlDeviceCommand,
     ) -> DeviceCommandResponse {
-        if let Err(error) = command.validate_for_target(&self.local_device_id) {
-            return DeviceCommandResponse::Rejected {
-                reason: "invalid_conversation_control".to_string(),
-                detail: error.to_string(),
-            };
-        }
         if let Some(intake) = self.conversation_input_intake.as_ref() {
             return match intake.apply_conversation_control(command).await {
                 Ok(response) => DeviceCommandResponse::ConversationControl {
@@ -4717,15 +4720,24 @@ impl SyncTransferDeviceCommand {
     }
 }
 
+fn validate_session_source(
+    authenticated_peer: Option<&str>,
+    source_device_id: &str,
+) -> Result<(), DeviceCommandBusError> {
+    if authenticated_peer == Some(source_device_id) {
+        Ok(())
+    } else {
+        Err(DeviceCommandBusError::UnauthenticatedSource)
+    }
+}
+
 impl ProjectDeviceCommand {
     pub fn validate_session_route(
         &self,
         authenticated_peer: Option<&str>,
         local_device_id: &str,
     ) -> Result<(), DeviceCommandBusError> {
-        if authenticated_peer != Some(self.source_device_id.as_str()) {
-            return Err(DeviceCommandBusError::UnauthenticatedSource);
-        }
+        validate_session_source(authenticated_peer, &self.source_device_id)?;
         self.validate_for_target(local_device_id)
     }
 
