@@ -107,6 +107,15 @@ pub struct AuthService {
     force_enabled: bool,
 }
 
+/// A signed login for the registered account on this server.
+pub(crate) struct VerifiedLoginUser(String);
+
+impl VerifiedLoginUser {
+    pub(crate) fn id(&self) -> &str {
+        &self.0
+    }
+}
+
 impl AuthService {
     pub fn new_disabled() -> Self {
         Self {
@@ -415,6 +424,23 @@ impl AuthService {
             return None;
         }
 
+        self.verify_signed_token(token)
+    }
+
+    pub(crate) fn verified_login_user(&self, token: &str) -> Option<VerifiedLoginUser> {
+        if self.static_token.is_some() || rua_core::phone_use::accepts_native_token(token) {
+            return None;
+        }
+        let username = self.verify_signed_token(token)?;
+        let guard = self
+            .data
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (!username.trim().is_empty() && guard.user.as_ref()?.username == username)
+            .then_some(VerifiedLoginUser(username))
+    }
+
+    fn verify_signed_token(&self, token: &str) -> Option<String> {
         let parts: Vec<&str> = token.splitn(2, '.').collect();
         if parts.len() != 2 {
             return None;

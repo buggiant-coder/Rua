@@ -95,8 +95,16 @@ pub async fn dispatch_conversation_control(
     intake: &ConversationInputIntake,
     command: ConversationControlDeviceCommand,
 ) -> Result<ConversationControlDeviceResponse, DeviceCommandDeliveryError> {
+    dispatch_control_from_local_login(intake, command, None).await
+}
+
+pub(crate) async fn dispatch_control_from_local_login(
+    intake: &ConversationInputIntake,
+    command: ConversationControlDeviceCommand,
+    login_user: Option<&crate::auth::VerifiedLoginUser>,
+) -> Result<ConversationControlDeviceResponse, DeviceCommandDeliveryError> {
     let transport = DeviceSessionControlTransport::for_intake(intake);
-    dispatch_conversation_control_with(intake, &transport, command).await
+    dispatch_control_with_local_login(intake, &transport, command, login_user).await
 }
 
 pub async fn dispatch_acp_control(
@@ -130,9 +138,20 @@ pub async fn dispatch_conversation_control_with(
     transport: &dyn ConversationControlTransport,
     command: ConversationControlDeviceCommand,
 ) -> Result<ConversationControlDeviceResponse, DeviceCommandDeliveryError> {
+    dispatch_control_with_local_login(intake, transport, command, None).await
+}
+
+async fn dispatch_control_with_local_login(
+    intake: &ConversationInputIntake,
+    transport: &dyn ConversationControlTransport,
+    command: ConversationControlDeviceCommand,
+    login_user: Option<&crate::auth::VerifiedLoginUser>,
+) -> Result<ConversationControlDeviceResponse, DeviceCommandDeliveryError> {
     if command.source_device_id == command.target_device_id {
-        return Box::pin(intake.apply_conversation_control(command)).await;
+        return Box::pin(intake.apply_conversation_control_with_local_login(command, login_user))
+            .await;
     }
+    // Forward only the wire command to a different authority.
     deliver_remote_conversation_control_with(intake, transport, command).await
 }
 

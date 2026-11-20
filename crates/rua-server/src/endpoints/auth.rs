@@ -19,7 +19,7 @@ pub fn router() -> Router<AppState> {
         .route("/revoke-all-tokens", post(revoke_all_tokens))
 }
 
-fn extract_bearer(headers: &HeaderMap) -> Option<String> {
+pub(super) fn extract_bearer(headers: &HeaderMap) -> Option<String> {
     let value = headers.get("authorization")?.to_str().ok()?;
     let token = value.strip_prefix("Bearer ")?.trim();
     if token.is_empty() {

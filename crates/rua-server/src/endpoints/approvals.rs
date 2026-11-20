@@ -1,5 +1,5 @@
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
@@ -134,6 +134,7 @@ async fn chat_snapshot(
         &agent_id,
         &chat_id,
         ConversationControlDeviceAction::ApprovalSnapshot,
+        None,
     )
     .await
 }
@@ -141,8 +142,11 @@ async fn chat_snapshot(
 async fn chat_decide(
     State(state): State<AppState>,
     ChatPath((agent_id, chat_id, approval_id)): ChatPath<(String, String, String)>,
+    headers: HeaderMap,
     Json(decision): Json<ConversationApprovalDecision>,
 ) -> Response {
+    let login_user = super::auth::extract_bearer(&headers)
+        .and_then(|token| state.auth.verified_login_user(&token));
     chat_control_approval(
         &state,
         &agent_id,
@@ -151,6 +155,7 @@ async fn chat_decide(
             approval_id,
             decision,
         },
+        login_user.as_ref(),
     )
     .await
 }
@@ -160,14 +165,17 @@ async fn chat_control_approval(
     agent_id: &str,
     chat_id: &str,
     action: ConversationControlDeviceAction,
+    login_user: Option<&crate::auth::VerifiedLoginUser>,
 ) -> Response {
     let workspace = state.chat_workspace();
-    match super::chats::dispatch_agent_chat_control(
-        state,
+    match super::chats::dispatch_saved_chat_control(
+        &state.conversation_input_intake,
+        crate::services::chat_device_activity::device_id_from_sync_device(&state.sync_device),
         agent_id,
         workspace.as_path(),
         chat_id,
         action,
+        login_user,
     )
     .await
     {

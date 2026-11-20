@@ -1448,6 +1448,15 @@ impl ConversationInputIntake {
         &self,
         command: ConversationControlDeviceCommand,
     ) -> Result<ConversationControlDeviceResponse, DeviceCommandDeliveryError> {
+        self.apply_conversation_control_with_local_login(command, None)
+            .await
+    }
+
+    pub(crate) async fn apply_conversation_control_with_local_login(
+        &self,
+        command: ConversationControlDeviceCommand,
+        login_user: Option<&crate::auth::VerifiedLoginUser>,
+    ) -> Result<ConversationControlDeviceResponse, DeviceCommandDeliveryError> {
         let reject = |reason: &str, detail: String| DeviceCommandDeliveryError::Rejected {
             reason: reason.to_string(),
             detail,
@@ -2093,9 +2102,23 @@ impl ConversationInputIntake {
                         crate::services::conversation_authority::ConversationActiveTurnPhase::RunningTool,
                     )
                     .await;
-                let outcome = approval_authority
-                    .decide_for_agent(&request.agent_id, &approval_id, decision)
-                    .await;
+                let outcome = match login_user {
+                    Some(user) => {
+                        approval_authority
+                            .decide_for_authenticated_user(
+                                &request.agent_id,
+                                &approval_id,
+                                decision,
+                                user.id(),
+                            )
+                            .await
+                    }
+                    None => {
+                        approval_authority
+                            .decide_for_agent(&request.agent_id, &approval_id, decision)
+                            .await
+                    }
+                };
                 if outcome.is_err()
                     && approval_authority
                         .request(&approval_id)
@@ -3892,6 +3915,7 @@ impl ConversationInputIntake {
                 workspace.as_path(),
                 address.chat_id().as_str(),
                 action,
+                None,
             )
         };
         let approval_id = match approval_id {

@@ -164,6 +164,135 @@ async fn create_denied_authority_request(app: &super::support::TestApp) -> Strin
     request.id
 }
 
+async fn post_chat_decision(
+    router: &axum::Router,
+    request_id: &str,
+    token: &str,
+) -> axum::response::Response {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    router
+        .clone()
+        .oneshot(
+            Request::post(format!(
+                "/api/chats/{CHAT_ID}/approvals/{request_id}/decide"
+            ))
+            .header("authorization", format!("Bearer {token}"))
+            .extension(axum::extract::ConnectInfo(
+                "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({ "decision": "run_once", "decided_by": "webui" }).to_string(),
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_chat_approval_records_only_the_verified_login_identity() {
+    let app = build_app();
+    let router = rua_server::router::build_app(app.state.clone(), None);
+    app.state
+        .auth
+        .register_user("desktop-user", "fixture-password", None)
+        .unwrap();
+    let login = request(
+        &router,
+        Method::POST,
+        "/api/auth/login",
+        Some(json!({ "username": "desktop-user", "password": "fixture-password" })),
+        None,
+    )
+    .await;
+    assert_eq!(login.status(), StatusCode::OK);
+    let token = read_json(login).await["token"].as_str().unwrap().to_owned();
+    let request_id = create_authority_request(&app).await;
+    let response = post_chat_decision(&router, &request_id, &token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = read_json(response).await;
+    assert_eq!(body["decided_by"], "webui");
+    assert_eq!(
+        body["authenticated_user_decision"],
+        json!({ "user_id": "desktop-user", "decision": "run_once" })
+    );
+    let security = app
+        .state
+        .registry
+        .get_or_create("default")
+        .await
+        .unwrap()
+        .security_module()
+        .await
+        .unwrap();
+    let stored = security
+        .approval_authority()
+        .request(&request_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(stored).unwrap()["authenticated_user_decision"],
+        body["authenticated_user_decision"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_chat_approval_via_exempt_host_with_revoked_login_has_no_user_fact() {
+    let app = build_app();
+    let router = rua_server::router::build_app(app.state.clone(), None);
+    let token = app
+        .state
+        .auth
+        .register_user("desktop-user", "fixture-password", None)
+        .unwrap();
+    assert!(app.state.auth.revoke_token(&token));
+    rua_security::SecurityConfigStore::new(app.state.rua_root.clone())
+        .update_allow_no_auth_hosts(vec!["127.0.0.1".into()])
+        .unwrap();
+    let request_id = create_authority_request(&app).await;
+    let response = post_chat_decision(&router, &request_id, &token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = read_json(response).await;
+    assert_eq!(body["status"], "approved");
+    assert!(body["authenticated_user_decision"].is_null());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_chat_approval_for_an_existing_blank_account_id_remains_an_ordinary_decision() {
+    let app = build_app();
+    let router = rua_server::router::build_app(app.state.clone(), None);
+    let token = app
+        .state
+        .auth
+        .register_user(" ", "fixture-password", None)
+        .unwrap();
+    let request_id = create_authority_request(&app).await;
+    let response = post_chat_decision(&router, &request_id, &token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = read_json(response).await;
+    assert_eq!(body["status"], "approved");
+    assert!(body["authenticated_user_decision"].is_null());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_chat_approval_with_static_api_credential_has_no_user_fact() {
+    let mut app = build_app();
+    app.state.auth = Arc::new(rua_server::auth::AuthService::new_with_token(
+        "fixture-token".into(),
+    ));
+    let router = rua_server::router::build_app(app.state.clone(), None);
+    let request_id = create_authority_request(&app).await;
+    let response = post_chat_decision(&router, &request_id, "fixture-token").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = read_json(response).await;
+    assert_eq!(body["status"], "approved");
+    assert!(body["authenticated_user_decision"].is_null());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn authority_decide_run_once_approves_one_pending_request() {
     let app = build_app();
@@ -186,6 +315,7 @@ async fn authority_decide_run_once_approves_one_pending_request() {
     assert_eq!(body["tool_name"], "bash");
     assert_eq!(body["status"], "approved");
     assert_eq!(body["decided_by"], "webui");
+    assert!(body["authenticated_user_decision"].is_null());
 
     let duplicate = request(
         &app.app,

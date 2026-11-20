@@ -557,6 +557,7 @@ pub(crate) async fn dispatch_agent_chat_control(
         ws_dir,
         chat_id,
         action,
+        None,
     )
     .await
 }
@@ -568,6 +569,7 @@ pub(crate) async fn dispatch_saved_chat_control(
     ws_dir: &Path,
     chat_id: &str,
     action: ConversationControlDeviceAction,
+    login_user: Option<&crate::auth::VerifiedLoginUser>,
 ) -> Result<ConversationControlDeviceResponse, ApiError> {
     let placement =
         crate::services::conversation_authority_target::load_optional_chat_authority_placement(
@@ -582,7 +584,7 @@ pub(crate) async fn dispatch_saved_chat_control(
         })?;
     let source_device_id = source_device_id
         .ok_or_else(|| ApiError::Unavailable("local Device identity is unavailable".to_string()))?;
-    dispatch_conversation_control(
+    crate::services::conversation_control_dispatcher::dispatch_control_from_local_login(
         intake,
         ConversationControlDeviceCommand {
             command_id: format!("chat-running-config-{}", uuid::Uuid::new_v4()),
@@ -593,6 +595,7 @@ pub(crate) async fn dispatch_saved_chat_control(
             authority_epoch: placement.authority_epoch,
             action,
         },
+        login_user,
     )
     .await
     .map_err(|error| chat_command_delivery_error(error, "Chat options"))
