@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { DeviceDto } from "@/api/modules/sync";
 import ProjectEditDialog from "./ProjectEditDialog";
 
 const api = vi.hoisted(() => ({
@@ -126,6 +127,81 @@ beforeEach(() => {
   }));
 });
 describe("Project resources", () => {
+  it("distinguishes paired devices with the same name and keeps the selected ID and path after a rename", async () => {
+    const first = {
+      ...devices[1],
+      device_id: "00111111abcdefff",
+      friendly_name: "Phone",
+    };
+    const second = {
+      ...devices[1],
+      device_id: "00222222abcdefff",
+      friendly_name: "",
+      label: "Phone",
+    };
+    const saved = vi.fn();
+    const dialog = (paired: DeviceDto[]) => (
+      <ProjectEditDialog
+        project={project}
+        devices={paired}
+        onSaved={saved}
+        onClose={vi.fn()}
+      />
+    );
+    const { rerender } = render(
+      dialog([devices[0], first, second] as DeviceDto[]),
+    );
+    click("projects.addFolder");
+    await waitFor(() =>
+      expect(api.browseDirectory).toHaveBeenCalledWith("desk", "~"),
+    );
+    fireEvent.click(screen.getByRole("combobox"));
+    expect(screen.getByRole("option", { name: "Desktop" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: `Phone · ${first.device_id}` }),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("option", { name: `Phone · ${second.device_id}` }),
+    );
+    await waitFor(() =>
+      expect(api.browseDirectory).toHaveBeenCalledWith(second.device_id, "~"),
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "projects.folderPath" }),
+      {
+        target: { value: "/shared" },
+      },
+    );
+    rerender(
+      dialog([
+        devices[0],
+        first,
+        { ...second, friendly_name: "Renamed phone" },
+      ] as DeviceDto[]),
+    );
+    expect(screen.getByRole("combobox")).toHaveTextContent("Renamed phone");
+    expect(
+      screen.getByRole("textbox", { name: "projects.folderPath" }),
+    ).toHaveValue("/shared");
+    await waitFor(() => expect(folder("projects.addFolder")).toBeEnabled());
+    click("projects.addFolder");
+    await waitFor(() =>
+      expect(api.browseDirectory).toHaveBeenLastCalledWith(
+        second.device_id,
+        "/shared",
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getAllByTitle("/shared")).toHaveLength(2),
+    );
+    save();
+    await waitFor(() => expect(saved).toHaveBeenCalled());
+    expect(api.editResources).toHaveBeenCalledWith("project", 4, [
+      one,
+      { device_id: second.device_id, resource_root: "/shared" },
+    ]);
+  });
+
   it("adds the same absolute path on another device and accepts the saved association ID", async () => {
     const saved = open();
     await choose("/shared", "Phone");

@@ -15,12 +15,21 @@ import {
 } from "@/utils/androidStorage";
 import { extractFriendlyMessage } from "@/utils/error";
 
+function deviceName(device: DeviceDto) {
+  return device.friendly_name || device.label || device.device_id;
+}
+
 export function projectResourceDeviceLabel(
   deviceId: string,
   devices: DeviceDto[],
 ) {
   const device = devices.find((item) => item.device_id === deviceId);
-  return device?.friendly_name || device?.label || deviceId;
+  if (!device) return deviceId;
+  const name = deviceName(device);
+  const ambiguous = devices.some(
+    (item) => item.device_id !== deviceId && deviceName(item) === name,
+  );
+  return ambiguous ? `${name} · ${deviceId}` : name;
 }
 
 export default function ProjectResourcePicker({
