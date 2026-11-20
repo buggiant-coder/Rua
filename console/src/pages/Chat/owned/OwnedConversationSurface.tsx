@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   ArrowDownToLine,
@@ -29,6 +29,7 @@ import * as drafts from "../drafts";
 import { projectChatDraftKey } from "../../Projects/projectChatNavigation";
 import { Modal, TextArea, toast } from "@/ui";
 import type { ApprovalRequest } from "@/api/modules/console";
+import type { DeviceDto } from "@/api/modules/sync";
 import type {
   ChatHistory,
   ExecutionPosition,
@@ -306,11 +307,33 @@ function shortApprovalTaskId(taskId: string): string {
     : taskId;
 }
 
+function approvalReadLocation(request: ApprovalRequest) {
+  const args = request.tool_call.args;
+  if (
+    request.origin === "acp" ||
+    request.tool_name !== "read" ||
+    !args ||
+    typeof args !== "object"
+  )
+    return null;
+  const { device_id, file_path, ...options } = args as Record<string, unknown>;
+  if (
+    typeof device_id !== "string" ||
+    !device_id ||
+    typeof file_path !== "string" ||
+    !file_path
+  )
+    return null;
+  return { deviceId: device_id, path: file_path, options };
+}
+
 function ApprovalTray({
   pending,
+  devices,
   onApprove,
 }: {
   pending: ApprovalRequest[];
+  devices?: DeviceDto[];
   onApprove: (
     approvalRequestId: string,
     approve: boolean,
@@ -330,6 +353,11 @@ function ApprovalTray({
   if (pending.length === 0) return null;
 
   const request = pending[activeIndex] || pending[0];
+  const readLocation = approvalReadLocation(request);
+  const device = devices?.find(
+    (item) => item.device_id === readLocation?.deviceId,
+  );
+  const deviceName = device?.friendly_name || device?.label;
   const reuseOptions = request.reuse_options || [];
   const chatReuseOptions = reuseOptions.filter(
     (option) => option.scope === "chat",
@@ -409,10 +437,36 @@ function ApprovalTray({
         <div className="rua-approval-tray-reason">
           {approvalReason(request)}
         </div>
-        {request.tool_call.display && (
-          <div className="rua-approval-tray-display">
-            {request.tool_call.display}
-          </div>
+        {readLocation ? (
+          <dl className="rua-approval-file-location">
+            <dt>
+              {t("chat.approval.targetDevice", {
+                defaultValue: "Target device",
+              })}
+            </dt>
+            <dd>
+              {deviceName &&
+                deviceName !== readLocation.deviceId &&
+                `${deviceName} · `}
+              <bdi>{readLocation.deviceId}</bdi>
+            </dd>
+            <dt>{t("chat.approval.path", { defaultValue: "Path" })}</dt>
+            <dd>
+              <bdi>{readLocation.path}</bdi>
+            </dd>
+            {Object.entries(readLocation.options).map(([key, value]) => (
+              <Fragment key={key}>
+                <dt>{key}</dt>
+                <dd>{JSON.stringify(value)}</dd>
+              </Fragment>
+            ))}
+          </dl>
+        ) : (
+          request.tool_call.display && (
+            <div className="rua-approval-tray-display">
+              {request.tool_call.display}
+            </div>
+          )
         )}
       </div>
       {request.origin === "acp" ? (
@@ -1002,6 +1056,7 @@ export default function OwnedConversationSurface({
         />
         <ApprovalTray
           pending={runtime.approvalSnapshot.pending}
+          devices={executionLocation?.devices}
           onApprove={runtime.approveTool}
         />
         <OwnedConversationComposer

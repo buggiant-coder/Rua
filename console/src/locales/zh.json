@@ -2522,6 +2522,8 @@
         "fileGuard": "文件防护"
       },
       "queueLabel": "审批队列",
+      "targetDevice": "目标设备",
+      "path": "路径",
       "queueTitle": "审批",
       "queuePending": "{{count}} 待处理",
       "queuePendingTitle": "待处理",

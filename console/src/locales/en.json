@@ -2604,6 +2604,8 @@
         "fileGuard": "File Guard"
       },
       "queueLabel": "Approval queue",
+      "targetDevice": "Target device",
+      "path": "Path",
       "queueTitle": "Approvals",
       "queuePending": "{{count}} pending",
       "queuePendingTitle": "Pending",

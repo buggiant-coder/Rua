@@ -2166,6 +2166,8 @@
         "fileGuard": "Защита файлов"
       },
       "queueLabel": "Очередь разрешений",
+      "targetDevice": "Целевое устройство",
+      "path": "Путь",
       "queueTitle": "Разрешения",
       "queuePending": "{{count}} ожидает",
       "queuePendingTitle": "Ожидает",

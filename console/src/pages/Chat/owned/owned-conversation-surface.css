@@ -658,6 +658,24 @@ html.mobile-mode .rua-owned-surface {
   white-space: nowrap;
 }
 
+.rua-approval-file-location {
+  display: grid;
+  grid-template-columns: fit-content(35%) minmax(0, 1fr);
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  font-size: var(--font-sm);
+  overflow-wrap: anywhere;
+}
+
+.rua-approval-file-location dt {
+  color: var(--chat-muted-fg);
+}
+
+.rua-approval-file-location dd {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 .rua-approval-tray-actions {
   display: flex;
   flex-wrap: wrap;

@@ -1867,6 +1867,65 @@ describe("OwnedConversationSurface", () => {
     expect(mockGetChat).toHaveBeenCalledTimes(1);
   });
 
+  it("shows the full requested device and file path before approving a read", async () => {
+    const path = `/storage/emulated/0/DCIM/${"summer album/".repeat(
+      12,
+    )}last-photo.jpg`;
+    mockGetChat.mockResolvedValue(idleHistory());
+    mockGetApprovalSnapshot.mockResolvedValue({
+      pending: [
+        {
+          id: "phone-file-approval",
+          agent_id: "default",
+          chat_id: "chat-1",
+          turn_id: "turn-1",
+          tool_call_id: "read-call",
+          tool_name: "read",
+          status: "pending",
+          tool_call: {
+            display: "read …",
+            args: { device_id: "phone-id", file_path: path, limit: 4 },
+          },
+          created_at: "2026-06-21T00:00:00Z",
+          reuse_options: [],
+        },
+      ],
+      resolved: [],
+    });
+    render(
+      <MemoryRouter>
+        <OwnedConversationSurface
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
+          chatModel={configuredModel}
+          executionLocation={{
+            devices: [
+              {
+                device_id: "phone-id",
+                friendly_name: "My phone",
+                label: "Android",
+                is_self: false,
+                public_key: "",
+                added_at_ms: 0,
+                last_seen_ms: 0,
+                connectivity_state: "connected",
+                session_path: null,
+                session_rtt_ms: null,
+              },
+            ],
+          }}
+        />
+      </MemoryRouter>,
+    );
+    const tray = within(await screen.findByLabelText("Approval queue"));
+    expect(tray.getByText("phone-id").parentElement).toHaveTextContent(
+      "My phone · phone-id",
+    );
+    expect(tray.getByText(path)).toBeVisible();
+    expect(tray.getByText("limit").nextElementSibling).toHaveTextContent("4");
+    expect(tray.getByRole("button", { name: "Run once" })).toBeEnabled();
+  });
+
   it("renders and submits exact ACP runner permission options", async () => {
     mockGetChat.mockResolvedValue({
       ...idleHistory(),

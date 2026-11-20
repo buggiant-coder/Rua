@@ -2161,6 +2161,8 @@
         "fileGuard": "ファイル保護"
       },
       "queueLabel": "承認キュー",
+      "targetDevice": "対象デバイス",
+      "path": "パス",
       "queueTitle": "承認",
       "queuePending": "{{count}} 件待ち",
       "queuePendingTitle": "保留中",
