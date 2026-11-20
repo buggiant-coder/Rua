@@ -327,7 +327,7 @@ export default function ConversationNavigation({
   }, [ensureCatalogLoaded, loadProjects]);
 
   useEffect(() => {
-    if (!createProjectOpen) return;
+    if (!createProjectOpen && projectAction?.kind !== "edit" && projectAction?.kind !== "resources") return;
     let cancelled = false;
     void devicesApi
       .listDevices()
@@ -341,7 +341,7 @@ export default function ConversationNavigation({
     return () => {
       cancelled = true;
     };
-  }, [createProjectOpen]);
+  }, [createProjectOpen, projectAction?.kind]);
 
   useEffect(() => {
     if (previousPath.current === location.pathname) return;
@@ -932,6 +932,7 @@ export default function ConversationNavigation({
       </Modal>
       {projectAction?.kind === "edit" && (
         <ProjectEditDialog
+          devices={devices}
           key={projectAction.project.project_id}
           project={projectAction.project}
           onClose={() => setProjectAction(null)}
@@ -970,25 +971,8 @@ export default function ConversationNavigation({
       )}
       {projectAction?.kind === "resources" && (
         <ProjectShellDrawer
-          localResourceDevice={
-            devices.find(
-              (device) =>
-                device.device_id === projectAction.project.resource_device_id,
-            )?.is_self === true
-          }
+          devices={devices}
           project={projectAction.project}
-          deviceLabel={
-            devices.find(
-              (device) =>
-                device.device_id === projectAction.project.resource_device_id,
-            )?.friendly_name || projectAction.project.resource_device_id
-          }
-          availabilityLabel={
-            devices.find(
-              (device) =>
-                device.device_id === projectAction.project.resource_device_id,
-            )?.connectivity_state ?? "unknown"
-          }
           lazy
           resourcePolicy={null}
           policyLoading={false}

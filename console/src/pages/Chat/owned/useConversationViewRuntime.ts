@@ -1023,7 +1023,6 @@ import {
 } from "../drafts";
 
 type SubmitRequest = {
-  project_working_directory_id?: string;
   agent_id?: string;
   project_id?: string;
   target_device_id?: string;

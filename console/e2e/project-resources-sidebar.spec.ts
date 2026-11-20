@@ -30,8 +30,10 @@ test("multi-folder project, sidebar organization and project actions against the
   writeFileSync(join(docs, "guide.txt"), "Resource proof");
   const created = await request.post(`${api}/projects`, {
     data: {
-      resource_device_id: self.device_id,
-      resource_roots: [app, docs],
+      directories: [app, docs].map((resource_root) => ({
+        resource_root,
+        device_id: self.device_id,
+      })),
       display_name: name,
     },
   });
@@ -41,8 +43,10 @@ test("multi-folder project, sidebar organization and project actions against the
   const peerName = `${name} peer`;
   const peerResponse = await request.post(`${api}/projects`, {
     data: {
-      resource_device_id: self.device_id,
-      resource_roots: [app, docs],
+      directories: [app, docs].map((resource_root) => ({
+        resource_root,
+        device_id: self.device_id,
+      })),
       display_name: peerName,
     },
   });
@@ -50,7 +54,10 @@ test("multi-folder project, sidebar organization and project actions against the
   const peer = (await peerResponse.json()).project;
   const peerId = peer.project_id;
   const secondary = project.resources.directories[1].directory_id;
-  await page.goto(`/projects/${id}/chats/00000000-0000-4000-8000-000000009901`);
+  await page.goto("/projects");
+  await page
+    .getByRole("button", { name: "Select Project", exact: true })
+    .waitFor();
   const path = page.url();
   const actions = () =>
     page.getByRole("button", {
@@ -119,14 +126,18 @@ test("multi-folder project, sidebar organization and project actions against the
     .getByRole("menuitem", { name: "Edit project", exact: true })
     .click();
   await page
-    .getByRole("radio", { name: `Use ${docs} as default folder`, exact: true })
-    .check();
+    .getByRole("textbox", { name: "Resource name" })
+    .last()
+    .fill("Documentation");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(
-    (await (await request.get(`${api}/projects/${id}`)).json()).resources
-      .primary_directory_id,
-  ).toBe(secondary);
+    (
+      await (await request.get(`${api}/projects/${id}`)).json()
+    ).resources.directories.find(
+      (d: { directory_id: string }) => d.directory_id === secondary,
+    ).display_name,
+  ).toBe("Documentation");
   await actions().click();
   await page
     .getByRole("menuitem", { name: "Pin project", exact: true })
@@ -141,22 +152,23 @@ test("multi-folder project, sidebar organization and project actions against the
   expect(page.url()).toBe(path);
   await actions().click();
   await page.getByRole("menuitem", { name: "Browse resource folders" }).click();
-  await expect(page.getByText("guide.txt", { exact: true })).toBeVisible();
   const workspace = page.getByRole("dialog");
+  await workspace.getByRole("combobox").click();
+  await page.getByRole("option").filter({ hasText: docs }).click();
+  await expect(page.getByText("guide.txt", { exact: true })).toBeVisible();
   const workspaceNode = (await workspace.elementHandle())!;
   await expect(page.locator(".rua-ui-drawer-mask")).toHaveClass(/--visible/);
   await workspace.getByRole("tab", { name: "Git", exact: true }).click();
   await workspace.getByRole("combobox").click();
-  await page.getByRole("option", { name: app, exact: true }).click();
+  await page.getByRole("option").filter({ hasText: app }).click();
   expect(await workspaceNode.evaluate((node) => node.isConnected)).toBe(true);
   await expect(page.locator(".rua-ui-drawer-mask")).toHaveClass(/--visible/);
   await expect(
     workspace.getByRole("tab", { name: "Git", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
   await workspace.getByRole("combobox").click();
-  await page.getByRole("option", { name: docs, exact: true }).click();
+  await page.getByRole("option").filter({ hasText: docs }).click();
   await workspace.getByRole("tab", { name: "Files", exact: true }).click();
-  await expect(page.getByText("guide.txt", { exact: true })).toBeVisible();
   expect(await workspaceNode.evaluate((node) => node.isConnected)).toBe(true);
   await page.getByRole("button", { name: "Close", exact: true }).click();
   await page
@@ -301,8 +313,7 @@ for (const width of [1280, 390]) {
     const name = `编辑验收 ${Date.now()}`;
     const response = await request.post(`${api}/projects`, {
       data: {
-        resource_device_id: device.device_id,
-        resource_roots: [app],
+        directories: [{ device_id: device.device_id, resource_root: app }],
         display_name: name,
       },
     });
@@ -322,28 +333,36 @@ for (const width of [1280, 390]) {
         .click();
     };
     try {
-      await page.goto(
-        `/projects/${id}/chats/00000000-0000-4000-8000-000000009905`,
-      );
+      await page.goto("/projects");
       await openEdit();
-      await expect(page.getByRole("radio")).toHaveCount(1);
+      await expect(
+        page.getByRole("textbox", { name: "资源名称", exact: true }),
+      ).toHaveCount(1);
       await page
         .getByRole("button", { name: "添加文件夹", exact: true })
         .click();
       await expect(
         page.getByRole("button", { name: "保存", exact: true }),
       ).toHaveCount(0);
-      await page.getByRole("button", { name: "docs", exact: true }).click();
+      const directoryInput = page.getByRole("textbox", {
+        name: "文件夹路径",
+        exact: true,
+      });
+      await expect(directoryInput).not.toHaveValue("");
+      await directoryInput.fill(docs);
       await expect(
         page.getByRole("textbox", { name: "文件夹路径", exact: true }),
       ).toHaveValue(docs);
       await page
         .getByRole("button", { name: "添加文件夹", exact: true })
         .click();
-      await expect(page.getByRole("radio")).toHaveCount(2);
+      await expect(
+        page.getByRole("textbox", { name: "资源名称", exact: true }),
+      ).toHaveCount(2);
       await page
-        .getByRole("radio", { name: `将 ${docs} 设为默认目录`, exact: true })
-        .check();
+        .getByRole("textbox", { name: "资源名称", exact: true })
+        .last()
+        .fill("编辑文档");
       await page.getByRole("button", { name: "保存", exact: true }).click();
       await expect(page.getByRole("dialog")).toHaveCount(0);
       await expect
@@ -352,19 +371,18 @@ for (const width of [1280, 390]) {
             await request.get(`${api}/projects/${id}`)
           ).json();
           return value.resources.directories.map(
-            (item: { display_path: string }) => item.display_path,
+            (item: { resource_root: string }) => item.resource_root,
           );
         })
         .toEqual([app, docs]);
       await page.reload();
       await openEdit();
-      await expect(page.getByRole("radio")).toHaveCount(2);
       await expect(
-        page.getByRole("radio", {
-          name: `将 ${docs} 设为默认目录`,
-          exact: true,
-        }),
-      ).toBeChecked();
+        page.getByRole("textbox", { name: "资源名称", exact: true }),
+      ).toHaveCount(2);
+      await expect(
+        page.getByRole("textbox", { name: "资源名称", exact: true }).last(),
+      ).toHaveValue("编辑文档");
       const dialog = page.getByRole("dialog");
       await expect(dialog).not.toContainText("common.remove");
       await expect(dialog).not.toContainText("用于新建对话");
@@ -384,13 +402,15 @@ for (const width of [1280, 390]) {
         .click();
       await expect(
         page.getByRole("textbox", { name: "文件夹路径", exact: true }),
-      ).toHaveValue(root);
+      ).not.toHaveValue("");
       await expect(dialog).not.toContainText("Storage locations");
       await dialog.screenshot({
         path: test.info().outputPath(`project-folder-picker-${width}.png`),
       });
       await page.getByRole("button", { name: "取消", exact: true }).click();
-      await expect(page.getByRole("radio")).toHaveCount(2);
+      await expect(
+        page.getByRole("textbox", { name: "资源名称", exact: true }),
+      ).toHaveCount(2);
       await page.getByRole("button", { name: "取消", exact: true }).click();
     } finally {
       await request.post(`${api}/projects/${id}/archive`, {

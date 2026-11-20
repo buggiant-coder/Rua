@@ -64,7 +64,7 @@
   display: grid;
   min-width: 0;
   min-height: 65px;
-  grid-template-columns: 36px minmax(0, 1fr) minmax(150px, 220px);
+  grid-template-columns: 36px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   padding: 0;
@@ -121,22 +121,6 @@
   }
 }
 
-.projectDevice {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-  color: var(--text-3);
-  font-size: 11px;
-
-  span:nth-child(2) {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-}
-
 .statusDot {
   width: 7px;
   height: 7px;
@@ -154,66 +138,6 @@
 
 .statusWarning {
   background: var(--warning-fg);
-}
-
-.statusDanger {
-  background: var(--danger-fg);
-}
-
-.availabilityLabel {
-  color: var(--text-mute);
-}
-
-.mobileAvailability {
-  display: none;
-}
-
-.createForm {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.deviceOption {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 7px;
-}
-
-.deviceOffline {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-  color: var(--text-mute);
-  font-size: 11px;
-}
-
-.duplicateBody {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-
-  > div {
-    min-width: 0;
-    flex: 1;
-  }
-
-  strong,
-  code {
-    display: block;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  code {
-    margin-top: 3px;
-    color: var(--text-3);
-    font-family: var(--font-mono);
-    font-size: 11px;
-  }
 }
 
 :global(html.mobile-mode) {
@@ -238,47 +162,23 @@
     grid-template-columns: 34px minmax(0, 1fr);
     gap: 9px;
   }
-
-  .projectDevice {
-    display: none;
-  }
-
-  .mobileAvailability {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-top: 5px;
-    color: var(--text-3);
-    font-size: 11px;
-  }
-
-  .duplicateBody {
-    align-items: stretch;
-    flex-direction: column;
-  }
-}
-
-.resourceFolderRow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 0;
-
-  label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex: 1;
-    min-width: 0;
-  }
-
-  span {
-    overflow-wrap: anywhere;
-  }
 }
 
 .projectActions {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.resourceLine {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-2);
+  font-size: var(--font-sm);
+  code {
+    overflow-wrap: anywhere;
+  }
 }

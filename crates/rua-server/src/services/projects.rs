@@ -5,7 +5,7 @@ use std::time::Duration;
 use rua_core::ProjectId;
 use rua_project::{
     ProjectCreateResourcesRequest, ProjectCreationOutcome, ProjectDeletePreparation,
-    ProjectDescriptor, ProjectDirectoryListing, ProjectResourceBindingStore,
+    ProjectDescriptor, ProjectDirectoryListing, ProjectResourceDirectoryInput,
 };
 use thiserror::Error;
 
@@ -22,14 +22,10 @@ use crate::state::AppState;
 
 const PROJECT_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProjectCreateResolution {
-    Created(ProjectCreationOutcome),
-    Duplicate(ProjectDescriptor),
-}
-
 #[derive(Debug, Error)]
 pub enum ProjectPlacementError {
+    #[error("Project not found: {0}")]
+    NotFound(String),
     #[error("local Device identity is unavailable")]
     MissingLocalDevice,
     #[error("Project Device command is unavailable: {0}")]
@@ -38,8 +34,8 @@ pub enum ProjectPlacementError {
     Rejected(String),
     #[error("invalid Project request: {0}")]
     Invalid(String),
-    #[error("Project lifecycle conflict: {0}")]
-    Lifecycle(String),
+    #[error("Project conflict: {0}")]
+    Conflict(String),
     #[error("Project storage failed: {0}")]
     Store(String),
     #[error("unexpected Project Device response")]
@@ -50,9 +46,7 @@ pub enum ProjectPlacementError {
 pub struct ProjectPlacementService {
     local_device_id: String,
     catalog: Arc<rua_project::ProjectCatalog>,
-    bindings: Arc<ProjectResourceBindingStore>,
     device_network: Arc<crate::services::device_session_access::DeviceNetworkAccess>,
-    data_dir: PathBuf,
 }
 
 impl ProjectPlacementService {
@@ -62,118 +56,82 @@ impl ProjectPlacementService {
         Ok(Self {
             local_device_id,
             catalog: Arc::clone(&state.project_catalog),
-            bindings: Arc::clone(&state.project_bindings),
             device_network: Arc::clone(&state.device_network),
-            data_dir: state.rua_root.clone(),
         })
     }
 
-    pub fn new(
-        local_device_id: String,
-        catalog: Arc<rua_project::ProjectCatalog>,
-        bindings: Arc<ProjectResourceBindingStore>,
-        device_network: Arc<crate::services::device_session_access::DeviceNetworkAccess>,
-        data_dir: PathBuf,
-    ) -> Self {
-        Self {
-            local_device_id,
-            catalog,
-            bindings,
-            device_network,
-            data_dir,
+    /// Only newly associated locations require a read on their owning Device.
+    async fn validate_locations(
+        &self,
+        existing: &[rua_project::ProjectResourceDirectory],
+        directories: &mut [ProjectResourceDirectoryInput],
+    ) -> Result<(), ProjectPlacementError> {
+        for directory in directories {
+            if existing.iter().any(|old| {
+                old.device_id == directory.device_id
+                    && old.resource_root.as_os_str() == directory.resource_root.as_os_str()
+                    && directory
+                        .directory_id
+                        .as_ref()
+                        .is_none_or(|id| id == &old.directory_id)
+            }) {
+                continue;
+            }
+            if directory.device_id.trim().is_empty() {
+                return Err(ProjectPlacementError::Invalid(
+                    "A resource requires a Device".into(),
+                ));
+            }
+            directory.resource_root = if directory.device_id == self.local_device_id {
+                validate_resource_directory(directory.resource_root.clone())
+                    .await
+                    .map_err(ProjectPlacementError::Invalid)?
+            } else {
+                match self
+                    .deliver(
+                        &directory.device_id,
+                        ProjectDeviceAction::ValidateResourceDirectory {
+                            resource_root: directory.resource_root.clone(),
+                        },
+                    )
+                    .await?
+                {
+                    ProjectDeviceResponse::ValidatedResourceDirectory {
+                        device_id,
+                        resource_root,
+                    } if device_id == directory.device_id => resource_root,
+                    _ => return Err(ProjectPlacementError::UnexpectedResponse),
+                }
+            };
         }
+        Ok(())
     }
 
     pub async fn edit_resources(
         &self,
         project_id: &ProjectId,
         expected_revision: u64,
-        resource_roots: &[PathBuf],
-        primary_index: usize,
-        directory_ids: &[Option<String>],
+        mut directories: Vec<ProjectResourceDirectoryInput>,
         state: &AppState,
     ) -> Result<ProjectCreationOutcome, ProjectPlacementError> {
         let project = self
             .catalog
             .get(project_id)
             .map_err(map_project_error)?
-            .ok_or_else(|| ProjectPlacementError::Invalid("Project not found".into()))?;
-        if project.resource_device_id == self.local_device_id {
-            let outcome =
-                crate::services::project_lifecycle::ProjectResourceEditor::from_app_state(state)
-                    .edit_resources(
-                        project_id,
-                        expected_revision,
-                        resource_roots,
-                        primary_index,
-                        directory_ids,
-                    )
-                    .await
-                    .map_err(ProjectPlacementError::Lifecycle)?;
-            return Ok(outcome);
+            .ok_or_else(|| ProjectPlacementError::NotFound(project_id.to_string()))?;
+        if project.resources.revision != expected_revision {
+            return Err(map_project_error(
+                rua_project::ProjectError::ResourceRevisionConflict,
+            ));
         }
-        match self
-            .deliver(
-                &project.resource_device_id,
-                ProjectDeviceAction::EditResources {
-                    project_id: project_id.clone(),
-                    expected_revision,
-                    resource_roots: resource_roots.to_vec(),
-                    primary_index,
-                    directory_ids: directory_ids.to_vec(),
-                },
-            )
-            .await?
-        {
-            ProjectDeviceResponse::ResourcesEdited { outcome } => {
-                self.catalog
-                    .apply_descriptor(outcome.project.clone())
-                    .map_err(map_project_error)?;
-                Ok(outcome)
-            }
-            _ => Err(ProjectPlacementError::UnexpectedResponse),
-        }
-    }
-
-    pub async fn set_primary_directory(
-        &self,
-        project_id: &ProjectId,
-        expected_revision: u64,
-        directory_id: &str,
-        state: &AppState,
-    ) -> Result<ProjectDescriptor, ProjectPlacementError> {
-        let project = self
+        self.validate_locations(&project.resources.directories, &mut directories)
+            .await?;
+        let outcome = self
             .catalog
-            .get(project_id)
-            .map_err(map_project_error)?
-            .ok_or_else(|| ProjectPlacementError::Invalid("Project not found".into()))?;
-        if project.resource_device_id == self.local_device_id {
-            let project =
-                crate::services::project_lifecycle::ProjectResourceEditor::from_app_state(state)
-                    .set_primary_directory(project_id, expected_revision, directory_id)
-                    .await
-                    .map_err(ProjectPlacementError::Lifecycle)?;
-            return Ok(project);
-        }
-        match self
-            .deliver(
-                &project.resource_device_id,
-                ProjectDeviceAction::SetPrimaryDirectory {
-                    project_id: project_id.clone(),
-                    expected_revision,
-                    directory_id: directory_id.into(),
-                },
-            )
-            .await?
-        {
-            ProjectDeviceResponse::ResourcesUpdated { project } => {
-                self.catalog
-                    .apply_descriptor(project.clone())
-                    .map_err(map_project_error)?;
-                Ok(project)
-            }
-            _ => Err(ProjectPlacementError::UnexpectedResponse),
-        }
+            .replace_resources(project_id, expected_revision, directories)
+            .map_err(map_project_error)?;
+        publish_project_descriptor(state, &outcome.project).await;
+        Ok(outcome)
     }
 
     pub async fn browse_directory(
@@ -242,75 +200,20 @@ impl ProjectPlacementService {
 
     pub async fn create(
         &self,
-        resource_device_id: &str,
-        resource_roots: &[String],
-        primary_index: usize,
+        mut directories: Vec<ProjectResourceDirectoryInput>,
         display_name: Option<String>,
         state: &AppState,
-    ) -> Result<ProjectCreateResolution, ProjectPlacementError> {
-        if resource_device_id == self.local_device_id {
-            let outcome = match self
-                .catalog
-                .create_resources(ProjectCreateResourcesRequest {
-                    resource_device_id: resource_device_id.to_string(),
-                    resource_roots: resource_roots.iter().map(PathBuf::from).collect(),
-                    primary_index,
-                    display_name,
-                }) {
-                Ok(outcome) => outcome,
-                Err(rua_project::ProjectError::DuplicateBinding { owner }) => {
-                    return Ok(ProjectCreateResolution::Duplicate(*owner));
-                }
-                Err(error) => return Err(map_project_error(error)),
-            };
-            let publication = crate::sync_publication::publish_project_descriptor_committed(
-                state,
-                outcome.project.clone(),
-            )
-            .await;
-            if publication.status == crate::sync_publication::PublicationStatus::AppendFailed {
-                tracing::warn!(
-                    project_id = %outcome.project.project_id,
-                    errors = ?publication.errors,
-                    "Project created locally but descriptor publication failed"
-                );
-            }
-            return Ok(ProjectCreateResolution::Created(outcome));
-        }
-
-        let response = self
-            .deliver(
-                resource_device_id,
-                ProjectDeviceAction::CreateResources {
-                    resource_roots: resource_roots.to_vec(),
-                    primary_index,
-                    display_name,
-                },
-            )
-            .await?;
-        match response {
-            ProjectDeviceResponse::Created { outcome } => {
-                if let Err(error) = self.catalog.apply_descriptor(outcome.project.clone()) {
-                    tracing::warn!(
-                        project_id = %outcome.project.project_id,
-                        error = %error,
-                        "remote Project committed but controller catalog hydration failed"
-                    );
-                }
-                Ok(ProjectCreateResolution::Created(outcome))
-            }
-            ProjectDeviceResponse::Duplicate { owner } => {
-                if let Err(error) = self.catalog.apply_descriptor(owner.clone()) {
-                    tracing::warn!(
-                        project_id = %owner.project_id,
-                        error = %error,
-                        "duplicate Project owner returned but controller catalog hydration failed"
-                    );
-                }
-                Ok(ProjectCreateResolution::Duplicate(owner))
-            }
-            _ => Err(ProjectPlacementError::UnexpectedResponse),
-        }
+    ) -> Result<ProjectCreationOutcome, ProjectPlacementError> {
+        self.validate_locations(&[], &mut directories).await?;
+        let outcome = self
+            .catalog
+            .create_resources(ProjectCreateResourcesRequest {
+                display_name,
+                directories,
+            })
+            .map_err(map_project_error)?;
+        publish_project_descriptor(state, &outcome.project).await;
+        Ok(outcome)
     }
 
     pub async fn archive_idle_chats(
@@ -320,26 +223,11 @@ impl ProjectPlacementService {
         state: &AppState,
     ) -> Result<crate::services::project_chat::ProjectBulkArchiveResult, ProjectPlacementError>
     {
-        if project.resource_device_id == self.local_device_id {
-            return state
-                .conversation_input_intake
-                .archive_idle_project_chats(&project.project_id, chat_ids, &self.local_device_id)
-                .await
-                .map_err(ProjectPlacementError::Invalid);
-        }
-        match self
-            .deliver(
-                &project.resource_device_id,
-                ProjectDeviceAction::ArchiveIdleChats {
-                    project_id: project.project_id.clone(),
-                    chat_ids,
-                },
-            )
-            .await?
-        {
-            ProjectDeviceResponse::ChatsArchived { result } => Ok(result),
-            _ => Err(ProjectPlacementError::UnexpectedResponse),
-        }
+        state
+            .conversation_input_intake
+            .archive_idle_project_chats(&project.project_id, chat_ids, &self.local_device_id)
+            .await
+            .map_err(ProjectPlacementError::Invalid)
     }
 
     pub async fn inspect_resource(
@@ -348,24 +236,21 @@ impl ProjectPlacementService {
         directory_id: &str,
         operation: ProjectResourceOperation,
     ) -> Result<ProjectDeviceResponse, ProjectPlacementError> {
-        if project.resource_device_id == self.local_device_id {
-            let binding = self
-                .bindings
-                .get(&project.project_id)
-                .map_err(map_project_error)?
-                .ok_or_else(|| {
-                    ProjectPlacementError::Invalid("Project binding is unavailable".into())
-                })?;
-            let directory_id = directory_id.to_string();
+        let directory = project
+            .resources
+            .directory(directory_id)
+            .map_err(map_project_error)?;
+        if directory.device_id == self.local_device_id {
+            let directory = directory.clone();
             return tokio::task::spawn_blocking(move || {
-                inspect_project_resource(&binding, &directory_id, operation)
+                inspect_project_resource(&directory, operation)
             })
             .await
-            .map_err(|error| ProjectPlacementError::Unavailable(error.to_string()))?
+            .map_err(|e| ProjectPlacementError::Unavailable(e.to_string()))?
             .map_err(ProjectPlacementError::Invalid);
         }
         self.deliver(
-            &project.resource_device_id,
+            &directory.device_id,
             ProjectDeviceAction::InspectResource {
                 project_id: project.project_id.clone(),
                 directory_id: directory_id.into(),
@@ -375,115 +260,16 @@ impl ProjectPlacementService {
         .await
     }
 
-    pub async fn git_status(
-        &self,
-        project: &ProjectDescriptor,
-    ) -> Result<rua_project::ProjectGitStatus, ProjectPlacementError> {
-        if project.resource_device_id == self.local_device_id {
-            let binding = self
-                .bindings
-                .get(&project.project_id)
-                .map_err(map_project_error)?
-                .ok_or_else(|| {
-                    ProjectPlacementError::Invalid("Project binding is unavailable".to_string())
-                })?;
-            return tokio::task::spawn_blocking(move || {
-                rua_project::inspect_project_git(binding.primary_root())
-            })
-            .await
-            .map_err(|error| {
-                ProjectPlacementError::Unavailable(format!(
-                    "inspect Project Git task failed: {error}"
-                ))
-            })?
-            .map_err(ProjectPlacementError::Unavailable);
-        }
-        match self
-            .deliver(
-                &project.resource_device_id,
-                ProjectDeviceAction::InspectGit {
-                    project_id: project.project_id.clone(),
-                },
-            )
-            .await?
-        {
-            ProjectDeviceResponse::GitStatus { status } => Ok(status),
-            _ => Err(ProjectPlacementError::UnexpectedResponse),
-        }
-    }
-
-    pub async fn git_history(
-        &self,
-        project: &ProjectDescriptor,
-        offset: usize,
-        limit: usize,
-    ) -> Result<rua_project::ProjectGitHistoryPage, ProjectPlacementError> {
-        if project.resource_device_id == self.local_device_id {
-            let binding = self
-                .bindings
-                .get(&project.project_id)
-                .map_err(map_project_error)?
-                .ok_or_else(|| {
-                    ProjectPlacementError::Invalid("Project binding is unavailable".to_string())
-                })?;
-            return tokio::task::spawn_blocking(move || {
-                rua_project::inspect_project_git_history(binding.primary_root(), offset, limit)
-            })
-            .await
-            .map_err(|error| {
-                ProjectPlacementError::Unavailable(format!(
-                    "inspect Project Git history task failed: {error}"
-                ))
-            })?
-            .map_err(ProjectPlacementError::Unavailable);
-        }
-        match self
-            .deliver(
-                &project.resource_device_id,
-                ProjectDeviceAction::InspectGitHistory {
-                    project_id: project.project_id.clone(),
-                    offset,
-                    limit,
-                },
-            )
-            .await?
-        {
-            ProjectDeviceResponse::GitHistory { history } => Ok(history),
-            _ => Err(ProjectPlacementError::UnexpectedResponse),
-        }
-    }
-
     pub async fn lifecycle_preview(
         &self,
         project: &ProjectDescriptor,
         state: &AppState,
     ) -> Result<ProjectLifecyclePreview, ProjectPlacementError> {
-        if self.resource_device_is_revoked(project) {
-            return Ok(ProjectLifecyclePreview {
-                project: project.clone(),
-                impact: None,
-                resource_device_revoked: true,
-            });
-        }
-        if project.resource_device_id == self.local_device_id {
-            return state
-                .conversation_input_intake
-                .inspect_project_lifecycle(&project.project_id)
-                .await
-                .map_err(ProjectPlacementError::Rejected);
-        }
-        match self
-            .deliver(
-                &project.resource_device_id,
-                ProjectDeviceAction::InspectLifecycle {
-                    project_id: project.project_id.clone(),
-                },
-            )
-            .await?
-        {
-            ProjectDeviceResponse::LifecyclePreview { preview } => Ok(preview),
-            _ => Err(ProjectPlacementError::UnexpectedResponse),
-        }
+        state
+            .conversation_input_intake
+            .inspect_project_lifecycle(&project.project_id)
+            .await
+            .map_err(ProjectPlacementError::Rejected)
     }
 
     pub async fn archive(
@@ -491,58 +277,15 @@ impl ProjectPlacementService {
         project: &ProjectDescriptor,
         state: &AppState,
     ) -> Result<ProjectArchiveResult, ProjectPlacementError> {
-        if self.resource_device_is_revoked(project) {
-            self.catalog
-                .begin_lifecycle_transition(&project.project_id)
-                .map_err(map_project_error)?;
-            let result = (|| {
-                let changed = project.lifecycle != rua_project::ProjectLifecycle::Archived;
-                let project = self
-                    .catalog
-                    .set_lifecycle(&project.project_id, rua_project::ProjectLifecycle::Archived)
-                    .map_err(map_project_error)?;
-                Ok(ProjectArchiveResult {
-                    project,
-                    impact: None,
-                    resource_device_revoked: true,
-                    changed,
-                })
-            })();
-            self.catalog.end_lifecycle_transition(&project.project_id);
-            let result = result?;
-            if result.changed {
-                publish_lifecycle_descriptor(state, &result.project).await;
-            }
-            return Ok(result);
+        let result = state
+            .conversation_input_intake
+            .archive_project(&project.project_id)
+            .await
+            .map_err(ProjectPlacementError::Conflict)?;
+        if result.changed {
+            publish_project_descriptor(state, &result.project).await;
         }
-        if project.resource_device_id == self.local_device_id {
-            let result = state
-                .conversation_input_intake
-                .archive_project(&project.project_id)
-                .await
-                .map_err(ProjectPlacementError::Lifecycle)?;
-            if result.changed {
-                publish_lifecycle_descriptor(state, &result.project).await;
-            }
-            return Ok(result);
-        }
-        match self
-            .deliver(
-                &project.resource_device_id,
-                ProjectDeviceAction::Archive {
-                    project_id: project.project_id.clone(),
-                },
-            )
-            .await?
-        {
-            ProjectDeviceResponse::Archived { result } => {
-                self.catalog
-                    .apply_descriptor(result.project.clone())
-                    .map_err(map_project_error)?;
-                Ok(result)
-            }
-            _ => Err(ProjectPlacementError::UnexpectedResponse),
-        }
+        Ok(result)
     }
 
     pub async fn reopen(
@@ -550,39 +293,15 @@ impl ProjectPlacementService {
         project: &ProjectDescriptor,
         state: &AppState,
     ) -> Result<ProjectReopenResult, ProjectPlacementError> {
-        if self.resource_device_is_revoked(project) {
-            return Err(ProjectPlacementError::Lifecycle(
-                "Reopen requires the original resource Device to be online".to_string(),
-            ));
+        let result = state
+            .conversation_input_intake
+            .reopen_project(&project.project_id)
+            .await
+            .map_err(ProjectPlacementError::Conflict)?;
+        if result.changed {
+            publish_project_descriptor(state, &result.project).await;
         }
-        if project.resource_device_id == self.local_device_id {
-            let result = state
-                .conversation_input_intake
-                .reopen_project(&project.project_id)
-                .await
-                .map_err(ProjectPlacementError::Lifecycle)?;
-            if result.changed {
-                publish_lifecycle_descriptor(state, &result.project).await;
-            }
-            return Ok(result);
-        }
-        match self
-            .deliver(
-                &project.resource_device_id,
-                ProjectDeviceAction::Reopen {
-                    project_id: project.project_id.clone(),
-                },
-            )
-            .await?
-        {
-            ProjectDeviceResponse::Reopened { result } => {
-                self.catalog
-                    .apply_descriptor(result.project.clone())
-                    .map_err(map_project_error)?;
-                Ok(result)
-            }
-            _ => Err(ProjectPlacementError::UnexpectedResponse),
-        }
+        Ok(result)
     }
 
     pub async fn permanent_delete(
@@ -608,7 +327,7 @@ impl ProjectPlacementService {
                 .conversation_input_intake
                 .project_delete_scope(project_id)
                 .await
-                .map_err(ProjectPlacementError::Lifecycle)?;
+                .map_err(ProjectPlacementError::Conflict)?;
             let publication = crate::sync_publication::publish_project_permanently_deleted(
                 state,
                 project_id.clone(),
@@ -622,7 +341,7 @@ impl ProjectPlacementService {
                         .rollback_permanent_delete(project_id)
                         .map_err(map_project_error)?;
                 }
-                return Err(ProjectPlacementError::Lifecycle(format!(
+                return Err(ProjectPlacementError::Conflict(format!(
                     "Project delete tombstone publication failed: {}",
                     publication.errors.join("; ")
                 )));
@@ -632,7 +351,7 @@ impl ProjectPlacementService {
                 .conversation_input_intake
                 .cleanup_permanently_deleted_project(project_id, &scope_root, &addresses)
                 .await
-                .map_err(ProjectPlacementError::Lifecycle)?;
+                .map_err(ProjectPlacementError::Conflict)?;
             let finalized = self
                 .catalog
                 .finalize_permanent_delete(project_id)
@@ -645,25 +364,10 @@ impl ProjectPlacementService {
         result
     }
 
-    fn resource_device_is_revoked(&self, project: &ProjectDescriptor) -> bool {
-        project.resource_device_id != self.local_device_id
-            && !resource_device_is_member(&self.data_dir, &project.resource_device_id)
-    }
-
     async fn deliver(
         &self,
         target_device_id: &str,
         action: ProjectDeviceAction,
-    ) -> Result<ProjectDeviceResponse, ProjectPlacementError> {
-        self.deliver_with_timeout(target_device_id, action, PROJECT_COMMAND_TIMEOUT)
-            .await
-    }
-
-    async fn deliver_with_timeout(
-        &self,
-        target_device_id: &str,
-        action: ProjectDeviceAction,
-        timeout: Duration,
     ) -> Result<ProjectDeviceResponse, ProjectPlacementError> {
         let session_manager =
             crate::services::device_session_access::current_session_manager(&self.device_network)
@@ -677,32 +381,10 @@ impl ProjectPlacementService {
                 target_device_id: target_device_id.to_string(),
                 action,
             },
-            timeout,
+            PROJECT_COMMAND_TIMEOUT,
         )
         .await
         .map_err(|error| match error {
-            crate::services::device_command_bus::DeviceCommandDeliveryError::Rejected {
-                reason,
-                detail,
-            } if matches!(
-                reason.as_str(),
-                "project_directory_unavailable" | "project_create_failed"
-            ) =>
-            {
-                ProjectPlacementError::Invalid(detail)
-            }
-            crate::services::device_command_bus::DeviceCommandDeliveryError::Rejected {
-                reason,
-                detail,
-            } if matches!(
-                reason.as_str(),
-                "project_archive_failed"
-                    | "project_reopen_failed"
-                    | "project_lifecycle_inspect_failed"
-            ) =>
-            {
-                ProjectPlacementError::Lifecycle(detail)
-            }
             crate::services::device_command_bus::DeviceCommandDeliveryError::Rejected {
                 detail,
                 ..
@@ -712,32 +394,35 @@ impl ProjectPlacementService {
     }
 }
 
-async fn publish_lifecycle_descriptor(state: &AppState, project: &ProjectDescriptor) {
+async fn publish_project_descriptor(state: &AppState, project: &ProjectDescriptor) {
     let publication =
         crate::sync_publication::publish_project_descriptor_committed(state, project.clone()).await;
     if publication.status == crate::sync_publication::PublicationStatus::AppendFailed {
         tracing::warn!(
             project_id = %project.project_id,
             errors = ?publication.errors,
-            "Project lifecycle committed but descriptor publication failed"
+            "Project descriptor committed but Sync publication failed"
         );
     }
 }
 
-fn resource_device_is_member(data_dir: &Path, resource_device_id: &str) -> bool {
-    let path = data_dir.join("sync").join("device_list.json");
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<rua_sync::device_list::DeviceList>(&bytes).ok())
-        .is_some_and(|list| {
-            list.devices
-                .iter()
-                .any(|device| hex::encode(device.device_id) == resource_device_id)
-        })
+pub(crate) async fn validate_resource_directory(root: PathBuf) -> Result<PathBuf, String> {
+    if !root.is_absolute() {
+        return Err("Resource root must be absolute".into());
+    }
+    tokio::task::spawn_blocking(move || {
+        let path = rua_project::normalize_project_root(&root.to_string_lossy())
+            .map_err(|e| e.to_string())?;
+        rua_project::validate_project_directory(&path).map_err(|e| e.to_string())?;
+        Ok(path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn map_project_error(error: rua_project::ProjectError) -> ProjectPlacementError {
     match error {
+        rua_project::ProjectError::NotFound(id) => ProjectPlacementError::NotFound(id.to_string()),
         rua_project::ProjectError::InvalidResources(_)
         | rua_project::ProjectError::InvalidPath(_)
         | rua_project::ProjectError::DirectoryUnavailable { .. }
@@ -746,25 +431,21 @@ fn map_project_error(error: rua_project::ProjectError) -> ProjectPlacementError 
         | rua_project::ProjectError::InvalidProjectId => {
             ProjectPlacementError::Invalid(error.to_string())
         }
-        rua_project::ProjectError::PermanentDeleteRequiresArchive(_)
+        rua_project::ProjectError::ResourceRevisionConflict
+        | rua_project::ProjectError::PermanentDeleteRequiresArchive(_)
         | rua_project::ProjectError::PermanentlyDeleted(_)
         | rua_project::ProjectError::LifecycleTransitionInProgress(_) => {
-            ProjectPlacementError::Lifecycle(error.to_string())
+            ProjectPlacementError::Conflict(error.to_string())
         }
         other => ProjectPlacementError::Store(other.to_string()),
     }
 }
 
-/// Resolve resource identities only against this Device's authoritative binding.
+/// Inspect a directory after verifying that its saved owner is this Device.
 pub(crate) fn inspect_project_resource(
-    binding: &rua_project::ProjectResourceBinding,
-    directory_id: &str,
+    directory: &rua_project::ProjectResourceDirectory,
     operation: ProjectResourceOperation,
 ) -> Result<ProjectDeviceResponse, String> {
-    let directory = binding
-        .resources
-        .directory(directory_id)
-        .map_err(|error| error.to_string())?;
     let root = directory.resource_root.canonicalize().map_err(|error| {
         format!(
             "Resource directory {} is unavailable: {error}",
@@ -788,7 +469,7 @@ pub(crate) fn inspect_project_resource(
             let listing = rua_project::list_project_directory(&path.to_string_lossy())
                 .map_err(|error| error.to_string())?;
             Ok(ProjectDeviceResponse::Directory {
-                device_id: binding.resource_device_id.clone(),
+                device_id: directory.device_id.clone(),
                 path: listing.path,
                 entries: listing.entries,
                 roots: Vec::new(),

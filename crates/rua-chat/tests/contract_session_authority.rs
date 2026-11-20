@@ -199,7 +199,7 @@ async fn existing_project_chat_loads_membership_policy() {
         &ChatPolicy {
             agent_assignment: AgentAssignmentPolicy::Selectable,
             resource: ResourcePolicy::ProjectBinding,
-            authority_placement: AuthorityPlacementPolicy::ResourceBound,
+            authority_placement: AuthorityPlacementPolicy::Fixed,
         }
     );
     assert_eq!(

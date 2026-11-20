@@ -1891,16 +1891,6 @@ export function AgentChatPage({
         <ProjectSelector
           currentProject={null}
           projects={projects}
-          projectDeviceLabel={(project) => {
-            const device = syncDevices.find(
-              (item) => item.device_id === project.resource_device_id,
-            );
-            return (
-              device?.friendly_name ||
-              device?.label ||
-              project.resource_device_id.slice(0, 12)
-            );
-          }}
           onSelect={selectProject}
           onSelectIndependent={() => undefined}
           onCreate={() => setCreateProjectOpen(true)}

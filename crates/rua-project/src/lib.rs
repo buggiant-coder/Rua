@@ -10,9 +10,8 @@ pub use git::{
 };
 pub use model::{
     ProjectCreateRequest, ProjectCreateResourcesRequest, ProjectCreationOutcome, ProjectDescriptor,
-    ProjectDirectoryDescriptor, ProjectDirectoryEntry, ProjectDirectoryEntryKind,
-    ProjectDirectoryListing, ProjectLifecycle, ProjectOverlapRelation, ProjectOverlapWarning,
-    ProjectResourceBinding, ProjectResourcesDescriptor,
+    ProjectDirectoryEntry, ProjectDirectoryEntryKind, ProjectDirectoryListing, ProjectLifecycle,
+    ProjectOverlapRelation, ProjectOverlapWarning,
 };
 pub use path::{
     create_project_directory, list_project_directory, normalize_project_root,
@@ -20,11 +19,10 @@ pub use path::{
 };
 pub use store::{
     project_tombstone_exists, ProjectAdmissionGuard, ProjectCatalog, ProjectDeletePreparation,
-    ProjectError, ProjectResourceBindingStore, ProjectResourceEditGuard, ProjectResult,
-    ProjectStores, ProjectTombstone,
+    ProjectError, ProjectExclusiveAdmissionGuard, ProjectResult, ProjectTombstone,
 };
 
-pub use resources::{ProjectResourceDirectory, ProjectResources, INITIAL_PROJECT_DIRECTORY_ID};
+pub use resources::{ProjectResourceDirectory, ProjectResourceDirectoryInput, ProjectResources};
 
 mod sidebar;
 pub use sidebar::{

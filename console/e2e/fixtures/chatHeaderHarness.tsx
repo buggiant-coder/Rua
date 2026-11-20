@@ -107,8 +107,7 @@ export function Harness() {
                     display_name: params.has("long")
                       ? "A very long project display name that must truncate"
                       : "项目",
-                    resource_device_id: "fixture-device",
-                    display_path: "",
+                    resources: { revision: 1, directories: [] },
                     lifecycle: "active",
                     created_at: "2026-01-01T00:00:00Z",
                     updated_at: "2026-01-01T00:00:00Z",

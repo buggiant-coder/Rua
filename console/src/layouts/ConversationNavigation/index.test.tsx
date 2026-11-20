@@ -92,8 +92,7 @@ function project(id: string) {
   return {
     project_id: id,
     display_name: `Project ${id}`,
-    resource_device_id: "local",
-    display_path: `/${id}`,
+    resources: { revision: 1, directories: [] },
     lifecycle: "active" as const,
     created_at: "",
     updated_at: "",

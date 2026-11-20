@@ -1318,7 +1318,7 @@ impl ActiveStreamBroadcastDeviceSessionHandler {
             )
             .await?;
         if placement.device_id != initial_state.local_device_id {
-            if !target.resource_bound
+            if !target.project_member
                 && request
                     .authority_epoch
                     .is_some_and(|expected_epoch| placement.authority_epoch > expected_epoch)
@@ -1340,7 +1340,7 @@ impl ActiveStreamBroadcastDeviceSessionHandler {
         }
         if let Some(expected_epoch) = request.authority_epoch {
             if placement.authority_epoch != expected_epoch {
-                if !target.resource_bound && placement.authority_epoch > expected_epoch {
+                if !target.project_member && placement.authority_epoch > expected_epoch {
                     return Ok(Some(ActiveStreamBroadcastFrame::AuthorityRedirect {
                         device_delivery_id: format!("authority-redirect:{address}"),
                         address: address.clone(),
@@ -1356,7 +1356,7 @@ impl ActiveStreamBroadcastDeviceSessionHandler {
                     "Conversation Live Activity targets a stale authority Epoch".to_string()
                 );
             }
-        } else if !target.resource_bound {
+        } else if !target.project_member {
             return Err(
                 "initial Agent Conversation Control View requires Authority Epoch".to_string(),
             );

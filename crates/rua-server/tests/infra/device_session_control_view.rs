@@ -4413,7 +4413,7 @@ async fn removed_remote_project_background_tool_route_does_not_transfer_executio
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn remote_project_first_submit_materializes_on_resource_device() {
+async fn remote_project_first_submit_materializes_on_selected_device() {
     let source_dir = TempDir::new().expect("source state");
     let mut source_state =
         AppState::from_tempdir(source_dir.path().to_path_buf(), ServerProfile::Test);
@@ -4421,6 +4421,9 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
     let second_state = AppState::from_tempdir(second_dir.path().to_path_buf(), ServerProfile::Test);
     let target_dir = TempDir::new().expect("target state");
     let target_state = AppState::from_tempdir(target_dir.path().to_path_buf(), ServerProfile::Test);
+    install_test_device(&source_state, 92);
+    install_test_device(&second_state, 94);
+    install_test_device(&target_state, 93);
     seed_fixture_provider(
         &target_state,
         vec![
@@ -4508,7 +4511,10 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
     *second_state.device_network.lock().await = Some(second.runtime.clone());
 
     let chat_id = "00000000-0000-4000-8000-000000000404";
-    let mut first_submit_extra = serde_json::Map::new();
+    let mut first_submit_extra = serde_json::Map::from_iter([(
+        "target_device_id".into(),
+        serde_json::json!(target_device_id),
+    )]);
     first_submit_extra.insert(
         "chat_model_slot".to_string(),
         serde_json::json!({
@@ -4692,10 +4698,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/console/live",
-                    created.project.project_id
-                ))
+                .uri(format!("/api/chats/{chat_id}/console/live"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
@@ -4838,15 +4841,14 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
             .is_none(),
         "second viewer has no Project Chat Header before Live"
     );
+    let second_store = WorkspaceSessionStore::new(second_scope.root());
+    second_store.save_chat_header(&header).await.unwrap();
     let second_app = rua_server::router::build_app(second_state.clone(), None);
     let second_live = second_app
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/console/live",
-                    created.project.project_id
-                ))
+                .uri(format!("/api/chats/{chat_id}/console/live"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
@@ -4878,17 +4880,25 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
         .iter()
         .any(|event| event["type"] == "text_delta" && event["delta"] == "live-before-sync"));
     assert!(
-        WorkspaceSessionStore::new(second_scope.root())
-            .load_chat_header(chat_id)
+        second_store
+            .read_message_range(chat_id, 1, 20)
             .await
             .unwrap()
-            .is_none(),
-        "second viewer Live does not require stable Project storage"
+            .is_empty(),
+        "the second viewer receives live events while only the Chat header is replicated"
     );
 
     assert!(target_scope.chat_index_path().is_file());
     assert!(!target_repo.join("sessions").exists());
-    assert!(source_state.project_bindings.list().unwrap().is_empty());
+    assert_eq!(
+        source_state
+            .project_catalog
+            .get(&created.project.project_id)
+            .unwrap()
+            .unwrap()
+            .resources,
+        created.project.resources
+    );
 
     target_state
         .agent_service
@@ -4933,10 +4943,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/console/live",
-                    created.project.project_id
-                ))
+                .uri(format!("/api/chats/{chat_id}/console/live"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
@@ -5035,7 +5042,10 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
                 attachments: Vec::new(),
                 input: None,
                 messages: None,
-                extra: serde_json::Map::new(),
+                extra: serde_json::Map::from_iter([(
+                    "target_device_id".into(),
+                    serde_json::json!(target_device_id),
+                )]),
                 channel_kind: Some(rua_channel::core::renderer::ChannelKind::Chat),
             },
         )
@@ -5232,10 +5242,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
     assert!(matches!(
         workspace,
         ConversationControlDeviceResponse::ResourcePolicy { workspace }
-            if workspace.policy.profile
-                == rua_security::ProjectResourceProfile::ResourceWrite
-                && workspace.policy.cwd == target_repo.to_string_lossy()
-                && workspace.policy.dedicated_operations_root_confined
+            if workspace.policy.is_none()
     ));
     let model = deliver_conversation_control_via_session(
         source.runtime.session_manager(),
@@ -5340,7 +5347,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
                 workspace_dir,
                 ..
             }
-        } if workspace_dir == target_repo.to_string_lossy()
+        } if workspace_dir == header.extra[rua_session::EXECUTION_DIRECTORY_KEY]["path"].as_str().unwrap()
     ));
 
     let approval = target_state
@@ -5509,7 +5516,10 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
                 attachments: Vec::new(),
                 input: None,
                 messages: None,
-                extra: serde_json::Map::new(),
+                extra: serde_json::Map::from_iter([(
+                    "target_device_id".into(),
+                    serde_json::json!(target_device_id),
+                )]),
                 channel_kind: Some(rua_channel::core::renderer::ChannelKind::Chat),
             },
         )
@@ -5517,6 +5527,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
     assert!(matches!(
         offline_outcome,
         rua_server::services::conversation_input_intake::ConversationInputDeliveryOutcome::Delivered {
+            transport: rua_server::services::conversation_input_intake::ConversationInputDeliveryTransport::RemoteAuthority,
             accepted: true,
             ..
         }
@@ -5562,7 +5573,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
             &created.project.project_id,
             "default",
             ConsoleChatRequest {
-                message: "must not survive path loss".to_string(),
+                message: "continue while the resource path is missing".to_string(),
                 chat_id: Some(offline_chat_id.to_string()),
                 model: None,
                 is_reconnect: false,
@@ -5574,35 +5585,30 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
             },
         )
         .await;
-    assert!(!matches!(
-        path_missing_submit,
+    assert!(matches!(path_missing_submit,
         rua_server::services::conversation_input_intake::ConversationInputDeliveryOutcome::Delivered {
-            accepted: true,
-            ..
+            transport: rua_server::services::conversation_input_intake::ConversationInputDeliveryTransport::RemoteAuthority,
+            accepted: true, ..
+        }), "{path_missing_submit:?}");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while target_state
+            .conversation_authority
+            .active_turn(&offline_address)
+            .await
+            .is_some()
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-    ));
-    assert_eq!(
-        offline_store
-            .read_turn_range(offline_chat_id, 1, usize::MAX)
-            .await
-            .unwrap()
-            .len(),
-        offline_turn_count_before
-    );
-    assert!(target_state
-        .conversation_authority
-        .queue_snapshot(&offline_address)
+    })
+    .await
+    .expect("Turn finishes while the resource path is missing");
+    let offline_turn_count = offline_store
+        .read_turn_range(offline_chat_id, 1, usize::MAX)
         .await
-        .is_empty());
-    std::fs::create_dir_all(&target_repo).unwrap();
-    assert_eq!(
-        offline_store
-            .read_turn_range(offline_chat_id, 1, usize::MAX)
-            .await
-            .unwrap()
-            .len(),
-        offline_turn_count_before
-    );
+        .unwrap()
+        .len();
+    assert_eq!(offline_turn_count, offline_turn_count_before + 1);
+    assert!(!target_repo.exists());
     let offline_source_scope =
         rua_core::ChatStore::resolve(&source_state.rua_root, offline_address.clone());
     copy_tree(offline_scope.root(), offline_source_scope.root())
@@ -5613,10 +5619,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
-                .uri(format!(
-                    "/api/projects/{}/chats/{offline_chat_id}",
-                    created.project.project_id
-                ))
+                .uri(format!("/api/chats/{offline_chat_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -5669,7 +5672,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
             .await
             .unwrap()
             .len(),
-        offline_turn_count_before
+        offline_turn_count
     );
     assert!(target_state
         .conversation_authority
@@ -5721,7 +5724,7 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
             .await
             .unwrap()
             .len(),
-        offline_turn_count_before
+        offline_turn_count
     );
 
     drop(second_viewer);
@@ -5730,9 +5733,10 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn remote_project_turns_read_fresh_instructions_only_from_the_resource_root() {
+async fn remote_project_turns_use_execution_cwd_and_do_not_scan_resource_directories() {
     const FIRST_MARKER: &str = "RESOURCE_PROJECT_INSTRUCTIONS_FIRST_12A7";
     const SECOND_MARKER: &str = "RESOURCE_PROJECT_INSTRUCTIONS_SECOND_12B8";
+    const RESOURCE_MARKER: &str = "UNREAD_RESOURCE_INSTRUCTIONS_12C8";
     const CONTROLLER_MARKER: &str = "CONTROLLER_INSTRUCTIONS_MUST_NOT_APPEAR_12C9";
     const PROJECT_SKILL_MARKER: &str = "RESOURCE_PROJECT_SKILL_BODY_13B2";
 
@@ -5745,10 +5749,19 @@ async fn remote_project_turns_read_fresh_instructions_only_from_the_resource_roo
     .expect("controller instructions");
     let target_dir = TempDir::new().expect("target state");
     let target_state = AppState::from_tempdir(target_dir.path().join("data"), ServerProfile::Test);
+    install_test_device(&source_state, 102);
+    install_test_device(&target_state, 103);
+    let agent = target_state
+        .registry
+        .get_or_create("default")
+        .await
+        .unwrap();
+    let execution_directory = agent.workspace_dir();
+    std::fs::write(execution_directory.join("AGENTS.md"), FIRST_MARKER).unwrap();
     let repository = TempDir::new().expect("resource repository");
     let target_repo = repository.path().join("project");
     std::fs::create_dir_all(&target_repo).expect("resource Project root");
-    std::fs::write(target_repo.join("AGENTS.md"), FIRST_MARKER.as_bytes())
+    std::fs::write(target_repo.join("AGENTS.md"), RESOURCE_MARKER.as_bytes())
         .expect("first Project Instructions");
     std::fs::create_dir_all(target_repo.join(".agents/skills/resource-only"))
         .expect("Project Skill directory");
@@ -5823,7 +5836,14 @@ async fn remote_project_turns_read_fresh_instructions_only_from_the_resource_roo
                     attachments: Vec::new(),
                     input: None,
                     messages: None,
-                    extra: serde_json::Map::new(),
+                    extra: if expected_count == 1 {
+                        serde_json::Map::from_iter([(
+                            "target_device_id".into(),
+                            serde_json::json!(target_device_id),
+                        )])
+                    } else {
+                        Default::default()
+                    },
                     channel_kind: Some(rua_channel::core::renderer::ChannelKind::Chat),
                 },
             )
@@ -5857,19 +5877,21 @@ async fn remote_project_turns_read_fresh_instructions_only_from_the_resource_roo
         .expect("resource Project Turn did not finish");
 
         if expected_count == 1 {
-            let target_scope =
-                rua_core::ChatStore::resolve(&target_state.rua_root, ChatAddress::new(chat_id));
-            let synced_chat = rua_server::services::chat_index::get(target_scope.root(), chat_id)
-                .await
-                .expect("read resource Chat Index")
-                .expect("resource Chat Index entry");
-            let source_scope =
-                rua_core::ChatStore::resolve(&source_state.rua_root, ChatAddress::new(chat_id));
-            rua_server::services::chat_index::upsert(source_scope.root(), synced_chat)
-                .await
-                .expect("simulate synchronized Project Chat metadata");
-            std::fs::write(target_repo.join("AGENTS.md"), SECOND_MARKER.as_bytes())
-                .expect("updated Project Instructions");
+            // The source has only the receipt at this point. Updating the resource
+            // metadata does not move the next Turn away from the selected Device.
+            target_state
+                .project_catalog
+                .replace_resources(
+                    &created.project.project_id,
+                    created.project.resources.revision,
+                    vec![],
+                )
+                .unwrap();
+            std::fs::write(
+                execution_directory.join("AGENTS.md"),
+                SECOND_MARKER.as_bytes(),
+            )
+            .unwrap();
         }
     }
 
@@ -5879,23 +5901,20 @@ async fn remote_project_turns_read_fresh_instructions_only_from_the_resource_roo
         (&requests[0], FIRST_MARKER, SECOND_MARKER),
         (&requests[1], SECOND_MARKER, FIRST_MARKER),
     ] {
-        assert_eq!(request.working_dir.as_deref(), Some(target_repo.as_path()));
+        assert_eq!(
+            request.working_dir.as_deref(),
+            Some(execution_directory.as_path())
+        );
         assert_eq!(
             request
                 .metadata
                 .get(rua_agent::hooks::PROJECT_SKILLS_ROOT_METADATA_KEY)
                 .and_then(serde_json::Value::as_str),
-            Some(target_repo.to_string_lossy().as_ref())
+            Some(execution_directory.to_string_lossy().as_ref())
         );
         assert_eq!(
             request.conversation_store_dir.as_deref(),
-            Some(
-                target_state
-                    .rua_root
-                    .join("projects")
-                    .join(created.project.project_id.as_str())
-                    .as_path()
-            )
+            Some(target_state.chat_workspace().as_path())
         );
         let instructions = request
             .metadata
@@ -5905,6 +5924,19 @@ async fn remote_project_turns_read_fresh_instructions_only_from_the_resource_roo
         assert!(instructions.contains(expected_marker));
         assert!(!instructions.contains(rejected_marker));
         assert!(!instructions.contains(CONTROLLER_MARKER));
+        assert!(!instructions.contains(RESOURCE_MARKER));
+        let directories = request.metadata[rua_session::TURN_PROJECT_RESOURCES_KEY]["directories"]
+            .as_array()
+            .unwrap();
+        if expected_marker == FIRST_MARKER {
+            assert_eq!(directories.len(), 1);
+            assert_eq!(
+                directories[0]["resource_root"],
+                serde_json::json!(target_repo)
+            );
+        } else {
+            assert!(directories.is_empty());
+        }
     }
 
     let descriptor = serde_json::to_string(
@@ -5928,11 +5960,8 @@ async fn remote_project_turns_read_fresh_instructions_only_from_the_resource_roo
         let bytes = std::fs::read(entry.path()).expect("read Rua-owned data file");
         assert!(
             !bytes
-                .windows(FIRST_MARKER.len())
-                .any(|window| window == FIRST_MARKER.as_bytes())
-                && !bytes
-                    .windows(SECOND_MARKER.len())
-                    .any(|window| window == SECOND_MARKER.as_bytes())
+                .windows(RESOURCE_MARKER.len())
+                .any(|window| window == RESOURCE_MARKER.as_bytes())
                 && !bytes
                     .windows(PROJECT_SKILL_MARKER.len())
                     .any(|window| window == PROJECT_SKILL_MARKER.as_bytes()),
@@ -5946,11 +5975,8 @@ async fn remote_project_turns_read_fresh_instructions_only_from_the_resource_roo
 
 fn full_command_handler(state: &AppState, target_device_id: &str) -> Arc<DeviceCommandHandler> {
     Arc::new(
-        command_handler(state, target_device_id).with_project_runtime(
-            Arc::clone(&state.project_catalog),
-            Arc::clone(&state.project_bindings),
-            rua_server::sync_publication::SyncPublicationRuntime::from_app_state(state),
-        ),
+        command_handler(state, target_device_id)
+            .with_project_runtime(Arc::clone(&state.project_catalog)),
     )
 }
 

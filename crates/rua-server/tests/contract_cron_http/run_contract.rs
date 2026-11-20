@@ -178,7 +178,7 @@ async fn cron_bound_agent_heartbeat_continue_selected_chat_without_changing_disp
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id":device, "resource_root":root,"display_name":"Photos"
+            "directories": [{"device_id": device, "resource_root": root}],"display_name":"Photos"
         })),
     )
     .await;

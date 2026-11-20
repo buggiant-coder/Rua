@@ -280,7 +280,7 @@ pub async fn verify_and_observe_authority_redirect(
         .map_err(|error| error.to_string())?
         .ok_or("Chat header unavailable")?;
     if header.project_id.is_some() {
-        return Err("Project Chat authority is fixed to its resource Device".into());
+        return Err("Chat authority is fixed on its execution Device".into());
     }
     if redirect.placement.device_id == local_device_id {
         let current =

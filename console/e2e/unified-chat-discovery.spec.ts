@@ -65,8 +65,7 @@ async function mockDiscoveryServer(
     ([project_id, display_name]) => ({
       project_id,
       display_name,
-      display_path: `/fixture/${project_id}`,
-      resource_device_id: "desktop",
+      resources: { revision: 1, directories: [] },
       lifecycle: "active",
     }),
   );

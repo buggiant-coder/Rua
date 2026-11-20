@@ -1,285 +1,224 @@
-use rua_project::ProjectResources;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Barrier};
 
-#[test]
-fn explicit_rebinding_preserves_identity_and_unknown_fields_after_directory_move() {
-    let temp = tempfile::tempdir().unwrap();
-    let old = temp.path().join("copal-rust");
-    let new = temp.path().join("rua");
-    std::fs::create_dir(&old).unwrap();
-    std::fs::write(old.join("user-file"), "keep").unwrap();
-    let mut resources = ProjectResources::create(std::slice::from_ref(&old), 0).unwrap();
-    resources.directories[0]
-        .extra
-        .insert("future".into(), serde_json::json!(true));
-    std::fs::rename(&old, &new).unwrap();
-    let updated = resources
-        .edited_with_directory_ids(std::slice::from_ref(&new), 0, &[Some("initial".into())])
-        .unwrap();
-    assert_eq!(updated.primary_directory_id, "initial");
-    assert_eq!(updated.directory("initial").unwrap().resource_root, new);
-    assert_eq!(updated.directories[0].extra, resources.directories[0].extra);
-    assert_eq!(updated.revision, 2);
-    assert_eq!(
-        std::fs::read_to_string(new.join("user-file")).unwrap(),
-        "keep"
-    );
-    assert!(!old.exists());
-    assert!(resources
-        .edited_with_directory_ids(&[old], 0, &[Some("initial".into())])
-        .is_err());
-    assert!(resources
-        .edited_with_directory_ids(std::slice::from_ref(&new), 0, &[Some("unknown".into())])
-        .is_err());
-    assert!(resources
-        .edited_with_directory_ids(std::slice::from_ref(&new), 0, &[None, None])
-        .is_err());
-    assert!(resources
-        .edited_with_directory_ids(
-            &[new, temp.path().to_path_buf()],
-            0,
-            &[Some("initial".into()), Some("initial".into())]
-        )
-        .is_err());
-    assert_eq!(resources.revision, 1);
-}
+use rua_project::{
+    ProjectCatalog, ProjectCreateResourcesRequest, ProjectError, ProjectResourceDirectoryInput,
+    ProjectResources,
+};
+use serde_json::json;
 
-#[test]
-fn directory_collection_preserves_individual_roots_and_primary_after_reload() {
-    let temp = tempfile::tempdir().unwrap();
-    let app = temp.path().join("app");
-    let docs = temp.path().join("docs");
-    std::fs::create_dir(&app).unwrap();
-    std::fs::create_dir(&docs).unwrap();
-    let resources = ProjectResources::create(&[app.clone(), docs.clone()], 1).unwrap();
-    assert_eq!(resources.primary().unwrap().resource_root, docs);
-    assert_eq!(resources.directories.len(), 2);
-    assert_eq!(resources.directories[0].resource_root, app);
-    let saved = serde_json::to_vec(&resources).unwrap();
-    let restored: ProjectResources = serde_json::from_slice(&saved).unwrap();
-    assert_eq!(resources, restored);
-    assert_ne!(
-        resources.directories[0].directory_id,
-        resources.directories[1].directory_id
-    );
-    assert!(resources.directory("missing").is_err());
-}
-
-#[test]
-fn duplicate_normalized_directories_and_invalid_primary_are_rejected() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().to_path_buf();
-    assert!(ProjectResources::create(&[root.clone(), root.join(".")], 0).is_err());
-    assert!(ProjectResources::create(&[root], 1).is_err());
-    assert!(ProjectResources::create(&[], 0).is_err());
-}
-
-#[test]
-fn migration_preserves_offline_path_and_directory_identity() {
-    let missing = std::env::temp_dir().join("rua-missing-resource-for-migration");
-    let first = ProjectResources::from_legacy_root(missing.clone());
-    let second = ProjectResources::from_legacy_root(missing.clone());
-    assert_eq!(first.primary_directory_id, second.primary_directory_id);
-    assert_eq!(first.primary().unwrap().resource_root, missing);
-    first.validate().unwrap();
-}
-
-#[test]
-fn resource_collection_preserves_unknown_fields() {
-    let resources = ProjectResources::from_legacy_root(std::env::temp_dir());
-    let mut value = serde_json::to_value(&resources).unwrap();
-    value["future_policy"] = serde_json::json!({"enabled":true});
-    value["directories"][0]["future_label"] = serde_json::json!("docs");
-    let restored: ProjectResources = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(serde_json::to_value(restored).unwrap(), value);
-}
-
-#[test]
-fn multiple_directories_are_committed_and_reloaded_as_one_binding() {
-    let temp = tempfile::tempdir().unwrap();
-    let app = temp.path().join("app");
-    let docs = temp.path().join("docs");
-    std::fs::create_dir(&app).unwrap();
-    std::fs::create_dir(&docs).unwrap();
-    let store_root = temp.path().join("store");
-    let stores = rua_project::ProjectStores::open(&store_root).unwrap();
-    let created = stores
-        .catalog
-        .create_resources(rua_project::ProjectCreateResourcesRequest {
-            resource_device_id: "local".into(),
-            resource_roots: vec![app.clone(), docs.clone()],
-            primary_index: 1,
-            display_name: Some("Product".into()),
-        })
-        .unwrap();
-    let id = created.project.project_id;
-    drop(stores);
-    let stores = rua_project::ProjectStores::open(&store_root).unwrap();
-    let binding = stores.bindings.get(&id).unwrap().unwrap();
-    assert_eq!(binding.primary_root(), docs);
-    assert_eq!(binding.resources.directories.len(), 2);
-    assert_eq!(binding.resources.directories[0].resource_root, app);
-    assert!(serde_json::to_value(binding)
-        .unwrap()
-        .get("resource_root")
-        .is_none());
-}
-
-#[test]
-fn store_migrates_legacy_binding_atomically_even_when_directory_is_missing() {
-    let temp = tempfile::tempdir().unwrap();
-    let repo = temp.path().join("repo");
-    std::fs::create_dir(&repo).unwrap();
-    let root = temp.path().join("data");
-    let stores = rua_project::ProjectStores::open(&root).unwrap();
-    let created = stores
-        .catalog
-        .create_bound(rua_project::ProjectCreateRequest {
-            resource_device_id: "device".into(),
-            resource_root: repo.to_string_lossy().into(),
-            display_name: None,
-        })
-        .unwrap();
-    drop(stores);
-    let record_path = std::fs::read_dir(root.join("records"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let mut record: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
-    record["schema_version"] = serde_json::json!(2);
-    record["binding"]
-        .as_object_mut()
-        .unwrap()
-        .remove("resources");
-    record["binding"]["resource_root"] = serde_json::json!(repo);
-    record["binding"]["future_binding"] = serde_json::json!("keep");
-    record["descriptor"]
-        .as_object_mut()
-        .unwrap()
-        .remove("resources");
-    rua_config::atomic_write(&record_path, &serde_json::to_vec(&record).unwrap()).unwrap();
-    std::fs::remove_dir(&repo).unwrap();
-    let stores = rua_project::ProjectStores::open(&root).unwrap();
-    let id = created.project.project_id;
-    let binding = stores.bindings.get(&id).unwrap().unwrap();
-    assert_eq!(binding.primary_root(), repo);
-    assert_eq!(
-        binding.resources.primary_directory_id,
-        rua_project::INITIAL_PROJECT_DIRECTORY_ID
-    );
-    assert_eq!(binding.extra["future_binding"], "keep");
-    drop(stores);
-    let after: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
-    assert_eq!(after["schema_version"], 3);
-    assert!(after["binding"].get("resource_root").is_none());
-    let stores = rua_project::ProjectStores::open(&root).unwrap();
-    assert_eq!(stores.bindings.get(&id).unwrap().unwrap(), binding);
-}
-
-#[test]
-fn unsupported_future_schema_is_rejected_without_rewriting_it() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("data");
-    std::fs::create_dir_all(root.join("records")).unwrap();
-    let record_path = root.join("records/future.json");
-    let bytes = br#"{"schema_version":99,"future_record":"keep"}"#;
-    rua_config::atomic_write(&record_path, bytes).unwrap();
-    assert!(rua_project::ProjectStores::open(&root).is_err());
-    assert_eq!(std::fs::read(record_path).unwrap(), bytes);
-}
-
-#[test]
-fn admissions_and_resource_transitions_exclude_each_other_until_guard_drops() {
-    let temp = tempfile::tempdir().unwrap();
-    let stores = rua_project::ProjectStores::open(temp.path().join("data")).unwrap();
-    let project = stores
-        .catalog
-        .create_bound(rua_project::ProjectCreateRequest {
-            resource_device_id: "device".into(),
-            resource_root: temp.path().to_string_lossy().into(),
-            display_name: None,
-        })
-        .unwrap()
-        .project;
-    let admission = stores.catalog.begin_admission(&project.project_id).unwrap();
-    assert!(stores
-        .catalog
-        .begin_lifecycle_transition(&project.project_id)
-        .is_err());
-    drop(admission);
-    stores
-        .catalog
-        .begin_lifecycle_transition(&project.project_id)
-        .unwrap();
-    assert!(stores.catalog.begin_admission(&project.project_id).is_err());
-    stores.catalog.end_lifecycle_transition(&project.project_id);
-    assert!(stores.catalog.begin_admission(&project.project_id).is_ok());
-}
-
-#[test]
-fn editing_preserves_ids_and_unknown_fields_and_never_reuses_initial_identity() {
-    let temp = tempfile::tempdir().unwrap();
-    let a = temp.path().join("a");
-    let b = temp.path().join("b");
-    let c = temp.path().join("c");
-    for path in [&a, &b, &c] {
-        std::fs::create_dir(path).unwrap();
+fn input(device: &str, path: impl AsRef<Path>) -> ProjectResourceDirectoryInput {
+    ProjectResourceDirectoryInput {
+        directory_id: None,
+        device_id: device.into(),
+        resource_root: path.as_ref().to_owned(),
+        display_name: None,
+        extra: Default::default(),
     }
-    let mut resources = ProjectResources::create(&[a.clone(), b.clone()], 0).unwrap();
+}
+
+#[test]
+fn device_and_root_are_the_address_and_only_a_rename_keeps_the_id() {
+    let pc = input("pc", "/photos");
+    let phone = input("phone", "/photos");
+    let mut resources = ProjectResources::create(vec![pc.clone(), phone.clone()]).unwrap();
+    let id = resources.directories[1].directory_id.clone();
     resources.directories[1]
         .extra
-        .insert("future".into(), serde_json::json!(true));
-    let updated = resources.edited(&[c.clone(), b.clone()], 1).unwrap();
-    assert_eq!(updated.directories[1], resources.directories[1]);
-    assert_ne!(updated.directories[0].directory_id, "initial");
-    assert_eq!(updated.revision, 2);
+        .insert("unknown".into(), json!(true));
+    resources.extra.insert("collection_field".into(), json!(7));
+    let mut renamed = phone;
+    renamed.directory_id = Some(id.clone());
+    renamed.display_name = Some("Camera".into());
+    let updated = resources.edited(vec![renamed.clone(), pc]).unwrap();
+    assert_eq!(updated.directory(&id).unwrap().extra["unknown"], true);
     assert_eq!(
-        updated.primary_directory_id,
-        resources.directories[1].directory_id
+        updated.directory(&id).unwrap().display_name.as_deref(),
+        Some("Camera")
     );
-    assert!(resources.edited(&[], 0).is_err());
-    assert!(resources.edited(&[a.clone(), a], 0).is_err());
+    assert_eq!(updated.extra, resources.extra);
+    assert_eq!(updated.revision, 2);
+    let mut moved = renamed.clone();
+    moved.resource_root = PathBuf::from("/archive");
+    let replaced = updated.edited(vec![moved]).unwrap();
+    assert!(replaced.directory(&id).is_err());
+    assert_eq!(
+        resources.directory(&id).unwrap().resource_root,
+        Path::new("/photos")
+    );
+    renamed.device_id = "tablet".into();
+    let moved_device = updated.edited(vec![renamed]).unwrap();
+    assert!(moved_device.directory(&id).is_err());
+    assert_eq!(moved_device.directories[0].device_id, "tablet");
 }
 
 #[test]
-fn guarded_commit_preserves_checked_directory_ids_and_releases_failed_edits() {
+fn malformed_ids_duplicate_locations_and_relative_paths_are_rejected_atomically() {
+    let a = input("pc", "/a");
+    assert!(ProjectResources::create(vec![a.clone(), a.clone()]).is_err());
+    for invalid in ["", "relative", "C:relative", r"\relative", r"\\server"] {
+        assert!(ProjectResources::create(vec![input("pc", invalid)]).is_err());
+    }
+    for valid in [
+        "/storage/emulated/0",
+        r"C:\Users\me\Pictures",
+        r"\\nas\photos",
+    ] {
+        assert!(ProjectResources::create(vec![input("device", valid)]).is_ok());
+    }
+    assert!(ProjectResources::create(vec![input("", "/a")]).is_err());
+    let base = ProjectResources::create(vec![a.clone()]).unwrap();
+    let mut b = input("pc", "/b");
+    b.directory_id = Some("unknown".into());
+    assert!(base.edited(vec![b.clone()]).is_err());
+    b.directory_id = Some(base.directories[0].directory_id.clone());
+    let mut c = b.clone();
+    c.resource_root = "/c".into();
+    assert!(base.edited(vec![b, c]).is_err());
+    assert_eq!(base.revision, 1);
+}
+
+#[test]
+fn empty_projects_and_offline_metadata_edits_survive_reopen() {
     let temp = tempfile::tempdir().unwrap();
-    let stores = rua_project::ProjectStores::open(temp.path().join("data")).unwrap();
-    let first = temp.path().join("first");
-    let second = temp.path().join("second");
-    std::fs::create_dir(&first).unwrap();
-    std::fs::create_dir(&second).unwrap();
-    let project = stores
-        .catalog
-        .create_bound(rua_project::ProjectCreateRequest {
-            resource_device_id: "device".into(),
-            resource_root: first.to_string_lossy().into(),
-            display_name: None,
+    let root = temp.path().join("catalog");
+    let catalog = ProjectCatalog::open(&root).unwrap();
+    let project = catalog
+        .create_resources(ProjectCreateResourcesRequest {
+            display_name: Some("Family Photos".into()),
+            directories: vec![],
         })
         .unwrap()
         .project;
     let id = &project.project_id;
-    let binding = stores.bindings.get(id).unwrap().unwrap();
-    let candidate = binding.resources.edited(&[first, second], 1).unwrap();
-    let guard = stores.catalog.begin_resource_edit(id).unwrap();
-    assert!(stores.catalog.begin_admission(id).is_err());
-    guard.commit_resources(1, candidate.clone()).unwrap();
+    assert_eq!(project.resources, ProjectResources::default());
+    let offline = input("phone", "/device-only/dcim");
+    let added = catalog
+        .replace_resources(id, 1, vec![offline.clone()])
+        .unwrap()
+        .project;
+    let mut renamed = offline;
+    renamed.directory_id = Some(added.resources.directories[0].directory_id.clone());
+    renamed.display_name = Some("DCIM".into());
+    let admission = catalog.begin_admission(id).unwrap();
+    let next = catalog
+        .replace_resources(id, 2, vec![renamed])
+        .unwrap()
+        .project;
     assert_eq!(
-        stores.bindings.get(id).unwrap().unwrap().resources,
-        candidate
+        next.resources.directories[0].directory_id,
+        added.resources.directories[0].directory_id
     );
-    drop(stores.catalog.begin_admission(id).unwrap());
-    let stale = stores.catalog.begin_resource_edit(id).unwrap();
-    assert!(stale.commit_resources(1, candidate).is_err());
-    drop(stores.catalog.begin_admission(id).unwrap());
-    drop(stores.catalog.begin_resource_edit(id).unwrap());
-    assert!(stores.catalog.begin_admission(id).is_ok());
-    let reopened = rua_project::ProjectStores::open(temp.path().join("data")).unwrap();
+    let removed = catalog.replace_resources(id, 3, vec![]).unwrap().project;
+    assert!(removed.resources.directories.is_empty());
+    assert_eq!(removed.resources.revision, 4);
+    assert!(matches!(
+        catalog.replace_resources(id, 3, vec![]),
+        Err(ProjectError::ResourceRevisionConflict)
+    ));
+    drop(admission);
+    drop(catalog);
+    let reopened = ProjectCatalog::open(root).unwrap();
+    assert_eq!(reopened.get(id).unwrap(), Some(removed));
+}
+
+#[test]
+fn concurrent_edits_commit_once_and_loser_can_retry() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = Arc::new(ProjectCatalog::open(temp.path()).unwrap());
+    let project = catalog
+        .create_resources(ProjectCreateResourcesRequest {
+            display_name: Some("Snapshots".into()),
+            directories: vec![],
+        })
+        .unwrap()
+        .project;
+    let barrier = Arc::new(Barrier::new(2));
+    let workers = ["a", "b"].map(|device| {
+        let catalog = catalog.clone();
+        let id = project.project_id.clone();
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            catalog.replace_resources(&id, 1, vec![input(device, "/photos")])
+        })
+    });
+    let results = workers.map(|worker| worker.join().unwrap());
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
     assert_eq!(
-        reopened.bindings.get(id).unwrap(),
-        stores.bindings.get(id).unwrap()
+        results
+            .iter()
+            .filter(|r| matches!(r, Err(ProjectError::ResourceRevisionConflict)))
+            .count(),
+        1
     );
+    let saved = catalog.get(&project.project_id).unwrap().unwrap();
+    assert_eq!(saved.resources.directories.len(), 1);
+    catalog
+        .replace_resources(&project.project_id, saved.resources.revision, vec![])
+        .unwrap();
+}
+
+#[test]
+fn legacy_and_future_records_are_left_intact_for_explicit_migration() {
+    for schema in [2, 3, 99] {
+        let temp = tempfile::tempdir().unwrap();
+        let records = temp.path().join("records");
+        std::fs::create_dir(&records).unwrap();
+        let file = records.join("project.json");
+        let bytes =
+            serde_json::to_vec(&json!({"schema_version":schema,"binding":{"future_key":7}}))
+                .unwrap();
+        rua_config::atomic_write(&file, &bytes).unwrap();
+        assert!(ProjectCatalog::open(temp.path()).is_err());
+        assert_eq!(std::fs::read(file).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn a_replica_cannot_redirect_an_existing_association_id() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = ProjectCatalog::open(temp.path()).unwrap();
+    let project = catalog
+        .create_resources(ProjectCreateResourcesRequest {
+            display_name: Some("Family".into()),
+            directories: vec![input("phone", "/Photos")],
+        })
+        .unwrap()
+        .project;
+    let mut changed = project.clone();
+    changed.resources.revision += 1;
+    changed.resources.directories[0].device_id = "desktop".into();
+    assert!(matches!(
+        catalog.apply_descriptor(changed),
+        Err(ProjectError::InvalidResources(_))
+    ));
+    assert_eq!(catalog.get(&project.project_id).unwrap().unwrap(), project);
+}
+
+#[test]
+fn overlap_uses_the_resource_device_and_its_path_component_boundaries() {
+    let temp = tempfile::tempdir().unwrap();
+    let catalog = ProjectCatalog::open(temp.path()).unwrap();
+    let create = |device: &str, path: &str| {
+        catalog
+            .create_resources(ProjectCreateResourcesRequest {
+                display_name: Some("Photo collection".into()),
+                directories: vec![input(device, path)],
+            })
+            .unwrap()
+    };
+    let parent = create("windows", r"C:\Users\photos");
+    let child = create("windows", r"C:\Users\photos\2026");
+    assert_eq!(child.overlap_warnings.len(), 1);
+    assert_eq!(
+        child.overlap_warnings[0].project_id,
+        parent.project.project_id
+    );
+    assert!(create("second-pc", r"C:\Users\photos\2026")
+        .overlap_warnings
+        .is_empty());
+    assert!(create("windows", r"C:\Users\photos-private")
+        .overlap_warnings
+        .is_empty());
 }

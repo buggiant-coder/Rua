@@ -4827,57 +4827,72 @@ async fn project_collaboration_keeps_resource_root_and_rejects_archived_project(
         .await
         .unwrap()
         .unwrap();
-    tools["builtin_tools"]["read"] = json!({"name":"read","enabled":false});
+    tools["builtin_tools"]["read"] = json!({"name":"read","enabled":true});
     test.state
         .agent_tools_cells
         .cell("default")
         .write_value(tools)
         .await
         .unwrap();
-    let template = caller(&test, "project-template").await;
-    let original_scope = ChatStore::resolve(&test.state.rua_root, template.address.clone());
-    let mut header = WorkspaceSessionStore::new(original_scope.root())
-        .load_chat_header(template.address.chat_id().as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    let device = header.extra["authority_placement"]["device_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let app = rua_server::router::build_app(test.state.clone(), None);
+    let device =
+        rua_server::services::device_context::current_sync_device_id(&test.state.sync_device)
+            .unwrap();
     let resource = tempfile::tempdir().unwrap();
-    let project = test
-        .state
-        .project_catalog
-        .create_bound(rua_project::ProjectCreateRequest {
-            resource_device_id: device,
-            resource_root: resource.path().to_string_lossy().into_owned(),
-            display_name: Some("Collaboration fixture".into()),
-        })
-        .unwrap()
-        .project;
-    let binding = test
-        .state
-        .project_bindings
-        .get(&project.project_id)
-        .unwrap()
-        .unwrap();
+    let project = request(
+        &app,
+        Method::POST,
+        "/api/projects",
+        Some(json!({
+            "display_name":"Collaboration fixture",
+            "directories":[{"device_id":device,"resource_root":resource.path()}],
+        })),
+    )
+    .await;
+    assert_eq!(project.status(), StatusCode::CREATED);
+    let project = read_json(project).await["project"].clone();
+    let project_id = project["project_id"].as_str().unwrap();
     let address = ChatAddress::new(uuid::Uuid::new_v4().to_string());
-    header.chat_id = address.chat_id().to_string();
-    header.metadata.chat_id = header.chat_id.clone();
-    header.project_id = Some(project.project_id.to_string());
-    header
-        .extra
-        .insert("selected_agent_id".into(), json!("default"));
-    let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
-    WorkspaceSessionStore::new(scope.root())
-        .save_chat_header(&header)
-        .await
-        .unwrap();
+    let uri = format!("/api/chats/{}", address.chat_id());
+    let submit = request(
+        &app,
+        Method::POST,
+        &format!("{uri}/console/submit"),
+        Some(json!({
+            "agent_id":"default","project_id":project_id,"message":"Create a collaboration source"
+        })),
+    )
+    .await;
+    assert_eq!(submit.status(), StatusCode::OK);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while test
+            .state
+            .conversation_authority
+            .active_turn(&address)
+            .await
+            .is_some()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let source_history = read_json(request(&app, Method::GET, &uri, None).await).await;
+    assert_eq!(source_history["project_id"], project_id);
+    let directory_key = rua_session::EXECUTION_DIRECTORY_KEY;
+    let execution_directory = source_history["meta"][directory_key].clone();
+    let cwd = std::path::PathBuf::from(execution_directory["path"].as_str().unwrap());
+    assert_eq!(execution_directory["device_id"], device);
+    assert_ne!(cwd, resource.path());
     let source = CollaborationCaller {
         address,
-        working_dir: binding.primary_root().to_path_buf().clone(),
-        ..template
+        working_dir: cwd.clone(),
+        turn_id: "source-turn".into(),
+        tool_call_id: "project-collaboration".into(),
+        configuration_epoch: source_history["meta"]["hook_configuration"]["epoch"]
+            .as_str()
+            .unwrap()
+            .into(),
     };
     let child = test
         .state
@@ -4885,19 +4900,19 @@ async fn project_collaboration_keeps_resource_root_and_rejects_archived_project(
         .create(source.clone(), "default".into(), None, 0)
         .await
         .unwrap();
-    assert_eq!(
-        WorkspaceSessionStore::new(scope.root())
-            .load_chat_header(child.chat.chat_id().as_str())
-            .await
-            .unwrap()
-            .unwrap()
-            .project_id
-            .as_deref(),
-        Some(project.project_id.as_str())
-    );
+    let child_uri = format!("/api/chats/{}", child.chat.chat_id());
+    let child_history = read_json(request(&app, Method::GET, &child_uri, None).await).await;
+    assert_eq!(child_history["project_id"], project_id);
+    assert_eq!(child_history["meta"][directory_key], execution_directory);
+
+    rua_config::atomic_write_json(
+        &cwd.join("task-resource.json"),
+        &json!({"scope":"captured Task cwd"}),
+    )
+    .unwrap();
     rua_config::atomic_write_json(
         &resource.path().join("task-resource.json"),
-        &json!({"scope":"project task resource"}),
+        &json!({"scope":"Project resource"}),
     )
     .unwrap();
     let configuration = test
@@ -4918,16 +4933,26 @@ async fn project_collaboration_keeps_resource_root_and_rejects_archived_project(
             .capability_configuration
             .as_ref()
             .unwrap()
-            .extra["project_working_directory_id"],
-        json!(rua_project::INITIAL_PROJECT_DIRECTORY_ID)
+            .extra[directory_key],
+        execution_directory
     );
+    let removed = request(
+        &app,
+        Method::PATCH,
+        &format!("/api/projects/{project_id}/resources"),
+        Some(json!({
+            "expected_revision":project["resources"]["revision"],"directories":[]
+        })),
+    )
+    .await;
+    assert_eq!(removed.status(), StatusCode::OK);
     let task_scope = ChatStore::resolve(&test.state.rua_root, child.chat.clone());
     let task_store = WorkspaceSessionStore::new(task_scope.root());
     task_store
         .update_chat_header(child.chat.chat_id().as_str(), |header| {
             header.extra.insert(
-                "project_working_directory_id".into(),
-                json!("newer-live-directory"),
+                directory_key.into(),
+                json!({"device_id":device,"path":resource.path()}),
             );
         })
         .await
@@ -4954,14 +4979,13 @@ async fn project_collaboration_keeps_resource_root_and_rejects_archived_project(
         .await
         .unwrap();
     assert!(!read.is_error, "{}", read.text_content());
-    assert!(read.text_content().contains("project task resource"));
+    assert!(read.text_content().contains("captured Task cwd"));
 
     task_store
         .update_chat_header(child.chat.chat_id().as_str(), |header| {
-            header.extra.insert(
-                "project_working_directory_id".into(),
-                json!(rua_project::INITIAL_PROJECT_DIRECTORY_ID),
-            );
+            header
+                .extra
+                .insert(directory_key.into(), execution_directory.clone());
         })
         .await
         .unwrap();
@@ -4987,7 +5011,7 @@ async fn project_collaboration_keeps_resource_root_and_rejects_archived_project(
     assert_eq!(result.state, "completed");
     assert_eq!(
         requests.lock().await[0].working_dir.as_deref(),
-        Some(binding.primary_root())
+        Some(cwd.as_path())
     );
     let child_scope = ChatStore::resolve(&test.state.rua_root, child.chat.clone());
     let child_store = WorkspaceSessionStore::new(child_scope.root());
@@ -5001,10 +5025,14 @@ async fn project_collaboration_keeps_resource_root_and_rejects_archived_project(
             .title,
         "inspect project"
     );
-    test.state
-        .project_catalog
-        .set_lifecycle(&project.project_id, rua_project::ProjectLifecycle::Archived)
-        .unwrap();
+    let archive = request(
+        &app,
+        Method::POST,
+        &format!("/api/projects/{project_id}/archive"),
+        Some(json!({"confirmed":true})),
+    )
+    .await;
+    assert_eq!(archive.status(), StatusCode::OK);
     let mut next = source;
     next.tool_call_id = "archived-send".into();
     assert!(test

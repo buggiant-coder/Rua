@@ -34,9 +34,9 @@ async fn enforce_authority_movement_policy(
         .policy(address)
         .await
         .map_err(ChatMetadataStoreError::Session)?;
-    if policy.authority_placement == rua_chat::AuthorityPlacementPolicy::ResourceBound {
+    if policy.authority_placement == rua_chat::AuthorityPlacementPolicy::Fixed {
         return Err(ChatMetadataStoreError::Conflict(
-            "Chat authority is fixed by its Resource-bound Authority Policy".to_string(),
+            "Chat authority is fixed on its execution Device".to_string(),
         ));
     }
     Ok(())
@@ -220,6 +220,8 @@ pub struct ConversationAllowedControls {
 }
 
 pub struct ConversationAuthority {
+    project_resources:
+        std::sync::OnceLock<(Arc<rua_project::ProjectCatalog>, rua_core::WorkspaceRoot)>,
     background_work: std::sync::OnceLock<Arc<crate::services::background_work::BackgroundWork>>,
     active_turns: RwLock<HashMap<ChatAddress, ConversationActiveTurn>>,
     placement_projections: RwLock<HashMap<ChatAddress, ConversationAuthorityPlacementProjection>>,
@@ -352,30 +354,13 @@ impl ConversationAuthority {
         {
             return Ok(placement);
         }
-        let local_device_id =
+        let target_device_id =
             crate::services::device_context::current_sync_device_id(&state.sync_device)
                 .ok_or_else(|| {
                     ChatMetadataStoreError::Internal(
                         "local Device identity is unavailable".to_string(),
                     )
                 })?;
-        let header = rua_session::WorkspaceSessionStore::new(scope_root.root())
-            .load_chat_header(address.chat_id().as_str())
-            .await
-            .map_err(|error| ChatMetadataStoreError::Internal(error.to_string()))?;
-        let target_device_id = match header.and_then(|header| header.project_id) {
-            None => local_device_id,
-            Some(id) => {
-                state
-                    .project_catalog
-                    .get(&rua_core::ProjectId::new(&id))
-                    .map_err(|error| ChatMetadataStoreError::Internal(error.to_string()))?
-                    .ok_or_else(|| {
-                        ChatMetadataStoreError::Internal(format!("Project '{id}' not found"))
-                    })?
-                    .resource_device_id
-            }
-        };
         let placement = ConversationAuthorityPlacement {
             device_id: target_device_id.clone(),
             authority_epoch: ConversationAuthorityEpoch::next_for_device(&target_device_id, None),
@@ -391,6 +376,78 @@ impl ConversationAuthority {
         )
         .await?;
         Ok(placement)
+    }
+
+    pub(crate) fn bind_project_resources(
+        &self,
+        catalog: Arc<rua_project::ProjectCatalog>,
+        workspace: rua_core::WorkspaceRoot,
+    ) {
+        let _ = self.project_resources.set((catalog, workspace));
+    }
+
+    async fn capture_turn_resources(
+        &self,
+        address: &ChatAddress,
+        pending: &mut ConversationInputPayload,
+    ) -> Result<(), String> {
+        let Some((catalog, workspace)) = self.project_resources.get() else {
+            return Ok(());
+        };
+        let key = rua_session::TURN_PROJECT_RESOURCES_KEY;
+        let id = address.chat_id().as_str();
+        let store = rua_session::WorkspaceSessionStore::new(workspace.as_path());
+        let regenerate = regenerate_turn_id(pending);
+        let turn_id = regenerate.as_deref().or_else(|| {
+            pending
+                .extra
+                .get("turn_id")
+                .and_then(serde_json::Value::as_str)
+        });
+        if let Some(turn_id) = turn_id {
+            match store
+                .read_turn(id, turn_id)
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                Some(record) => {
+                    if let Some(snapshot) = record.metadata.get(key) {
+                        pending.extra.insert(key.into(), snapshot.clone());
+                    }
+                    return Ok(());
+                }
+                None if regenerate.is_some() => return Err(format!("Turn not found: {turn_id}")),
+                None => {}
+            }
+        }
+        let snapshot = {
+            let header = store
+                .load_stored_chat_header(id)
+                .await
+                .map_err(|e| e.to_string())?;
+            let project = match header {
+                Some(header) => header.project_id,
+                None => pending
+                    .extra
+                    .get("project_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            };
+            match project {
+                Some(project_id) => {
+                    let project = catalog
+                        .get(&rua_core::ProjectId::new(&project_id))
+                        .map_err(|e| e.to_string())?
+                        .ok_or_else(|| format!("Project not found: {project_id}"))?;
+                    Some(serde_json::to_value(project.resources).map_err(|e| e.to_string())?)
+                }
+                None => None,
+            }
+        };
+        if let Some(snapshot) = snapshot {
+            pending.extra.insert(key.into(), snapshot);
+        }
+        Ok(())
     }
 
     pub fn new() -> Self {
@@ -424,6 +481,7 @@ impl ConversationAuthority {
         Self {
             active_turns: RwLock::new(HashMap::new()),
             background_work: std::sync::OnceLock::new(),
+            project_resources: std::sync::OnceLock::new(),
             placement_projections: RwLock::new(HashMap::new()),
             queue: RwLock::new(HashMap::new()),
             accepted_submissions: RwLock::new(HashMap::new()),
@@ -1135,7 +1193,7 @@ impl ConversationAuthority {
             return Err("stale conversation authority Epoch".to_string());
         }
         let active_turn = self.active_turns.read().await.get(&key).cloned();
-        let (head, regenerate_turn_id, submit_device_id) = {
+        let (head, mut pending, submit_device_id) = {
             let mut queues = self.queue.write().await;
             let queue = queues
                 .get_mut(&key)
@@ -1158,11 +1216,14 @@ impl ConversationAuthority {
                 .ok_or_else(|| "queued input is missing".to_string())?;
             (
                 entry.snapshot.clone(),
-                regenerate_turn_id(&entry.pending),
+                entry.pending.clone(),
                 entry.snapshot.submit_device_id.clone(),
             )
         };
 
+        if active_turn.is_none() {
+            self.capture_turn_resources(address, &mut pending).await?;
+        }
         self.processed_control_commands
             .write()
             .await
@@ -1191,13 +1252,14 @@ impl ConversationAuthority {
             ))
             .await;
         let active_turn = self
-            .start_active_turn_with_id_locked(start, regenerate_turn_id, submit_device_id)
+            .start_active_turn_for_input_locked(start, &mut pending, submit_device_id)
             .await;
         let mut queues = self.queue.write().await;
         let queued = queues
             .get_mut(&key)
             .and_then(|queue| queue.front_mut())
             .ok_or_else(|| "queued input is missing".to_string())?;
+        queued.pending = pending;
         queued.pending.extra.insert(
             "turn_id".to_string(),
             serde_json::json!(active_turn.turn_id.clone()),
@@ -1322,6 +1384,15 @@ impl ConversationAuthority {
             None
         };
         if let Some(next) = next_input.as_mut() {
+            if let Err(error) = self
+                .capture_turn_resources(address, &mut next.pending)
+                .await
+            {
+                next.pending.extra.insert(
+                    "project_resource_capture_error".into(),
+                    serde_json::json!(error),
+                );
+            }
             let placement = self
                 .placement_projection(address)
                 .await
@@ -1570,6 +1641,10 @@ impl ConversationAuthority {
             stream_key.address, address,
             "Conversation submission Stream Key must match Active Turn address"
         );
+        pending
+            .extra
+            .remove(rua_session::TURN_PROJECT_RESOURCES_KEY);
+        pending.extra.remove("project_resource_capture_error");
         let submission_id = ensure_submission_id(&mut pending);
         // Intake prepares an execution context before acquiring admission. A switch
         // that won the gate invalidates that context, including its Agent runtime.
@@ -1716,6 +1791,7 @@ impl ConversationAuthority {
             ACCEPTANCE_MODE_KEY.to_string(),
             serde_json::json!(ConversationInputAcceptanceMode::Started),
         );
+        self.capture_turn_resources(&address, &mut pending).await?;
         if let Some(persist) = persist {
             let persistence_context = FirstConversationSubmissionPersistenceContext {
                 turn_id: pending
@@ -1785,6 +1861,15 @@ impl ConversationAuthority {
             if !draining || next.pending.extra.contains_key("turn_id") {
                 self.set_queued_count_from_queue(address).await;
                 if !next.pending.extra.contains_key("turn_id") {
+                    if let Err(error) = self
+                        .capture_turn_resources(address, &mut next.pending)
+                        .await
+                    {
+                        next.pending.extra.insert(
+                            "project_resource_capture_error".into(),
+                            serde_json::json!(error),
+                        );
+                    }
                     let current = self.active_turn(address).await?;
                     let placement = self
                         .placement_projection(address)
@@ -2610,12 +2695,12 @@ impl ConversationAuthority {
         let acp_binding = meta.get(CHAT_ACP_BINDING_META_KEY).cloned();
         let acp_active = chat_acp_binding_active(meta);
         let active_turn_present = active_turn.is_some();
-        let authority_resource_bound = rua_chat::ChatPolicy::from_metadata(
+        let authority_fixed = rua_chat::ChatPolicy::from_metadata(
             meta.get("project_id").and_then(serde_json::Value::as_str),
             meta,
         )
         .authority_placement
-            == rua_chat::AuthorityPlacementPolicy::ResourceBound;
+            == rua_chat::AuthorityPlacementPolicy::Fixed;
         let authority_device_id = placement_projection
             .as_ref()
             .map(|placement| placement.device_id.clone());
@@ -2627,7 +2712,7 @@ impl ConversationAuthority {
             authority_epoch,
             active_turn_present,
             acp_active,
-            authority_resource_bound,
+            authority_fixed,
         );
 
         let background_work = self.background_work_view(address).await;
@@ -2656,7 +2741,7 @@ impl ConversationAuthority {
                 interject: active_turn_present,
                 edit_queued_input: false,
                 delete_queued_input: false,
-                switch_authority: !authority_resource_bound && !active_turn_present && !acp_active,
+                switch_authority: !authority_fixed && !active_turn_present && !acp_active,
                 enter_acp: !active_turn_present && !acp_active,
                 exit_acp: acp_active,
             },
@@ -2826,7 +2911,7 @@ fn conversation_authority_placement_view(
     authority_epoch: Option<ConversationAuthorityEpoch>,
     active_turn_present: bool,
     acp_active: bool,
-    resource_bound: bool,
+    authority_fixed: bool,
 ) -> ConversationAuthorityPlacementView {
     let lock_reason = if acp_active {
         Some(ConversationAuthorityPlacementLockReason::AcpPassthrough)
@@ -2838,7 +2923,7 @@ fn conversation_authority_placement_view(
     ConversationAuthorityPlacementView {
         authority_device_id,
         authority_epoch,
-        switchable: !resource_bound && lock_reason.is_none(),
+        switchable: !authority_fixed && lock_reason.is_none(),
         lock_reason,
     }
 }

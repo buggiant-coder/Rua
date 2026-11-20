@@ -25,7 +25,7 @@ use crate::services::device_session_access::current_session_manager;
 
 const DEVICE_COMMAND_DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const PROJECT_AUTHORITY_FIXED_DETAIL: &str =
-    "Project Chat authority is fixed to its resource Device";
+    "Chat authority is fixed on its execution Device";
 
 /// Device-to-device delivery for controls whose authority lives elsewhere.
 #[async_trait]

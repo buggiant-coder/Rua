@@ -188,7 +188,6 @@ pub struct AppState {
 
     pub project_catalog: Arc<rua_project::ProjectCatalog>,
 
-    pub project_bindings: Arc<rua_project::ProjectResourceBindingStore>,
     pub skill_service: Arc<FileSkillService>,
     pub local_model: Arc<rua_local_model::LocalModelManager>,
     pub plugins: Arc<rua_plugin::PluginManager>,
@@ -497,10 +496,14 @@ impl AppState {
                 ),
             ));
         let cell_store = Arc::new(cell_store::FileSystemCellStore::new());
-        let project_stores = rua_project::ProjectStores::open(data_dir.join("projects"))
-            .expect("Project stores open must succeed");
-        let project_catalog = project_stores.catalog;
-        let project_bindings = project_stores.bindings;
+        let project_catalog = Arc::new(
+            rua_project::ProjectCatalog::open(data_dir.join("projects"))
+                .expect("Project catalog open must succeed"),
+        );
+        conversation_authority.bind_project_resources(
+            Arc::clone(&project_catalog),
+            rua_core::RuaRoot::new(&data_dir).chat_workspace(),
+        );
         let provider_cells = Arc::new(rua_provider::ProviderCells::with_key(
             Arc::clone(&cell_store),
             Arc::clone(&provider_manager),
@@ -1175,7 +1178,6 @@ impl AppState {
             .with_provider_manager(Arc::clone(&provider_manager))
             .with_conversation_authority(Arc::clone(&conversation_authority))
             .with_acp_chat_registry(Arc::clone(&acp_chat_registry))
-            .with_project_bindings(Arc::clone(&project_bindings))
             .with_tool_config_context(
                 Arc::clone(&agent_tools_cells),
                 device_key_bytes,
@@ -1210,7 +1212,7 @@ impl AppState {
             .with_collaboration_binding(Arc::clone(&collaboration_binding))
             .with_product_hooks(Arc::clone(&product_hooks))
             .with_candidate_completion_runtime(candidate_completion_runtime)
-            .with_project_runtime(Arc::clone(&project_catalog), Arc::clone(&project_bindings))
+            .with_project_runtime(Arc::clone(&project_catalog))
             .with_security(Arc::clone(&security_module))
             .with_approval_authority(Arc::clone(security_module.approval_authority()))
             .with_acp_permission_relay(Arc::clone(&acp_permission_relay))
@@ -1273,38 +1275,7 @@ impl AppState {
                         &sync_transfer_session_manager_cell,
                     ))
                     .with_chat_media_transfers(Arc::clone(&chat_media_transfers))
-                    .with_project_resource_editor(
-                        crate::services::project_lifecycle::ProjectResourceEditor::new(
-                            data_dir.clone(),
-                            Arc::clone(&project_catalog),
-                            Arc::clone(&project_bindings),
-                            Arc::clone(&conversation_authority),
-                            Arc::clone(security_module.approval_authority()),
-                            Arc::clone(&task_runtime),
-                            crate::sync_publication::SyncPublicationRuntime::new(
-                                sync_dir.clone(),
-                                Arc::clone(&sync_enabled),
-                                Arc::clone(&sync_node_cell),
-                                Arc::clone(&sync_ns_cell),
-                                Arc::clone(&sync_device_cell),
-                                Some(Arc::clone(&sync_hlc_clock)),
-                                Arc::clone(&sync_trigger),
-                            ),
-                        ),
-                    )
-                    .with_project_runtime(
-                        Arc::clone(&project_catalog),
-                        Arc::clone(&project_bindings),
-                        crate::sync_publication::SyncPublicationRuntime::new(
-                            sync_dir.clone(),
-                            Arc::clone(&sync_enabled),
-                            Arc::clone(&sync_node_cell),
-                            Arc::clone(&sync_ns_cell),
-                            Arc::clone(&sync_device_cell),
-                            Some(Arc::clone(&sync_hlc_clock)),
-                            Arc::clone(&sync_trigger),
-                        ),
-                    )
+                    .with_project_runtime(Arc::clone(&project_catalog))
                     .with_task_runtime(Arc::clone(&task_runtime))
                     .with_user_notifications(Arc::clone(&user_notifications))
                     .with_foreground_operations(Arc::clone(&foreground_operations)),
@@ -1723,7 +1694,7 @@ impl AppState {
             tool_catalog,
             tool_config_store,
             project_catalog: Arc::clone(&project_catalog),
-            project_bindings: Arc::clone(&project_bindings),
+
             chat_service,
             llm_debug_captures: Arc::new(
                 crate::services::llm_debug_capture::LlmDebugCaptureRegistry::new(&data_dir),
@@ -2160,7 +2131,7 @@ impl AppState {
                 .with_product_hooks(Arc::clone(&self.product_hooks))
                 .with_project_runtime(
                     Arc::clone(&self.project_catalog),
-                    Arc::clone(&self.project_bindings),
+
                 )
                 .with_security(Arc::clone(&self.security))
                 .with_approval_authority(Arc::clone(self.security.approval_authority()))
@@ -2174,14 +2145,7 @@ impl AppState {
                 &self.sync_transfer_session_manager,
             ))
             .with_chat_media_transfers(Arc::clone(&self.chat_media_transfers))
-            .with_project_resource_editor(
-                crate::services::project_lifecycle::ProjectResourceEditor::from_app_state(self),
-            )
-            .with_project_runtime(
-                Arc::clone(&self.project_catalog),
-                Arc::clone(&self.project_bindings),
-                crate::sync_publication::SyncPublicationRuntime::from_app_state(self),
-            )
+            .with_project_runtime(Arc::clone(&self.project_catalog))
             .with_task_runtime(Arc::clone(&self.task_runtime))
             .with_user_notifications(Arc::clone(&self.user_notifications))
             .with_foreground_operations(Arc::clone(&self.foreground_operations)),

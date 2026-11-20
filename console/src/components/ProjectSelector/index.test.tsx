@@ -17,8 +17,7 @@ vi.mock("react-i18next", () => ({
 const project = {
   project_id: "project-a",
   display_name: "Project A",
-  resource_device_id: "device-a",
-  display_path: "/projects/a",
+  resources: { revision: 1, directories: [] },
   lifecycle: "active" as const,
   created_at: "2026-08-24T00:00:00Z",
   updated_at: "2026-08-24T00:00:00Z",
@@ -27,7 +26,16 @@ const secondProject = {
   ...project,
   project_id: "project-b",
   display_name: "Project B",
-  display_path: "/projects/b",
+  resources: {
+    revision: 1,
+    directories: [
+      {
+        directory_id: "b",
+        device_id: "device-b",
+        resource_root: "/projects/b",
+      },
+    ],
+  },
 };
 
 describe("ProjectSelector", () => {
@@ -57,9 +65,7 @@ describe("ProjectSelector", () => {
     ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Project B/ }));
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith(secondProject));
-    expect(localStorage.getItem("rua_project_last_project")).toBe(
-      "project-b",
-    );
+    expect(localStorage.getItem("rua_project_last_project")).toBe("project-b");
   });
 
   it("shows independent chats as the current scope and selects an active project", async () => {
@@ -102,8 +108,6 @@ describe("ProjectSelector", () => {
     fireEvent.click(screen.getByRole("button", { name: "Independent chats" }));
     await waitFor(() => expect(onSelectIndependent).toHaveBeenCalledOnce());
     expect(onSelect).not.toHaveBeenCalled();
-    expect(localStorage.getItem("rua_project_last_project")).toBe(
-      "project-a",
-    );
+    expect(localStorage.getItem("rua_project_last_project")).toBe("project-a");
   });
 });

@@ -163,7 +163,7 @@ async fn draft_live_viewer_waits_for_materialization_without_authority_error() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn project_draft_live_viewer_waits_on_its_resource_device() {
+async fn project_draft_live_viewer_waits_on_the_connected_device() {
     let tmp = TempDir::new().expect("tempdir");
     let state = AppState::from_tempdir(tmp.path().to_path_buf(), ServerProfile::Test);
     let local_device_id = current_sync_device_id(&state.sync_device).expect("test Device identity");
@@ -174,10 +174,14 @@ async fn project_draft_live_viewer_waits_on_its_resource_device() {
         .apply_descriptor(rua_project::ProjectDescriptor {
             project_id: project_id.clone(),
             display_name: "Draft Project".to_string(),
-            resource_device_id: local_device_id.clone(),
-            display_path: "/local/draft".to_string(),
             lifecycle: rua_project::ProjectLifecycle::Active,
-            resources: None,
+            resources: rua_project::ProjectResources::create(vec![
+                rua_project::ProjectResourceDirectoryInput::new(
+                    local_device_id.clone(),
+                    "/local/draft",
+                ),
+            ])
+            .unwrap(),
             created_at: now,
             updated_at: now,
             extra: BTreeMap::new(),
@@ -219,10 +223,14 @@ async fn unavailable_project_live_does_not_fallback_or_persist_retry_intent() {
         .apply_descriptor(rua_project::ProjectDescriptor {
             project_id: project_id.clone(),
             display_name: "Unavailable Project".to_string(),
-            resource_device_id: "0102030405060708".to_string(),
-            display_path: "/remote/unavailable".to_string(),
             lifecycle: rua_project::ProjectLifecycle::Active,
-            resources: None,
+            resources: rua_project::ProjectResources::create(vec![
+                rua_project::ProjectResourceDirectoryInput::new(
+                    "0102030405060708",
+                    "/remote/unavailable",
+                ),
+            ])
+            .unwrap(),
             created_at: now,
             updated_at: now,
             extra: BTreeMap::new(),

@@ -97,10 +97,7 @@ async fn project_chat_draft_materializes_scoped_metadata_without_a_turn() {
         "selectable"
     );
     assert_eq!(header.extra["chat_policy"]["resource"], "project_binding");
-    assert_eq!(
-        header.extra["chat_policy"]["authority_placement"],
-        "resource_bound"
-    );
+    assert_eq!(header.extra["chat_policy"]["authority_placement"], "fixed");
     assert_eq!(
         header.extra["authority_placement"]["device_id"],
         "resource-device"
@@ -1354,44 +1351,285 @@ async fn concurrent_project_chats_keep_turn_queue_and_approval_state_isolated() 
     authority.finish_active_turn(&second).await;
 }
 
-#[test]
-fn persisted_project_directory_survives_primary_change_and_missing_default() {
+/// Exposes the actual constructed Agent request at the model boundary and lets
+/// the test choose exactly when the Turn ends.
+struct ProjectTurnRuntime(
+    tokio::sync::mpsc::UnboundedSender<(
+        rua_contract::agent::AgentRequest,
+        tokio::sync::oneshot::Sender<()>,
+    )>,
+);
+
+#[async_trait::async_trait]
+impl rua_contract::AgentRuntime for ProjectTurnRuntime {
+    async fn stream(
+        &self,
+        req: rua_contract::agent::AgentRequest,
+    ) -> rua_core::Result<
+        std::pin::Pin<
+            Box<dyn futures::Stream<Item = rua_core::Result<rua_core::RuntimeEvent>> + Send>,
+        >,
+    > {
+        let (release, held) = tokio::sync::oneshot::channel();
+        self.0.send((req, release)).unwrap();
+        Ok(Box::pin(futures::stream::once(async move {
+            let _ = held.await;
+            Ok(rua_core::RuntimeEvent::End {
+                finish_reason: Some("stop".into()),
+            })
+        })))
+    }
+    async fn cancel(&self, _: &rua_core::id::SessionId) -> rua_core::Result<()> {
+        Ok(())
+    }
+    async fn warmup(&self, _: rua_contract::agent::RuntimeWarmupContext) -> rua_core::Result<()> {
+        Ok(())
+    }
+    async fn shutdown(&self) -> rua_core::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_turns_capture_resources_at_claim_and_keep_their_execution_directory() {
+    use rua_project::{ProjectCreateResourcesRequest, ProjectResourceDirectoryInput};
+    use rua_server::services::conversation_input_intake::ConversationInputDeliveryOutcome;
     let temp = tempfile::tempdir().unwrap();
-    let old = temp.path().join("old");
-    let new = temp.path().join("new");
-    std::fs::create_dir(&old).unwrap();
-    std::fs::create_dir(&new).unwrap();
-    let resources = rua_project::ProjectResources::create(&[old.clone(), new.clone()], 1).unwrap();
-    let binding = rua_project::ProjectResourceBinding {
-        project_id: "project-a".into(),
-        resource_device_id: "device".into(),
-        resources,
-        created_at: chrono::Utc::now(),
+    let state = rua_server::AppState::from_tempdir(
+        temp.path().join("data"),
+        rua_server::ServerProfile::Test,
+    );
+    state.wait_platform_initialization().await.unwrap();
+    let runtime = state.registry.get_or_create("default").await.unwrap();
+    let (sender, mut observations) = tokio::sync::mpsc::unbounded_channel();
+    runtime
+        .set_react_runtime(std::sync::Arc::new(ProjectTurnRuntime(sender)))
+        .await;
+    let device =
+        rua_server::services::device_context::current_sync_device_id(&state.sync_device).unwrap();
+    let root = temp.path().join("photos-not-mounted-here");
+    let directory = |device_id: &str| ProjectResourceDirectoryInput {
+        directory_id: None,
+        device_id: device_id.into(),
+        resource_root: root.clone(),
+        display_name: None,
         extra: Default::default(),
     };
-    let header = rua_session::ChatSessionHeader::new(rua_session::ChatMetadata {
-        chat_id: "chat".into(),
-        agent_id: "default".into(),
-        title: "Chat".into(),
-        created_at: chrono::Utc::now().to_rfc3339(),
-        last_activity_at: chrono::Utc::now().to_rfc3339(),
-        pinned: false,
-        archived: false,
-        preview: None,
-    });
-    assert_eq!(
-        rua_server::services::project_chat::working_directory(&binding, Some(&header), None)
-            .unwrap(),
-        old
-    );
-    assert_eq!(
-        rua_server::services::project_chat::working_directory(&binding, None, None).unwrap(),
-        new
-    );
-    std::fs::remove_dir(&new).unwrap();
+    let project = state
+        .project_catalog
+        .create_resources(ProjectCreateResourcesRequest {
+            directories: vec![directory("phone-a"), directory("laptop-b")],
+            display_name: Some("Photos".into()),
+        })
+        .unwrap()
+        .project;
+    let id = uuid::Uuid::new_v4().to_string();
+    let submit = |message: &str| rua_channel::core::console::ConsoleChatRequest {
+        message: message.into(),
+        chat_id: Some(id.clone()),
+        model: None,
+        is_reconnect: false,
+        attachments: vec![],
+        input: None,
+        messages: None,
+        extra: Default::default(),
+        channel_kind: None,
+    };
+    let intake = &state.conversation_input_intake;
+    let first = intake
+        .submit_project_delivery(&project.project_id, "default", submit("first"))
+        .await;
     assert!(
-        rua_server::services::project_chat::working_directory(&binding, Some(&header), None)
-            .is_ok()
+        matches!(
+            first,
+            ConversationInputDeliveryOutcome::Delivered { accepted: true, .. }
+        ),
+        "{first:?}"
     );
-    assert!(rua_server::services::project_chat::working_directory(&binding, None, None).is_err());
+    let (first, release) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), observations.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    let key = rua_session::TURN_PROJECT_RESOURCES_KEY;
+    assert_eq!(first.metadata[key], serde_json::json!(project.resources));
+    let prompt = first.metadata[rua_agent::hooks::PROJECT_INSTRUCTIONS_METADATA_KEY]
+        .as_str()
+        .unwrap();
+    for value in ["phone-a", "laptop-b", root.to_str().unwrap()] {
+        assert!(prompt.contains(value), "{prompt}");
+    }
+    assert!(!first.metadata.contains_key("project_resource_roots"));
+    let queued = intake
+        .submit_project_delivery(&project.project_id, "default", submit("queued before edit"))
+        .await;
+    assert!(
+        matches!(
+            queued,
+            ConversationInputDeliveryOutcome::Delivered {
+                queued_to_active_authority: true,
+                ..
+            }
+        ),
+        "{queued:?}"
+    );
+    let store = WorkspaceSessionStore::new(state.chat_workspace().as_path());
+    let first_turn = store.read_turn_range(&id, 1, 1).await.unwrap().remove(0);
+    let execution_dir = first.working_dir.as_ref().unwrap();
+    let filename = "task-fixture.txt";
+    std::fs::write(
+        execution_dir.join(filename),
+        "retained Task working directory",
+    )
+    .unwrap();
+    let owner = rua_task::TaskOwner::from_address(ChatAddress::new(id.as_str()));
+    let configuration = state
+        .product_hooks
+        .chat_configuration(&owner.chat_address)
+        .await
+        .unwrap();
+    let (release_task, waiting) = tokio::sync::oneshot::channel::<()>();
+    let dependency = state
+        .task_runtime
+        .adopt_running(
+            uuid::Uuid::new_v4().to_string(),
+            rua_task::TaskSpec {
+                owner: owner.clone(),
+                instruction: "Hold the read until after the resource edit".into(),
+                runner: rua_task::TaskRunnerSpec::Tool {
+                    tool_name: "fixture".into(),
+                    arguments: serde_json::json!({}),
+                },
+                origin: Default::default(),
+                depends_on: vec![],
+                context_refs: vec![],
+            },
+            rua_task::TaskAttemptAuthorization::new("default")
+                .unwrap()
+                .with_configuration_epoch(configuration.epoch.clone()),
+            rua_task::TaskAdoptedExecution::new(
+                async {
+                    let _ = waiting.await;
+                    rua_task::TaskRunOutput::completed("ready")
+                },
+                Default::default(),
+            ),
+        )
+        .await
+        .unwrap();
+    let task_context = rua_core::tool::ToolContext {
+        agent_id: "default".into(),
+        session_id: id.clone(),
+        working_dir: execution_dir.clone(),
+        metadata: std::collections::HashMap::from([
+            ("turn_id".into(), serde_json::json!(first_turn.turn_id)),
+            ("tool_use_id".into(), serde_json::json!("original-read")),
+            (
+                "chat_configuration_epoch".into(),
+                serde_json::json!(configuration.epoch),
+            ),
+        ]),
+        task_runtime: Some(std::sync::Arc::new(
+            rua_tool::extended::task_tools::TaskRuntimeHandle::new(state.task_runtime.clone()),
+        )),
+        ..Default::default()
+    };
+    let created = rua_contract::Tool::call(&rua_tool::extended::task_tools::TaskCreateTool, serde_json::json!({
+        "depends_on":[dependency], "runner":{"type":"tool","tool_name":"read","arguments":{"file_path":filename}}
+    }),task_context).await.unwrap();
+    let created: serde_json::Value = serde_json::from_str(&created.text_content()).unwrap();
+    let task_id = created["task_id"].as_str().unwrap();
+    let updated = state
+        .project_catalog
+        .replace_resources(&project.project_id, project.resources.revision, vec![])
+        .unwrap()
+        .project;
+    assert_eq!(
+        first_turn.metadata[key],
+        serde_json::json!(project.resources)
+    );
+    release.send(()).unwrap();
+    let (second, release) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), observations.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(second.metadata[key], serde_json::json!(updated.resources));
+    let prompt = second.metadata[rua_agent::hooks::PROJECT_INSTRUCTIONS_METADATA_KEY]
+        .as_str()
+        .unwrap();
+    assert!(!prompt.contains("phone-a"));
+    assert_eq!(first.working_dir, second.working_dir);
+    let header = store.load_chat_header(&id).await.unwrap().unwrap();
+    assert_eq!(
+        header.extra[rua_session::EXECUTION_DIRECTORY_KEY],
+        serde_json::json!({"device_id":device,"path":first.working_dir})
+    );
+    let turns = store.read_turn_range(&id, 1, 2).await.unwrap();
+    assert_eq!(turns[0].metadata[key], serde_json::json!(project.resources));
+    assert_eq!(turns[1].metadata[key], serde_json::json!(updated.resources));
+    assert!(!root.exists());
+    let mut retry = submit("regenerate the original Turn");
+    retry.extra.insert(
+        rua_server::services::conversation_authority::REGENERATE_TURN_ID_KEY.into(),
+        serde_json::json!(first_turn.turn_id),
+    );
+    let retry = intake
+        .submit_project_delivery(&project.project_id, "default", retry)
+        .await;
+    assert!(
+        matches!(
+            retry,
+            ConversationInputDeliveryOutcome::Delivered {
+                queued_to_active_authority: true,
+                ..
+            }
+        ),
+        "{retry:?}"
+    );
+    release.send(()).unwrap();
+    let (regenerated, release) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), observations.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        regenerated.metadata[key],
+        serde_json::json!(project.resources)
+    );
+    assert_eq!(regenerated.working_dir, first.working_dir);
+    store
+        .set_collaboration_wake_suppressed(&id, true)
+        .await
+        .unwrap();
+    release_task.send(()).unwrap();
+    let task = state
+        .task_runtime
+        .await_terminal(&owner, task_id, std::time::Duration::from_secs(12))
+        .await
+        .unwrap();
+    assert_eq!(
+        task.state,
+        rua_task::TaskState::Completed,
+        "{:?}",
+        task.result
+    );
+    assert!(task
+        .result
+        .as_ref()
+        .unwrap()
+        .output
+        .contains("retained Task working directory"));
+    let origin = task.spec.origin.turn_id.as_ref().unwrap();
+    assert_eq!(origin, &first_turn.turn_id);
+    assert_eq!(
+        store
+            .read_turn(&id, origin)
+            .await
+            .unwrap()
+            .unwrap()
+            .metadata[key],
+        serde_json::json!(project.resources)
+    );
+    release.send(()).unwrap();
 }

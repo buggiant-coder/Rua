@@ -19,8 +19,7 @@ async fn create_project(test: &TestApp, name: &str) -> String {
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id(&test.state),
-            "resource_root": root,
+            "directories": [{"device_id": local_device_id(&test.state), "resource_root": root}],
             "display_name": name,
         })),
     )

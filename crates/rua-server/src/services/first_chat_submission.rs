@@ -325,6 +325,7 @@ pub(crate) async fn append_accepted_submission(
             acp_origin_runner: None,
             memory_signal: None,
             turn_agent_assignment: Some(&assignment_metadata),
+            project_resources: input.extra.get(rua_session::TURN_PROJECT_RESOURCES_KEY),
             turn_model: input.extra.get(rua_chat::TURN_MODEL_KEY),
             turn_thinking: input.extra.get(rua_chat::TURN_THINKING_KEY),
             collaboration_mode,

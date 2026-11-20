@@ -31,7 +31,7 @@ async fn conflicting_project_writes_preserve_saved_membership_and_history() {
             Method::POST,
             "/api/projects",
             Some(json!({
-                "resource_device_id":local_device_id(&test.state), "resource_root":root
+                "directories": [{"device_id": local_device_id(&test.state), "resource_root": root}]
             })),
         )
         .await;
@@ -100,13 +100,13 @@ async fn conflicting_project_writes_preserve_saved_membership_and_history() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn first_project_input_starts_acp_with_resource_cwd() {
+async fn first_project_input_starts_acp_in_the_chat_execution_directory() {
     let test = build_app();
     test.state.wait_platform_initialization().await.unwrap();
     let resource = test._temp.path().join("first-acp-resource");
     std::fs::create_dir_all(&resource).unwrap();
     let project = request(&test.app, Method::POST, "/api/projects", Some(json!({
-        "resource_device_id": local_device_id(&test.state), "resource_root": resource, "display_name": "ACP resource"
+        "directories": [{"device_id": local_device_id(&test.state), "resource_root": resource}], "display_name": "ACP resource"
     }))).await;
     assert_eq!(project.status(), StatusCode::CREATED);
     let project_id = response_json(project).await["project"]["project_id"]
@@ -159,8 +159,9 @@ async fn first_project_input_starts_acp_with_resource_cwd() {
     );
     assert_eq!(
         header.extra["acp_binding"]["cwd"],
-        resource.to_string_lossy().as_ref()
+        header.extra[rua_session::EXECUTION_DIRECTORY_KEY]["path"]
     );
+    assert_ne!(header.extra["acp_binding"]["cwd"], json!(resource));
     let exited = request(
         &test.app,
         Method::POST,
@@ -217,7 +218,7 @@ async fn directory_create_and_bind_are_explicit_and_non_destructive() {
     .await;
     assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
     let project = request(&test.app, Method::POST, "/api/projects", Some(json!({
-        "resource_device_id": device_id, "resource_root": parent.join("my"), "display_name": "my"
+        "directories": [{"device_id": device_id, "resource_root": parent.join("my")}], "display_name": "my"
     }))).await;
     assert_eq!(project.status(), StatusCode::CREATED);
 }
@@ -274,8 +275,7 @@ async fn local_create_browse_list_get_rename_and_shared_directory_contract() {
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id,
-            "resource_root": repo,
+            "directories": [{"device_id": local_device_id, "resource_root": repo}],
             "display_name": "Main repo",
         })),
     )
@@ -318,18 +318,21 @@ async fn local_create_browse_list_get_rename_and_shared_directory_contract() {
         response_json(rename).await["display_name"],
         json!("Renamed repo")
     );
-    let binding = test
+    let descriptor = test
         .state
-        .project_bindings
+        .project_catalog
         .get(&ProjectId::new(project_id))
         .unwrap()
         .unwrap();
-    assert_eq!(binding.primary_root().to_path_buf(), repo);
+    assert_eq!(descriptor.resources.directories[0].resource_root, repo);
 
     let git = request(
         &test.app,
         Method::GET,
-        &format!("/api/projects/{project_id}/workspace/git"),
+        &format!(
+            "/api/projects/{project_id}/workspace/git?directory_id={}",
+            descriptor.resources.directories[0].directory_id
+        ),
         None,
     )
     .await;
@@ -346,8 +349,7 @@ async fn local_create_browse_list_get_rename_and_shared_directory_contract() {
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id,
-            "resource_root": repo,
+            "directories": [{"device_id": local_device_id, "resource_root": repo}],
             "display_name": "Duplicate",
         })),
     )
@@ -368,10 +370,14 @@ async fn project_list_activity_comes_from_chat_index_without_reading_history() {
     let project = ProjectDescriptor {
         project_id: ProjectId::new("activity-project"),
         display_name: "Activity Project".to_string(),
-        resource_device_id: "1111111111111111".to_string(),
-        display_path: "/remote/display/path".to_string(),
         lifecycle: ProjectLifecycle::Active,
-        resources: None,
+        resources: rua_project::ProjectResources::create(vec![
+            rua_project::ProjectResourceDirectoryInput::new(
+                "1111111111111111",
+                "/remote/display/path",
+            ),
+        ])
+        .unwrap(),
         created_at: "2026-09-21T00:00:00Z".parse().unwrap(),
         updated_at: "2026-09-22T00:00:00Z".parse().unwrap(),
         extra: BTreeMap::new(),
@@ -468,8 +474,7 @@ async fn ordinary_and_project_chats_share_the_chat_id_route() {
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id,
-            "resource_root": repo,
+            "directories": [{"device_id": local_device_id, "resource_root": repo}],
             "display_name": "Unified Chat Project",
         })),
     )
@@ -634,7 +639,7 @@ async fn ordinary_and_project_chats_share_the_chat_id_route() {
         json!({
             "agent_assignment": "selectable",
             "resource": "project_binding",
-            "authority_placement": "resource_bound",
+            "authority_placement": "fixed",
         })
     );
 
@@ -703,8 +708,7 @@ async fn local_project_chat_first_submit_materializes_history_by_chat_id() {
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id,
-            "resource_root": first_repo,
+            "directories": [{"device_id": local_device_id, "resource_root": first_repo}],
             "display_name": "First",
         })),
     )
@@ -719,8 +723,7 @@ async fn local_project_chat_first_submit_materializes_history_by_chat_id() {
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id,
-            "resource_root": second_repo,
+            "directories": [{"device_id": local_device_id, "resource_root": second_repo}],
             "display_name": "Second",
         })),
     )
@@ -802,10 +805,7 @@ async fn local_project_chat_first_submit_materializes_history_by_chat_id() {
         "selectable"
     );
     assert_eq!(header.extra["chat_policy"]["resource"], "project_binding");
-    assert_eq!(
-        header.extra["chat_policy"]["authority_placement"],
-        "resource_bound"
-    );
+    assert_eq!(header.extra["chat_policy"]["authority_placement"], "fixed");
     assert_eq!(
         header.extra["authority_placement"]["device_id"],
         local_device_id
@@ -1084,30 +1084,30 @@ async fn local_project_chat_first_submit_materializes_history_by_chat_id() {
         response_json(offline_history).await["messages"][0]["role"],
         "user"
     );
-    let failed_chat_id = "00000000-0000-4000-8000-000000000406";
-    let unavailable_submit = request(
+    let new_chat_id = "00000000-0000-4000-8000-000000000406";
+    let submit = request(
         &test.app,
         Method::POST,
-        &format!("/api/chats/{failed_chat_id}/console/submit"),
+        &format!("/api/chats/{new_chat_id}/console/submit"),
         Some(json!({ "project_id": first_id,
             "agent_id": "default",
-            "chat_id": failed_chat_id,
-            "message": "Do not queue this",
+            "chat_id": new_chat_id,
+            "message": "Continue while the resource is unavailable",
         })),
     )
     .await;
-    assert_eq!(unavailable_submit.status(), StatusCode::OK);
-    assert_eq!(response_json(unavailable_submit).await["mode"], "rejected");
-    let failed_address = rua_core::ChatAddress::new(failed_chat_id);
-    let failed_scope = rua_core::ChatStore::resolve(&test.state.rua_root, failed_address);
-    assert!(!failed_scope.evergreen_chat_root().exists());
-    assert!(
-        !failed_scope.chat_index_path().is_file()
-            || rua_server::services::chat_index::get(failed_scope.root(), failed_chat_id,)
-                .await
-                .unwrap()
-                .is_none()
-    );
+    assert_eq!(submit.status(), StatusCode::OK);
+    assert_eq!(response_json(submit).await["mode"], "started");
+    let new_chat = request(
+        &test.app,
+        Method::GET,
+        &format!("/api/chats/{new_chat_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(new_chat.status(), StatusCode::OK);
+    assert_eq!(response_json(new_chat).await["project_id"], first_id);
+    assert!(!first_repo.exists());
 
     let lazy_chat_id = "00000000-0000-4000-8000-000000000407";
     for suffix in ["", "/approvals/snapshot", "/acp/permissions"] {
@@ -1179,8 +1179,7 @@ async fn local_project_chat_first_submit_without_model_persists_default_model() 
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id(&test.state),
-            "resource_root": repo,
+            "directories": [{"device_id": local_device_id(&test.state), "resource_root": repo}],
             "display_name": "Default Model Project",
         })),
     )
@@ -1233,8 +1232,7 @@ async fn chat_deletion_requires_saved_membership_before_removing_a_projection() 
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id(&test.state),
-            "resource_root": repo,
+            "directories": [{"device_id": local_device_id(&test.state), "resource_root": repo}],
             "display_name": "Index-only",
         })),
     )
@@ -1287,8 +1285,7 @@ async fn project_acp_collaboration_can_be_force_deleted_without_changing_executo
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id(&test.state),
-            "resource_root": repo,
+            "directories": [{"device_id": local_device_id(&test.state), "resource_root": repo}],
             "display_name": "Collaboration deletion",
         })),
     )
@@ -1373,8 +1370,7 @@ async fn project_chat_list_update_delete_and_busy_isolation_contract() {
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id,
-            "resource_root": repo,
+            "directories": [{"device_id": local_device_id, "resource_root": repo}],
             "display_name": "Managed",
         })),
     )
@@ -1782,8 +1778,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id,
-            "resource_root": repo,
+            "directories": [{"device_id": local_device_id, "resource_root": repo}],
             "display_name": "Controlled",
         })),
     )
@@ -1846,17 +1841,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     .await;
     assert_eq!(workspace.status(), StatusCode::OK);
     let workspace = response_json(workspace).await;
-    assert_eq!(workspace["policy"]["profile"], "resource-write");
-    assert_eq!(workspace["policy"]["source"], "project_default");
-    assert_eq!(workspace["policy"]["cwd"], repo.to_string_lossy().as_ref());
-    assert_eq!(
-        workspace["policy"]["writable_roots"],
-        json!([repo.to_string_lossy()])
-    );
-    assert_eq!(
-        workspace["policy"]["dedicated_operations_root_confined"],
-        true
-    );
+    assert!(workspace["policy"].is_null());
     assert_eq!(workspace["pending_approval_count"], 0);
     assert_eq!(workspace["chat_rule_count"], 0);
 
@@ -1877,10 +1862,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     )
     .await;
     assert_eq!(unchanged.status(), StatusCode::OK);
-    assert_eq!(
-        response_json(unchanged).await["policy"]["profile"],
-        "resource-write"
-    );
+    assert!(response_json(unchanged).await["policy"].is_null());
     let configuration_path = format!("/api/chats/{chat_id}/configuration");
     let preview = request(&test.app, Method::GET, &configuration_path, None).await;
     assert_eq!(preview.status(), StatusCode::OK);
@@ -1939,7 +1921,8 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     assert_eq!(acp_status.status(), StatusCode::OK);
     let acp_status = response_json(acp_status).await;
     assert_eq!(acp_status["active"], false);
-    assert_eq!(acp_status["workspace_dir"], repo.to_string_lossy().as_ref());
+    assert_eq!(acp_status["workspace_dir"], workspace["policy"]["cwd"]);
+    assert_ne!(acp_status["workspace_dir"], json!(repo));
 
     let address = ChatAddress::new(chat_id);
     let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
@@ -2179,7 +2162,7 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
     assert!(response_json(placement_mutation).await["detail"]
         .as_str()
         .unwrap()
-        .contains("bound to its Project resource Device"));
+        .contains("fixed on its execution Device"));
 }
 
 struct ProjectLifecycleBlockingRunner {
@@ -2213,8 +2196,7 @@ async fn project_task_routes_use_typed_project_chat_ownership() {
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id,
-            "resource_root": repo,
+            "directories": [{"device_id": local_device_id, "resource_root": repo}],
             "display_name": "Project Task Owner",
         })),
     )
@@ -2425,8 +2407,7 @@ async fn project_archive_and_reopen_ordered_hard_stop_contract() {
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id,
-            "resource_root": repo,
+            "directories": [{"device_id": local_device_id, "resource_root": repo}],
             "display_name": "Lifecycle",
         })),
     )
@@ -2706,31 +2687,6 @@ async fn project_archive_and_reopen_ordered_hard_stop_contract() {
         .contains("Archived Project"));
 
     std::fs::remove_dir_all(&repo).unwrap();
-    let failed_reopen = request(
-        &test.app,
-        Method::POST,
-        &format!("/api/projects/{project_id}/reopen"),
-        None,
-    )
-    .await;
-    assert_eq!(failed_reopen.status(), StatusCode::CONFLICT);
-    assert_eq!(
-        test.state
-            .project_catalog
-            .get(&project_id_typed)
-            .unwrap()
-            .unwrap()
-            .lifecycle,
-        ProjectLifecycle::Archived
-    );
-
-    std::fs::create_dir_all(&repo).unwrap();
-    std::fs::write(
-        repo.join("KEEP.md"),
-        b"Project lifecycle must not touch this.\n",
-    )
-    .unwrap();
-    let repository_before_reopen = snapshot_directory(&repo);
     let reopened = request(
         &test.app,
         Method::POST,
@@ -2762,21 +2718,22 @@ async fn project_archive_and_reopen_ordered_hard_stop_contract() {
         .list_pending_for_address(&address)
         .await
         .is_empty());
-    assert_eq!(snapshot_directory(&repo), repository_before_reopen);
+    assert!(!repo.exists());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn project_archive_distinguishes_offline_member_from_revoked_device() {
+async fn project_lifecycle_metadata_ignores_offline_or_removed_resource_devices() {
     let test = build_app();
     let now = Utc::now();
     let offline_device_id = "0102030405060708";
     let offline_project = ProjectDescriptor {
         project_id: ProjectId::new("project-offline"),
         display_name: "Offline".to_string(),
-        resource_device_id: offline_device_id.to_string(),
-        display_path: "/remote/offline".to_string(),
         lifecycle: ProjectLifecycle::Active,
-        resources: None,
+        resources: rua_project::ProjectResources::create(vec![
+            rua_project::ProjectResourceDirectoryInput::new(offline_device_id, "/remote/offline"),
+        ])
+        .unwrap(),
         created_at: now,
         updated_at: now,
         extra: BTreeMap::new(),
@@ -2820,7 +2777,7 @@ async fn project_archive_distinguishes_offline_member_from_revoked_device() {
         Some(json!({"confirmed": true})),
     )
     .await;
-    assert_eq!(offline_archive.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(offline_archive.status(), StatusCode::OK);
     assert_eq!(
         test.state
             .project_catalog
@@ -2828,16 +2785,17 @@ async fn project_archive_distinguishes_offline_member_from_revoked_device() {
             .unwrap()
             .unwrap()
             .lifecycle,
-        ProjectLifecycle::Active
+        ProjectLifecycle::Archived
     );
 
     let revoked_project = ProjectDescriptor {
         project_id: ProjectId::new("project-revoked"),
         display_name: "Revoked".to_string(),
-        resource_device_id: "1112131415161718".to_string(),
-        display_path: "/remote/revoked".to_string(),
         lifecycle: ProjectLifecycle::Active,
-        resources: None,
+        resources: rua_project::ProjectResources::create(vec![
+            rua_project::ProjectResourceDirectoryInput::new("1112131415161718", "/remote/revoked"),
+        ])
+        .unwrap(),
         created_at: now,
         updated_at: now,
         extra: BTreeMap::new(),
@@ -2863,8 +2821,7 @@ async fn project_archive_distinguishes_offline_member_from_revoked_device() {
     .await;
     assert_eq!(preview.status(), StatusCode::OK);
     let preview = response_json(preview).await;
-    assert_eq!(preview["resource_device_revoked"], true);
-    assert!(preview["impact"].is_null());
+    assert_eq!(preview["impact"]["affected_chat_count"], 0);
 
     let revoked_archive = request(
         &test.app,
@@ -2876,8 +2833,7 @@ async fn project_archive_distinguishes_offline_member_from_revoked_device() {
     assert_eq!(revoked_archive.status(), StatusCode::OK);
     let revoked_archive = response_json(revoked_archive).await;
     assert_eq!(revoked_archive["project"]["lifecycle"], "archived");
-    assert_eq!(revoked_archive["resource_device_revoked"], true);
-    assert!(revoked_archive["impact"].is_null());
+    assert_eq!(revoked_archive["impact"]["affected_chat_count"], 0);
 
     let revoked_reopen = request(
         &test.app,
@@ -2886,7 +2842,15 @@ async fn project_archive_distinguishes_offline_member_from_revoked_device() {
         None,
     )
     .await;
-    assert_eq!(revoked_reopen.status(), StatusCode::CONFLICT);
+    assert_eq!(revoked_reopen.status(), StatusCode::OK);
+    let archived_again = request(
+        &test.app,
+        Method::POST,
+        "/api/projects/project-revoked/archive",
+        Some(json!({"confirmed":true})),
+    )
+    .await;
+    assert_eq!(archived_again.status(), StatusCode::OK);
 
     let revoked_delete = request(
         &test.app,
@@ -2922,8 +2886,7 @@ async fn project_permanent_delete_cleans_rua_state_and_preserves_repository() {
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id,
-            "resource_root": repo,
+            "directories": [{"device_id": local_device_id, "resource_root": repo}],
             "display_name": "Delete fixture",
         })),
     )
@@ -3061,8 +3024,7 @@ async fn project_permanent_delete_cleans_rua_state_and_preserves_repository() {
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id,
-            "resource_root": repo,
+            "directories": [{"device_id": local_device_id, "resource_root": repo}],
             "display_name": "Still owned",
         })),
     )
@@ -3084,12 +3046,6 @@ async fn project_permanent_delete_cleans_rua_state_and_preserves_repository() {
     assert!(test
         .state
         .project_catalog
-        .get(&project_id_typed)
-        .unwrap()
-        .is_none());
-    assert!(test
-        .state
-        .project_bindings
         .get(&project_id_typed)
         .unwrap()
         .is_none());
@@ -3118,8 +3074,7 @@ async fn project_permanent_delete_cleans_rua_state_and_preserves_repository() {
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id,
-            "resource_root": repo,
+            "directories": [{"device_id": local_device_id, "resource_root": repo}],
             "display_name": "Replacement",
         })),
     )
@@ -3160,10 +3115,11 @@ async fn archived_offline_project_delete_does_not_contact_resource_device() {
     let project = ProjectDescriptor {
         project_id: ProjectId::new("project-offline-delete"),
         display_name: "Offline delete".to_string(),
-        resource_device_id: "0102030405060708".to_string(),
-        display_path: "/remote/offline".to_string(),
         lifecycle: ProjectLifecycle::Archived,
-        resources: None,
+        resources: rua_project::ProjectResources::create(vec![
+            rua_project::ProjectResourceDirectoryInput::new("0102030405060708", "/remote/offline"),
+        ])
+        .unwrap(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
         extra: BTreeMap::new(),
@@ -3178,7 +3134,7 @@ async fn archived_offline_project_delete_does_not_contact_resource_device() {
         sync_dir.join("device_list.json"),
         serde_json::to_vec_pretty(&rua_sync::device_list::DeviceList {
             devices: vec![rua_sync::device_list::DeviceEntry {
-                device_id: hex::decode(&project.resource_device_id)
+                device_id: hex::decode(&project.resources.directories[0].device_id)
                     .unwrap()
                     .try_into()
                     .unwrap(),
@@ -3235,15 +3191,19 @@ fn snapshot_directory(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_project_stays_visible_without_availability_or_path_disclosure() {
+async fn remote_resource_locations_are_visible_and_chat_deletion_targets_its_saved_authority() {
     let test = build_app();
     let project = ProjectDescriptor {
         project_id: ProjectId::new("remote-project"),
         display_name: "Remote Project".to_string(),
-        resource_device_id: "1111111111111111".to_string(),
-        display_path: "/remote/display/path".to_string(),
         lifecycle: ProjectLifecycle::Active,
-        resources: None,
+        resources: rua_project::ProjectResources::create(vec![
+            rua_project::ProjectResourceDirectoryInput::new(
+                "1111111111111111",
+                "/remote/display/path",
+            ),
+        ])
+        .unwrap(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
         extra: BTreeMap::new(),
@@ -3259,7 +3219,10 @@ async fn remote_project_stays_visible_without_availability_or_path_disclosure() 
     assert_eq!(list["projects"][0]["project_id"], "remote-project");
     assert!(list["projects"][0].get("availability").is_none());
     assert!(list["projects"][0].get("resource_root").is_none());
-    assert!(test.state.project_bindings.list().unwrap().is_empty());
+    assert_eq!(
+        list["projects"][0]["resources"]["directories"][0]["resource_root"],
+        "/remote/display/path"
+    );
     let chat_id = "00000000-0000-4000-8000-000000000411";
     let store = rua_session::WorkspaceSessionStore::new(test.state.rua_root.join("chats"));
     let now = Utc::now().to_rfc3339();
@@ -3274,6 +3237,12 @@ async fn remote_project_stays_visible_without_availability_or_path_disclosure() 
         preview: None,
     });
     header.project_id = Some("remote-project".into());
+    let execution_device = "2222222222222222";
+    header.extra.insert("authority_placement".into(), json!({
+        "device_id": execution_device,
+        "authority_epoch": rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::next_for_device(execution_device, None),
+        "base_manifest_hash": rua_server::services::conversation_manifest::initial_conversation_manifest_hash(&ChatAddress::new(chat_id)).unwrap(),
+    }));
     store.save_chat_header(&header).await.unwrap();
     let deleted = request(
         &test.app,
@@ -3315,8 +3284,7 @@ async fn project_chat_remote_delete_command_preserves_busy_force_and_not_found()
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": device_id,
-            "resource_root": repo,
+            "directories": [{"device_id": device_id, "resource_root": repo}],
         })),
     )
     .await;
@@ -3414,8 +3382,7 @@ async fn child_root_warns_but_file_path_and_offline_remote_create_do_not_commit(
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id,
-            "resource_root": repo,
+            "directories": [{"device_id": local_device_id, "resource_root": repo}],
         })),
     )
     .await;
@@ -3426,8 +3393,7 @@ async fn child_root_warns_but_file_path_and_offline_remote_create_do_not_commit(
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id,
-            "resource_root": package,
+            "directories": [{"device_id": local_device_id, "resource_root": package}],
         })),
     )
     .await;
@@ -3443,8 +3409,7 @@ async fn child_root_warns_but_file_path_and_offline_remote_create_do_not_commit(
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id,
-            "resource_root": file,
+            "directories": [{"device_id": local_device_id, "resource_root": file}],
         })),
     )
     .await;
@@ -3456,8 +3421,7 @@ async fn child_root_warns_but_file_path_and_offline_remote_create_do_not_commit(
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": "ffffffffffffffff",
-            "resource_root": "/remote/only",
+            "directories": [{"device_id": "ffffffffffffffff", "resource_root": "/remote/only"}],
         })),
     )
     .await;
@@ -3478,8 +3442,7 @@ async fn project_chat_archive_filter_and_bulk_delete_archived_contract() {
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id,
-            "resource_root": repo,
+            "directories": [{"device_id": local_device_id, "resource_root": repo}],
             "display_name": "Archive Contract",
         })),
     )
@@ -3620,10 +3583,14 @@ async fn chat_metadata_reads_only_the_index_including_archived_project_chats() {
             .apply_descriptor(ProjectDescriptor {
                 project_id: ProjectId::new(id),
                 display_name: id.to_string(),
-                resource_device_id: "1111111111111111".to_string(),
-                display_path: "/remote/unavailable".to_string(),
                 lifecycle: ProjectLifecycle::Active,
-                resources: None,
+                resources: rua_project::ProjectResources::create(vec![
+                    rua_project::ProjectResourceDirectoryInput::new(
+                        "1111111111111111",
+                        "/remote/unavailable",
+                    ),
+                ])
+                .unwrap(),
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 extra: BTreeMap::new(),
@@ -3696,105 +3663,27 @@ async fn multi_directory_project_creation_preserves_roots_and_rejects_duplicate_
     let docs_dir = test._temp.path().join("multi-docs");
     std::fs::create_dir(&app_dir).unwrap();
     std::fs::create_dir(&docs_dir).unwrap();
-    let body = json!({
-        "resource_device_id": local_device_id(&test.state),
-        "resource_roots": [app_dir, docs_dir],
-        "primary_index": 1,
-        "display_name": "App and docs"
-    });
+    let local = local_device_id(&test.state);
+    let entry = |root: &Path| json!({"device_id":local,"resource_root":root});
+    let body =
+        json!({"directories":[entry(&app_dir),entry(&docs_dir)], "display_name":"App and docs"});
     let response = request(&test.app, Method::POST, "/api/projects", Some(body.clone())).await;
     assert_eq!(response.status(), StatusCode::CREATED);
     let created = response_json(response).await;
     let descriptor = &created["project"];
-    assert_eq!(
-        descriptor["display_path"],
-        docs_dir.to_string_lossy().as_ref()
+    let directories = descriptor["resources"]["directories"].as_array().unwrap();
+    assert_eq!(directories.len(), 2);
+    assert_eq!(directories[0]["resource_root"], json!(app_dir));
+    assert_eq!(directories[1]["resource_root"], json!(docs_dir));
+    assert_eq!(directories[1]["device_id"], local);
+    assert_ne!(
+        directories[0]["directory_id"],
+        directories[1]["directory_id"]
     );
-    assert_eq!(
-        descriptor["resources"]["directories"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    let primary_id = descriptor["resources"]["primary_directory_id"]
-        .as_str()
-        .unwrap();
-    let id = ProjectId::new(descriptor["project_id"].as_str().unwrap());
-    let binding = test.state.project_bindings.get(&id).unwrap().unwrap();
-    assert_eq!(
-        binding
-            .resources
-            .directory(primary_id)
-            .unwrap()
-            .resource_root,
-        docs_dir
-    );
-    assert_eq!(binding.resources.directories[0].resource_root, app_dir);
-    assert!(descriptor.get("resource_root").is_none());
-
-    let chat_id = "00000000-0000-4000-8000-000000000701";
-    let submit = request(
-        &test.app,
-        Method::POST,
-        &format!("/api/chats/{chat_id}/console/submit"),
-        Some(
-            json!({"project_id":id, "agent_id":"default", "chat_id":chat_id, "message":"Inspect project resources"}),
-        ),
-    )
-    .await;
-    assert_eq!(submit.status(), StatusCode::OK);
-    wait_for_chat_idle(&test.state, chat_id).await;
-    let scope =
-        rua_core::ChatStore::resolve(&test.state.rua_root, rua_core::ChatAddress::new(chat_id));
-    let header = rua_session::WorkspaceSessionStore::new(scope.root())
-        .load_chat_header(chat_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(header.extra["project_working_directory_id"], primary_id);
-
-    let primary_uri = format!("/api/projects/{id}/resources/primary");
-    let changed = request(
-        &test.app,
-        Method::PATCH,
-        &primary_uri,
-        Some(json!({"expected_revision": 1, "directory_id": "initial"})),
-    )
-    .await;
-    assert_eq!(changed.status(), StatusCode::OK);
-    let changed = response_json(changed).await;
-    assert_eq!(changed["resources"]["revision"], 2);
-    assert_eq!(changed["display_path"], app_dir.to_string_lossy().as_ref());
-    let stale = request(
-        &test.app,
-        Method::PATCH,
-        &primary_uri,
-        Some(json!({"expected_revision": 1, "directory_id": primary_id})),
-    )
-    .await;
-    assert_eq!(stale.status(), StatusCode::CONFLICT);
-    let again = request(&test.app, Method::POST, &format!("/api/chats/{chat_id}/console/submit"),
-        Some(json!({ "project_id": id,"agent_id":"default", "message":"Continue", "project_working_directory_id":"initial"}))).await;
-    assert_eq!(again.status(), StatusCode::OK);
-    wait_for_chat_idle(&test.state, chat_id).await;
-    let header = rua_session::WorkspaceSessionStore::new(scope.root())
-        .load_chat_header(chat_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(header.extra["project_working_directory_id"], primary_id);
-    let chosen_chat = "00000000-0000-4000-8000-000000000702";
-    let chosen = request(&test.app, Method::POST, &format!("/api/chats/{chosen_chat}/console/submit"),
-        Some(json!({ "project_id": id,"agent_id":"default", "message":"Use docs", "project_working_directory_id":primary_id}))).await;
-    assert_eq!(chosen.status(), StatusCode::OK);
-    wait_for_chat_idle(&test.state, chosen_chat).await;
-    let header = rua_session::WorkspaceSessionStore::new(scope.root())
-        .load_chat_header(chosen_chat)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(header.extra["project_working_directory_id"], primary_id);
+    assert!(descriptor.get("resource_device_id").is_none());
+    assert!(descriptor["resources"]
+        .get("primary_directory_id")
+        .is_none());
 
     let reused = request(&test.app, Method::POST, "/api/projects", Some(body)).await;
     assert_eq!(reused.status(), StatusCode::CREATED);
@@ -3810,9 +3699,7 @@ async fn multi_directory_project_creation_preserves_roots_and_rejects_duplicate_
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id(&test.state),
-            "resource_roots": [app_dir, app_dir.join(".")],
-            "primary_index": 0
+            "directories": [entry(&app_dir),entry(&app_dir.join("."))]
         })),
     )
     .await;
@@ -3821,7 +3708,7 @@ async fn multi_directory_project_creation_preserves_roots_and_rejects_duplicate_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn resource_edits_reject_chat_references_stale_revisions_and_active_admission() {
+async fn resource_edits_preserve_referencing_chat_and_allow_active_admission() {
     let test = build_app();
     let app = test._temp.path().join("edit-app");
     let docs = test._temp.path().join("edit-docs");
@@ -3829,9 +3716,20 @@ async fn resource_edits_reject_chat_references_stale_revisions_and_active_admiss
     for root in [&app, &docs, &assets] {
         std::fs::create_dir(root).unwrap();
     }
-    let created = response_json(request(&test.app, Method::POST, "/api/projects", Some(json!({
-        "resource_device_id":local_device_id(&test.state), "resource_roots":[app,docs], "primary_index":0
-    }))).await).await;
+    let local = local_device_id(&test.state);
+    let entry = |root: &Path| json!({"device_id":local,"resource_root":root});
+    let created = response_json(
+        request(
+            &test.app,
+            Method::POST,
+            "/api/projects",
+            Some(json!({
+                "directories":[entry(&app),entry(&docs)]
+            })),
+        )
+        .await,
+    )
+    .await;
     let id = ProjectId::new(created["project"]["project_id"].as_str().unwrap());
     let uri = format!("/api/projects/{id}/resources");
     let chat_id = "00000000-0000-4000-8000-000000000703";
@@ -3852,42 +3750,47 @@ async fn resource_edits_reject_chat_references_stale_revisions_and_active_admiss
     )
     .await;
     assert_eq!(archived.status(), StatusCode::OK);
+    let store = rua_session::WorkspaceSessionStore::new(test.state.chat_workspace().as_path());
+    let before = store.load_chat_header(chat_id).await.unwrap().unwrap();
+    let history_uri = format!("/api/chats/{chat_id}");
+    let history = response_json(request(&test.app, Method::GET, &history_uri, None).await).await;
+    assert!(!history["messages"].as_array().unwrap().is_empty());
+    let admission = test.state.project_catalog.begin_admission(&id).unwrap();
     let remove_used = request(
         &test.app,
         Method::PATCH,
         &uri,
-        Some(json!({"expected_revision":1,"resource_roots":[docs],"primary_index":0})),
+        Some(json!({"expected_revision":1,"directories":[entry(&assets)]})),
     )
     .await;
-    assert_eq!(remove_used.status(), StatusCode::CONFLICT);
-    assert!(response_json(remove_used).await["detail"]
-        .as_str()
-        .unwrap()
-        .contains(chat_id));
-    let admission = test.state.project_catalog.begin_admission(&id).unwrap();
-    let change = json!({"expected_revision":1,"resource_roots":[app,assets],"primary_index":1});
-    let busy = request(&test.app, Method::PATCH, &uri, Some(change.clone())).await;
-    assert_eq!(busy.status(), StatusCode::CONFLICT);
+    assert_eq!(remove_used.status(), StatusCode::OK);
     drop(admission);
-    let changed = request(&test.app, Method::PATCH, &uri, Some(change.clone())).await;
-    assert_eq!(changed.status(), StatusCode::OK);
-    let changed = response_json(changed).await;
-    assert_eq!(changed["project"]["resources"]["revision"], 2);
-    assert_eq!(
-        changed["project"]["resources"]["directories"][0]["directory_id"],
-        "initial"
-    );
-    assert!(docs.exists(), "Detaching must not delete files");
-    let stale = request(&test.app, Method::PATCH, &uri, Some(change)).await;
+    let stale = request(
+        &test.app,
+        Method::PATCH,
+        &uri,
+        Some(json!({"expected_revision":1,"directories":[]})),
+    )
+    .await;
     assert_eq!(stale.status(), StatusCode::CONFLICT);
     let empty = request(
         &test.app,
         Method::PATCH,
         &uri,
-        Some(json!({"expected_revision":2,"resource_roots":[],"primary_index":0})),
+        Some(json!({"expected_revision":2,"directories":[]})),
     )
     .await;
-    assert_eq!(empty.status(), StatusCode::CONFLICT);
+    assert_eq!(empty.status(), StatusCode::OK);
+    let project = &response_json(empty).await["project"];
+    assert_eq!(project["project_id"], id.as_str());
+    assert_eq!(project["resources"], json!({"revision":3,"directories":[]}));
+    assert_eq!(
+        store.load_chat_header(chat_id).await.unwrap().unwrap(),
+        before
+    );
+    let after = response_json(request(&test.app, Method::GET, &history_uri, None).await).await;
+    assert_eq!(after["messages"], history["messages"]);
+    assert!(app.exists() && docs.exists() && assets.exists());
 }
 
 #[tokio::test]
@@ -3900,9 +3803,10 @@ async fn sidebar_preferences_are_independent_of_resource_device_availability_and
         .apply_descriptor(rua_project::ProjectDescriptor {
             project_id: ProjectId::new("remote-sidebar"),
             display_name: "Remote".into(),
-            resource_device_id: "offline-device".into(),
-            display_path: "/remote/repo".into(),
-            resources: None,
+            resources: rua_project::ProjectResources::create(vec![
+                rua_project::ProjectResourceDirectoryInput::new("offline-device", "/remote/repo"),
+            ])
+            .unwrap(),
             lifecycle: rua_project::ProjectLifecycle::Active,
             created_at: now,
             updated_at: now,
@@ -3947,10 +3851,13 @@ async fn resource_views_use_directory_identity_and_reject_cross_root_paths() {
         .status()
         .unwrap()
         .success());
-    let created=response_json(request(&test.app,Method::POST,"/api/projects",Some(json!({"resource_device_id":local_device_id(&test.state),"resource_roots":[first,second]}))).await).await;
+    let created=response_json(request(&test.app,Method::POST,"/api/projects",Some(json!({"directories":[{"device_id":local_device_id(&test.state),"resource_root":first},{"device_id":local_device_id(&test.state),"resource_root":second}]}))).await).await;
     let project = &created["project"];
     let id = project["project_id"].as_str().unwrap();
     let directory = project["resources"]["directories"][1]["directory_id"]
+        .as_str()
+        .unwrap();
+    let first_id = project["resources"]["directories"][0]["directory_id"]
         .as_str()
         .unwrap();
     let files = request(
@@ -3983,7 +3890,7 @@ async fn resource_views_use_directory_identity_and_reject_cross_root_paths() {
         request(
             &test.app,
             Method::GET,
-            &format!("/api/projects/{id}/workspace/git?directory_id=initial"),
+            &format!("/api/projects/{id}/workspace/git?directory_id={first_id}"),
             None,
         )
         .await,
@@ -4036,7 +3943,7 @@ async fn bulk_archive_includes_collaboration_skips_busy_and_retries_only_selecte
             &test.app,
             Method::POST,
             "/api/projects",
-            Some(json!({"resource_device_id":local_device_id(&test.state),"resource_root":root})),
+            Some(json!({"directories": [{"device_id": local_device_id(&test.state), "resource_root": root}]})),
         )
         .await,
     )
@@ -4214,6 +4121,35 @@ async fn bulk_archive_includes_collaboration_skips_busy_and_retries_only_selecte
         "project_admission_in_progress"
     );
     drop(admission);
+
+    store
+        .update_chat_header(ids[0], |header| {
+            header.metadata.archived = false;
+            header.extra.get_mut("authority_placement").unwrap()["device_id"] =
+                json!("offline-authority");
+        })
+        .await
+        .unwrap();
+    let offline = response_json(
+        request(
+            &test.app,
+            Method::POST,
+            &uri,
+            Some(json!({"chat_ids":[ids[0]]})),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(offline["items"][0]["status"], "failed");
+    assert!(
+        !store
+            .load_chat_header(ids[0])
+            .await
+            .unwrap()
+            .unwrap()
+            .metadata
+            .archived
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4226,7 +4162,7 @@ async fn legacy_project_chat_listing_updates_do_not_require_runtime_configuratio
         Method::POST,
         "/api/projects",
         Some(json!({
-            "resource_device_id": local_device_id(&test.state), "resource_root": repo,
+            "directories": [{"device_id": local_device_id(&test.state), "resource_root": repo}],
         })),
     )
     .await;
@@ -4305,7 +4241,7 @@ async fn legacy_project_chat_listing_updates_do_not_require_runtime_configuratio
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resource_edits_allow_idle_acp_binding_but_reject_running_and_queued_work() {
+async fn resource_edits_leave_active_acp_and_queued_work_untouched() {
     let test = build_app();
     let app = test._temp.path().join("idle-acp-app");
     let docs = test._temp.path().join("idle-acp-docs");
@@ -4317,7 +4253,7 @@ async fn resource_edits_allow_idle_acp_binding_but_reject_running_and_queued_wor
             Method::POST,
             "/api/projects",
             Some(json!({
-                "resource_device_id":local_device_id(&test.state), "resource_root":app
+                "directories": [{"device_id": local_device_id(&test.state), "resource_root": app}]
             })),
         )
         .await,
@@ -4363,24 +4299,12 @@ async fn resource_edits_allow_idle_acp_binding_but_reject_running_and_queued_wor
         &test.app,
         Method::PATCH,
         &resources,
-        Some(json!({"expected_revision":1,"resource_roots":[app,docs],"primary_index":0})),
+        Some(json!({"expected_revision":1,"directories":[{"device_id":local_device_id(&test.state),"resource_root":app},{"device_id":local_device_id(&test.state),"resource_root":docs}]})),
     )
     .await;
     let status = changed.status();
     let changed = response_json(changed).await;
     assert_eq!(status, StatusCode::OK, "{changed}");
-    let docs_id = changed["project"]["resources"]["directories"][1]["directory_id"]
-        .as_str()
-        .unwrap();
-    let primary = format!("{resources}/primary");
-    let switched = request(
-        &test.app,
-        Method::PATCH,
-        &primary,
-        Some(json!({"expected_revision":2,"directory_id":docs_id})),
-    )
-    .await;
-    assert_eq!(switched.status(), StatusCode::OK);
     assert!(store
         .load_chat_header(chat_id)
         .await
@@ -4405,23 +4329,20 @@ async fn resource_edits_allow_idle_acp_binding_but_reject_running_and_queued_wor
             driver_detail: None,
         })
         .await;
-    for (uri, body) in [
-        (
-            resources,
-            json!({"expected_revision":3,"resource_roots":[app,docs],"primary_index":0}),
-        ),
-        (
-            primary,
-            json!({"expected_revision":3,"directory_id":"initial"}),
-        ),
-    ] {
-        let blocked = request(&test.app, Method::PATCH, &uri, Some(body)).await;
-        assert_eq!(blocked.status(), StatusCode::CONFLICT);
-        assert!(response_json(blocked).await["detail"]
-            .as_str()
-            .unwrap()
-            .contains(chat_id));
-    }
+    let unlinked = request(
+        &test.app,
+        Method::PATCH,
+        &resources,
+        Some(json!({"expected_revision":2,"directories":[]})),
+    )
+    .await;
+    assert_eq!(unlinked.status(), StatusCode::OK);
+    assert!(test
+        .state
+        .conversation_authority
+        .active_turn(&address)
+        .await
+        .is_some());
     test.state
         .conversation_authority
         .enqueue_input(
@@ -4443,18 +4364,16 @@ async fn resource_edits_allow_idle_acp_binding_but_reject_running_and_queued_wor
         .conversation_authority
         .finish_active_turn(&address)
         .await;
-    let blocked = request(
-        &test.app,
-        Method::PATCH,
-        &format!("/api/projects/{id}/resources/primary"),
-        Some(json!({"expected_revision":3,"directory_id":"initial"})),
-    )
-    .await;
-    assert_eq!(blocked.status(), StatusCode::CONFLICT);
-    assert!(response_json(blocked).await["detail"]
-        .as_str()
-        .unwrap()
-        .contains("queued inputs: 1"));
+    let next = request(&test.app,Method::PATCH,&resources,Some(json!({"expected_revision":3,"directories":[{"device_id":local_device_id(&test.state),"resource_root":docs}]}))).await;
+    assert_eq!(next.status(), StatusCode::OK);
+    assert_eq!(
+        test.state
+            .conversation_authority
+            .queue_snapshot(&address)
+            .await
+            .len(),
+        1
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4468,7 +4387,7 @@ async fn archive_and_reopen_preserve_idle_acp_collaboration_executor() {
             Method::POST,
             "/api/projects",
             Some(
-                json!({"resource_device_id": local_device_id(&test.state), "resource_root": repo}),
+                json!({"directories": [{"device_id": local_device_id(&test.state), "resource_root": repo}]}),
             ),
         )
         .await,

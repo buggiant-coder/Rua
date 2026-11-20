@@ -7,16 +7,7 @@ import {
   type LoaderFunctionArgs,
 } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import type { TFunction } from "i18next";
-import {
-  Archive,
-  Folder,
-  Pencil,
-  Plus,
-  RotateCcw,
-  Trash2,
-  WifiOff,
-} from "lucide-react";
+import { Archive, Folder, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
 
 import { projectsApi } from "@/api/modules/projects";
 import { invalidateConversationNavigation } from "@/layouts/conversationNavigationEvents";
@@ -300,6 +291,7 @@ export default function ProjectsPage({
 
       {renameProject && (
         <ProjectEditDialog
+          devices={devices}
           key={renameProject.project_id}
           project={renameProject}
           onClose={() => setRenameProject(null)}
@@ -388,8 +380,7 @@ function ProjectSection({
       </div>
       <div className={styles.projectList}>
         {projects.map((project) => {
-          const device = devicesById.get(project.resource_device_id);
-          const availability = connectivityMeta(device?.connectivity_state, t);
+          const directories = project.resources?.directories ?? [];
           return (
             <div
               id={`project-${project.project_id}`}
@@ -416,33 +407,42 @@ function ProjectSection({
                       <Tag>{t("projects.archived", "Archived")}</Tag>
                     ) : null}
                   </div>
-                  <code title={project.display_path}>
-                    {project.display_path}
-                  </code>
-                  <div className={styles.mobileAvailability}>
-                    <span
-                      className={`${styles.statusDot} ${
-                        styles[availability.dotClass]
-                      }`}
-                    />
-                    <span>{availability.label}</span>
-                  </div>
-                </div>
-                <div className={styles.projectDevice}>
-                  <span
-                    className={`${styles.statusDot} ${
-                      styles[availability.dotClass]
-                    }`}
-                  />
-                  <span>
-                    {device?.friendly_name ||
-                      device?.label ||
-                      project.resource_device_id}
-                  </span>
-                  <span className={styles.availabilityLabel}>
-                    {availability.label}
-                  </span>
-                  {availability.showOfflineIcon ? <WifiOff size={13} /> : null}
+                  {directories.length ? (
+                    directories.map((directory) => {
+                      const device = devicesById.get(directory.device_id);
+                      const state = device?.connectivity_state;
+                      const statusStyle =
+                        state === "connected"
+                          ? styles.statusOnline
+                          : state === "connecting"
+                          ? styles.statusWarning
+                          : styles.statusOffline;
+                      return (
+                        <div
+                          key={directory.directory_id}
+                          className={styles.resourceLine}
+                        >
+                          <span
+                            className={`${styles.statusDot} ${statusStyle}`}
+                            title={deviceConnectivityLabel(t, state)}
+                          />
+                          <span>
+                            {device?.friendly_name ||
+                              device?.label ||
+                              directory.device_id}
+                          </span>
+                          {directory.display_name && (
+                            <strong>{directory.display_name}</strong>
+                          )}
+                          <code title={directory.resource_root}>
+                            {directory.resource_root}
+                          </code>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <small>{t("projects.noResourceFolders")}</small>
+                  )}
                 </div>
               </button>
               <div className={styles.projectActions}>
@@ -503,35 +503,4 @@ function ProjectSection({
       </div>
     </section>
   );
-}
-
-function connectivityMeta(
-  state: DeviceDto["connectivity_state"] | undefined,
-  t: TFunction,
-): {
-  label: string;
-  dotClass: "statusOnline" | "statusOffline" | "statusWarning" | "statusDanger";
-  showOfflineIcon: boolean;
-} {
-  switch (state) {
-    case "connected":
-      return {
-        label: deviceConnectivityLabel(t, state),
-        dotClass: "statusOnline",
-        showOfflineIcon: false,
-      };
-    case "connecting":
-      return {
-        label: deviceConnectivityLabel(t, state),
-        dotClass: "statusWarning",
-        showOfflineIcon: false,
-      };
-    case "not_connected":
-    default:
-      return {
-        label: deviceConnectivityLabel(t, state),
-        dotClass: "statusOffline",
-        showOfflineIcon: true,
-      };
-  }
 }

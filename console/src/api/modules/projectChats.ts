@@ -74,7 +74,7 @@ export type ProjectResourcePolicyView = {
     dedicated_operations_root_confined: boolean;
     tool_guard_enabled: boolean;
     approval_mode: string;
-  };
+  } | null;
   pending_approval_count: number;
   chat_rule_count: number;
   agent_rule_count: number;

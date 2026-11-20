@@ -70,6 +70,8 @@ pub use turn_writer::TurnWriter;
 
 /// Device and native path captured for the Chat execution directory.
 pub const EXECUTION_DIRECTORY_KEY: &str = "execution_directory";
+/// Immutable resource association metadata recorded on a claimed Project Turn.
+pub const TURN_PROJECT_RESOURCES_KEY: &str = "turn_project_resources";
 
 /// Ordered changes to the selected Agent of a materialized Chat.
 pub const AGENT_SWITCH_EVENTS_KEY: &str = "agent_switch_events";

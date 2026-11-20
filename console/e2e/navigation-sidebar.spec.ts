@@ -17,8 +17,7 @@ const projects: ProjectDescriptor[] = [
   {
     project_id: "navigation-project",
     display_name: "导航改版",
-    resource_device_id: "desktop",
-    display_path: "/fixture/navigation",
+    resources: { revision: 1, directories: [] },
     lifecycle: "active",
     created_at: timestamp,
     updated_at: timestamp,
@@ -26,8 +25,7 @@ const projects: ProjectDescriptor[] = [
   {
     project_id: "second-project",
     display_name: "移动端计划",
-    resource_device_id: "desktop",
-    display_path: "/fixture/mobile",
+    resources: { revision: 1, directories: [] },
     lifecycle: "active",
     created_at: timestamp,
     updated_at: timestamp,

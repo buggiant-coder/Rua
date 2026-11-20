@@ -88,28 +88,27 @@ Details: [model knowledge and reasoning](docs/adr/0006-model-knowledge-catalog-a
 
 ## Chat identity, storage, and navigation
 
-Proposed evolution: [ADR 0059](docs/adr/0059-unified-chat-and-device-resources.md)
-explores unified Chat behavior with Agent-independent ownership, fixed optional
-Project membership, and resources across Devices. Its product-design interview
-concluded on 2026-11-20; the scoped definitions below remain the current contract
-pending technical design and implementation.
+[ADR 0059](docs/adr/0059-unified-chat-and-device-resources.md) records the
+unified Chat design. Chat identity, fixed Project membership, drafts, discovery,
+Agent switching, and the Project resource collection are implemented. Definitions
+marked as proposed describe later slices.
 
-**Chat Identity (proposed):** A Chat ID independently identifies one Chat within
+**Chat Identity:** A Chat ID independently identifies one Chat within
 a user's identity domain; Project membership and selected Agent are not parts of
 its canonical identity.
 
-**Project Membership (proposed):** A Chat's association with one Project, or no
+**Project Membership:** A Chat's association with one Project, or no
 Project, fixed when its new-Chat draft is established and preserved unchanged
 through materialization and the rest of its lifetime.
 
-**Chat Draft (proposed):** An unmaterialized Chat with an independent ID and fixed
+**Chat Draft:** An unmaterialized Chat with an independent ID and fixed
 Project membership. New-Chat drafts and input caches are organized by Project or
 no Project, while each Chat retains its own input. Agent changes do not change
 the cache association. Every New Chat action applies the current Agent Selector
 choice even when restoring a draft; fixed membership and input are retained.
 Existing lazy materialization behavior remains intact.
 
-**Unified Chat List (proposed):** A shared listing/search entry point across
+**Unified Chat List:** A shared listing/search entry point across
 Projects and unassigned Chats, retaining Project navigation and filtering by
 Project or currently selected Agent under the existing visibility rules.
 
@@ -130,7 +129,7 @@ is best effort: unreadable content is omitted without pausing the operation.
 Use these filenames consistently in user-facing discussion instead of introducing
 separate "rule file" or "shared description" concepts.
 
-**Project Resource Collection (proposed):** Zero or more Project-managed resource
+**Project Resource Collection:** Zero or more Project-managed resource
 associations shared by its Chats, with no Chat-specific additions or exclusions.
 A Project may exist without resources; Chats without a Project have no bound
 resource collection.
@@ -140,23 +139,23 @@ association data managed from any paired Device and synchronized, without a fixe
 management Device. New resource locations still require validation by their
 owning Device; metadata changes do not operate on source files.
 
-**Project Resource Identity (proposed):** A stable resource reference whose
+**Project Resource Identity:** A stable resource reference whose
 Device and root directory are not rebound in place. Changing either creates a
 new resource identity; renaming its display label preserves identity. This
 association identity is distinct from Agent-facing file locations, which use
 the owning Device and real filesystem path.
 
-**Resource Association Removal (proposed):** Removing a Project resource from
+**Resource Association Removal:** Removing a Project resource from
 future Turns while existing Turns/Tasks retain their captured references.
 Removal can proceed while the resource Device is offline if the Project update
 can be saved; it does not delete files, cancel work, revoke filesystem
 permissions, or change an independently selected Chat working directory.
 
-**Project Resource Authorization (proposed):** Resource access governed by the
+**Project Resource Authorization:** Resource access governed by the
 existing permission system, without separate per-resource read-only/read-write
 settings.
 
-**Chat Agent Switch (proposed):** Replacement of the Agent-contributed
+**Chat Agent Switch:** Replacement of the Agent-contributed
 configuration while retaining Chat model/thinking choices, execution position,
 Project membership, history, and attachments. Valid Agent configuration can be
 selected while optional Tool/MCP capabilities are temporarily unavailable;
@@ -251,26 +250,26 @@ Details: [address and lazy materialization](docs/adr/0018-chat-address-scope-and
 
 | Term | Meaning and boundary |
 |---|---|
-| **Chat** | The user-facing conversation with one immutable Scope, durable history, and Turns. Agent-Scoped and Project-Scoped Chats share one domain model; bare “session” is ambiguous. |
-| **Chat Scope / Chat Namespace** | The fixed Agent or Project storage/routing partition. Scope chooses Workspace, Chat Index, Media root, and Sync partition; it does not substitute for behavior policy or execution Authority. |
-| **Chat Address** | Complete immutable locator: `{agent_id, chat_id}` or `{project_id, chat_id}`. A Project Chat's selected Agent is not part of its address. |
-| **Chat ID** | UUID generated before navigation. Global uniqueness does not remove the need for complete scoped addresses in storage, controls, Tasks, approvals, and Sync. |
-| **Chat Policy** | Agent Assignment, Resource, and Authority Placement policies independent of storage Scope. Shared Chat logic evaluates policy without duplicating Agent/Project implementations. |
-| **Agent-Scoped Chat** | Chat in a fixed Agent Namespace, normally with fixed Agent selection and selectable execution Authority. Namespace membership does not give the Agent a second ownership of Chat state. |
-| **Project-Scoped Chat** | Chat in a Project Namespace, normally with selectable Agent and resource-bound Authority. Changing Agent never moves its storage or resource binding. |
+| **Chat** | A user-facing conversation with durable history, Turns and fixed optional Project membership. |
+| **Chat Scope / Chat Namespace** | Historical Agent and Project partitions in pre-migration data. New Chat storage and routing use the independent Chat ID. |
+| **Chat Address** | The independent Chat ID within the user’s identity domain. Project membership and the selected Agent are stored with the Chat. |
+| **Chat ID** | UUID allocated for a draft and retained after first submission, Agent switches and reopening. |
+| **Chat Policy** | Rules for Agent selection, resource membership and Authority placement, evaluated independently of storage. |
+| **Agent-Scoped Chat** | Earlier name for a Chat created outside a Project. Its current Agent can change under the normal admission rules. |
+| **Project-Scoped Chat** | Earlier name for a Chat with fixed Project membership. The selected Agent and initial execution Device are independent of the Project’s resource directories. |
 | **Chat Agent Selection** | The executor selected for future Turns under Chat policy. |
 | **Turn Agent Assignment** | Immutable executor choice captured for a claimed Turn; changing future selection does not relabel existing work. |
-| **Workspace Ownership / Chat Scope Store** | Scope determines the managed storage container; shared stores operate on a complete Chat Address without inventing a global Chat directory. |
+| **Workspace Ownership / Chat Scope Store** | The shared Chat store resolves history and list entries by independent Chat ID. Each Agent retains its own workspace for its configuration and prompt files. |
 | **Rua Root** | Rua's managed application-data root, distinct from any user's Project source directory. |
-| **Workspace Root** | Managed Agent or Project workspace for Chat data, Media, and related Rua-owned state. |
-| **Project Resource Root** | User directory on the Project Resource Device where execution operates; distinct from the managed Project Workspace. |
+| **Workspace Root** | A Rua-managed workspace directory. Agent configuration and prompt files use the Agent workspace. Chat headers and history use the Chat store. |
+| **Project Resource Root** | A directory identified by its owning Device and real absolute path. Multiple Devices can advertise the same path spelling. |
 | **Secret Root** | Secret-material root configured separately from Rua Root and Workspace paths. Its location does not determine each domain's replication policy. |
 | **Chat Media** | Scope-workspace attachments with portable `media/<uuid>` references. Foreground transfer routes to Authority; authority-switch readiness verifies Required Media separately from the Conversation Manifest. |
 | **Lazy Chat** | Valid scoped address before durable materialization. Read-only navigation/discovery and staged attachments do not create a Chat; the first accepted stateful operation materializes coherent state/configuration. |
 | **Chat Draft / Draft Agent Assignment** | Browser-local unsent input, attachments, and draft executor/options. Draft state is not saved history or execution Authority. |
 | **Empty Conversation State** | Valid empty/lazy presentation; it does not prove a backend Chat was created. |
 | **Active Chat** | Complete address selected by the route. Switching views detaches observation without stopping backend work. |
-| **Agent Chat Route / Project Chat Route** | Canonical `/agents/{agentId}/chats/{chatId}` and `/projects/{projectId}/chats/{chatId}` routes. Scope comes from the address, not a global selector. |
+| **Agent Chat Route / Project Chat Route** | The canonical Chat URL is `/chats/{chatId}`. Opening a Chat restores its saved Project membership and Agent selection. |
 | **Conversation Landing Resolution / Agent-Scoped Chat Navigation** | Resolve an entry action to a complete Agent Chat route before mounting its view, using validated per-Agent browser hints or a fresh Lazy Chat ID. |
 | **Chat Navigation Hint / Browser Last Active Chat / Recent Chat Stack** | Bounded browser-local per-Agent navigation hints. They are not backend metadata or saved-list ordering. |
 | **Active Project Resolution / Browser Project Navigation Hints** | Resolve Project entry/navigation from an explicit Project and validated browser-local hints, preserving the complete Project Chat Address. |
@@ -284,7 +283,7 @@ Details: [address and lazy materialization](docs/adr/0018-chat-address-scope-and
 | **Message Log** | Append-only raw chronology with stable message IDs and monotonic sequence numbers. Source for history, Recall, and Context Projection tail reads. |
 | **Turn Index / Turn Metadata** | Durable Turn/variant boundaries and lifecycle metadata, including selected response path and timing. |
 | **Message Metadata** | Message-level identity, Turn, role, timing/status, and provider/tool linkage for exact retrieval and audit. |
-| **Chat Index** | Repairable non-authoritative scoped list projection, not another owner of Session state. ADR-0021 remains Proposed. |
+| **Chat Index** | Repairable list and search projection across Chats. Session headers and history are authoritative. |
 | **Assistant Response Variant** | Regenerated candidate response for one Turn; the next user Turn commits the chosen path. |
 | **Conversation Branch Point** | Inclusive assistant response anchoring rollback/branch; later content is excluded. |
 | **Session Context Snapshot** | Persisted provenance of context that affected execution, rather than only a pointer to mutable Agent defaults. |
@@ -603,23 +602,24 @@ Details: [Cell Store](docs/adr/0004-config-persistence-cell-store.md).
 
 ## Project resources and lifecycle
 
-Details: [Project resources and organization](docs/adr/0019-project-scoped-chat-and-fixed-resource-binding.md),
+Details: [unified Chat and cross-device resources](docs/adr/0059-unified-chat-and-device-resources.md),
+[earlier Project organization](docs/adr/0019-project-scoped-chat-and-fixed-resource-binding.md),
 [Chat deletion proposal](docs/adr/0046-chat-deletion-tombstones-and-storage-accounting.md).
 
 | Term | Meaning and boundary |
 |---|---|
-| **Project / Project Descriptor / Project Catalog** | Synchronized logical context, portable listing metadata, and process-wide descriptor index. Directory content, Git state, and authoritative local paths are not synchronized Project metadata. |
-| **Project Resource Binding** | Resource-Device-local nonempty directory collection, stable directory IDs, primary ID, and revision. A Project uses one immutable resource Device; attached directories do not merge executable configuration. |
+| **Project / Project Descriptor / Project Catalog** | A Project organizes member Chats. Its portable descriptor carries its name, lifecycle and versioned resource collection. The catalog stores and synchronizes this metadata. |
+| **Project Resource Binding** | An association with one directory on its owning Device. Renaming preserves its ID. Replacing the Device or root creates a new ID. Each Project can hold zero or more associations. |
 | **Project Directory Picker** | Browses/creates an explicitly named child on that Device without overwrite or implicit ancestor creation. Android uses filesystem paths with native permissions, not SAF document URIs as bindings. |
-| **Project Primary Directory / Project Chat Working Directory** | Default for new Chats versus directory ID frozen at first accepted Submit. Changing the primary does not move existing Chats; collaborators inherit the source choice. |
-| **Project Resource Policy** | Working directory determines cwd; attached roots supply default writable scope. Reads may extend outside unless separately denied; outside writes require approval/permissive policy. |
+| **Chat Working Directory** | The Chat execution Device and working directory are independent of the Project resource collection. A resource edit preserves the location captured by existing work. |
+| **Project Resource Policy** | Existing Agent security settings and Tool Guard govern access. Attaching or detaching a directory only changes the references supplied to member Chats. |
 | **Project Approval Reuse** | Chat-scoped approvals follow full Project Chat Address across Agent switches; Agent-scoped approvals follow Agent. Archive/Reopen preserves Chat reuse; deletion removes it with Chat-owned data. |
 | **Project Sidebar Preferences** | User-owned pins/manual ordering independent of activity/descriptors, synchronized per preference record rather than replacing the whole sidebar. |
-| **Project Availability** | Current resource-serving ability. Unavailable Projects/history remain visible and drafts editable; Submit reports/blocks on the specific resource reason without creating a deferred job. |
-| **Project Chat Concurrency** | One Authority/Turn/queue per Chat, with no Project-wide execution lock. Separate working trees require distinct resource bindings/Projects. |
+| **Project Availability** | Availability is determined for each operation on its target Device. A missing resource can coexist with an active Project, readable history, and new Turns. |
+| **Project Chat Concurrency** | Each Chat has its own Authority, active Turn and queue. Resource edits can proceed while its Chats run. |
 | **Project Chat Archive** | Reversible individual Chat listing state, independent of Project Archive. “Clear Archive” is permanent deletion. |
 | **Archived Project / Project Archive Confirmation** | Project-wide stop of Turns, queues, waits, ACP work, and Tasks before reversible archive, with explicit stop counts when available. Preserve executor selection; revoked-Device exception follows ADR-0019. |
-| **Project Reopen** | Online resource validation then explicit return to active state. Does not restart stopped work, queues, approvals, or Tasks. |
+| **Project Reopen** | An explicit metadata change returns the Project to active status even when a resource Device is offline. Previously stopped work stays stopped. |
 | **Project Delete** | Confirmed permanent removal of an already archived Project and Rua-owned Chat data. Never modifies/deletes the bound source directories or Git repository. |
 | **Project Knowledge / Project Instructions / Project Skills** | Reviewable resource documents, selected-root `AGENTS.md`, and in-place `.agents/skills` discovery. Read on the resource Device; do not invent Project Memory or merge instructions from unrelated attached roots. |
 | **Pinned Chat Delete Protection** | Recheck synchronized local pin state at every permanent-delete entry point. |

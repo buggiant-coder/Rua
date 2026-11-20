@@ -59,37 +59,37 @@ async function mockProjectApis(page: Page) {
           {
             project_id: "project-rua",
             display_name: "rua-rust",
-            resource_device_id: "device-mac",
-            display_path:
-              "/Users/example/MyProjects/rua-rust-with-a-long-worktree-name",
+            resources: {
+              revision: 1,
+              directories: [
+                {
+                  directory_id: "folder",
+                  device_id: "device-mac",
+                  resource_root:
+                    "/Users/example/MyProjects/rua-rust-with-a-long-worktree-name",
+                },
+              ],
+            },
             lifecycle: "active",
             created_at: "2026-08-01T00:00:00Z",
             updated_at: "2026-08-01T00:00:00Z",
-            availability: {
-              project_id: "project-rua",
-              resource_device_id: "device-mac",
-              status: "available",
-              observed_at: "2026-08-01T00:00:00Z",
-              fresh: true,
-              detail: "resource Device and directory are available",
-            },
           },
           {
             project_id: "project-archive",
             display_name: "Archived mobile app",
-            resource_device_id: "device-phone",
-            display_path: "/sdcard/Projects/mobile-app",
+            resources: {
+              revision: 1,
+              directories: [
+                {
+                  directory_id: "folder",
+                  device_id: "device-phone",
+                  resource_root: "/sdcard/Projects/mobile-app",
+                },
+              ],
+            },
             lifecycle: "archived",
             created_at: "2026-07-01T00:00:00Z",
             updated_at: "2026-07-01T00:00:00Z",
-            availability: {
-              project_id: "project-archive",
-              resource_device_id: "device-phone",
-              status: "device_revoked",
-              observed_at: "2026-08-01T00:00:00Z",
-              fresh: true,
-              detail: "resource Device is not a current network member",
-            },
           },
         ],
       });
@@ -100,6 +100,7 @@ async function mockProjectApis(page: Page) {
         path: "/Users/example/MyProjects",
         parent_path: "/Users/example",
         proposed_name: "MyProjects",
+        roots: [],
         entries: [
           {
             name: "rua-rust",
@@ -141,19 +142,13 @@ async function inspectProjects(page: Page, mobile: boolean) {
       waitUntil: "networkidle",
     },
   );
-  await expect(page.getByText("rua-rust", { exact: true })).toBeVisible();
-  await expect(page.getByText("Archived mobile app")).toBeVisible();
   await expect(
-    page
-      .locator("span:visible")
-      .filter({ hasText: /Available|可用/ })
-      .first(),
+    page.getByText("rua-rust", { exact: true }).last(),
   ).toBeVisible();
+  await expect(page.getByText("Archived mobile app")).toBeVisible();
+  await expect(page.getByTitle(/^(Connected|已连接)$/).first()).toBeVisible();
   await expect(
-    page
-      .locator("span:visible")
-      .filter({ hasText: /Device removed|设备已移除/ })
-      .first(),
+    page.getByTitle(/^(Not connected|未连接)$/).first(),
   ).toBeVisible();
   await expectNoHorizontalScroll(page);
 
@@ -164,12 +159,17 @@ async function inspectProjects(page: Page, mobile: boolean) {
   await expect(
     page.getByRole("dialog").getByText(/New Project|新建项目/),
   ).toBeVisible();
-  await page.getByPlaceholder("~").fill("/Users/example/MyProjects");
-  await page.getByRole("button", { name: /Browse directory|浏览目录/ }).click();
-  await expect(page.getByText("current")).toBeVisible();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: /Add folder|添加文件夹/ })
+    .click();
+  const picker = page.getByRole("dialog");
   await expect(
-    page.locator('[aria-label="Symbolic link"], [aria-label="符号链接"]'),
-  ).toHaveCount(1);
+    picker.getByRole("button", { name: "current", exact: true }),
+  ).toBeVisible();
+  await expect(
+    picker.getByRole("button", { name: "rua-rust", exact: true }),
+  ).toBeVisible();
   await expectNoHorizontalScroll(page);
 
   const dialog = await page.getByRole("dialog").boundingBox();
@@ -198,4 +198,13 @@ test("Projects overview and creation dialog fit mobile", async ({
     path: testInfo.outputPath("projects-mobile.png"),
     fullPage: false,
   });
+  await page.goBack();
+  await expect(
+    page
+      .getByRole("dialog")
+      .getByRole("textbox", { name: /Display name|显示名称/ }),
+  ).toBeVisible();
+  await page.goBack();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page).toHaveURL(/\/projects\?/);
 });

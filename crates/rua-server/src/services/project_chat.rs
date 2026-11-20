@@ -12,31 +12,6 @@ use crate::services::conversation_authority::{
 };
 use crate::services::conversation_authority_placement::ConversationAuthorityPlacement;
 
-pub const PROJECT_WORKING_DIRECTORY_META_KEY: &str = "project_working_directory_id";
-
-/// Existing Chats retain their original directory; only drafts inherit the primary.
-pub fn working_directory(
-    binding: &rua_project::ProjectResourceBinding,
-    header: Option<&ChatSessionHeader>,
-    draft_directory_id: Option<&str>,
-) -> Result<PathBuf, String> {
-    let id = match header {
-        Some(header) => header
-            .extra
-            .get(PROJECT_WORKING_DIRECTORY_META_KEY)
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(rua_project::INITIAL_PROJECT_DIRECTORY_ID),
-        None => draft_directory_id.unwrap_or(&binding.resources.primary_directory_id),
-    };
-    let directory = binding
-        .resources
-        .directory(id)
-        .map_err(|error| error.to_string())?;
-    rua_project::validate_project_directory(&directory.resource_root)
-        .map_err(|error| error.to_string())?;
-    Ok(directory.resource_root.clone())
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChatAgentSelection {
     pub agent_id: String,
@@ -435,12 +410,12 @@ async fn stage_first_turn(
     .await?;
 
     let store = WorkspaceSessionStore::new(staging_root);
-    if let Some(directory_id) = input.extra.get(PROJECT_WORKING_DIRECTORY_META_KEY) {
+    if let Some(directory) = input.extra.get(rua_session::EXECUTION_DIRECTORY_KEY) {
         store
             .update_chat_header(address.chat_id().as_str(), |header| {
                 header.extra.insert(
-                    PROJECT_WORKING_DIRECTORY_META_KEY.into(),
-                    directory_id.clone(),
+                    rua_session::EXECUTION_DIRECTORY_KEY.into(),
+                    directory.clone(),
                 );
             })
             .await

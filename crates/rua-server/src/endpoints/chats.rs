@@ -2899,11 +2899,9 @@ async fn update_authority_placement_core(
     let address = rua_core::ChatAddress::new(chat_id);
     let service = rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(ws_dir));
     match service.policy(&address).await {
-        Ok(policy)
-            if policy.authority_placement == rua_chat::AuthorityPlacementPolicy::ResourceBound =>
-        {
+        Ok(policy) if policy.authority_placement == rua_chat::AuthorityPlacementPolicy::Fixed => {
             return ApiError::Conflict(
-                "Chat authority placement is bound to its Project resource Device".into(),
+                "Chat authority placement is fixed on its execution Device".into(),
             )
             .into_response();
         }

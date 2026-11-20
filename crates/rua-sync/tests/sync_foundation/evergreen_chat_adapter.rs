@@ -150,7 +150,7 @@ async fn scoped_round_trip_preserves_unified_chat_fields_and_compact_assignment(
         assert_eq!(
             header.extra["chat_policy"]["authority_placement"],
             if project_id.is_some() {
-                "resource_bound"
+                "fixed"
             } else {
                 "selectable"
             }
@@ -1021,9 +1021,8 @@ async fn inbound_writes_evergreen_files_without_legacy_flat_session() {
 #[tokio::test]
 async fn project_tombstone_rejects_later_evergreen_snapshot() {
     let data = tempfile::tempdir().unwrap();
-    let projects = rua_project::ProjectStores::open(data.path().join("projects")).unwrap();
+    let projects = rua_project::ProjectCatalog::open(data.path().join("projects")).unwrap();
     projects
-        .catalog
         .apply_tombstone(
             rua_core::ProjectId::new("deleted-project"),
             chrono::Utc::now(),

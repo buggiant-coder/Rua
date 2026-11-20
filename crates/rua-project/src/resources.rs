@@ -3,151 +3,174 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{normalize_project_root, validate_project_directory, ProjectError, ProjectResult};
+use crate::{ProjectError, ProjectResult};
 
-/// Stable within a Project, including records migrated from a single root.
-pub const INITIAL_PROJECT_DIRECTORY_ID: &str = "initial";
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectResourceDirectoryInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory_id: Option<String>,
+    pub device_id: String,
+    pub resource_root: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl ProjectResourceDirectoryInput {
+    pub fn new(device_id: impl Into<String>, resource_root: impl Into<PathBuf>) -> Self {
+        Self {
+            directory_id: None,
+            device_id: device_id.into(),
+            resource_root: resource_root.into(),
+            display_name: None,
+            extra: BTreeMap::new(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectResourceDirectory {
     pub directory_id: String,
+    pub device_id: String,
     pub resource_root: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     #[serde(default, flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectResources {
-    pub directories: Vec<ProjectResourceDirectory>,
-    pub primary_directory_id: String,
     pub revision: u64,
+    pub directories: Vec<ProjectResourceDirectory>,
     #[serde(default, flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
-impl ProjectResources {
-    pub fn create(paths: &[PathBuf], primary_index: usize) -> ProjectResult<Self> {
-        if paths.is_empty() || primary_index >= paths.len() {
-            return Err(ProjectError::InvalidResources(
-                "Select at least one directory and a primary from that collection".into(),
-            ));
-        }
-        let mut directories = Vec::with_capacity(paths.len());
-        for (index, path) in paths.iter().enumerate() {
-            let root = normalize_project_root(&path.to_string_lossy())?;
-            validate_project_directory(&root)?;
-            directories.push(ProjectResourceDirectory {
-                directory_id: if index == 0 {
-                    INITIAL_PROJECT_DIRECTORY_ID.to_string()
-                } else {
-                    uuid::Uuid::new_v4().to_string()
-                },
-                resource_root: root,
-                extra: BTreeMap::new(),
-            });
-        }
-        let resources = Self {
-            primary_directory_id: directories[primary_index].directory_id.clone(),
-            directories,
+impl Default for ProjectResources {
+    fn default() -> Self {
+        Self {
+            directories: Vec::new(),
             revision: 1,
             extra: BTreeMap::new(),
-        };
-        resources.validate()?;
-        Ok(resources)
+        }
+    }
+}
+
+impl ProjectResources {
+    pub fn create(directories: Vec<ProjectResourceDirectoryInput>) -> ProjectResult<Self> {
+        Self::default().build(directories, 1)
     }
 
-    pub fn edited(&self, paths: &[PathBuf], primary_index: usize) -> ProjectResult<Self> {
-        self.edited_with_directory_ids(paths, primary_index, &[])
-    }
-
-    /// Explicit IDs rebind existing directories without changing Chat references.
-    pub fn edited_with_directory_ids(
-        &self,
-        paths: &[PathBuf],
-        primary_index: usize,
-        directory_ids: &[Option<String>],
-    ) -> ProjectResult<Self> {
-        if !directory_ids.is_empty() && directory_ids.len() != paths.len() {
-            return Err(ProjectError::InvalidResources(
-                "Directory IDs must match the resource directory collection".into(),
-            ));
-        }
-        let mut updated = Self::create(paths, primary_index)?;
-        for (index, directory) in updated.directories.iter_mut().enumerate() {
-            let existing = match directory_ids.get(index).and_then(Option::as_deref) {
-                Some(id) => Some(self.directory(id)?),
-                None => self
-                    .directories
-                    .iter()
-                    .find(|old| old.resource_root == directory.resource_root),
-            };
-            if let Some(existing) = existing {
-                directory.directory_id = existing.directory_id.clone();
-                directory.extra = existing.extra.clone();
-            } else {
-                directory.directory_id = uuid::Uuid::new_v4().to_string();
-            }
-        }
-        updated.primary_directory_id = updated.directories[primary_index].directory_id.clone();
-        updated.revision = self
+    pub fn edited(&self, directories: Vec<ProjectResourceDirectoryInput>) -> ProjectResult<Self> {
+        let revision = self
             .revision
             .checked_add(1)
             .ok_or_else(|| ProjectError::InvalidResources("Resource revision exhausted".into()))?;
-        updated.extra = self.extra.clone();
-        updated.validate()?;
-        Ok(updated)
+        self.build(directories, revision)
     }
 
-    /// Migration preserves stored path identity even when the directory is offline.
-    pub fn from_legacy_root(resource_root: PathBuf) -> Self {
-        Self {
-            directories: vec![ProjectResourceDirectory {
-                directory_id: INITIAL_PROJECT_DIRECTORY_ID.to_string(),
-                resource_root,
-                extra: BTreeMap::new(),
-            }],
-            primary_directory_id: INITIAL_PROJECT_DIRECTORY_ID.to_string(),
-            revision: 1,
-            extra: BTreeMap::new(),
+    /// Owners validate new paths before this metadata-only operation.
+    fn build(
+        &self,
+        inputs: Vec<ProjectResourceDirectoryInput>,
+        revision: u64,
+    ) -> ProjectResult<Self> {
+        let mut directories = Vec::with_capacity(inputs.len());
+        let mut supplied_ids = HashSet::new();
+        for input in inputs {
+            let same_location = |d: &ProjectResourceDirectory| {
+                d.device_id == input.device_id
+                    && d.resource_root.as_os_str() == input.resource_root.as_os_str()
+            };
+            let existing = if let Some(id) = input.directory_id {
+                if !supplied_ids.insert(id.clone()) {
+                    return Err(ProjectError::InvalidResources(format!(
+                        "Repeated directory ID: {id}"
+                    )));
+                }
+                Some(self.directory(&id)?).filter(|d| same_location(d))
+            } else {
+                self.directories.iter().find(|d| same_location(d))
+            };
+            let mut extra = existing.map(|d| d.extra.clone()).unwrap_or_default();
+            extra.extend(input.extra);
+            directories.push(ProjectResourceDirectory {
+                directory_id: existing
+                    .map(|d| d.directory_id.clone())
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                device_id: input.device_id,
+                resource_root: input.resource_root,
+                display_name: input
+                    .display_name
+                    .map(|name| name.trim().to_owned())
+                    .filter(|name| !name.is_empty()),
+                extra,
+            });
         }
+        let result = Self {
+            revision,
+            directories,
+            extra: self.extra.clone(),
+        };
+        result.validate()?;
+        Ok(result)
     }
 
     pub fn validate(&self) -> ProjectResult<()> {
-        if self.revision == 0 || self.directories.is_empty() {
+        if self.revision == 0 {
             return Err(ProjectError::InvalidResources(
-                "Resource revision and directory collection must not be empty".into(),
+                "Resource revision must be positive".into(),
             ));
         }
         let mut ids = HashSet::new();
-        let mut paths = HashSet::new();
+        let mut locations = HashSet::new();
         for directory in &self.directories {
+            if directory.device_id.trim().is_empty() {
+                return Err(ProjectError::InvalidResourceDevice);
+            }
+            let path = directory.resource_root.to_str().unwrap_or_default();
             if directory.directory_id.trim().is_empty()
                 || !ids.insert(&directory.directory_id)
-                || !paths.insert(&directory.resource_root)
-                || !directory.resource_root.is_absolute()
+                || !locations.insert((&directory.device_id, path))
+                || !is_device_absolute_path(path)
             {
                 return Err(ProjectError::InvalidResources(
-                    "Directory IDs and absolute paths must be nonempty and unique within a Project"
+                    "Resource IDs and Device/absolute path pairs must be nonempty and unique"
                         .into(),
                 ));
             }
         }
-        self.primary()?;
         Ok(())
     }
 
     pub fn directory(&self, directory_id: &str) -> ProjectResult<&ProjectResourceDirectory> {
         self.directories
             .iter()
-            .find(|directory| directory.directory_id == directory_id)
+            .find(|d| d.directory_id == directory_id)
             .ok_or_else(|| {
                 ProjectError::InvalidResources(format!(
                     "Project directory does not exist: {directory_id}"
                 ))
             })
     }
+}
 
-    pub fn primary(&self) -> ProjectResult<&ProjectResourceDirectory> {
-        self.directory(&self.primary_directory_id)
+// A replica may run a different operating system from the validating Device.
+fn is_device_absolute_path(path: &str) -> bool {
+    if path.contains('\0') {
+        return false;
     }
+    let bytes = path.as_bytes();
+    path.starts_with('/')
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'/' | b'\\'))
+        || path.strip_prefix(r"\\").is_some_and(|unc| {
+            let mut components = unc.split('\\');
+            components.next().is_some_and(|server| !server.is_empty())
+                && components.next().is_some_and(|share| !share.is_empty())
+        })
 }

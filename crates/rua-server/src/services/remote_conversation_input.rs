@@ -74,6 +74,8 @@ pub struct RemoteConversationInputDeliveryOutcome {
 pub struct SourcePendingConversationInput {
     pub agent_id: String,
     pub authority_epoch: ConversationAuthorityEpoch,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_manifest_hash: Option<String>,
     pub address: ChatAddress,
     pub submission_id: String,
     pub input_id: String,
@@ -96,6 +98,7 @@ impl SourcePendingConversationInput {
         Self {
             agent_id: request.agent_id.clone(),
             authority_epoch: request.authority_epoch,
+            base_manifest_hash: Some(request.base_manifest_hash.clone()),
             address: request.address.clone(),
             submission_id: request.submission_id.clone(),
             input_id: ack.input_id.clone(),
@@ -286,9 +289,11 @@ impl RemoteConversationInputDelivery {
             .map(str::to_string)
             .unwrap_or_else(|| format!("submission-{}", uuid::Uuid::new_v4()));
         let mut metadata = serde_json::Map::new();
+        if let Some(project_id) = params.request.extra.get("project_id") {
+            metadata.insert("project_id".into(), project_id.clone());
+        }
         if params.materialize_conversation {
             for key in [
-                "project_id",
                 "collaboration_mode",
                 "harness_configuration",
                 "user_id",

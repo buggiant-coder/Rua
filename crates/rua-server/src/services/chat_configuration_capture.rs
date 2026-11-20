@@ -15,8 +15,7 @@ pub(crate) struct ChatConfigurationSelection {
     pub collaboration_mode: Value,
     pub harness_configuration: Option<Value>,
     pub authority_device_id: String,
-    pub project_working_directory_id: Option<String>,
-    pub standalone_working_dir: Option<std::path::PathBuf>,
+    pub execution_working_dir: Option<std::path::PathBuf>,
 }
 
 /// Captures resources without persisting or adopting the candidate configuration.
@@ -37,23 +36,13 @@ pub(crate) async fn capture_chat_configuration(
         .capability_configuration(project_root)
         .await
         .map_err(|error| error.to_string())?;
-    if project_root.is_some() {
-        let directory_id = selection
-            .project_working_directory_id
-            .ok_or("Project configuration requires a captured working directory identity")?;
-        capability_configuration.extra.insert(
-            super::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY.into(),
-            serde_json::json!(directory_id),
-        );
-    } else {
-        let cwd = selection
-            .standalone_working_dir
-            .unwrap_or_else(|| runtime.workspace_dir());
-        capability_configuration.extra.insert(
-            rua_session::EXECUTION_DIRECTORY_KEY.into(),
-            serde_json::json!({"device_id": selection.authority_device_id, "path": cwd}),
-        );
-    }
+    let cwd = selection
+        .execution_working_dir
+        .unwrap_or_else(|| runtime.workspace_dir());
+    capability_configuration.extra.insert(
+        rua_session::EXECUTION_DIRECTORY_KEY.into(),
+        serde_json::json!({"device_id":selection.authority_device_id, "path":cwd}),
+    );
     let prompt_file_content = super::console_chat::prompt_file_fragment_for_entries(
         &runtime.workspace_dir(),
         &assignment.system_prompt_files,

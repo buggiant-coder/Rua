@@ -297,9 +297,8 @@ async fn chat_tombstone_rejects_newer_index_upsert() {
 #[tokio::test]
 async fn project_tombstone_rejects_later_chat_index_upsert() {
     let data = tempfile::tempdir().unwrap();
-    let projects = rua_project::ProjectStores::open(data.path().join("projects")).unwrap();
+    let projects = rua_project::ProjectCatalog::open(data.path().join("projects")).unwrap();
     projects
-        .catalog
         .apply_tombstone(
             rua_core::ProjectId::new("deleted-project"),
             chrono::Utc::now(),

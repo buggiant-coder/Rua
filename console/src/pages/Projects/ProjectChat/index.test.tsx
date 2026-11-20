@@ -340,8 +340,16 @@ vi.mock("@/pages/Chat/tasks/TaskActivityDrawer", () => ({
 const project = {
   project_id: "project-1",
   display_name: "rua-rust",
-  resource_device_id: "resource-device",
-  display_path: "/repos/rua-rust",
+  resources: {
+    revision: 1,
+    directories: [
+      {
+        directory_id: "main",
+        device_id: "resource-device",
+        resource_root: "/repos/rua-rust",
+      },
+    ],
+  },
   lifecycle: "active" as const,
   created_at: "2026-08-01T00:00:00Z",
   updated_at: "2026-08-01T00:00:00Z",
@@ -351,7 +359,16 @@ const secondProject = {
   ...project,
   project_id: "project-2",
   display_name: "codex",
-  display_path: "/repos/codex",
+  resources: {
+    revision: 1,
+    directories: [
+      {
+        directory_id: "codex",
+        device_id: "other-device",
+        resource_root: "/repos/codex",
+      },
+    ],
+  },
 };
 
 describe("ProjectChat loader", () => {
@@ -566,10 +583,17 @@ describe("ProjectChatPage", () => {
         ...project,
         resources: {
           revision: 1,
-          primary_directory_id: "main",
           directories: [
-            { directory_id: "main", display_path: "/repo/main" },
-            { directory_id: "docs", display_path: "/repo/docs" },
+            {
+              directory_id: "main",
+              device_id: "resource-device",
+              resource_root: "/repo/main",
+            },
+            {
+              directory_id: "docs",
+              device_id: "phone",
+              resource_root: "/repo/docs",
+            },
           ],
         },
       } as typeof project,
@@ -594,7 +618,9 @@ describe("ProjectChatPage", () => {
     expect(await screen.findByText("Default Agent")).toBeVisible();
     expect(screen.getByText("rua-rust")).toBeVisible();
     expect(screen.queryByTitle("Resource · Connected")).not.toBeInTheDocument();
-    const deviceChip = screen.getByRole("button", { name: /Resource/ });
+    const deviceChip = screen.getByRole("button", {
+      name: /Execution device: This device/,
+    });
     expect(deviceChip).toHaveAttribute("aria-disabled", "true");
     fireEvent.click(deviceChip);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
@@ -632,7 +658,7 @@ describe("ProjectChatPage", () => {
       agentId: "default",
       target: { projectId: "project-1" },
       chatId: "chat-1",
-      targetDeviceId: "resource-device",
+      targetDeviceId: "controller",
     });
     expect(screen.queryByRole("menuitem", { name: "Archive" })).toBeNull();
   });
@@ -1226,28 +1252,41 @@ describe("ProjectChatPage", () => {
     }
   });
 
-  it("loads effective policy from the resource Device when Workspace opens", async () => {
-    renderPage({
-      project,
-      chatId: "chat-resource-policy",
-      initialHistory: materializedHistory(),
-    });
-    await screen.findByText("Default Agent");
+  it.each([
+    ["resource-write", "Resource write"],
+    [null, "Uses Agent permissions"],
+  ])(
+    "shows the effective permission summary and approval counts (%s)",
+    async (profile, expected) => {
+      if (profile === null)
+        projectChatsApiMock.getResourcePolicy.mockResolvedValue({
+          policy: null,
+          pending_approval_count: 1,
+          chat_rule_count: 2,
+          agent_rule_count: 3,
+        });
+      renderPage({
+        project,
+        chatId: "chat-resource-policy",
+        initialHistory: materializedHistory(),
+      });
+      await screen.findByText("Default Agent");
 
-    fireEvent.click(screen.getByRole("button", { name: "Workspace" }));
+      fireEvent.click(screen.getByRole("button", { name: "Workspace" }));
 
-    expect(await screen.findByText("AGENTS.md")).toBeVisible();
-    fireEvent.click(screen.getByRole("tab", { name: "Context" }));
-    expect(await screen.findByText("Resource write")).toBeVisible();
-    expect(projectChatsApiMock.getResourcePolicy).toHaveBeenCalledWith(
-      "project-1",
-      "chat-resource-policy",
-    );
-    expect(
-      screen.getByText("/repos/rua-rust", { selector: "code" }),
-    ).toBeVisible();
-    expect(screen.getByText("1 pending · 2 Chat · 3 Agent")).toBeVisible();
-  });
+      expect(await screen.findByText("AGENTS.md")).toBeVisible();
+      fireEvent.click(screen.getByRole("tab", { name: "Context" }));
+      expect(await screen.findByText(expected!)).toBeVisible();
+      expect(projectChatsApiMock.getResourcePolicy).toHaveBeenCalledWith(
+        "project-1",
+        "chat-resource-policy",
+      );
+      expect(
+        screen.getByText("/repos/rua-rust", { selector: "code" }),
+      ).toBeVisible();
+      expect(screen.getByText("1 pending · 2 Chat · 3 Agent")).toBeVisible();
+    },
+  );
 
   it("reuses Project header controls without exposing authority placement", async () => {
     renderPage({

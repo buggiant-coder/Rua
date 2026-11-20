@@ -1,3 +1,4 @@
+import english from "@/locales/en.json";
 import {
   fireEvent,
   render,
@@ -49,7 +50,7 @@ const { devicesApiMock, projectChatsApiMock, projectsApiMock, toastMock } =
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (_key: string, fallback?: unknown) =>
-      typeof fallback === "string" ? fallback : _key,
+      typeof fallback === "string" ? fallback : _key.split(".").reduce((value: any,k: string)=>value?.[k], english) ?? _key,
   }),
 }));
 
@@ -120,8 +121,7 @@ describe("ProjectsPage", () => {
       project: {
         project_id: "project-1",
         display_name: "rua",
-        resource_device_id: "device-a",
-        display_path: "/repos/rua",
+        resources: {revision:1,directories:[{directory_id:"first",device_id:"device-a",resource_root:"/repos/rua"}]},
         lifecycle: "active",
         created_at: "2026-08-01T00:00:00Z",
         updated_at: "2026-08-01T00:00:00Z",
@@ -132,8 +132,7 @@ describe("ProjectsPage", () => {
       project: {
         project_id: "project-archived",
         display_name: "Archived repo",
-        resource_device_id: "device-a",
-        display_path: "/repos/archived",
+        resources: {revision:1,directories:[{directory_id:"first",device_id:"device-a",resource_root:"/repos/archived"}]},
         lifecycle: "active",
         created_at: "2026-08-01T00:00:00Z",
         updated_at: "2026-08-01T01:00:00Z",
@@ -156,8 +155,7 @@ describe("ProjectsPage", () => {
       project: {
         project_id: projectId,
         display_name: "Active repo",
-        resource_device_id: "device-a",
-        display_path: "/repos/active",
+        resources: {revision:1,directories:[{directory_id:"first",device_id:"device-a",resource_root:"/repos/active"}]},
         lifecycle: "archived",
         created_at: "2026-08-01T00:00:00Z",
         updated_at: "2026-08-01T01:00:00Z",
@@ -176,29 +174,13 @@ describe("ProjectsPage", () => {
     renderProjects({ projects: [], devices: [onlineDevice] });
 
     fireEvent.click(screen.getAllByRole("button", { name: "New Project" })[0]);
-    const pathInput = screen.getByPlaceholderText("~");
-    fireEvent.change(pathInput, { target: { value: "/repos/rua" } });
-    fireEvent.click(screen.getByRole("button", { name: "Browse directory" }));
-
-    await waitFor(() => {
-      expect(projectsApiMock.browseDirectory).toHaveBeenCalledWith(
-        "device-a",
-        "/repos/rua",
-      );
-    });
-    expect(screen.getAllByRole("textbox")[0]).toHaveValue("rua");
-    expect(screen.getByText("src")).toBeVisible();
-
-    fireEvent.click(screen.getByRole("button", { name: "Create Project" }));
-
-    await waitFor(() => {
-      expect(projectsApiMock.create).toHaveBeenCalledWith(
-        "device-a",
-        "/repos/rua",
-        "rua",
-        0,
-      );
-    });
+    fireEvent.click(screen.getByRole("button", {name:"Add folder"}));
+    await waitFor(()=>expect(screen.getByRole("button",{name:"Add folder"})).toBeEnabled());
+    fireEvent.change(screen.getByPlaceholderText("~"),{target:{value:"/repos/rua"}});
+    fireEvent.click(screen.getByRole("button", {name:"Add folder"}));
+    await waitFor(()=>expect(screen.getByRole("textbox",{name:"Display name"})).toHaveValue("rua"));
+    fireEvent.click(screen.getByRole("button",{name:"Create Project"}));
+    await waitFor(()=>expect(projectsApiMock.create).toHaveBeenCalledWith("rua",[{device_id:"device-a",resource_root:"/repos/rua"}]));
     expect(await screen.findByText("rua")).toBeVisible();
     expect(toastMock.success).toHaveBeenCalledWith("Project created");
     expect(navigationChanged).toHaveBeenCalledExactlyOnceWith(
@@ -221,14 +203,7 @@ describe("ProjectsPage", () => {
     renderProjects({ projects: [], devices: [onlineDevice] });
 
     fireEvent.click(screen.getAllByRole("button", { name: "New Project" })[0]);
-    const browseButton = screen.getByRole("button", {
-      name: "Browse directory",
-    });
-
-    expect(screen.getByPlaceholderText("~")).toHaveValue("");
-    expect(browseButton).toBeEnabled();
-    fireEvent.click(browseButton);
-
+    fireEvent.click(screen.getByRole("button", {name:"Add folder"}));
     await waitFor(() => {
       expect(projectsApiMock.browseDirectory).toHaveBeenCalledWith(
         "device-a",
@@ -262,24 +237,15 @@ describe("ProjectsPage", () => {
     renderProjects({ projects: [], devices: [onlineDevice] });
 
     fireEvent.click(screen.getAllByRole("button", { name: "New Project" })[0]);
-    const displayNameInput = screen.getAllByRole("textbox")[0];
-    const pathInput = screen.getByPlaceholderText("~");
-    expect(
-      displayNameInput.compareDocumentPosition(pathInput) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    const name = screen.getByRole("textbox",{name:"Display name"});
+    fireEvent.change(name,{target:{value:"My folder collection"}});
+    fireEvent.click(screen.getByRole("button",{name:"Add folder"}));
+    await screen.findByText("rua");expect(screen.queryByText("notes.txt")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button",{name:"rua"}));
+    await waitFor(()=>expect(screen.getByRole("button",{name:"Add folder"})).toBeEnabled());
+    fireEvent.click(screen.getByRole("button",{name:"Add folder"}));
+    await waitFor(()=>expect(screen.getByRole("textbox",{name:"Display name"})).toHaveValue("My folder collection"));
 
-    fireEvent.change(pathInput, { target: { value: "/repos/ru" } });
-    const suggestion = await screen.findByRole("option", { name: /rua/ });
-    expect(projectsApiMock.browseDirectory).toHaveBeenCalledWith(
-      "device-a",
-      "/repos",
-    );
-    expect(screen.queryByRole("option", { name: /notes\.txt/ })).toBeNull();
-
-    fireEvent.click(suggestion);
-    expect(pathInput).toHaveValue("/repos/rua");
-    expect(displayNameInput).toHaveValue("rua");
   });
 
   it("keeps duplicate navigation explicit", async () => {
@@ -292,9 +258,7 @@ describe("ProjectsPage", () => {
     renderProjects({ projects: [], devices: [onlineDevice] });
 
     fireEvent.click(screen.getAllByRole("button", { name: "New Project" })[0]);
-    fireEvent.change(screen.getByPlaceholderText("~"), {
-      target: { value: "/repos/rua" },
-    });
+    fireEvent.change(screen.getByRole("textbox",{name:"Display name"}),{target:{value:"Existing"}});
     fireEvent.click(screen.getByRole("button", { name: "Create Project" }));
 
     expect(await screen.findByText("Project already exists")).toBeVisible();
@@ -314,8 +278,7 @@ describe("ProjectsPage", () => {
         {
           project_id: "project-missing",
           display_name: "Missing repo",
-          resource_device_id: "device-a",
-          display_path: "/repos/missing",
+          resources: {revision:1,directories:[{directory_id:"first",device_id:"device-a",resource_root:"/repos/missing"}]},
           lifecycle: "active",
           created_at: "2026-08-01T00:00:00Z",
           updated_at: "2026-08-01T00:00:00Z",
@@ -323,8 +286,7 @@ describe("ProjectsPage", () => {
         {
           project_id: "project-revoked",
           display_name: "Removed device repo",
-          resource_device_id: "device-removed",
-          display_path: "/repos/removed",
+          resources: {revision:1,directories:[{directory_id:"first",device_id:"device-removed",resource_root:"/repos/removed"}]},
           lifecycle: "active",
           created_at: "2026-08-01T00:00:00Z",
           updated_at: "2026-08-01T00:00:00Z",
@@ -332,16 +294,15 @@ describe("ProjectsPage", () => {
       ],
     });
 
-    expect(screen.getAllByText("Connected")).toHaveLength(2);
-    expect(screen.getAllByText("Not connected")).toHaveLength(2);
+    expect(screen.getByTitle("Connected")).toBeInTheDocument();
+    expect(screen.getByTitle("Not connected")).toBeInTheDocument();
   });
 
   it("opens an active Project with its validated browser-local Chat hint", async () => {
     const activeProject = {
       project_id: "project-active",
       display_name: "Active repo",
-      resource_device_id: "device-a",
-      display_path: "/repos/active",
+      resources: {revision:1,directories:[{directory_id:"first",device_id:"device-a",resource_root:"/repos/active"}]},
       lifecycle: "active" as const,
       created_at: "2026-08-01T00:00:00Z",
       updated_at: "2026-08-01T00:00:00Z",
@@ -363,8 +324,7 @@ describe("ProjectsPage", () => {
     const activeProject = {
       project_id: "project-active",
       display_name: "Active repo",
-      resource_device_id: "device-a",
-      display_path: "/repos/active",
+      resources: {revision:1,directories:[{directory_id:"first",device_id:"device-a",resource_root:"/repos/active"}]},
       lifecycle: "active" as const,
       created_at: "2026-08-01T00:00:00Z",
       updated_at: "2026-08-01T00:00:00Z",
@@ -403,8 +363,7 @@ describe("ProjectsPage", () => {
     const activeProject = {
       project_id: "project-active",
       display_name: "Active repo",
-      resource_device_id: "device-a",
-      display_path: "/repos/active",
+      resources: {revision:1,directories:[{directory_id:"first",device_id:"device-a",resource_root:"/repos/active"}]},
       lifecycle: "active" as const,
       created_at: "2026-08-01T00:00:00Z",
       updated_at: "2026-08-01T00:00:00Z",
@@ -429,8 +388,7 @@ describe("ProjectsPage", () => {
     const activeProject = {
       project_id: "project-active",
       display_name: "Active repo",
-      resource_device_id: "device-a",
-      display_path: "/repos/active",
+      resources: {revision:1,directories:[{directory_id:"first",device_id:"device-a",resource_root:"/repos/active"}]},
       lifecycle: "active" as const,
       created_at: "2026-08-01T00:00:00Z",
       updated_at: "2026-08-01T00:00:00Z",
@@ -452,8 +410,7 @@ describe("ProjectsPage", () => {
     const archivedProject = {
       project_id: "project-archived",
       display_name: "Archived repo",
-      resource_device_id: "device-a",
-      display_path: "/repos/archived",
+      resources: {revision:1,directories:[{directory_id:"first",device_id:"device-a",resource_root:"/repos/archived"}]},
       lifecycle: "archived" as const,
       created_at: "2026-08-01T00:00:00Z",
       updated_at: "2026-08-01T00:00:00Z",
@@ -475,8 +432,7 @@ describe("ProjectsPage", () => {
     const archivedProject = {
       project_id: "project-archived",
       display_name: "Archived repo",
-      resource_device_id: "device-a",
-      display_path: "/repos/archived",
+      resources: {revision:1,directories:[{directory_id:"first",device_id:"device-a",resource_root:"/repos/archived"}]},
       lifecycle: "archived" as const,
       created_at: "2026-08-01T00:00:00Z",
       updated_at: "2026-08-01T00:00:00Z",
@@ -501,8 +457,7 @@ describe("ProjectsPage", () => {
     const archivedProject = {
       project_id: "project-archived",
       display_name: "Archived repo",
-      resource_device_id: "device-a",
-      display_path: "/repos/archived",
+      resources: {revision:1,directories:[{directory_id:"first",device_id:"device-a",resource_root:"/repos/archived"}]},
       lifecycle: "archived" as const,
       created_at: "2026-08-01T00:00:00Z",
       updated_at: "2026-08-01T00:00:00Z",

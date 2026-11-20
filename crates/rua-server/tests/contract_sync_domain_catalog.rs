@@ -31,9 +31,9 @@ async fn export_catalog_registers_all_full_export_domains() {
     let blobs: rua_sync::endpoint::BlobsApiStore =
         iroh_blobs::store::mem::MemStore::default().into();
     let sync_key = rua_sync::crypto::SyncKey::from_bytes([9u8; 32]);
-    let project_catalog = rua_project::ProjectStores::open(data_dir.join("projects"))
-        .expect("Project stores")
-        .catalog;
+    let project_catalog = std::sync::Arc::new(
+        rua_project::ProjectCatalog::open(data_dir.join("projects")).expect("Project catalog"),
+    );
 
     let registry = build_export_registry(
         data_dir,
@@ -72,9 +72,9 @@ async fn apply_catalog_registers_all_inbound_apply_domains() {
     let blobs: rua_sync::endpoint::BlobsApiStore =
         iroh_blobs::store::mem::MemStore::default().into();
     let sync_key = rua_sync::crypto::SyncKey::from_bytes([9u8; 32]);
-    let project_catalog = rua_project::ProjectStores::open(data_dir.join("projects"))
-        .expect("Project stores")
-        .catalog;
+    let project_catalog = std::sync::Arc::new(
+        rua_project::ProjectCatalog::open(data_dir.join("projects")).expect("Project catalog"),
+    );
 
     let registry = build_apply_registry(
         data_dir,

@@ -94,6 +94,7 @@ export default function DirectoryPicker<T = unknown>({
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [highlightedSuggestion, setHighlightedSuggestion] = useState(-1);
   const requestIdRef = useRef(0);
+  const typedRevision = useRef(0);
   const browseRequestIdRef = useRef<number>();
 
   useEffect(() => {
@@ -117,13 +118,15 @@ export default function DirectoryPicker<T = unknown>({
   const loadListing = useCallback(
     async (path: string, updateValue = true) => {
       const requestId = ++requestIdRef.current;
+      const inputRevision = typedRevision.current;
       setLoading(true);
       try {
         const next = await browse(path);
         if (requestId !== requestIdRef.current) return;
         setListing(next);
         onListingChange?.(next);
-        if (updateValue) onChange(next.path);
+        if (updateValue && inputRevision === typedRevision.current)
+          onChange(next.path);
       } catch (error) {
         if (requestId === requestIdRef.current) reportError(error);
       } finally {
@@ -228,7 +231,10 @@ export default function DirectoryPicker<T = unknown>({
             id={id}
             name={name}
             value={value}
-            onChange={(event) => onChange(event.target.value)}
+            onChange={(event) => {
+              typedRevision.current++;
+              onChange(event.target.value);
+            }}
             onFocus={() => setSuggestionsOpen(suggestions.length > 0)}
             onBlur={() =>
               window.setTimeout(() => setSuggestionsOpen(false), 100)

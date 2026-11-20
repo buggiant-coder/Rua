@@ -6,6 +6,7 @@ import type {
   ProjectArchiveResult,
   ProjectCreationOutcome,
   ProjectDescriptor,
+  ProjectResourceInput,
   ProjectDirectoryListing,
   ProjectGitStatus,
   ProjectGitHistoryPage,
@@ -44,25 +45,25 @@ export const projectsApi = {
       )}&path=${encodeURIComponent(path)}`,
     ),
 
-  getGitStatus: (projectId: string, directoryId?: string) =>
+  getGitStatus: (projectId: string, directoryId: string) =>
     request<ProjectGitStatus>(
-      `/projects/${encodeURIComponent(projectId)}/workspace/git${
-        directoryId ? `?directory_id=${encodeURIComponent(directoryId)}` : ""
-      }`,
+      `/projects/${encodeURIComponent(
+        projectId,
+      )}/workspace/git?directory_id=${encodeURIComponent(directoryId)}`,
     ),
 
   getGitHistory: (
     projectId: string,
+    directoryId: string,
     offset = 0,
     limit = 30,
-    directoryId?: string,
   ) =>
     request<ProjectGitHistoryPage>(
       `/projects/${encodeURIComponent(
         projectId,
-      )}/workspace/git/history?offset=${offset}&limit=${limit}${
-        directoryId ? `&directory_id=${encodeURIComponent(directoryId)}` : ""
-      }`,
+      )}/workspace/git/history?offset=${offset}&limit=${limit}&directory_id=${encodeURIComponent(
+        directoryId,
+      )}`,
     ),
 
   browseDirectory: (deviceId: string, path: string) =>
@@ -77,29 +78,16 @@ export const projectsApi = {
       body: JSON.stringify({ device_id: deviceId, parent, name }),
     }),
 
-  create: (
-    resourceDeviceId: string,
-    resourceRoot: string | string[],
-    displayName?: string,
-    primaryIndex = 0,
-  ) =>
+  create: (displayName: string, directories: ProjectResourceInput[]) =>
     request<ProjectCreationOutcome>("/projects", {
       method: "POST",
-      body: JSON.stringify({
-        resource_device_id: resourceDeviceId,
-        ...(Array.isArray(resourceRoot)
-          ? { resource_roots: resourceRoot, primary_index: primaryIndex }
-          : { resource_root: resourceRoot }),
-        display_name: displayName,
-      }),
+      body: JSON.stringify({ display_name: displayName, directories }),
     }),
 
   editResources: (
     projectId: string,
     expectedRevision: number,
-    resourceRoots: string[],
-    primaryIndex: number,
-    directoryIds?: Array<string | null>,
+    directories: ProjectResourceInput[],
   ) =>
     request<ProjectCreationOutcome>(
       `/projects/${encodeURIComponent(projectId)}/resources`,
@@ -107,25 +95,7 @@ export const projectsApi = {
         method: "PATCH",
         body: JSON.stringify({
           expected_revision: expectedRevision,
-          resource_roots: resourceRoots,
-          primary_index: primaryIndex,
-          ...(directoryIds ? { directory_ids: directoryIds } : {}),
-        }),
-      },
-    ),
-
-  setPrimaryDirectory: (
-    projectId: string,
-    expectedRevision: number,
-    directoryId: string,
-  ) =>
-    request<ProjectDescriptor>(
-      `/projects/${encodeURIComponent(projectId)}/resources/primary`,
-      {
-        method: "PATCH",
-        body: JSON.stringify({
-          expected_revision: expectedRevision,
-          directory_id: directoryId,
+          directories,
         }),
       },
     ),

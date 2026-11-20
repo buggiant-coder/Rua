@@ -706,11 +706,7 @@ impl CollaborationService {
             return Err("Source Chat is not authoritative on this Device".into());
         }
         self.intake
-            .validate_collaboration_resource(
-                &caller.address,
-                &current_device_id,
-                &caller.working_dir,
-            )
+            .validate_collaboration_project(&caller.address)
             .await?;
         Ok(configuration)
     }
@@ -1048,7 +1044,7 @@ impl CollaborationService {
         ) {
             if let Some(project_id) = project_id {
                 self.intake
-                    .validate_acp_project_resources(&rua_core::ProjectId::new(project_id))?;
+                    .require_existing_project(&rua_core::ProjectId::new(project_id))?;
             }
         }
         let gate = self.gate(&caller.address).await;
@@ -1158,20 +1154,10 @@ impl CollaborationService {
                 .extra
                 .insert("selected_agent_id".into(), serde_json::json!(agent_id));
             header.project_id = source_header.project_id.clone();
-            let (directory_key, directory) = if project_id.is_some() {
-                let key = super::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY;
-                let id = source_header.extra.get(key).cloned().unwrap_or_else(|| {
-                    serde_json::json!(rua_project::INITIAL_PROJECT_DIRECTORY_ID)
-                });
-                (key, id)
-            } else {
-                (
-                    rua_session::EXECUTION_DIRECTORY_KEY,
-                    serde_json::json!({
-                        "device_id": self.current_device_id(), "path": caller.working_dir
-                    }),
-                )
-            };
+            let directory_key = rua_session::EXECUTION_DIRECTORY_KEY;
+            let directory = serde_json::json!({
+                "device_id": self.current_device_id(), "path": caller.working_dir
+            });
             configuration
                 .capability_configuration
                 .as_mut()
@@ -1450,7 +1436,9 @@ impl CollaborationService {
                     let (turn, _) = super::console_chat::build_submitted_user_turn(&configuration.selected_agent_id, &input, &persist_placement.device_id, super::console_chat::SubmittedUserTurnMetadata {
                         turn_id: Some(&accepted.turn_id), input_id: Some(&accepted.input_id), acceptance_mode: Some("started"),
                         submission_id: Some(&persisted_record.request_id), device_delivery: None, acp_origin_runner: None,
-                        memory_signal: None, turn_agent_assignment: Some(&assignment), turn_model: model.as_ref(), turn_thinking: thinking.as_ref(),
+                        memory_signal: None,
+                        project_resources: pending.extra.get(rua_session::TURN_PROJECT_RESOURCES_KEY),
+                        turn_agent_assignment: Some(&assignment), turn_model: model.as_ref(), turn_thinking: thinking.as_ref(),
                         collaboration_mode: serde_json::from_value(configuration.collaboration_mode).map_err(|e| e.to_string())?,
                         authority_device_id: &persist_placement.device_id, authority_epoch: persist_placement.authority_epoch,
                     }).map_err(|e| e.to_string())?.ok_or("Empty collaboration input")?;

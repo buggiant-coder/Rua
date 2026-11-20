@@ -1,16 +1,4 @@
-//! Project control target preparation.
-//!
-//! A Project Chat is a fixed-resource conversation: its Conversation Authority is
-//! always the Project's resource Device, its Agent Selection belongs to the Chat,
-//! and its authority Epoch is only known from the resource Device. Callers express
-//! a Project id plus a Chat id and receive the complete typed control target; they
-//! never assemble discovery, materialization, or placement steps themselves.
-//!
-//! Preparation is strictly read-only. It never creates a Chat, never writes a Chat
-//! header or configuration, and never installs an authority placement: an
-//! unmaterialized Project Chat stays absent, and materialization belongs to the
-//! first accepted input. The initial zero-Epoch discovery envelope is a read-only
-//! protocol detail, not an authority grant.
+//! Resolve controls from the existing Chat's saved Project membership and authority placement.
 
 use std::path::{Path, PathBuf};
 
@@ -30,12 +18,6 @@ use crate::services::device_command_bus::{
 use crate::services::device_context::current_sync_device_id;
 use crate::state::AppState;
 
-/// Reason the resource Device reports for a Project Chat that has no Chat state.
-const PROJECT_CHAT_NOT_FOUND_REASON: &str = "project_chat_not_found";
-
-const PROJECT_AUTHORITY_FIXED_DETAIL: &str =
-    "Project Chat authority is fixed to its resource Device";
-
 /// Failure to prepare or drive a Project control target.
 ///
 /// The domain distinguishes what the caller can still act on; HTTP status mapping
@@ -54,15 +36,14 @@ pub enum ProjectControlError {
     Store(String),
     #[error("Project Chat not found: {chat_id}")]
     ProjectChatNotFound { chat_id: String },
-    /// The resource Device rejected the control; the reason and detail are part of
+    /// The authority Device rejected the control; the reason and detail are part of
     /// the device control contract.
     #[error("{detail}")]
     Rejected { reason: String, detail: String },
-    /// The resource Device answered with a control view that contradicts the
-    /// Project fixed-resource rule.
+    /// The stored Chat authority placement is missing or invalid.
     #[error("{0}")]
     InvalidAuthorityState(String),
-    /// The resource Device could not be reached or could not answer completely.
+    /// The authority Device could not be reached or could not answer completely.
     #[error("{0}")]
     Unavailable(String),
     #[error("{0}")]
@@ -80,12 +61,6 @@ impl ProjectControlError {
             DeviceCommandDeliveryError::Rejected { reason, detail } => {
                 Self::Rejected { reason, detail }
             }
-            // A Project Chat never follows a redirect, so a redirect here can only
-            // mean the responder does not honour its fixed resource Device.
-            DeviceCommandDeliveryError::AuthorityRedirect(_) => Self::Rejected {
-                reason: "project_authority_fixed".to_string(),
-                detail: PROJECT_AUTHORITY_FIXED_DETAIL.to_string(),
-            },
             other => Self::Unavailable(other.to_string()),
         }
     }
@@ -93,16 +68,14 @@ impl ProjectControlError {
 
 /// Prepared control target for one existing Project Chat.
 ///
-/// Holding this value means the Project is Active, the Chat exists on its resource
-/// Device, and the resource Device confirmed the fixed authority placement for the
-/// selected Agent.
+/// The saved Chat belongs to the Active Project and identifies the Agent and authority Device.
 #[derive(Debug, Clone)]
 pub struct ProjectControlTarget {
     address: ChatAddress,
     scope_root: PathBuf,
     agent_id: String,
     source_device_id: String,
-    resource_device_id: String,
+    authority_device_id: String,
     authority_epoch: ConversationAuthorityEpoch,
 }
 
@@ -133,7 +106,7 @@ impl ProjectControlTarget {
             agent_id: self.agent_id.clone(),
             address: self.address.clone(),
             source_device_id: self.source_device_id.clone(),
-            target_device_id: self.resource_device_id.clone(),
+            target_device_id: self.authority_device_id.clone(),
             authority_epoch: self.authority_epoch,
             action,
         };
@@ -152,7 +125,7 @@ impl ProjectControlTarget {
             agent_id: self.agent_id.clone(),
             address: self.address.clone(),
             source_device_id: self.source_device_id.clone(),
-            target_device_id: self.resource_device_id.clone(),
+            target_device_id: self.authority_device_id.clone(),
             authority_epoch: self.authority_epoch,
             action,
         };
@@ -179,7 +152,7 @@ pub async fn resolve_project_control_target(
 
 /// Resolve the control target of a Project Chat that may not exist yet.
 ///
-/// `Ok(None)` means the Chat is not materialized on its resource Device. Read-only
+/// `Ok(None)` means the Chat is not materialized in the local replica. Read-only
 /// operations that are meaningful without a Chat use this; control operations use
 /// [`resolve_project_control_target`] instead.
 pub async fn resolve_optional_project_control_target(
@@ -214,73 +187,27 @@ async fn resolve_target(
         .to_path_buf();
     let source_device_id = current_sync_device_id(&state.sync_device)
         .ok_or(ProjectControlError::MissingDeviceIdentity)?;
-    let command = ConversationControlDeviceCommand {
-        command_id: format!("project-control-discover-{}", uuid::Uuid::new_v4()),
-        agent_id: String::new(),
-        address: address.clone(),
-        source_device_id: source_device_id.clone(),
-        target_device_id: project.resource_device_id.clone(),
-        authority_epoch: ConversationAuthorityEpoch::from_parts(0, 0, [0; 8]),
-        action: ConversationControlDeviceAction::Discover,
-    };
-    let response =
-        match dispatch_conversation_control(&state.conversation_input_intake, command).await {
-            Ok(response) => response,
-            Err(DeviceCommandDeliveryError::Rejected { reason, .. })
-                if reason == PROJECT_CHAT_NOT_FOUND_REASON =>
-            {
-                return Ok(None)
-            }
-            Err(error) => return Err(ProjectControlError::from_delivery(error)),
-        };
-    let ConversationControlDeviceResponse::View {
-        control,
-        execution_agent_id,
-        ..
-    } = response
+    let Some(header) =
+        crate::services::chat_context::load_live_chat_header(&state.rua_root, &chat_id)
+            .await
+            .map_err(|e| ProjectControlError::Store(e.to_string()))?
     else {
-        return Err(ProjectControlError::UnexpectedResponse(
-            "Project control discovery returned an unexpected response".to_string(),
-        ));
+        return Ok(None);
     };
-    let authority_device_id = control
-        .placement
-        .authority_device_id
-        .as_deref()
-        .or(control.authority_device_id.as_deref())
-        .ok_or_else(|| {
-            ProjectControlError::Unavailable(
-                "Project control discovery did not identify an authority Device".to_string(),
-            )
-        })?;
-    if authority_device_id != project.resource_device_id {
-        return Err(ProjectControlError::InvalidAuthorityState(
-            "Project Chat authority does not match its resource Device".to_string(),
-        ));
+    if header.project_id.as_deref() != Some(project_id.as_str()) {
+        return Ok(None);
     }
-    if control.placement.switchable {
-        return Err(ProjectControlError::InvalidAuthorityState(
-            "Project Chat authority must not be switchable".to_string(),
-        ));
-    }
-    let authority_epoch = control.placement.authority_epoch.ok_or_else(|| {
-        ProjectControlError::Unavailable(
-            "Project control discovery did not identify an authority Epoch".to_string(),
+    let placement =
+        crate::services::conversation_authority_placement::parse_conversation_authority_placement(
+            &serde_json::Value::Object(header.extra),
         )
-    })?;
-    let agent_id = execution_agent_id
-        .filter(|agent_id| !agent_id.trim().is_empty())
-        .ok_or_else(|| {
-            ProjectControlError::Unavailable(
-                "Project control discovery did not identify the selected Agent".to_string(),
-            )
-        })?;
+        .map_err(|e| ProjectControlError::InvalidAuthorityState(e.to_string()))?;
     Ok(Some(ProjectControlTarget {
         address,
         scope_root,
-        agent_id,
+        agent_id: header.agent_id,
         source_device_id,
-        resource_device_id: project.resource_device_id,
-        authority_epoch,
+        authority_device_id: placement.device_id,
+        authority_epoch: placement.authority_epoch,
     }))
 }

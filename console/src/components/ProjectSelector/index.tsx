@@ -17,7 +17,6 @@ import styles from "./index.module.less";
 export interface ProjectSelectorProps {
   currentProject: ProjectDescriptor | null;
   projects: ProjectDescriptor[];
-  projectDeviceLabel?: (project: ProjectDescriptor) => string;
   onSelect: (project: ProjectDescriptor) => void | Promise<void>;
   onSelectIndependent?: () => void | Promise<void>;
   onCreate?: () => void;
@@ -27,7 +26,6 @@ export interface ProjectSelectorProps {
 export default function ProjectSelector({
   currentProject,
   projects,
-  projectDeviceLabel,
   onSelect,
   onSelectIndependent,
   onCreate,
@@ -152,15 +150,12 @@ export default function ProjectSelector({
               </span>
               <span className={styles.projectOptionCopy}>
                 <strong>{project.display_name}</strong>
-                <small title={project.display_path}>
-                  {project.display_path}
+                <small>
+                  {t("projects.resourceCount", {
+                    count: project.resources?.directories.length ?? 0,
+                  })}
                 </small>
               </span>
-              {projectDeviceLabel && (
-                <span className={styles.projectOptionDevice}>
-                  {projectDeviceLabel(project)}
-                </span>
-              )}
               {active ? <Check size={15} /> : null}
             </button>
           );

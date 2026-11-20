@@ -1,14 +1,22 @@
 export type ProjectLifecycle = "active" | "archived";
 
+export interface ProjectResourceInput {
+  directory_id?: string;
+  device_id: string;
+  resource_root: string;
+  display_name?: string;
+}
+
+export interface ProjectResourceDirectory extends ProjectResourceInput {
+  directory_id: string;
+}
+
 export interface ProjectDescriptor {
   project_id: string;
   display_name: string;
-  resource_device_id: string;
-  display_path: string;
-  resources?: {
+  resources: {
     revision: number;
-    primary_directory_id: string;
-    directories: Array<{ directory_id: string; display_path: string }>;
+    directories: ProjectResourceDirectory[];
   };
   lifecycle: ProjectLifecycle;
   created_at: string;

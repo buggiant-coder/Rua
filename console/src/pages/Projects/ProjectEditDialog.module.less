@@ -34,50 +34,13 @@
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-md);
   background: var(--surface);
-  &[data-primary="true"] {
-    border-color: color-mix(in srgb, var(--primary) 35%, var(--border-soft));
-  }
-}
-.folderChoice {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 1;
-  min-width: 0;
-  cursor: pointer;
-  input {
-    margin: 0;
-    accent-color: var(--primary);
-    flex-shrink: 0;
-  }
-  svg {
-    flex-shrink: 0;
-    color: var(--text-3);
-  }
 }
 .folderDetails {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
-}
-.folderName {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-size: 14px;
-  font-weight: 500;
-  overflow-wrap: anywhere;
-}
-.primaryBadge {
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--primary-bg);
-  color: var(--primary);
-  font-size: 11px;
-  font-weight: 400;
-  white-space: nowrap;
 }
 .folderPath {
   font-size: 12px;
@@ -106,7 +69,6 @@
     cursor: default;
   }
 }
-.folderChoice input:focus-visible,
 .removeFolder:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 3px;
@@ -114,8 +76,5 @@
 @media (max-width: 480px) {
   .folderRow {
     padding: 10px 8px;
-  }
-  .folderChoice {
-    gap: 7px;
   }
 }

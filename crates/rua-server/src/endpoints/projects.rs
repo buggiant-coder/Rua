@@ -15,9 +15,7 @@ use crate::services::device_command_bus::{
 use crate::services::project_control::{
     resolve_project_control_target, ProjectControlError, ProjectControlTarget,
 };
-use crate::services::projects::{
-    ProjectCreateResolution, ProjectPlacementError, ProjectPlacementService,
-};
+use crate::services::projects::{ProjectPlacementError, ProjectPlacementService};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -28,10 +26,6 @@ pub fn router() -> Router<AppState> {
             get(get_project_sidebar).patch(update_project_sidebar),
         )
         .route("/projects/{projectId}/resources", patch(edit_resources))
-        .route(
-            "/projects/{projectId}/resources/primary",
-            patch(set_primary_directory),
-        )
         .route(
             "/projects/{projectId}/workspace/files",
             get(get_project_files),
@@ -167,13 +161,7 @@ struct BrowseDirectoryResponse {
 
 #[derive(Debug, Deserialize)]
 struct CreateProjectRequest {
-    resource_device_id: String,
-    #[serde(default)]
-    resource_root: Option<String>,
-    #[serde(default)]
-    resource_roots: Option<Vec<String>>,
-    #[serde(default)]
-    primary_index: usize,
+    directories: Vec<rua_project::ProjectResourceDirectoryInput>,
     #[serde(default)]
     display_name: Option<String>,
 }
@@ -491,10 +479,7 @@ async fn get_project_git_status(
             Err(error) => placement_error(error),
         };
     }
-    match service.git_status(&project).await {
-        Ok(status) => Json(status).into_response(),
-        Err(error) => placement_error(error),
-    }
+    ApiError::BadRequest("directory_id is required".into()).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -542,65 +527,22 @@ async fn get_project_git_history(
             Err(error) => placement_error(error),
         };
     }
-    match service
-        .git_history(&project, query.offset, query.limit.clamp(1, 100))
-        .await
-    {
-        Ok(history) => Json(history).into_response(),
-        Err(error) => placement_error(error),
-    }
+    ApiError::BadRequest("directory_id is required".into()).into_response()
 }
 
 async fn create_project(
     State(state): State<AppState>,
     Json(body): Json<CreateProjectRequest>,
 ) -> Response {
-    if body.resource_root.is_none() && body.resource_roots.is_none() {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"detail": "resource_roots or resource_root is required"})),
-        )
-            .into_response();
-    }
-    if body.resource_device_id.trim().is_empty()
-        || (body.resource_root.is_some() && body.resource_roots.is_some())
-    {
-        return ApiError::BadRequest(
-            "Provide a resource Device and either resource_roots or a legacy resource_root".into(),
-        )
-        .into_response();
-    }
-    let resource_roots = match body.resource_root {
-        Some(root) => vec![root],
-        None => body.resource_roots.unwrap_or_default(),
-    };
-    if resource_roots.is_empty()
-        || resource_roots.iter().any(|root| root.trim().is_empty())
-        || body.primary_index >= resource_roots.len()
-    {
-        return ApiError::BadRequest(
-            "Select nonempty resource directories and a valid primary index".into(),
-        )
-        .into_response();
-    }
     let service = match ProjectPlacementService::from_state(&state) {
         Ok(service) => service,
         Err(error) => return placement_error(error),
     };
     match service
-        .create(
-            body.resource_device_id.trim(),
-            &resource_roots,
-            body.primary_index,
-            body.display_name,
-            &state,
-        )
+        .create(body.directories, body.display_name, &state)
         .await
     {
-        Ok(ProjectCreateResolution::Created(outcome)) => {
-            (StatusCode::CREATED, Json(outcome)).into_response()
-        }
-        Ok(ProjectCreateResolution::Duplicate(owner)) => duplicate_response(owner),
+        Ok(outcome) => (StatusCode::CREATED, Json(outcome)).into_response(),
         Err(error) => placement_error(error),
     }
 }
@@ -608,10 +550,7 @@ async fn create_project(
 #[derive(Deserialize)]
 struct EditResourcesRequest {
     expected_revision: u64,
-    resource_roots: Vec<std::path::PathBuf>,
-    primary_index: usize,
-    #[serde(default)]
-    directory_ids: Vec<Option<String>>,
+    directories: Vec<rua_project::ProjectResourceDirectoryInput>,
 }
 
 async fn edit_resources(
@@ -627,43 +566,12 @@ async fn edit_resources(
         .edit_resources(
             &ProjectId::new(project_id),
             body.expected_revision,
-            &body.resource_roots,
-            body.primary_index,
-            &body.directory_ids,
+            body.directories,
             &state,
         )
         .await
     {
         Ok(outcome) => Json(outcome).into_response(),
-        Err(error) => placement_error(error),
-    }
-}
-
-#[derive(Deserialize)]
-struct SetPrimaryDirectoryRequest {
-    expected_revision: u64,
-    directory_id: String,
-}
-
-async fn set_primary_directory(
-    State(state): State<AppState>,
-    Path(project_id): Path<String>,
-    Json(body): Json<SetPrimaryDirectoryRequest>,
-) -> Response {
-    let service = match ProjectPlacementService::from_state(&state) {
-        Ok(service) => service,
-        Err(error) => return placement_error(error),
-    };
-    match service
-        .set_primary_directory(
-            &ProjectId::new(project_id),
-            body.expected_revision,
-            &body.directory_id,
-            &state,
-        )
-        .await
-    {
-        Ok(project) => Json(project).into_response(),
         Err(error) => placement_error(error),
     }
 }
@@ -794,7 +702,17 @@ async fn update_project_chat(
             .into_response();
     };
 
-    let result = if source_device_id == project.resource_device_id {
+    let placement =
+        match crate::services::conversation_authority_target::load_chat_authority_placement_target(
+            state.chat_workspace().as_path(),
+            &chat_id,
+        )
+        .await
+        {
+            Ok(placement) => placement,
+            Err(error) => return ApiError::Conflict(error).into_response(),
+        };
+    let result = if source_device_id == placement.device_id {
         state
             .conversation_input_intake
             .update_project_chat(&project_id, &chat_id, update, &source_device_id)
@@ -811,7 +729,7 @@ async fn update_project_chat(
         let command = crate::services::device_command_bus::ProjectDeviceCommand {
             command_id: format!("project-chat-update-{}", uuid::Uuid::new_v4()),
             source_device_id,
-            target_device_id: project.resource_device_id,
+            target_device_id: placement.device_id,
             action: crate::services::device_command_bus::ProjectDeviceAction::UpdateChat {
                 project_id,
                 chat_id,
@@ -827,9 +745,12 @@ async fn update_project_chat(
         {
             Ok(crate::services::device_command_bus::ProjectDeviceResponse::ChatUpdated {
                 chat,
-            }) => serde_json::from_value(chat)
-                .map_err(|error| format!("resource Device returned invalid Project Chat: {error}")),
-            Ok(_) => Err("resource Device returned an unexpected Project response".to_string()),
+            }) => serde_json::from_value(chat).map_err(|error| {
+                format!("Chat authority Device returned invalid Project Chat: {error}")
+            }),
+            Ok(_) => {
+                Err("Chat authority Device returned an unexpected Project response".to_string())
+            }
             Err(error) if error.failure_kind() == "device_offline" => {
                 return ApiError::Unavailable(error.to_string()).into_response();
             }
@@ -1050,14 +971,19 @@ async fn route_project_chat_delete(
     };
     use crate::services::project_chat::ProjectChatDeleteError;
 
-    let project = state
-        .project_catalog
-        .get(project_id)
-        .map_err(|error| ProjectChatDeleteError::Failed(error.to_string()))?
+    let header = crate::services::chat_context::read_chat_header(&state.rua_root, chat_id)
+        .await
+        .map_err(|e| ProjectChatDeleteError::Failed(e.to_string()))?
+        .filter(|h| h.project_id.as_deref() == Some(project_id.as_str()))
         .ok_or_else(|| {
-            ProjectChatDeleteError::NotFound(format!("Project not found: {project_id}"))
+            ProjectChatDeleteError::NotFound(format!("Project Chat not found: {chat_id}"))
         })?;
-    if project.resource_device_id == source_device_id {
+    let placement =
+        crate::services::conversation_authority_placement::parse_conversation_authority_placement(
+            &serde_json::Value::Object(header.extra),
+        )
+        .map_err(|e| ProjectChatDeleteError::Failed(e.to_string()))?;
+    if placement.device_id == source_device_id {
         return state
             .conversation_input_intake
             .delete_project_chat(project_id, chat_id, force, source_device_id)
@@ -1070,7 +996,7 @@ async fn route_project_chat_delete(
     let command = ProjectDeviceCommand {
         command_id: format!("project-chat-delete-{}", uuid::Uuid::new_v4()),
         source_device_id: source_device_id.to_string(),
-        target_device_id: project.resource_device_id,
+        target_device_id: placement.device_id,
         action: ProjectDeviceAction::DeleteChat {
             project_id: project_id.clone(),
             chat_id: chat_id.to_string(),
@@ -1086,7 +1012,7 @@ async fn route_project_chat_delete(
     {
         Ok(ProjectDeviceResponse::ChatDeleted { result }) => result,
         Ok(_) => Err(ProjectChatDeleteError::Failed(
-            "resource Device returned an unexpected Project response".to_string(),
+            "Chat authority Device returned an unexpected Project response".to_string(),
         )),
         Err(error) if error.failure_kind() == "device_offline" => {
             Err(ProjectChatDeleteError::Unavailable(error.to_string()))
@@ -1151,9 +1077,9 @@ fn project_control_error(error: DeviceCommandDeliveryError) -> ApiError {
                 ApiError::Conflict(detail)
             }
         }
-        DeviceCommandDeliveryError::AuthorityRedirect(_) => {
-            ApiError::Conflict("Project Chat authority is fixed to its resource Device".to_string())
-        }
+        DeviceCommandDeliveryError::AuthorityRedirect(_) => ApiError::Conflict(
+            "Project Chat authority is fixed to its saved execution Device".to_string(),
+        ),
         other => ApiError::Unavailable(other.to_string()),
     }
 }
@@ -1215,7 +1141,7 @@ async fn apply_project_chat_model_update(
         }) => chat,
         Ok(ConversationControlDeviceResponse::ModelUpdated { chat: None, .. }) => {
             return ApiError::Internal(
-                "resource Device did not return the updated Project Chat".to_string(),
+                "Chat authority Device did not return the updated Project Chat".to_string(),
             )
             .into_response();
         }
@@ -1231,7 +1157,7 @@ async fn apply_project_chat_model_update(
         Ok(chat) => chat,
         Err(error) => {
             return ApiError::Internal(format!(
-                "resource Device returned invalid Project Chat: {error}"
+                "Chat authority Device returned invalid Project Chat: {error}"
             ))
             .into_response();
         }
@@ -1241,32 +1167,16 @@ async fn apply_project_chat_model_update(
 
 fn placement_error(error: ProjectPlacementError) -> Response {
     match error {
+        ProjectPlacementError::NotFound(_) => ApiError::NotFound(error.to_string()),
         ProjectPlacementError::MissingLocalDevice => ApiError::Conflict(error.to_string()),
         ProjectPlacementError::Unavailable(_) => ApiError::Unavailable(error.to_string()),
         ProjectPlacementError::Rejected(_) | ProjectPlacementError::Invalid(_) => {
             ApiError::BadRequest(error.to_string())
         }
-        ProjectPlacementError::Lifecycle(_) => ApiError::Conflict(error.to_string()),
+        ProjectPlacementError::Conflict(_) => ApiError::Conflict(error.to_string()),
         ProjectPlacementError::Store(_) | ProjectPlacementError::UnexpectedResponse => {
             ApiError::Internal(error.to_string())
         }
     }
     .into_response()
-}
-
-fn duplicate_response(owner: ProjectDescriptor) -> Response {
-    let actions = match owner.lifecycle {
-        ProjectLifecycle::Active => vec!["view"],
-        ProjectLifecycle::Archived => vec!["view", "reopen"],
-    };
-    (
-        StatusCode::CONFLICT,
-        Json(serde_json::json!({
-            "detail": "This directory is already bound to a Project.",
-            "code": "project_binding_duplicate",
-            "project": owner,
-            "actions": actions,
-        })),
-    )
-        .into_response()
 }

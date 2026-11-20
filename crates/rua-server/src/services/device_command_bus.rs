@@ -319,7 +319,7 @@ pub enum ConversationControlDeviceResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectResourcePolicyView {
-    pub policy: rua_security::EffectiveProjectResourcePolicy,
+    pub policy: Option<rua_security::EffectiveProjectResourcePolicy>,
     pub pending_approval_count: usize,
     pub chat_rule_count: usize,
     pub agent_rule_count: usize,
@@ -592,46 +592,8 @@ pub enum ProjectDeviceAction {
     BrowseDirectory {
         path: String,
     },
-    Create {
-        resource_root: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        display_name: Option<String>,
-    },
-    CreateResources {
-        resource_roots: Vec<String>,
-        primary_index: usize,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        display_name: Option<String>,
-    },
-    EditResources {
-        project_id: rua_core::ProjectId,
-        expected_revision: u64,
-        resource_roots: Vec<PathBuf>,
-        primary_index: usize,
-        #[serde(default)]
-        directory_ids: Vec<Option<String>>,
-    },
-    SetPrimaryDirectory {
-        project_id: rua_core::ProjectId,
-        expected_revision: u64,
-        directory_id: String,
-    },
-    InspectGit {
-        project_id: rua_core::ProjectId,
-    },
-    InspectGitHistory {
-        project_id: rua_core::ProjectId,
-        offset: usize,
-        limit: usize,
-    },
-    InspectLifecycle {
-        project_id: rua_core::ProjectId,
-    },
-    Archive {
-        project_id: rua_core::ProjectId,
-    },
-    Reopen {
-        project_id: rua_core::ProjectId,
+    ValidateResourceDirectory {
+        resource_root: PathBuf,
     },
     UpdateChat {
         project_id: rua_core::ProjectId,
@@ -699,32 +661,15 @@ pub enum ProjectDeviceResponse {
         entries: Vec<rua_project::ProjectDirectoryEntry>,
         roots: Vec<rua_project::ProjectDirectoryEntry>,
     },
-    Created {
-        outcome: rua_project::ProjectCreationOutcome,
-    },
-    Duplicate {
-        owner: rua_project::ProjectDescriptor,
-    },
-    ResourcesEdited {
-        outcome: rua_project::ProjectCreationOutcome,
-    },
-    ResourcesUpdated {
-        project: rua_project::ProjectDescriptor,
+    ValidatedResourceDirectory {
+        device_id: String,
+        resource_root: PathBuf,
     },
     GitStatus {
         status: rua_project::ProjectGitStatus,
     },
     GitHistory {
         history: rua_project::ProjectGitHistoryPage,
-    },
-    LifecyclePreview {
-        preview: crate::services::project_lifecycle::ProjectLifecyclePreview,
-    },
-    Archived {
-        result: crate::services::project_lifecycle::ProjectArchiveResult,
-    },
-    Reopened {
-        result: crate::services::project_lifecycle::ProjectReopenResult,
     },
     ChatUpdated {
         chat: serde_json::Value,
@@ -1298,9 +1243,6 @@ pub struct DeviceCommandHandler {
         Option<Arc<crate::services::chat_media_transfer::ChatMediaTransferRegistry>>,
     sync_transfer_operations: Arc<crate::services::sync_transfer::SourceTransferOperationStore>,
     project_catalog: Option<Arc<rua_project::ProjectCatalog>>,
-    project_bindings: Option<Arc<rua_project::ProjectResourceBindingStore>>,
-    project_publication: Option<crate::sync_publication::SyncPublicationRuntime>,
-    project_resource_editor: Option<crate::services::project_lifecycle::ProjectResourceEditor>,
     task_runtime: Option<Arc<rua_task::TaskRuntime>>,
     user_notifications: Option<Arc<UserNotificationService>>,
 }
@@ -1383,9 +1325,6 @@ impl DeviceCommandHandler {
                 crate::services::sync_transfer::SourceTransferOperationStore::new(),
             ),
             project_catalog: None,
-            project_bindings: None,
-            project_publication: None,
-            project_resource_editor: None,
             task_runtime: None,
             user_notifications: None,
         }
@@ -1476,23 +1415,8 @@ impl DeviceCommandHandler {
         self
     }
 
-    pub fn with_project_resource_editor(
-        mut self,
-        editor: crate::services::project_lifecycle::ProjectResourceEditor,
-    ) -> Self {
-        self.project_resource_editor = Some(editor);
-        self
-    }
-
-    pub fn with_project_runtime(
-        mut self,
-        catalog: Arc<rua_project::ProjectCatalog>,
-        bindings: Arc<rua_project::ProjectResourceBindingStore>,
-        publication: crate::sync_publication::SyncPublicationRuntime,
-    ) -> Self {
+    pub fn with_project_runtime(mut self, catalog: Arc<rua_project::ProjectCatalog>) -> Self {
         self.project_catalog = Some(catalog);
-        self.project_bindings = Some(bindings);
-        self.project_publication = Some(publication);
         self
     }
 
@@ -1824,8 +1748,8 @@ impl DeviceCommandHandler {
                         Ok(None) => return reject("project_not_found", "Project not found".into()),
                         Err(error) => return reject("project_store_failed", error.to_string()),
                     };
-                    if project.resource_device_id != self.local_device_id || project.lifecycle != rua_project::ProjectLifecycle::Active {
-                        return reject("project_authority_fixed", "Project media target must be its active resource Device".into());
+                    if project.lifecycle != rua_project::ProjectLifecycle::Active {
+                        return reject("project_archived", "Archived Project cannot prepare Chat media".into());
                     }
                 }
                 let manager = crate::services::agent_manager::AgentManager::new(rua_root.to_path_buf());
@@ -2078,121 +2002,16 @@ impl DeviceCommandHandler {
                     },
                 }
             }
-            action @ (ProjectDeviceAction::Create { .. }
-            | ProjectDeviceAction::CreateResources { .. }) => {
-                let (resource_roots, primary_index, display_name) = match action {
-                    ProjectDeviceAction::Create {
-                        resource_root,
-                        display_name,
-                    } => (vec![resource_root], 0, display_name),
-                    ProjectDeviceAction::CreateResources {
-                        resource_roots,
-                        primary_index,
-                        display_name,
-                    } => (resource_roots, primary_index, display_name),
-                    _ => unreachable!(),
-                };
-                let Some(catalog) = self.project_catalog.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "project_runtime_unavailable".to_string(),
-                        detail: "Project Catalog is unavailable".to_string(),
-                    };
-                };
-                match catalog.create_resources(rua_project::ProjectCreateResourcesRequest {
-                    resource_device_id: self.local_device_id.clone(),
-                    resource_roots: resource_roots
-                        .iter()
-                        .map(std::path::PathBuf::from)
-                        .collect(),
-                    primary_index,
-                    display_name,
-                }) {
-                    Ok(outcome) => {
-                        if let Some(publication) = self.project_publication.as_ref() {
-                            let result = crate::sync_publication::publish_sync_fact_with_runtime(
-                                publication,
-                                crate::sync_publication::SyncPublicationFact::ProjectDescriptorCommitted {
-                                    descriptor: outcome.project.clone(),
-                                },
-                            )
-                            .await;
-                            if result.status
-                                == crate::sync_publication::PublicationStatus::AppendFailed
-                            {
-                                tracing::warn!(
-                                    project_id = %outcome.project.project_id,
-                                    errors = ?result.errors,
-                                    "remote Project committed but descriptor publication failed"
-                                );
-                            }
-                        }
-                        DeviceCommandResponse::Project {
-                            response: ProjectDeviceResponse::Created { outcome },
-                        }
-                    }
-                    Err(rua_project::ProjectError::DuplicateBinding { owner }) => {
-                        DeviceCommandResponse::Project {
-                            response: ProjectDeviceResponse::Duplicate { owner: *owner },
-                        }
-                    }
-                    Err(error) => DeviceCommandResponse::Rejected {
-                        reason: "project_create_failed".to_string(),
-                        detail: error.to_string(),
-                    },
-                }
-            }
-            ProjectDeviceAction::EditResources {
-                project_id,
-                expected_revision,
-                resource_roots,
-                primary_index,
-                directory_ids,
-            } => {
-                let Some(editor) = self.project_resource_editor.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "project_runtime_unavailable".into(),
-                        detail: "Project runtime unavailable".into(),
-                    };
-                };
-                match editor
-                    .edit_resources(
-                        &project_id,
-                        expected_revision,
-                        &resource_roots,
-                        primary_index,
-                        &directory_ids,
-                    )
-                    .await
-                {
-                    Ok(outcome) => DeviceCommandResponse::Project {
-                        response: ProjectDeviceResponse::ResourcesEdited { outcome },
+            ProjectDeviceAction::ValidateResourceDirectory { resource_root } => {
+                match super::projects::validate_resource_directory(resource_root).await {
+                    Ok(resource_root) => DeviceCommandResponse::Project {
+                        response: ProjectDeviceResponse::ValidatedResourceDirectory {
+                            device_id: self.local_device_id.clone(),
+                            resource_root,
+                        },
                     },
                     Err(detail) => DeviceCommandResponse::Rejected {
-                        reason: "project_resources_conflict".into(),
-                        detail,
-                    },
-                }
-            }
-            ProjectDeviceAction::SetPrimaryDirectory {
-                project_id,
-                expected_revision,
-                directory_id,
-            } => {
-                let Some(editor) = self.project_resource_editor.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "project_runtime_unavailable".into(),
-                        detail: "Project runtime unavailable".into(),
-                    };
-                };
-                match editor
-                    .set_primary_directory(&project_id, expected_revision, &directory_id)
-                    .await
-                {
-                    Ok(project) => DeviceCommandResponse::Project {
-                        response: ProjectDeviceResponse::ResourcesUpdated { project },
-                    },
-                    Err(detail) => DeviceCommandResponse::Rejected {
-                        reason: "project_resources_conflict".into(),
+                        reason: "project_directory_unavailable".into(),
                         detail,
                     },
                 }
@@ -2225,25 +2044,35 @@ impl DeviceCommandHandler {
                 directory_id,
                 operation,
             } => {
-                let binding = match self
-                    .project_bindings
+                let directory = self
+                    .project_catalog
                     .as_ref()
-                    .map(|store| store.get(&project_id))
-                {
-                    Some(Ok(Some(binding))) => binding,
-                    _ => {
+                    .ok_or_else(|| "Project catalog unavailable".to_string())
+                    .and_then(|catalog| {
+                        let project = catalog
+                            .get(&project_id)
+                            .map_err(|e| e.to_string())?
+                            .ok_or_else(|| format!("Project not found: {project_id}"))?;
+                        let directory = project
+                            .resources
+                            .directory(&directory_id)
+                            .map_err(|e| e.to_string())?;
+                        if directory.device_id != self.local_device_id {
+                            return Err("Resource directory belongs to another Device".into());
+                        }
+                        Ok(directory.clone())
+                    });
+                let directory = match directory {
+                    Ok(directory) => directory,
+                    Err(detail) => {
                         return DeviceCommandResponse::Rejected {
                             reason: "project_resource_unavailable".into(),
-                            detail: "Project binding is unavailable".into(),
+                            detail,
                         }
                     }
                 };
                 match tokio::task::spawn_blocking(move || {
-                    crate::services::projects::inspect_project_resource(
-                        &binding,
-                        &directory_id,
-                        operation,
-                    )
+                    super::projects::inspect_project_resource(&directory, operation)
                 })
                 .await
                 {
@@ -2255,151 +2084,6 @@ impl DeviceCommandHandler {
                             Err(error) => error.to_string(),
                             _ => unreachable!(),
                         },
-                    },
-                }
-            }
-            ProjectDeviceAction::InspectGit { project_id } => {
-                let Some(bindings) = self.project_bindings.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "project_runtime_unavailable".to_string(),
-                        detail: "Project Resource Binding Store is unavailable".to_string(),
-                    };
-                };
-                let binding = match bindings.get(&project_id) {
-                    Ok(Some(binding)) => binding,
-                    Ok(None) => {
-                        return DeviceCommandResponse::Rejected {
-                            reason: "project_git_unavailable".to_string(),
-                            detail: "Project binding is unavailable".to_string(),
-                        };
-                    }
-                    Err(error) => {
-                        return DeviceCommandResponse::Rejected {
-                            reason: "project_git_unavailable".to_string(),
-                            detail: error.to_string(),
-                        };
-                    }
-                };
-                match tokio::task::spawn_blocking(move || {
-                    rua_project::inspect_project_git(binding.primary_root())
-                })
-                .await
-                {
-                    Ok(Ok(status)) => DeviceCommandResponse::Project {
-                        response: ProjectDeviceResponse::GitStatus { status },
-                    },
-                    Ok(Err(error)) => DeviceCommandResponse::Rejected {
-                        reason: "project_git_unavailable".to_string(),
-                        detail: error,
-                    },
-                    Err(error) => DeviceCommandResponse::Rejected {
-                        reason: "project_git_unavailable".to_string(),
-                        detail: format!("inspect Project Git task failed: {error}"),
-                    },
-                }
-            }
-            ProjectDeviceAction::InspectGitHistory {
-                project_id,
-                offset,
-                limit,
-            } => {
-                let Some(bindings) = self.project_bindings.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "project_runtime_unavailable".to_string(),
-                        detail: "Project Resource Binding Store is unavailable".to_string(),
-                    };
-                };
-                let binding = match bindings.get(&project_id) {
-                    Ok(Some(binding)) => binding,
-                    Ok(None) => {
-                        return DeviceCommandResponse::Rejected {
-                            reason: "project_git_unavailable".to_string(),
-                            detail: "Project binding is unavailable".to_string(),
-                        };
-                    }
-                    Err(error) => {
-                        return DeviceCommandResponse::Rejected {
-                            reason: "project_git_unavailable".to_string(),
-                            detail: error.to_string(),
-                        };
-                    }
-                };
-                match tokio::task::spawn_blocking(move || {
-                    rua_project::inspect_project_git_history(binding.primary_root(), offset, limit)
-                })
-                .await
-                {
-                    Ok(Ok(history)) => DeviceCommandResponse::Project {
-                        response: ProjectDeviceResponse::GitHistory { history },
-                    },
-                    Ok(Err(error)) => DeviceCommandResponse::Rejected {
-                        reason: "project_git_unavailable".to_string(),
-                        detail: error,
-                    },
-                    Err(error) => DeviceCommandResponse::Rejected {
-                        reason: "project_git_unavailable".to_string(),
-                        detail: format!("inspect Project Git history task failed: {error}"),
-                    },
-                }
-            }
-            ProjectDeviceAction::InspectLifecycle { project_id } => {
-                let Some(intake) = self.conversation_input_intake.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "project_runtime_unavailable".to_string(),
-                        detail: "Project lifecycle runtime is unavailable".to_string(),
-                    };
-                };
-                match intake.inspect_project_lifecycle(&project_id).await {
-                    Ok(preview) => DeviceCommandResponse::Project {
-                        response: ProjectDeviceResponse::LifecyclePreview { preview },
-                    },
-                    Err(detail) => DeviceCommandResponse::Rejected {
-                        reason: "project_lifecycle_inspect_failed".to_string(),
-                        detail,
-                    },
-                }
-            }
-            ProjectDeviceAction::Archive { project_id } => {
-                let Some(intake) = self.conversation_input_intake.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "project_runtime_unavailable".to_string(),
-                        detail: "Project lifecycle runtime is unavailable".to_string(),
-                    };
-                };
-                match intake.archive_project(&project_id).await {
-                    Ok(result) => {
-                        if result.changed {
-                            self.publish_project_descriptor(&result.project).await;
-                        }
-                        DeviceCommandResponse::Project {
-                            response: ProjectDeviceResponse::Archived { result },
-                        }
-                    }
-                    Err(detail) => DeviceCommandResponse::Rejected {
-                        reason: "project_archive_failed".to_string(),
-                        detail,
-                    },
-                }
-            }
-            ProjectDeviceAction::Reopen { project_id } => {
-                let Some(intake) = self.conversation_input_intake.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "project_runtime_unavailable".to_string(),
-                        detail: "Project lifecycle runtime is unavailable".to_string(),
-                    };
-                };
-                match intake.reopen_project(&project_id).await {
-                    Ok(result) => {
-                        if result.changed {
-                            self.publish_project_descriptor(&result.project).await;
-                        }
-                        DeviceCommandResponse::Project {
-                            response: ProjectDeviceResponse::Reopened { result },
-                        }
-                    }
-                    Err(detail) => DeviceCommandResponse::Rejected {
-                        reason: "project_reopen_failed".to_string(),
-                        detail,
                     },
                 }
             }
@@ -3683,7 +3367,7 @@ impl DeviceCommandHandler {
             Ok(Some(context)) if context.project_id.is_some() => {
                 return DeviceCommandResponse::Rejected {
                     reason: "project_authority_fixed".into(),
-                    detail: "Project Chat authority is fixed to its resource Device".into(),
+                    detail: "Project Chat authority is fixed to its saved execution Device".into(),
                 }
             }
             Ok(_) => {}
@@ -3787,7 +3471,7 @@ impl DeviceCommandHandler {
         {
             return DeviceCommandResponse::Rejected {
                 reason: "project_authority_fixed".into(),
-                detail: "Project Chat authority is fixed to its resource Device".into(),
+                detail: "Project Chat authority is fixed to its saved execution Device".into(),
             };
         }
         let current = match crate::services::conversation_authority_placement::parse_conversation_authority_placement(
@@ -3934,7 +3618,7 @@ impl DeviceCommandHandler {
             Ok(Some(context)) if context.project_id.is_some() => {
                 return DeviceCommandResponse::Rejected {
                     reason: "project_authority_fixed".into(),
-                    detail: "Project Chat authority is fixed to its resource Device".into(),
+                    detail: "Project Chat authority is fixed to its saved execution Device".into(),
                 }
             }
             Ok(_) => {}
@@ -4361,26 +4045,6 @@ impl DeviceCommandHandler {
                     }
                 }
             }
-        }
-    }
-
-    async fn publish_project_descriptor(&self, descriptor: &rua_project::ProjectDescriptor) {
-        let Some(publication) = self.project_publication.as_ref() else {
-            return;
-        };
-        let result = crate::sync_publication::publish_sync_fact_with_runtime(
-            publication,
-            crate::sync_publication::SyncPublicationFact::ProjectDescriptorCommitted {
-                descriptor: descriptor.clone(),
-            },
-        )
-        .await;
-        if result.status == crate::sync_publication::PublicationStatus::AppendFailed {
-            tracing::warn!(
-                project_id = %descriptor.project_id,
-                errors = ?result.errors,
-                "Project lifecycle committed but descriptor publication failed"
-            );
         }
     }
 
@@ -5106,36 +4770,15 @@ impl ProjectDeviceCommand {
                     return Err(DeviceCommandBusError::InvalidId("empty path".to_string()));
                 }
             }
-            ProjectDeviceAction::Create { resource_root, .. } => {
-                if resource_root.trim().is_empty() {
+            ProjectDeviceAction::ValidateResourceDirectory { resource_root } => {
+                if !resource_root.is_absolute() {
                     return Err(DeviceCommandBusError::InvalidId(
-                        "empty Project Resource Root".to_string(),
+                        "Resource root must be absolute".into(),
                     ));
                 }
             }
-            ProjectDeviceAction::CreateResources {
-                resource_roots,
-                primary_index,
-                ..
-            } => {
-                if resource_roots.is_empty()
-                    || resource_roots.iter().any(|root| root.trim().is_empty())
-                    || *primary_index >= resource_roots.len()
-                {
-                    return Err(DeviceCommandBusError::InvalidId(
-                        "Invalid Project resource collection".into(),
-                    ));
-                }
-            }
-            ProjectDeviceAction::InspectGit { project_id }
-            | ProjectDeviceAction::ArchiveIdleChats { project_id, .. }
-            | ProjectDeviceAction::InspectResource { project_id, .. }
-            | ProjectDeviceAction::EditResources { project_id, .. }
-            | ProjectDeviceAction::SetPrimaryDirectory { project_id, .. }
-            | ProjectDeviceAction::InspectGitHistory { project_id, .. }
-            | ProjectDeviceAction::InspectLifecycle { project_id }
-            | ProjectDeviceAction::Archive { project_id }
-            | ProjectDeviceAction::Reopen { project_id } => {
+            ProjectDeviceAction::ArchiveIdleChats { project_id, .. }
+            | ProjectDeviceAction::InspectResource { project_id, .. } => {
                 validate_id(project_id.as_str())?;
             }
             ProjectDeviceAction::UpdateChat {

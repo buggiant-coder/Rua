@@ -34,7 +34,6 @@ import type {
   ModelSlot,
 } from "@/api/types";
 import type { ProjectDescriptor } from "@/api/types/project";
-import { deviceConnectivityLabel } from "@/components/DeviceConnectivity";
 import { useMultiDeviceFeatureAvailability } from "@/hooks/useMultiDeviceFeatureAvailability";
 import { useAgentStore } from "@/stores/agentStore";
 import { ChatOptionsModal } from "@/pages/Chat";
@@ -224,26 +223,9 @@ export default function ProjectChatPage({
   const { devices } = useMultiDeviceFeatureAvailability();
   const currentDeviceId =
     devices.find((device) => device.is_self)?.device_id ?? null;
-  const projectDevice = devices.find(
-    (device) => device.device_id === initialData.project.resource_device_id,
-  );
   const chatActivityWake = useConversationActivityWake(
     lazy ? undefined : chatId,
   );
-  const projectDeviceLabel = useCallback(
-    (project: ProjectDescriptor) => {
-      const device = devices.find(
-        (candidate) => candidate.device_id === project.resource_device_id,
-      );
-      return (
-        device?.friendly_name ||
-        device?.label ||
-        project.resource_device_id.slice(0, 12)
-      );
-    },
-    [devices],
-  );
-
   useEffect(() => {
     if (drawer !== "workspace" || lazy) {
       setResourcePolicy(null);
@@ -274,9 +256,6 @@ export default function ProjectChatPage({
   }, [chatId, drawer, executionAgentId, lazy, projectId, t]);
 
   const archived = projectLifecycle === "archived";
-  const availabilityLabel = archived
-    ? t("projects.archived")
-    : deviceConnectivityLabel(t, projectDevice?.connectivity_state);
   const submitDisabledReason = archived
     ? t("projects.chat.archivedSubmitDisabled")
     : agentDisabledReason;
@@ -448,13 +427,32 @@ export default function ProjectChatPage({
         ? { ...project, lifecycle: projectLifecycle }
         : project,
   );
-  const deviceLabel = projectDeviceLabel(initialData.project);
+  const executionDirectory = history?.meta?.execution_directory;
+  const workspaceDir =
+    executionDirectory &&
+    typeof executionDirectory === "object" &&
+    "path" in executionDirectory &&
+    typeof executionDirectory.path === "string"
+      ? executionDirectory.path
+      : "";
+  const executionDeviceId =
+    executionDirectory &&
+    typeof executionDirectory === "object" &&
+    "device_id" in executionDirectory &&
+    typeof executionDirectory.device_id === "string"
+      ? executionDirectory.device_id
+      : null;
   const projectPlacement = resolveChatPlacement({
     chatId,
     meta: history?.meta,
-    workspaceDirFallback: initialData.project.display_path,
+    workspaceDirFallback: workspaceDir,
     requireAcpStatus: false,
   });
+  const placementDeviceId =
+    history?.control?.placement?.authority_device_id ??
+    projectPlacement.authorityPlacementDeviceId ??
+    executionDeviceId ??
+    (lazy ? currentDeviceId : null);
   const controlAcpStatus = acpStatusFromConversationControl(
     history?.control,
     chatId,
@@ -499,9 +497,8 @@ export default function ProjectChatPage({
         session_id: null,
         cwd: null,
         chat_id: chatId,
-        workspace_dir:
-          currentAcpStatus?.workspace_dir ?? initialData.project.display_path,
-        target_device_id: initialData.project.resource_device_id,
+        workspace_dir: currentAcpStatus?.workspace_dir ?? workspaceDir,
+        target_device_id: placementDeviceId,
       });
       setHistory(removeAcpBindingFromHistory);
     } catch (error) {
@@ -515,8 +512,8 @@ export default function ProjectChatPage({
     acpControlVersion,
     chatId,
     currentAcpStatus?.workspace_dir,
-    initialData.project.display_path,
-    initialData.project.resource_device_id,
+    workspaceDir,
+    placementDeviceId,
     lazy,
     projectTarget,
     t,
@@ -659,7 +656,6 @@ export default function ProjectChatPage({
             lifecycle: projectLifecycle,
           }}
           projects={projects}
-          projectDeviceLabel={projectDeviceLabel}
           onSelect={handleProjectSelect}
           onSelectIndependent={() => navigate(resolveStandaloneChatPath())}
           onCreate={() => setCreateProjectOpen(true)}
@@ -709,7 +705,7 @@ export default function ProjectChatPage({
             projectId={projectId}
             executionAgentId={executionAgentId || "default"}
             draftKey={projectChatDraftKey(projectId, chatId)}
-            authorityPlacementDeviceId={initialData.project.resource_device_id}
+            authorityPlacementDeviceId={placementDeviceId}
             currentDeviceId={currentDeviceId}
             submitDisabled={Boolean(submitDisabledReason)}
             submitDisabledReason={submitDisabledReason}
@@ -741,7 +737,7 @@ export default function ProjectChatPage({
             }
             composerDeviceChip={
               <ChatDeviceChip
-                currentDeviceId={initialData.project.resource_device_id}
+                currentDeviceId={placementDeviceId}
                 devices={devices}
                 readOnly
               />
@@ -764,26 +760,11 @@ export default function ProjectChatPage({
         ) : null}
         {drawer === "workspace" ? (
           <ProjectShellDrawer
-            localResourceDevice={
-              devices.find(
-                (device) =>
-                  device.device_id === initialData.project.resource_device_id,
-              )?.is_self === true
-            }
-            workingDirectoryId={
-              lazy
-                ? initialData.project.resources?.primary_directory_id ??
-                  "initial"
-                : String(
-                    history?.meta?.project_working_directory_id ?? "initial",
-                  )
-            }
+            devices={devices}
             project={{
               ...initialData.project,
               lifecycle: projectLifecycle,
             }}
-            deviceLabel={deviceLabel}
-            availabilityLabel={availabilityLabel}
             lazy={lazy}
             resourcePolicy={resourcePolicy}
             policyLoading={resourcePolicyLoading}
@@ -823,10 +804,8 @@ export default function ProjectChatPage({
         agentId={executionAgentId || "default"}
         target={projectTarget}
         chatId={chatId}
-        targetDeviceId={initialData.project.resource_device_id}
-        defaultCwd={
-          currentAcpStatus?.workspace_dir || initialData.project.display_path
-        }
+        targetDeviceId={placementDeviceId ?? undefined}
+        defaultCwd={currentAcpStatus?.workspace_dir || workspaceDir}
         onEntered={(status, historyPreview) => {
           optimisticAcpControlBaselineRef.current = acpControlVersion;
           setOptimisticAcpStatus(status);

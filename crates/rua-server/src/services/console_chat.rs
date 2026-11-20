@@ -969,7 +969,6 @@ pub struct ConsoleChatService {
 
     provider_manager: Option<Arc<rua_provider::manager::ProviderManager>>,
     conversation_authority: Option<Arc<ConversationAuthority>>,
-    project_bindings: Option<Arc<rua_project::ProjectResourceBindingStore>>,
 }
 
 #[derive(Clone)]
@@ -1292,16 +1291,7 @@ impl ConsoleChatService {
             tool_catalog: None,
             provider_manager: None,
             conversation_authority: None,
-            project_bindings: None,
         }
-    }
-
-    pub fn with_project_bindings(
-        mut self,
-        bindings: Arc<rua_project::ProjectResourceBindingStore>,
-    ) -> Self {
-        self.project_bindings = Some(bindings);
-        self
     }
 
     pub fn with_provider_manager(
@@ -2829,6 +2819,7 @@ pub(crate) struct SubmittedUserTurnMetadata<'a> {
     pub acp_origin_runner: Option<&'a str>,
     pub memory_signal: Option<&'a MemorySignal>,
     pub turn_agent_assignment: Option<&'a serde_json::Value>,
+    pub project_resources: Option<&'a serde_json::Value>,
     pub turn_model: Option<&'a serde_json::Value>,
     pub turn_thinking: Option<&'a serde_json::Value>,
     pub collaboration_mode: AgentCollaborationMode,
@@ -2908,6 +2899,12 @@ pub(crate) fn build_submitted_user_turn(
         stored_metadata.insert(
             crate::services::conversation_authority::ACCEPTANCE_MODE_KEY.to_string(),
             serde_json::json!(acceptance_mode),
+        );
+    }
+    if let Some(resources) = metadata.project_resources {
+        stored_metadata.insert(
+            rua_session::TURN_PROJECT_RESOURCES_KEY.into(),
+            resources.clone(),
         );
     }
     if let Some(assignment) = metadata.turn_agent_assignment {
@@ -3190,7 +3187,6 @@ impl ConsoleChatService {
         let host_profile = self.host_profile.clone();
         let session_sync = self.session_sync.clone();
         let device_context_data_dir = session_sync.as_ref().map(|sync| sync.data_dir.clone());
-        let project_bindings = self.project_bindings.clone();
         let tool_config_cells = self.tool_config_cells.clone();
         let tool_config_device_key = self.tool_config_device_key;
         let tool_catalog = self.tool_catalog.clone();
@@ -3487,27 +3483,15 @@ impl ConsoleChatService {
                     req.extra.get("channel").and_then(serde_json::Value::as_str) == Some(*channel)
                 });
             let project_id = header.project_id.map(rua_core::ProjectId::new);
-            let project_resources = match project_id.as_ref() {
-                Some(project_id) => {
-                    let binding = project_bindings
-                        .as_ref()
-                        .ok_or_else(|| "Project Resource Binding Store is unavailable".to_string())
-                        .and_then(|bindings| {
-                            bindings.get(project_id).map_err(|error| error.to_string())
-                        })
-                        .and_then(|binding| {
-                            binding.ok_or_else(|| "Project Resource Binding is missing".to_string())
-                        });
-                    match binding {
-                        Ok(binding) => Some(binding.resources),
-                        Err(error) => {
-                            let _ = tx.send(Err(error)).await;
-                            return;
-                        }
-                    }
-                }
-                None => None,
-            };
+            if let Some(error) = req
+                .extra
+                .get("project_resource_capture_error")
+                .and_then(|v| v.as_str())
+            {
+                let _ = tx.send(Err(error.to_string())).await;
+                return;
+            }
+            let project_resources = req.extra.get(rua_session::TURN_PROJECT_RESOURCES_KEY);
             let mut project_instructions = match project_id.as_ref() {
                 Some(project_id) => {
                     crate::services::project_instructions::load_project_instructions(
@@ -3519,16 +3503,23 @@ impl ConsoleChatService {
                 }
                 None => None,
             };
-            if let Some(resources) = project_resources.as_ref() {
-                let paths = resources
-                    .directories
-                    .iter()
-                    .map(|directory| &directory.resource_root)
-                    .collect::<Vec<_>>();
-                let inventory = format!("Project resource directories (JSON paths): {}. Default working directory: {}. Use an explicit path for another directory; attachment does not activate its configuration or Hooks.", serde_json::json!(paths), serde_json::json!(working_dir));
+            if let Some(resources) = project_resources {
+                let directories: Vec<_> = resources["directories"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|directory| {
+                        serde_json::json!({
+                            "device_id": directory["device_id"],
+                            "path": directory["resource_root"],
+                        })
+                    })
+                    .collect();
                 let instructions = project_instructions.get_or_insert_with(String::new);
-                instructions.push_str("\n\n");
-                instructions.push_str(&inventory);
+                instructions.push_str(&format!(
+                    "\n\nProject resource directories (Device and absolute path): {}.",
+                    serde_json::json!(directories)
+                ));
             }
             let agent_prompt_files = match captured_configuration.as_ref() {
                 Some(configuration) => configuration.prompt_file_content.clone(),
@@ -3785,6 +3776,9 @@ impl ConsoleChatService {
                                 turn_agent_assignment: req
                                     .extra
                                     .get(rua_chat::TURN_AGENT_ASSIGNMENT_META_KEY),
+                                project_resources: req
+                                    .extra
+                                    .get(rua_session::TURN_PROJECT_RESOURCES_KEY),
                                 turn_model: req.extra.get(rua_chat::TURN_MODEL_KEY),
                                 turn_thinking: req.extra.get(rua_chat::TURN_THINKING_KEY),
                                 collaboration_mode: effective_collaboration_mode,
@@ -3972,19 +3966,21 @@ impl ConsoleChatService {
                     serde_json::Value::String(execution_environment.clone()),
                 );
             }
-            if let Some(resources) = project_resources.as_ref() {
+            if let Some(resources) = project_resources {
                 metadata.insert(
-                    "project_resource_roots".into(),
-                    serde_json::json!(resources
-                        .directories
-                        .iter()
-                        .map(|directory| &directory.resource_root)
-                        .collect::<Vec<_>>()),
+                    rua_session::TURN_PROJECT_RESOURCES_KEY.into(),
+                    resources.clone(),
                 );
-                metadata.insert(
-                    "project_resource_revision".into(),
-                    serde_json::json!(resources.revision),
-                );
+                if captured_configuration.as_ref().is_some_and(|c| {
+                    c.security_config.extra.contains_key(
+                        rua_security::project_resource_policy::PROJECT_RESOURCE_POLICY_KEY,
+                    )
+                }) {
+                    metadata.insert(
+                        "project_resource_roots".into(),
+                        serde_json::json!([working_dir]),
+                    );
+                }
             }
             if project_id.is_some() {
                 metadata.insert(
@@ -5219,6 +5215,7 @@ async fn materialize_runtime_observation_turn(
     turn_id: &str,
     value: &serde_json::Value,
     turn_agent_assignment: Option<&serde_json::Value>,
+    project_resources: Option<&serde_json::Value>,
 ) -> std::result::Result<(), String> {
     let note: rua_session::RuntimeNote =
         serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
@@ -5240,6 +5237,12 @@ async fn materialize_runtime_observation_turn(
     let mut message = note
         .into_new_conversation_message()
         .map_err(|error| error.to_string())?;
+    if let Some(resources) = project_resources {
+        message.metadata.insert(
+            rua_session::TURN_PROJECT_RESOURCES_KEY.into(),
+            resources.clone(),
+        );
+    }
     if let Some(assignment) = turn_agent_assignment {
         message.metadata.insert(
             rua_chat::TURN_AGENT_ASSIGNMENT_META_KEY.to_string(),
@@ -5675,6 +5678,7 @@ pub(crate) async fn drive_conversation_producer(
                 &turn_id,
                 &observation,
                 turn_agent_assignment.as_ref(),
+                pending.extra.get(rua_session::TURN_PROJECT_RESOURCES_KEY),
             )
             .await
             {

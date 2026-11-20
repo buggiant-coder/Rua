@@ -1,6 +1,5 @@
 use std::process::Command;
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rua_device_network::device_list::{DeviceEntry, DeviceList};
@@ -13,7 +12,6 @@ use rua_server::services::device_command_bus::{
     deliver_project_device_command_via_session, DeviceCommandHandler, ProjectDeviceAction,
     ProjectDeviceCommand, ProjectDeviceResponse,
 };
-use rua_server::sync_publication::SyncPublicationRuntime;
 use tempfile::TempDir;
 use tokio::sync::{Mutex, Notify};
 
@@ -187,25 +185,42 @@ fn install_connectable_peer(source: &TestPeer, target: &TestPeer) {
     std::fs::write(path, serde_json::to_vec_pretty(&device_list).unwrap()).unwrap();
 }
 
+async fn project_http(
+    app: &axum::Router,
+    method: axum::http::Method,
+    uri: &str,
+    body: serde_json::Value,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn remote_browse_and_create_execute_on_target_device() {
+async fn remote_resource_validation_and_inspection_use_device_sessions_and_only_creator_commits() {
     let network_secret = [44; 32];
     let source = build_peer(1, network_secret, Vec::new(), None).await;
     let target_data = tempfile::tempdir().unwrap();
     let target_repo = target_data.path().join("remote-repo");
     std::fs::create_dir_all(target_repo.join("src")).unwrap();
-    let stores = rua_project::ProjectStores::open(target_data.path().join("projects")).unwrap();
+    let stores =
+        Arc::new(rua_project::ProjectCatalog::open(target_data.path().join("projects")).unwrap());
     let target_device_id =
         hex::encode(&iroh::SecretKey::from_bytes(&[2; 32]).public().as_bytes()[..8]);
-    let publication = SyncPublicationRuntime::new(
-        target_data.path().join("sync"),
-        Arc::new(AtomicBool::new(false)),
-        Arc::new(tokio::sync::Mutex::new(None)),
-        Arc::new(RwLock::new(None)),
-        Arc::new(RwLock::new(None)),
-        None,
-        Arc::new(tokio::sync::RwLock::new(None)),
-    );
     let target_task_runtime = Arc::new(
         rua_task::TaskRuntime::open(rua_task::TaskRuntimeConfig::new(target_data.path())).unwrap(),
     );
@@ -221,11 +236,7 @@ async fn remote_browse_and_create_execute_on_target_device() {
             target_data.path().join("device_commands"),
             target_device_id.clone(),
         )
-        .with_project_runtime(
-            Arc::clone(&stores.catalog),
-            Arc::clone(&stores.bindings),
-            publication,
-        )
+        .with_project_runtime(Arc::clone(&stores))
         .with_task_runtime(Arc::clone(&target_task_runtime)),
     );
     let target = build_peer(2, network_secret, vec![peer_entry(1)], Some(handler)).await;
@@ -281,46 +292,50 @@ async fn remote_browse_and_create_execute_on_target_device() {
     run_git(&target_repo, &["commit", "-m", "initial"]);
     std::fs::write(target_repo.join("README.md"), "changed\n").unwrap();
 
-    let create = deliver_project_device_command_via_session(
-        source.runtime.session_manager(),
-        &ProjectDeviceCommand {
-            command_id: "project-create-1".to_string(),
-            source_device_id: source.device_id.clone(),
-            target_device_id: target.device_id.clone(),
-            action: ProjectDeviceAction::Create {
-                resource_root: target_repo.to_string_lossy().to_string(),
-                display_name: Some("Remote repo".to_string()),
-            },
-        },
-        Duration::from_secs(5),
+    use axum::http::{Method, StatusCode};
+    use rua_server::{router, AppState, ServerProfile};
+    use serde_json::json;
+    let state = AppState::from_tempdir(source.dir.path().join("controller"), ServerProfile::Test);
+    *state.sync_device.write().unwrap() = Some(Arc::new(
+        serde_json::from_value(json!({"secret_bytes":vec![1u8;32]})).unwrap(),
+    ));
+    *state.device_network.lock().await = Some(source.runtime.clone());
+    let app = router::build_app(state.clone(), None);
+    let local = json!({"device_id":source.device_id,"resource_root":target_repo});
+    let remote = json!({"device_id":target.device_id,"resource_root":target_repo});
+    let (status, result) = project_http(
+        &app,
+        Method::POST,
+        "/api/projects",
+        json!({"display_name":"Two devices","directories":[local,remote]}),
     )
-    .await
-    .unwrap();
-    let project = match create {
-        ProjectDeviceResponse::Created { outcome } => outcome.project,
-        other => panic!("unexpected create response: {other:?}"),
-    };
-    assert_eq!(stores.catalog.list().unwrap().len(), 1);
-    assert_eq!(
-        stores
-            .bindings
-            .get(&project.project_id)
-            .unwrap()
-            .unwrap()
-            .primary_root(),
-        target_repo
-    );
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    let project: rua_project::ProjectDescriptor =
+        serde_json::from_value(result["project"].clone()).unwrap();
+    let directories = &project.resources.directories;
+    assert_eq!(directories.len(), 2);
+    assert_eq!(directories[0].device_id, source.device_id);
+    assert_eq!(directories[1].device_id, target.device_id);
+    assert_eq!(directories[0].resource_root, directories[1].resource_root);
+    assert_ne!(directories[0].directory_id, directories[1].directory_id);
+    assert!(stores.list().unwrap().is_empty());
+    stores.apply_descriptor(project.clone()).unwrap();
 
+    let inspect = |id: &str| ProjectDeviceCommand {
+        command_id: format!("inspect-{id}"),
+        source_device_id: source.device_id.clone(),
+        target_device_id: target.device_id.clone(),
+        action: ProjectDeviceAction::InspectResource {
+            project_id: project.project_id.clone(),
+            directory_id: id.to_owned(),
+            operation:
+                rua_server::services::device_command_bus::ProjectResourceOperation::GitStatus,
+        },
+    };
     let git = deliver_project_device_command_via_session(
         source.runtime.session_manager(),
-        &ProjectDeviceCommand {
-            command_id: "project-git-1".to_string(),
-            source_device_id: source.device_id.clone(),
-            target_device_id: target.device_id.clone(),
-            action: ProjectDeviceAction::InspectGit {
-                project_id: project.project_id.clone(),
-            },
-        },
+        &inspect(&directories[1].directory_id),
         Duration::from_secs(5),
     )
     .await
@@ -333,36 +348,112 @@ async fn remote_browse_and_create_execute_on_target_device() {
         }
         other => panic!("unexpected Git response: {other:?}"),
     }
-
-    let duplicate = deliver_project_device_command_via_session(
+    assert!(deliver_project_device_command_via_session(
         source.runtime.session_manager(),
-        &ProjectDeviceCommand {
-            command_id: "project-create-2".to_string(),
-            source_device_id: source.device_id.clone(),
-            target_device_id: target.device_id.clone(),
-            action: ProjectDeviceAction::Create {
-                resource_root: target_repo.to_string_lossy().to_string(),
-                display_name: Some("Duplicate".to_string()),
-            },
-        },
-        Duration::from_secs(5),
+        &inspect(&directories[0].directory_id),
+        Duration::from_secs(5)
     )
     .await
-    .unwrap();
-    match duplicate {
-        ProjectDeviceResponse::Created { outcome } => {
-            assert_ne!(outcome.project.project_id, project.project_id);
-            assert_eq!(outcome.overlap_warnings[0].project_id, project.project_id);
-            assert_eq!(
-                outcome.overlap_warnings[0].relation,
-                rua_project::ProjectOverlapRelation::SharedDirectory
-            );
-        }
-        other => panic!("unexpected shared-directory response: {other:?}"),
-    }
+    .is_err());
 
-    let task_owner =
-        rua_task::TaskOwner::from_address(rua_core::ChatAddress::new("project-task-chat"));
+    let uri = format!("/api/projects/{}/resources", project.project_id);
+    let remote_new = json!({"device_id":target.device_id,"resource_root":target_repo.join("src")});
+    let missing = target_repo.join("missing");
+    let (status, error) = project_http(&app, Method::PATCH, &uri, json!({
+        "expected_revision":1,"directories":[remote_new,{"device_id":target.device_id,"resource_root":missing}]
+    })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert!(error["detail"]
+        .as_str()
+        .unwrap()
+        .contains(missing.to_str().unwrap()));
+    assert_eq!(
+        state.project_catalog.get(&project.project_id).unwrap(),
+        Some(project.clone())
+    );
+    let mut renamed = serde_json::to_value(&directories[1]).unwrap();
+    renamed["display_name"] = json!("Offline rename");
+    let network = state.device_network.lock().await.take();
+    let (status, error) = project_http(
+        &app,
+        Method::PATCH,
+        &uri,
+        json!({"expected_revision":1,"directories":[local,renamed,remote_new]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{error}");
+    assert_eq!(
+        state
+            .project_catalog
+            .get(&project.project_id)
+            .unwrap()
+            .as_ref(),
+        Some(&project)
+    );
+    let (status, result) = project_http(
+        &app,
+        Method::PATCH,
+        &uri,
+        json!({"expected_revision":1,"directories":[renamed]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(
+        result["project"]["resources"]["directories"],
+        json!([renamed])
+    );
+    let (status, result) = project_http(
+        &app,
+        Method::PATCH,
+        &uri,
+        json!({"expected_revision":2,"directories":[]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(
+        result["project"]["resources"],
+        json!({"revision":3,"directories":[]})
+    );
+    *state.device_network.lock().await = network;
+    let (status, result) = project_http(
+        &app,
+        Method::PATCH,
+        &uri,
+        json!({"expected_revision":3,"directories":[remote_new]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["project"]["resources"]["revision"], 4);
+    assert_eq!(
+        stores.get(&project.project_id).unwrap(),
+        Some(project.clone())
+    );
+    assert_eq!(
+        std::fs::read(target_repo.join("README.md")).unwrap(),
+        b"changed\n"
+    );
+
+    let task_chat_id = "00000000-0000-4000-8000-000000000915";
+    let mut header = rua_session::ChatSessionHeader::new(rua_session::ChatMetadata {
+        chat_id: task_chat_id.into(),
+        agent_id: "default".into(),
+        title: "Remote".into(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        last_activity_at: chrono::Utc::now().to_rfc3339(),
+        pinned: false,
+        archived: false,
+        preview: None,
+    });
+    header.project_id = Some(project.project_id.to_string());
+    rua_session::WorkspaceSessionStore::new(
+        rua_core::RuaRoot::new(target_data.path())
+            .chat_workspace()
+            .as_path(),
+    )
+    .save_chat_header(&header)
+    .await
+    .unwrap();
+    let task_owner = rua_task::TaskOwner::from_address(rua_core::ChatAddress::new(task_chat_id));
     let task_id = target_task_runtime
         .create(
             rua_task::TaskSpec {
@@ -383,7 +474,7 @@ async fn remote_browse_and_create_execute_on_target_device() {
     tokio::time::timeout(Duration::from_secs(2), async {
         while target_task_runtime
             .get(
-                &rua_task::TaskOwner::from_address(rua_core::ChatAddress::new("project-task-chat")),
+                &rua_task::TaskOwner::from_address(rua_core::ChatAddress::new(task_chat_id)),
                 &task_id,
             )
             .await
@@ -402,7 +493,7 @@ async fn remote_browse_and_create_execute_on_target_device() {
             target_device_id: target.device_id.clone(),
             action: ProjectDeviceAction::SendTaskInput {
                 project_id: project.project_id.clone(),
-                chat_id: "project-task-chat".to_string(),
+                chat_id: task_chat_id.to_string(),
                 task_id: task_id.clone(),
                 submission: rua_task::TaskInputSubmission::new(
                     "project-task-input-submission-1",
@@ -439,7 +530,7 @@ async fn remote_browse_and_create_execute_on_target_device() {
             target_device_id: target.device_id.clone(),
             action: ProjectDeviceAction::ListTasks {
                 project_id: project.project_id.clone(),
-                chat_id: "project-task-chat".to_string(),
+                chat_id: task_chat_id.to_string(),
                 filter: rua_task::TaskListFilter::default(),
             },
         },
@@ -457,7 +548,7 @@ async fn remote_browse_and_create_execute_on_target_device() {
     assert_eq!(tasks[0].task_id, task_id);
     assert_eq!(
         tasks[0].spec.owner.chat_address,
-        rua_core::ChatAddress::new("project-task-chat")
+        rua_core::ChatAddress::new(task_chat_id)
     );
 
     target.runtime.shutdown().await.unwrap();

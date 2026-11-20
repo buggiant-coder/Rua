@@ -39,7 +39,7 @@ pub enum ResourcePolicy {
 #[serde(rename_all = "snake_case")]
 pub enum AuthorityPlacementPolicy {
     Selectable,
-    ResourceBound,
+    Fixed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,7 +67,7 @@ impl ChatPolicy {
         let (resource, authority_placement) = match project_id {
             Some(_) => (
                 ResourcePolicy::ProjectBinding,
-                AuthorityPlacementPolicy::ResourceBound,
+                AuthorityPlacementPolicy::Fixed,
             ),
             None => (ResourcePolicy::None, AuthorityPlacementPolicy::Selectable),
         };

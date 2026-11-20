@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Utc};
 use rua_core::ProjectId;
@@ -8,12 +8,13 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    propose_project_display_name, validate_project_directory, ProjectCreateRequest,
-    ProjectCreateResourcesRequest, ProjectCreationOutcome, ProjectDescriptor, ProjectLifecycle,
-    ProjectOverlapRelation, ProjectOverlapWarning, ProjectResourceBinding, ProjectResources,
+    normalize_project_root, propose_project_display_name, validate_project_directory,
+    ProjectCreateRequest, ProjectCreateResourcesRequest, ProjectCreationOutcome, ProjectDescriptor,
+    ProjectLifecycle, ProjectOverlapRelation, ProjectOverlapWarning, ProjectResourceDirectoryInput,
+    ProjectResources,
 };
 
-const PROJECT_RECORD_SCHEMA_VERSION: u32 = 3;
+const PROJECT_RECORD_SCHEMA_VERSION: u32 = 4;
 const PROJECT_TOMBSTONE_SCHEMA_VERSION: u32 = 1;
 const LEGACY_PROJECT_RUNNING_CONFIG_FIELD: &str = "running_config";
 
@@ -21,6 +22,8 @@ pub type ProjectResult<T> = Result<T, ProjectError>;
 
 #[derive(Debug, Error)]
 pub enum ProjectError {
+    #[error("Project resources changed; reload before editing")]
+    ResourceRevisionConflict,
     #[error("invalid Project resources: {0}")]
     InvalidResources(String),
     #[error("io: {0}")]
@@ -39,11 +42,9 @@ pub enum ProjectError {
     InvalidProjectId,
     #[error("project not found: {0}")]
     NotFound(ProjectId),
-    #[error("project binding is already owned by another Project")]
-    DuplicateBinding { owner: Box<ProjectDescriptor> },
     #[error("duplicate Project id in catalog: {0}")]
     DuplicateProjectId(ProjectId),
-    #[error("Project resource Device and display path are immutable: {0}")]
+    #[error("Project creation time is immutable: {0}")]
     ImmutableIdentityChange(ProjectId),
     #[error("Project record lock is poisoned")]
     LockPoisoned,
@@ -59,8 +60,6 @@ struct StoredProjectRecord {
     #[serde(default = "default_schema_version")]
     schema_version: u32,
     descriptor: ProjectDescriptor,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    binding: Option<ProjectResourceBinding>,
     #[serde(default, flatten)]
     extra: BTreeMap<String, serde_json::Value>,
 }
@@ -118,45 +117,18 @@ impl ProjectStoreCore {
             {
                 continue;
             }
-            let mut raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+            let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
             let schema = raw
                 .get("schema_version")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(1);
-            if schema > u64::from(PROJECT_RECORD_SCHEMA_VERSION) {
+            if schema != u64::from(PROJECT_RECORD_SCHEMA_VERSION) {
                 return Err(ProjectError::InvalidResources(format!(
-                    "Unsupported Project record schema: {schema}"
+                    "Unsupported Project record schema {schema} at {}; migrate the data before opening it", path.display()
                 )));
             }
-            if schema < 3 {
-                if let Some(binding) = raw
-                    .get_mut("binding")
-                    .and_then(serde_json::Value::as_object_mut)
-                {
-                    if let Some(root) = binding.remove("resource_root") {
-                        let root: PathBuf = serde_json::from_value(root)?;
-                        binding.insert(
-                            "resources".into(),
-                            serde_json::to_value(ProjectResources::from_legacy_root(root))?,
-                        );
-                    }
-                }
-            }
-            let mut record: StoredProjectRecord = serde_json::from_value(raw)?;
-            if let Some(binding) = record.binding.as_ref() {
-                binding.resources.validate()?;
-                if record.descriptor.resources.is_none() {
-                    record.descriptor.resources = Some((&binding.resources).into());
-                }
-            }
-            let removed_legacy_running_config =
-                remove_legacy_project_running_config(&mut record.descriptor);
-            let upgraded_schema = record.schema_version < PROJECT_RECORD_SCHEMA_VERSION;
-            if removed_legacy_running_config || upgraded_schema {
-                record.schema_version = PROJECT_RECORD_SCHEMA_VERSION;
-                let bytes = serde_json::to_vec_pretty(&record)?;
-                rua_config::atomic_write(&path, &bytes)?;
-            }
+            let record: StoredProjectRecord = serde_json::from_value(raw)?;
+            validate_descriptor(&record.descriptor)?;
             let project_id = record.descriptor.project_id.clone();
             if project_id.as_str().trim().is_empty() {
                 return Err(ProjectError::InvalidProjectId);
@@ -240,26 +212,8 @@ impl ProjectStoreCore {
     }
 }
 
-pub struct ProjectStores {
-    pub catalog: Arc<ProjectCatalog>,
-    pub bindings: Arc<ProjectResourceBindingStore>,
-}
-
-impl ProjectStores {
-    pub fn open(root: impl Into<PathBuf>) -> ProjectResult<Self> {
-        let core = Arc::new(ProjectStoreCore::open(root)?);
-        Ok(Self {
-            catalog: Arc::new(ProjectCatalog {
-                core: Arc::clone(&core),
-                lifecycle_transitions: Mutex::new(ProjectAdmissions::default()),
-            }),
-            bindings: Arc::new(ProjectResourceBindingStore { core }),
-        })
-    }
-}
-
 pub struct ProjectCatalog {
-    core: Arc<ProjectStoreCore>,
+    core: ProjectStoreCore,
     lifecycle_transitions: Mutex<ProjectAdmissions>,
 }
 
@@ -269,7 +223,7 @@ struct ProjectAdmissions {
     pending: HashMap<ProjectId, usize>,
 }
 
-/// Pins resources until an input has become visible to active-work inspection.
+/// Holds lifecycle admission until an input is visible to active-work inspection.
 pub struct ProjectAdmissionGuard<'a> {
     catalog: &'a ProjectCatalog,
     project_id: ProjectId,
@@ -288,45 +242,30 @@ impl Drop for ProjectAdmissionGuard<'_> {
     }
 }
 
-pub struct ProjectResourceEditGuard<'a> {
+pub struct ProjectExclusiveAdmissionGuard<'a> {
     catalog: &'a ProjectCatalog,
     project_id: ProjectId,
 }
-impl ProjectResourceEditGuard<'_> {
-    /// Commit exactly the candidate validated by the Project resource editor.
-    /// This guard proves exclusion from admission, not completion of business checks.
-    pub fn commit_resources(
-        self,
-        expected_revision: u64,
-        resources: ProjectResources,
-    ) -> ProjectResult<ProjectCreationOutcome> {
-        self.catalog
-            .commit_resources(&self.project_id, expected_revision, resources)
-    }
-
-    pub fn set_primary_directory(
-        self,
-        expected_revision: u64,
-        directory_id: &str,
-    ) -> ProjectResult<ProjectDescriptor> {
-        self.catalog
-            .set_primary_directory(&self.project_id, expected_revision, directory_id)
-    }
-}
-
-impl Drop for ProjectResourceEditGuard<'_> {
+impl Drop for ProjectExclusiveAdmissionGuard<'_> {
     fn drop(&mut self) {
         self.catalog.end_lifecycle_transition(&self.project_id);
     }
 }
 
 impl ProjectCatalog {
-    pub fn begin_resource_edit(
+    pub fn open(root: impl Into<PathBuf>) -> ProjectResult<Self> {
+        Ok(Self {
+            core: ProjectStoreCore::open(root)?,
+            lifecycle_transitions: Mutex::new(ProjectAdmissions::default()),
+        })
+    }
+
+    pub fn begin_exclusive_admission(
         &self,
         project_id: &ProjectId,
-    ) -> ProjectResult<ProjectResourceEditGuard<'_>> {
+    ) -> ProjectResult<ProjectExclusiveAdmissionGuard<'_>> {
         self.begin_lifecycle_transition(project_id)?;
-        Ok(ProjectResourceEditGuard {
+        Ok(ProjectExclusiveAdmissionGuard {
             catalog: self,
             project_id: project_id.clone(),
         })
@@ -356,74 +295,51 @@ impl ProjectCatalog {
         &self,
         request: ProjectCreateRequest,
     ) -> ProjectResult<ProjectCreationOutcome> {
+        let root = normalize_project_root(&request.resource_root)?;
+        validate_project_directory(&root)?;
         self.create_resources(ProjectCreateResourcesRequest {
-            resource_device_id: request.resource_device_id,
-            resource_roots: vec![PathBuf::from(request.resource_root)],
-            primary_index: 0,
             display_name: request.display_name,
+            directories: vec![ProjectResourceDirectoryInput::new(
+                request.resource_device_id,
+                root,
+            )],
         })
     }
 
+    /// Creates a Project from locations already validated on their owning Devices.
     pub fn create_resources(
         &self,
         request: ProjectCreateResourcesRequest,
     ) -> ProjectResult<ProjectCreationOutcome> {
-        let resource_device_id = request.resource_device_id.trim();
-        if resource_device_id.is_empty() {
-            return Err(ProjectError::InvalidResourceDevice);
-        }
-        let resources = ProjectResources::create(&request.resource_roots, request.primary_index)?;
-        let resource_root = resources.primary()?.resource_root.clone();
-        let display_name = request
-            .display_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| propose_project_display_name(&resource_root));
-        if display_name.trim().is_empty() {
-            return Err(ProjectError::InvalidDisplayName);
-        }
-
-        let mut records = self.core.lock()?;
-        let mut overlap_warnings = resources
-            .directories
-            .iter()
-            .flat_map(|directory| {
-                overlap_warnings(&records, resource_device_id, &directory.resource_root)
-            })
-            .collect::<Vec<_>>();
-        overlap_warnings
-            .sort_by(|left, right| left.project_id.as_str().cmp(right.project_id.as_str()));
-        overlap_warnings.dedup_by(|left, right| left.project_id == right.project_id);
-        let project_id = ProjectId::new(uuid::Uuid::new_v4().to_string());
+        let resources = ProjectResources::create(request.directories)?;
+        let display_name = match request.display_name {
+            Some(name) => name.trim().to_owned(),
+            None => resources
+                .directories
+                .first()
+                .map(|directory| propose_project_display_name(&directory.resource_root))
+                .unwrap_or_default(),
+        };
         let now = Utc::now();
         let descriptor = ProjectDescriptor {
-            project_id: project_id.clone(),
+            project_id: ProjectId::new(uuid::Uuid::new_v4().to_string()),
             display_name,
-            resource_device_id: resource_device_id.to_string(),
-            display_path: resource_root.to_string_lossy().to_string(),
+            resources,
             lifecycle: ProjectLifecycle::Active,
-            resources: Some((&resources).into()),
             created_at: now,
             updated_at: now,
             extra: BTreeMap::new(),
         };
-        let binding = ProjectResourceBinding {
-            project_id: project_id.clone(),
-            resource_device_id: resource_device_id.to_string(),
-            resources,
-            created_at: now,
-            extra: BTreeMap::new(),
-        };
+        validate_descriptor(&descriptor)?;
+        let mut records = self.core.lock()?;
+        let overlap_warnings = overlap_warnings(&records, &descriptor);
         let record = StoredProjectRecord {
             schema_version: PROJECT_RECORD_SCHEMA_VERSION,
             descriptor: descriptor.clone(),
-            binding: Some(binding),
             extra: BTreeMap::new(),
         };
         self.core.write_record(&record)?;
-        records.insert(project_id, record);
+        records.insert(descriptor.project_id.clone(), record);
         Ok(ProjectCreationOutcome {
             project: descriptor,
             overlap_warnings,
@@ -485,54 +401,33 @@ impl ProjectCatalog {
         Ok(record.descriptor.clone())
     }
 
-    fn commit_resources(
+    /// Only the durable metadata commit is serialized; remote validation and Turns
+    /// never hold this lock. A concurrent editor must retry against the new revision.
+    pub fn replace_resources(
         &self,
         project_id: &ProjectId,
         expected_revision: u64,
-        resources: ProjectResources,
+        directories: Vec<ProjectResourceDirectoryInput>,
     ) -> ProjectResult<ProjectCreationOutcome> {
         let mut records = self.core.lock()?;
         if self.core.lock_tombstones()?.contains_key(project_id) {
             return Err(ProjectError::PermanentlyDeleted(project_id.clone()));
         }
-        let record = records
+        let previous = records
             .get(project_id)
             .ok_or_else(|| ProjectError::NotFound(project_id.clone()))?;
-        let mut updated = record.clone();
-        let binding = updated.binding.as_mut().ok_or_else(|| {
-            ProjectError::InvalidResources("Resource Device binding unavailable".into())
-        })?;
-        if binding.resources.revision != expected_revision {
+        if previous.descriptor.lifecycle != ProjectLifecycle::Active {
             return Err(ProjectError::InvalidResources(
-                "Project resources changed; reload before editing".into(),
+                "Archived Project cannot change resources".into(),
             ));
         }
-        resources.validate()?;
-        if expected_revision.checked_add(1) != Some(resources.revision) {
-            return Err(ProjectError::InvalidResources(
-                "Invalid resource revision increment".into(),
-            ));
+        if previous.descriptor.resources.revision != expected_revision {
+            return Err(ProjectError::ResourceRevisionConflict);
         }
-        binding.resources = resources;
-        updated.descriptor.display_path = binding.primary_root().to_string_lossy().into_owned();
-        updated.descriptor.resources = Some((&binding.resources).into());
+        let mut updated = previous.clone();
+        updated.descriptor.resources = previous.descriptor.resources.edited(directories)?;
         updated.descriptor.updated_at = Utc::now();
-        let mut overlap_warnings = binding
-            .resources
-            .directories
-            .iter()
-            .flat_map(|directory| {
-                overlap_warnings(
-                    &records,
-                    &binding.resource_device_id,
-                    &directory.resource_root,
-                )
-            })
-            .filter(|warning| warning.project_id != *project_id)
-            .collect::<Vec<_>>();
-        overlap_warnings
-            .sort_by(|left, right| left.project_id.as_str().cmp(right.project_id.as_str()));
-        overlap_warnings.dedup_by(|left, right| left.project_id == right.project_id);
+        let overlap_warnings = overlap_warnings(&records, &updated.descriptor);
         self.core.write_record(&updated)?;
         let project = updated.descriptor.clone();
         records.insert(project_id.clone(), updated);
@@ -540,43 +435,6 @@ impl ProjectCatalog {
             project,
             overlap_warnings,
         })
-    }
-
-    fn set_primary_directory(
-        &self,
-        project_id: &ProjectId,
-        expected_revision: u64,
-        directory_id: &str,
-    ) -> ProjectResult<ProjectDescriptor> {
-        let mut records = self.core.lock()?;
-        if self.core.lock_tombstones()?.contains_key(project_id) {
-            return Err(ProjectError::PermanentlyDeleted(project_id.clone()));
-        }
-        let record = records
-            .get_mut(project_id)
-            .ok_or_else(|| ProjectError::NotFound(project_id.clone()))?;
-        let mut updated = record.clone();
-        let binding = updated.binding.as_mut().ok_or_else(|| {
-            ProjectError::InvalidResources("Resource Device binding is unavailable".into())
-        })?;
-        if binding.resources.revision != expected_revision {
-            return Err(ProjectError::InvalidResources(
-                "Project resources changed; reload before editing".into(),
-            ));
-        }
-        let selected = binding.resources.directory(directory_id)?;
-        validate_project_directory(&selected.resource_root)?;
-        if binding.resources.primary_directory_id == directory_id {
-            return Ok(record.descriptor.clone());
-        }
-        binding.resources.primary_directory_id = directory_id.into();
-        binding.resources.revision += 1;
-        updated.descriptor.display_path = binding.primary_root().to_string_lossy().into_owned();
-        updated.descriptor.resources = Some((&binding.resources).into());
-        updated.descriptor.updated_at = Utc::now();
-        self.core.write_record(&updated)?;
-        *record = updated;
-        Ok(record.descriptor.clone())
     }
 
     pub fn set_lifecycle(
@@ -645,7 +503,23 @@ impl ProjectCatalog {
 
     pub fn apply_descriptor(
         &self,
+        descriptor: ProjectDescriptor,
+    ) -> ProjectResult<ProjectDescriptor> {
+        self.merge_descriptor(descriptor, true)
+    }
+
+    /// A later-delivered resource revision can arrive inside an older metadata event.
+    pub fn apply_resource_snapshot(
+        &self,
+        descriptor: ProjectDescriptor,
+    ) -> ProjectResult<ProjectDescriptor> {
+        self.merge_descriptor(descriptor, false)
+    }
+
+    fn merge_descriptor(
+        &self,
         mut descriptor: ProjectDescriptor,
+        apply_metadata: bool,
     ) -> ProjectResult<ProjectDescriptor> {
         remove_legacy_project_running_config(&mut descriptor);
         validate_descriptor(&descriptor)?;
@@ -657,41 +531,47 @@ impl ProjectCatalog {
         }
         let updated = match records.get(&project_id) {
             Some(existing) => {
-                if existing.descriptor.resource_device_id != descriptor.resource_device_id
-                    || existing.descriptor.created_at != descriptor.created_at
-                {
+                if existing.descriptor.created_at != descriptor.created_at {
                     return Err(ProjectError::ImmutableIdentityChange(project_id));
                 }
-                if let Some(binding) = existing.binding.as_ref() {
-                    descriptor.resources = Some((&binding.resources).into());
-                    descriptor.display_path = binding.primary_root().to_string_lossy().into_owned();
-                } else if let Some(resources) = existing.descriptor.resources.as_ref() {
-                    if descriptor
-                        .resources
-                        .as_ref()
-                        .map(|incoming| incoming.revision)
-                        .unwrap_or_default()
-                        < resources.revision
-                    {
-                        descriptor.resources = Some(resources.clone());
-                        descriptor.display_path = existing.descriptor.display_path.clone();
+                let mut resources = descriptor.resources;
+                if resources.revision < existing.descriptor.resources.revision {
+                    resources = existing.descriptor.resources.clone();
+                } else {
+                    for directory in &resources.directories {
+                        if let Ok(prior) = existing
+                            .descriptor
+                            .resources
+                            .directory(&directory.directory_id)
+                        {
+                            if prior.device_id != directory.device_id
+                                || prior.resource_root.as_os_str()
+                                    != directory.resource_root.as_os_str()
+                            {
+                                return Err(ProjectError::InvalidResources(format!(
+                                    "A resource association cannot change location: {}",
+                                    directory.directory_id
+                                )));
+                            }
+                        }
                     }
-                } else if descriptor.resources.is_none()
-                    && existing.descriptor.display_path != descriptor.display_path
-                {
-                    return Err(ProjectError::ImmutableIdentityChange(project_id));
+                }
+                if !apply_metadata {
+                    descriptor = existing.descriptor.clone();
+                }
+                descriptor.resources = resources;
+                if descriptor == existing.descriptor {
+                    return Ok(descriptor);
                 }
                 StoredProjectRecord {
                     schema_version: existing.schema_version,
                     descriptor: descriptor.clone(),
-                    binding: existing.binding.clone(),
                     extra: existing.extra.clone(),
                 }
             }
             None => StoredProjectRecord {
                 schema_version: PROJECT_RECORD_SCHEMA_VERSION,
                 descriptor: descriptor.clone(),
-                binding: None,
                 extra: BTreeMap::new(),
             },
         };
@@ -820,43 +700,11 @@ impl ProjectCatalog {
     }
 }
 
-pub struct ProjectResourceBindingStore {
-    core: Arc<ProjectStoreCore>,
-}
-
-impl ProjectResourceBindingStore {
-    pub fn get(&self, project_id: &ProjectId) -> ProjectResult<Option<ProjectResourceBinding>> {
-        let records = self.core.lock()?;
-        Ok(records
-            .get(project_id)
-            .and_then(|record| record.binding.clone()))
-    }
-
-    pub fn list(&self) -> ProjectResult<Vec<ProjectResourceBinding>> {
-        let records = self.core.lock()?;
-        let mut bindings = records
-            .values()
-            .filter_map(|record| record.binding.clone())
-            .collect::<Vec<_>>();
-        bindings.sort_by(|left, right| left.project_id.as_str().cmp(right.project_id.as_str()));
-        Ok(bindings)
-    }
-
-    pub fn validate_resource_root(&self, project_id: &ProjectId) -> ProjectResult<()> {
-        let binding = self
-            .get(project_id)?
-            .ok_or_else(|| ProjectError::NotFound(project_id.clone()))?;
-        validate_project_directory(binding.primary_root())
-    }
-}
-
 fn validate_descriptor(descriptor: &ProjectDescriptor) -> ProjectResult<()> {
     if descriptor.project_id.as_str().trim().is_empty() {
         return Err(ProjectError::InvalidProjectId);
     }
-    if descriptor.resource_device_id.trim().is_empty() {
-        return Err(ProjectError::InvalidResourceDevice);
-    }
+    descriptor.resources.validate()?;
     if descriptor.display_name.trim().is_empty() {
         return Err(ProjectError::InvalidDisplayName);
     }
@@ -885,38 +733,58 @@ fn sorted_descriptors<'a>(
 
 fn overlap_warnings(
     records: &HashMap<ProjectId, StoredProjectRecord>,
-    resource_device_id: &str,
-    resource_root: &Path,
+    project: &ProjectDescriptor,
 ) -> Vec<ProjectOverlapWarning> {
     let mut warnings = records
         .values()
-        .filter_map(|record| {
-            let binding = record.binding.as_ref()?;
-            if binding.resource_device_id != resource_device_id {
-                return None;
-            }
-            let relation = binding.resources.directories.iter().find_map(|directory| {
-                if directory.resource_root == resource_root {
-                    Some(ProjectOverlapRelation::SharedDirectory)
-                } else if resource_root.starts_with(&directory.resource_root) {
-                    Some(ProjectOverlapRelation::ExistingAncestor)
-                } else if directory.resource_root.starts_with(resource_root) {
-                    Some(ProjectOverlapRelation::ExistingDescendant)
-                } else {
-                    None
+        .map(|record| &record.descriptor)
+        .filter(|other| other.project_id != project.project_id)
+        .filter_map(|other| {
+            for root in &project.resources.directories {
+                for existing in &other.resources.directories {
+                    if existing.device_id != root.device_id {
+                        continue;
+                    }
+                    let path = root.resource_root.to_str()?;
+                    let other_path = existing.resource_root.to_str()?;
+                    let relation = if path == other_path {
+                        ProjectOverlapRelation::SharedDirectory
+                    } else if is_resource_ancestor(other_path, path) {
+                        ProjectOverlapRelation::ExistingAncestor
+                    } else if is_resource_ancestor(path, other_path) {
+                        ProjectOverlapRelation::ExistingDescendant
+                    } else {
+                        continue;
+                    };
+                    return Some(ProjectOverlapWarning {
+                        project_id: other.project_id.clone(),
+                        display_name: other.display_name.clone(),
+                        display_path: existing.resource_root.to_string_lossy().into_owned(),
+                        lifecycle: other.lifecycle,
+                        relation,
+                    });
                 }
-            })?;
-            Some(ProjectOverlapWarning {
-                project_id: record.descriptor.project_id.clone(),
-                display_name: record.descriptor.display_name.clone(),
-                display_path: record.descriptor.display_path.clone(),
-                lifecycle: record.descriptor.lifecycle,
-                relation,
-            })
+            }
+            None
         })
         .collect::<Vec<_>>();
     warnings.sort_by(|left, right| left.project_id.as_str().cmp(right.project_id.as_str()));
     warnings
+}
+
+// Paths are normalized by their owner. The editing replica need not share its OS.
+fn is_resource_ancestor(parent: &str, child: &str) -> bool {
+    let Some(suffix) = child
+        .strip_prefix(parent)
+        .filter(|suffix| !suffix.is_empty())
+    else {
+        return false;
+    };
+    if parent.starts_with('/') {
+        parent.ends_with('/') || suffix.starts_with('/')
+    } else {
+        parent.ends_with(['/', '\\']) || suffix.starts_with(['/', '\\'])
+    }
 }
 
 fn encode_file_component(value: &str) -> String {

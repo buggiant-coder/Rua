@@ -28,6 +28,7 @@ use crate::services::conversation_authority_router::{
     verify_and_observe_authority_redirect, ConversationAuthorityRouter, ConversationSubmitRoute,
     ConversationSubmitRouteRequest,
 };
+use crate::services::conversation_authority_target::load_optional_chat_authority_placement;
 use crate::services::device_command_bus::{
     acp_runner_infos_from_service, AcpChatDeviceAction, AcpChatDeviceCommand,
     AcpChatDeviceResponse, AcpChatDeviceSessionEntry, AcpChatDeviceStatus,
@@ -184,7 +185,6 @@ pub struct ConversationInputIntake {
     remote_input_delivery: RemoteConversationInputDelivery,
     conversation_authority: Option<Arc<ConversationAuthority>>,
     project_catalog: Option<Arc<rua_project::ProjectCatalog>>,
-    project_bindings: Option<Arc<rua_project::ProjectResourceBindingStore>>,
     security: Option<Arc<rua_security::SecurityModule>>,
     approval_authority: Option<Arc<rua_security::ApprovalAuthority>>,
     acp_permission_relay: Option<Arc<rua_acp::permissions::AcpPermissionRelay>>,
@@ -222,7 +222,7 @@ pub(crate) struct ConversationControlTarget {
 #[derive(Debug, Clone)]
 pub(crate) struct InitialConversationControlTarget {
     pub scope_root: PathBuf,
-    pub resource_bound: bool,
+    pub project_member: bool,
     pub chat_agent_state: Option<crate::services::project_chat::ChatAgentState>,
 }
 
@@ -473,7 +473,7 @@ impl ConversationInputIntake {
         }
     }
 
-    async fn standalone_working_directory(
+    async fn execution_working_directory(
         &self,
         chat_id: &str,
         agent_id: &str,
@@ -498,47 +498,17 @@ impl ConversationInputIntake {
         address: &ChatAddress,
         local_device_id: &str,
     ) -> Result<PathBuf, String> {
-        match self.chat_selection(address).await? {
-            (agent_id, None) => {
-                self.standalone_working_directory(
-                    address.chat_id().as_str(),
-                    agent_id.as_str(),
-                    local_device_id,
-                )
-                .await
-            }
-            (_, Some(ref project_id)) => {
-                let catalog = self
-                    .project_catalog
-                    .as_ref()
-                    .ok_or("Project Catalog unavailable")?;
-                let project = catalog
-                    .get(project_id)
-                    .map_err(|error| error.to_string())?
-                    .ok_or("Project not found")?;
-                if project.resource_device_id != local_device_id {
-                    return Err("Project collaboration is fixed to another resource Device".into());
-                }
-                let binding = self
-                    .project_bindings
-                    .as_ref()
-                    .ok_or("Project Resource Binding Store unavailable")?
-                    .get(project_id)
-                    .map_err(|error| error.to_string())?
-                    .ok_or("Project Resource Binding missing")?;
-                if binding.resource_device_id != local_device_id {
-                    return Err("Project Resource Binding targets another Device".into());
-                }
-                let target = self
-                    .resolve_project_conversation_scope_target(address, local_device_id)
-                    .await?;
-                let header = rua_session::WorkspaceSessionStore::new(&target.scope_root)
-                    .load_chat_header(address.chat_id().as_str())
-                    .await
-                    .map_err(|error| error.to_string())?;
-                crate::services::project_chat::working_directory(&binding, header.as_ref(), None)
-            }
+        let (agent_id, project_id) = self.chat_selection(address).await?;
+        if project_id.is_some() {
+            self.resolve_project_conversation_scope_target(address, local_device_id)
+                .await?;
         }
+        self.execution_working_directory(
+            address.chat_id().as_str(),
+            agent_id.as_str(),
+            local_device_id,
+        )
+        .await
     }
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -567,7 +537,6 @@ impl ConversationInputIntake {
             remote_input_delivery,
             conversation_authority: None,
             project_catalog: None,
-            project_bindings: None,
             security: None,
             approval_authority: None,
             acp_permission_relay: None,
@@ -628,13 +597,8 @@ impl ConversationInputIntake {
         self
     }
 
-    pub fn with_project_runtime(
-        mut self,
-        catalog: Arc<rua_project::ProjectCatalog>,
-        bindings: Arc<rua_project::ProjectResourceBindingStore>,
-    ) -> Self {
+    pub fn with_project_runtime(mut self, catalog: Arc<rua_project::ProjectCatalog>) -> Self {
         self.project_catalog = Some(catalog);
-        self.project_bindings = Some(bindings);
         self
     }
 
@@ -978,21 +942,13 @@ impl ConversationInputIntake {
             .await
             .map_err(|error| error.to_string())?;
         let scope_root = runtime.chat_workspace_dir();
-        let working_dir = if let Some(project_id) = &header.project_id {
+        if header.project_id.is_some() {
             self.resolve_project_conversation_scope_target(address, local_device_id)
                 .await?;
-            let binding = self
-                .project_bindings
-                .as_ref()
-                .ok_or("Project Resource Binding Store is unavailable")?
-                .get(&rua_core::ProjectId::new(project_id.clone()))
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("Project Resource Binding not found: {project_id}"))?;
-            crate::services::project_chat::working_directory(&binding, Some(&header), None)?
-        } else {
+        }
+        let working_dir =
             crate::services::chat_context::saved_working_directory(Some(&header), local_device_id)
-                .unwrap_or_else(|| runtime.workspace_dir())
-        };
+                .unwrap_or_else(|| runtime.workspace_dir());
         Ok((
             ConversationExecutionContext {
                 address: address.clone(),
@@ -1201,7 +1157,7 @@ impl ConversationInputIntake {
     async fn resolve_project_conversation_scope_target(
         &self,
         address: &ChatAddress,
-        local_device_id: &str,
+        _local_device_id: &str,
     ) -> Result<ProjectConversationScopeTarget, String> {
         let project = self.chat_project_id(address).await?;
         let project_id = project
@@ -1222,20 +1178,6 @@ impl ConversationInputIntake {
         if project.lifecycle != rua_project::ProjectLifecycle::Active {
             return Err("Archived Project cannot provide Chat activity".to_string());
         }
-        if project.resource_device_id != local_device_id {
-            return Err("Project Chat authority is fixed to its resource Device".to_string());
-        }
-        let bindings = self
-            .project_bindings
-            .as_ref()
-            .ok_or_else(|| "Project Resource Binding Store is unavailable".to_string())?;
-        let binding = bindings
-            .get(project_id)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("Project Resource Binding not found: {project_id}"))?;
-        if binding.resource_device_id != project.resource_device_id {
-            return Err("Project Resource Binding Device does not match the Project".to_string());
-        }
         Ok(ProjectConversationScopeTarget {
             scope_root: ChatStore::resolve(data_dir, address.clone())
                 .root()
@@ -1248,8 +1190,8 @@ impl ConversationInputIntake {
         address: &ChatAddress,
         local_device_id: &str,
     ) -> Result<InitialConversationControlTarget, String> {
-        let resource_bound = self.chat_project_id(address).await?.is_some();
-        let scope_root = if resource_bound {
+        let project_member = self.chat_header(address).await?.project_id.is_some();
+        let scope_root = if project_member {
             self.resolve_project_conversation_scope_target(address, local_device_id)
                 .await?
                 .scope_root
@@ -1260,7 +1202,7 @@ impl ConversationInputIntake {
         };
         Ok(InitialConversationControlTarget {
             scope_root,
-            resource_bound,
+            project_member,
             chat_agent_state: self.chat_agent_state(address).await.ok(),
         })
     }
@@ -1294,152 +1236,114 @@ impl ConversationInputIntake {
         );
         let project_discovery = project_id.as_ref().is_some()
             && matches!(&command.action, ConversationControlDeviceAction::Discover);
-        let (execution_agent_id, scope_root, working_dir, project_resource_device_id) =
-            match project_id.as_ref() {
-                None => {
-                    if !selecting_agent && agent_id.as_str() != command.agent_id {
-                        return Err(reject(
-                            "wrong_agent_scope",
-                            "Conversation control Agent does not match its Chat Address"
-                                .to_string(),
-                        ));
-                    }
-                    let root =
-                        ChatStore::resolve(self.session_sync.rua_root(), command.address.clone())
-                            .root()
-                            .to_path_buf();
-                    let cwd = if selecting_agent {
-                        // Selection uses durable configuration and requires no current Agent runtime.
-                        root.clone()
-                    } else {
-                        let runtime = self
-                            .registry
-                            .get_or_create(agent_id.as_str())
-                            .await
-                            .map_err(|e| reject("workspace_unavailable", e.to_string()))?;
-                        crate::services::chat_context::working_directory_on_device(
-                            &root,
-                            chat_id,
-                            &command.target_device_id,
-                            runtime.workspace_dir(),
-                        )
-                        .await
-                        .map_err(|detail| reject("chat_unavailable", detail))?
-                    };
-                    (agent_id.to_string(), root, cwd, None)
+        let (execution_agent_id, scope_root, working_dir) = match project_id.as_ref() {
+            None => {
+                if !selecting_agent && agent_id.as_str() != command.agent_id {
+                    return Err(reject(
+                        "wrong_agent_scope",
+                        "Conversation control Agent does not match its Chat Address".to_string(),
+                    ));
                 }
-                Some(project_id) => {
-                    let data_dir = self.session_sync.rua_root();
-                    let catalog = self.project_catalog.as_ref().ok_or_else(|| {
-                        reject(
-                            "project_catalog_unavailable",
-                            "Project Catalog is unavailable".to_string(),
-                        )
-                    })?;
-                    if catalog.lifecycle_transition_in_progress(project_id) {
-                        return Err(reject(
-                            "project_lifecycle_transition",
-                            "Project lifecycle transition is in progress".to_string(),
-                        ));
-                    }
-                    let project = catalog
-                        .get(project_id)
-                        .map_err(|error| reject("project_store_failed", error.to_string()))?
-                        .ok_or_else(|| {
-                            reject(
-                                "project_not_found",
-                                format!("Project not found: {project_id}"),
-                            )
-                        })?;
-                    if project.lifecycle != rua_project::ProjectLifecycle::Active
-                        && !matches!(
-                            command.action,
-                            ConversationControlDeviceAction::ViewAgentSelection
-                        )
-                    {
-                        let detail = if selecting_agent {
-                            "Chat Agent switch blocked by archived_project"
-                        } else {
-                            "Archived Project cannot accept Chat controls"
-                        };
-                        return Err(reject("project_archived", detail.to_owned()));
-                    }
-                    let bindings = self.project_bindings.as_ref().ok_or_else(|| {
-                        reject(
-                            "project_binding_unavailable",
-                            "Project Resource Binding Store is unavailable".to_string(),
-                        )
-                    })?;
-                    let binding = bindings
-                        .get(project_id)
-                        .map_err(|error| reject("project_binding_failed", error.to_string()))?
-                        .ok_or_else(|| {
-                            reject(
-                                "project_binding_not_found",
-                                format!("Project Resource Binding not found: {project_id}"),
-                            )
-                        })?;
-                    if binding.resource_device_id != project.resource_device_id {
-                        return Err(reject(
-                            "project_binding_mismatch",
-                            "Project Resource Binding Device does not match the Project"
-                                .to_string(),
-                        ));
-                    }
-                    if command.target_device_id != project.resource_device_id {
-                        return Err(reject(
-                            "project_authority_fixed",
-                            "Project Chat authority is fixed to its resource Device".to_string(),
-                        ));
-                    }
-                    let scope_root = ChatStore::resolve(data_dir, command.address.clone())
+                let root =
+                    ChatStore::resolve(self.session_sync.rua_root(), command.address.clone())
                         .root()
                         .to_path_buf();
-                    let header = rua_session::WorkspaceSessionStore::new(&scope_root)
-                        .load_chat_header(chat_id)
+                let cwd = if selecting_agent {
+                    // Selection uses durable configuration and requires no current Agent runtime.
+                    root.clone()
+                } else {
+                    let runtime = self
+                        .registry
+                        .get_or_create(agent_id.as_str())
                         .await
-                        .map_err(|error| reject("project_chat_unavailable", error.to_string()))?
-                        .ok_or_else(|| {
-                            reject(
-                                "project_chat_not_found",
-                                format!("Project Chat not found: {chat_id}"),
-                            )
-                        })?;
-                    let selected_agent_id =
-                        crate::services::project_chat::selection_from_header(&header)
-                            .map_err(|error| reject("project_agent_unavailable", error))?
-                            .agent_id;
-                    if command.agent_id != selected_agent_id
-                        && !project_discovery
-                        && !selecting_agent
-                    {
-                        return Err(reject(
-                            "stale_project_agent_selection",
-                            format!(
-                                "Project Chat Agent Selection changed from '{}' to '{}'",
-                                command.agent_id, selected_agent_id
-                            ),
-                        ));
-                    }
-                    if !selecting_agent {
-                        self.registry
-                            .get_or_create(&selected_agent_id)
-                            .await
-                            .map_err(|error| reject("workspace_unavailable", error.to_string()))?;
-                    }
-                    (
-                        selected_agent_id,
-                        scope_root,
-                        crate::services::project_chat::working_directory(
-                            &binding,
-                            Some(&header),
-                            None,
-                        )
-                        .map_err(|error| reject("project_directory_unavailable", error))?,
-                        Some(project.resource_device_id),
+                        .map_err(|e| reject("workspace_unavailable", e.to_string()))?;
+                    crate::services::chat_context::working_directory_on_device(
+                        &root,
+                        chat_id,
+                        &command.target_device_id,
+                        runtime.workspace_dir(),
                     )
+                    .await
+                    .map_err(|detail| reject("chat_unavailable", detail))?
+                };
+                (agent_id.to_string(), root, cwd)
+            }
+            Some(project_id) => {
+                let data_dir = self.session_sync.rua_root();
+                let catalog = self.project_catalog.as_ref().ok_or_else(|| {
+                    reject(
+                        "project_catalog_unavailable",
+                        "Project Catalog is unavailable".to_string(),
+                    )
+                })?;
+                if catalog.lifecycle_transition_in_progress(project_id) {
+                    return Err(reject(
+                        "project_lifecycle_transition",
+                        "Project lifecycle transition is in progress".to_string(),
+                    ));
                 }
-            };
+                let project = catalog
+                    .get(project_id)
+                    .map_err(|error| reject("project_store_failed", error.to_string()))?
+                    .ok_or_else(|| {
+                        reject(
+                            "project_not_found",
+                            format!("Project not found: {project_id}"),
+                        )
+                    })?;
+                if project.lifecycle != rua_project::ProjectLifecycle::Active
+                    && !matches!(
+                        command.action,
+                        ConversationControlDeviceAction::ViewAgentSelection
+                    )
+                {
+                    let detail = if selecting_agent {
+                        "Chat Agent switch blocked by archived_project"
+                    } else {
+                        "Archived Project cannot accept Chat controls"
+                    };
+                    return Err(reject("project_archived", detail.to_owned()));
+                }
+                let scope_root = ChatStore::resolve(data_dir, command.address.clone())
+                    .root()
+                    .to_path_buf();
+                let header = rua_session::WorkspaceSessionStore::new(&scope_root)
+                    .load_chat_header(chat_id)
+                    .await
+                    .map_err(|error| reject("project_chat_unavailable", error.to_string()))?
+                    .ok_or_else(|| {
+                        reject(
+                            "project_chat_not_found",
+                            format!("Project Chat not found: {chat_id}"),
+                        )
+                    })?;
+                let selected_agent_id =
+                    crate::services::project_chat::selection_from_header(&header)
+                        .map_err(|error| reject("project_agent_unavailable", error))?
+                        .agent_id;
+                if command.agent_id != selected_agent_id && !project_discovery && !selecting_agent {
+                    return Err(reject(
+                        "stale_project_agent_selection",
+                        format!(
+                            "Project Chat Agent Selection changed from '{}' to '{}'",
+                            command.agent_id, selected_agent_id
+                        ),
+                    ));
+                }
+                let cwd = if selecting_agent {
+                    scope_root.clone()
+                } else {
+                    self.execution_working_directory(
+                        chat_id,
+                        &selected_agent_id,
+                        &command.target_device_id,
+                    )
+                    .await
+                    .map_err(|detail| reject("workspace_unavailable", detail))?
+                };
+                (selected_agent_id, scope_root, cwd)
+            }
+        };
         let placement =
             crate::services::conversation_authority_target::load_chat_authority_placement_target(
                 &scope_root,
@@ -1447,14 +1351,6 @@ impl ConversationInputIntake {
             )
             .await
             .map_err(|detail| reject("authority_placement_unavailable", detail))?;
-        if let Some(resource_device_id) = project_resource_device_id.as_deref() {
-            if placement.device_id != resource_device_id {
-                return Err(reject(
-                    "project_authority_fixed",
-                    "Project Chat authority does not match its resource Device".to_string(),
-                ));
-            }
-        }
         if placement.device_id != command.target_device_id
             || placement.authority_epoch != command.authority_epoch
         {
@@ -1693,34 +1589,15 @@ impl ConversationInputIntake {
                         )
                     })?;
                 let config = configuration.security_config;
-                let binding = self
-                    .project_bindings
-                    .as_ref()
-                    .ok_or_else(|| {
-                        reject(
-                            "project_resources_unavailable",
-                            "Project bindings are unavailable".into(),
+                let policy = config
+                    .extra
+                    .contains_key(rua_security::PROJECT_RESOURCE_POLICY_KEY)
+                    .then(|| {
+                        rua_security::EffectiveProjectResourcePolicy::resolve(
+                            &config,
+                            &target.working_dir,
                         )
-                    })?
-                    .get(project_id.as_ref().expect("Project scope checked above"))
-                    .map_err(|error| reject("project_resources_unavailable", error.to_string()))?
-                    .ok_or_else(|| {
-                        reject(
-                            "project_resources_unavailable",
-                            "Project binding is missing".into(),
-                        )
-                    })?;
-                let roots = binding
-                    .resources
-                    .directories
-                    .iter()
-                    .map(|directory| directory.resource_root.clone())
-                    .collect::<Vec<_>>();
-                let policy = rua_security::EffectiveProjectResourcePolicy::resolve_with_roots(
-                    &config,
-                    &target.working_dir,
-                    &roots,
-                );
+                    });
                 let approval_authority = self.approval_authority.as_ref().ok_or_else(|| {
                     reject(
                         "approval_authority_unavailable",
@@ -2345,17 +2222,8 @@ impl ConversationInputIntake {
             AcpChatDeviceAction::Enter { .. } | AcpChatDeviceAction::ListSessions { .. }
         ) {
             if let Some(project_id) = project_id.as_ref() {
-                let bindings = self.project_bindings.as_ref().ok_or_else(|| {
-                    reject(
-                        "project_binding_unavailable",
-                        "Project Resource Binding Store is unavailable".to_string(),
-                    )
-                })?;
-                bindings
-                    .validate_resource_root(project_id)
-                    .map_err(|error| reject("project_resource_unavailable", error.to_string()))?;
-                self.validate_acp_project_resources(project_id)
-                    .map_err(|error| reject("unsupported_project_resources", error))?;
+                self.require_existing_project(project_id)
+                    .map_err(|error| reject("project_unavailable", error))?;
             }
         }
         let project_cwd = project_id
@@ -2615,9 +2483,6 @@ impl ConversationInputIntake {
             if project.lifecycle != rua_project::ProjectLifecycle::Active {
                 return Err("Chat Agent switch blocked by archived_project".into());
             }
-            if project.resource_device_id != placement.device_id {
-                return Err("Project Chat authority is fixed to its resource Device".into());
-            }
         }
         let selected_agent = self
             .agent_service
@@ -2759,16 +2624,6 @@ impl ConversationInputIntake {
         if project.lifecycle != rua_project::ProjectLifecycle::Active {
             return Err("Archived Project cannot update Chats".into());
         }
-        let binding = self
-            .project_bindings
-            .as_ref()
-            .ok_or("Project bindings unavailable")?
-            .get(project_id)
-            .map_err(|error| error.to_string())?
-            .ok_or("Project binding unavailable")?;
-        if binding.resource_device_id != project.resource_device_id {
-            return Err("Resource Device mismatch".into());
-        }
         let scope_root = ChatStore::resolve(
             data_dir,
             ChatAddress::new("00000000-0000-4000-8000-000000000000"),
@@ -2796,7 +2651,7 @@ impl ConversationInputIntake {
         let mut items = Vec::new();
         for chat_id in ids.into_iter().filter(|id| seen.insert(id.clone())) {
             let outcome = self
-                .archive_idle_project_chat(project_id, &scope_root, &chat_id)
+                .archive_idle_project_chat(project_id, &scope_root, &chat_id, source_device_id)
                 .await;
             let (status, reason) = match outcome {
                 Ok(reason) => (
@@ -2825,6 +2680,7 @@ impl ConversationInputIntake {
         project_id: &ProjectId,
         scope_root: &Path,
         chat_id: &str,
+        source_device_id: &str,
     ) -> Result<Option<String>, String> {
         // Coordinate with all Project work admissions and the per-Chat transition
         // gate. Busy work is observed, never cancelled by this listing operation.
@@ -2839,7 +2695,7 @@ impl ConversationInputIntake {
             .project_catalog
             .as_ref()
             .ok_or("Project catalog unavailable")?;
-        let admission = match catalog.begin_resource_edit(project_id) {
+        let admission = match catalog.begin_exclusive_admission(project_id) {
             Ok(guard) => guard,
             Err(_) => return Ok(Some("project_admission_in_progress".into())),
         };
@@ -2867,6 +2723,63 @@ impl ConversationInputIntake {
         }
         if header.metadata.archived {
             return Ok(None);
+        }
+        let local_device_id = current_sync_device_id(&self.sync_device)
+            .ok_or("Local Device identity is unavailable")?;
+        let placement = crate::services::conversation_authority_placement::parse_conversation_authority_placement(
+            &serde_json::Value::Object(header.extra.clone()),
+        ).map_err(|e| e.to_string())?;
+        if placement.device_id != local_device_id {
+            if source_device_id != local_device_id {
+                return Err("Chat authority placement changed; retry after sync".into());
+            }
+            drop(transition);
+            drop(admission);
+            use crate::services::device_command_bus::{
+                deliver_project_device_command_via_session, ProjectDeviceAction,
+                ProjectDeviceCommand, ProjectDeviceResponse,
+            };
+            let manager = crate::services::device_session_access::current_session_manager(
+                self.device_network(),
+            )
+            .await?;
+            let response = deliver_project_device_command_via_session(
+                &manager,
+                &ProjectDeviceCommand {
+                    command_id: format!("project-archive-chat-{}", uuid::Uuid::new_v4()),
+                    source_device_id: local_device_id,
+                    target_device_id: placement.device_id,
+                    action: ProjectDeviceAction::ArchiveIdleChats {
+                        project_id: project_id.clone(),
+                        chat_ids: Some(vec![chat_id.to_string()]),
+                    },
+                },
+                std::time::Duration::from_secs(10),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            let ProjectDeviceResponse::ChatsArchived { result } = response else {
+                return Err("Invalid response to Chat archive".into());
+            };
+            let [item] = result.items.as_slice() else {
+                return Err("Invalid number of Chat archive results".into());
+            };
+            if item.chat_id != chat_id {
+                return Err("Chat archive result belongs to another Chat".into());
+            }
+            use crate::services::project_chat::ProjectChatArchiveStatus;
+            return match item.status {
+                ProjectChatArchiveStatus::Archived => Ok(None),
+                ProjectChatArchiveStatus::Skipped => Ok(Some(
+                    item.reason
+                        .clone()
+                        .unwrap_or_else(|| "Chat archive skipped".into()),
+                )),
+                ProjectChatArchiveStatus::Failed => Err(item
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "Chat archive failed".into())),
+            };
         }
         let impact = self
             .project_lifecycle_impact(scope_root, &[(address.clone(), header)])
@@ -2935,18 +2848,6 @@ impl ConversationInputIntake {
         if project.lifecycle != rua_project::ProjectLifecycle::Active {
             return Err("Archived Project cannot update Chats".to_string());
         }
-        let bindings = self
-            .project_bindings
-            .as_ref()
-            .ok_or_else(|| "Project Resource Binding Store is unavailable".to_string())?;
-        let binding = bindings
-            .get(project_id)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("Project Resource Binding not found: {project_id}"))?;
-        if binding.resource_device_id != project.resource_device_id {
-            return Err("Project Resource Binding Device does not match the Project".to_string());
-        }
-
         let address = ChatAddress::new(chat_id);
         if self.chat_project_id(&address).await?.as_ref() != Some(project_id) {
             return Err(format!("Chat not found in Project: {chat_id}"));
@@ -3042,25 +2943,6 @@ impl ConversationInputIntake {
                 "Archived Project cannot delete Chats".to_string(),
             ));
         }
-        let bindings = self.project_bindings.as_ref().ok_or_else(|| {
-            ProjectChatDeleteError::Failed(
-                "Project Resource Binding Store is unavailable".to_string(),
-            )
-        })?;
-        let binding = bindings
-            .get(project_id)
-            .map_err(|error| ProjectChatDeleteError::Failed(error.to_string()))?
-            .ok_or_else(|| {
-                ProjectChatDeleteError::NotFound(format!(
-                    "Project Resource Binding not found: {project_id}"
-                ))
-            })?;
-        if binding.resource_device_id != project.resource_device_id {
-            return Err(ProjectChatDeleteError::Failed(
-                "Project Resource Binding Device does not match the Project".to_string(),
-            ));
-        }
-
         let address = ChatAddress::new(chat_id);
         let scope_root = ChatStore::resolve(data_dir, address.clone())
             .root()
@@ -3292,13 +3174,6 @@ impl ConversationInputIntake {
                     changed: false,
                 });
             }
-            let bindings = self
-                .project_bindings
-                .as_ref()
-                .ok_or_else(|| "Project Resource Binding Store is unavailable".to_string())?;
-            bindings
-                .validate_resource_root(project_id)
-                .map_err(|error| format!("Project resource cannot be reopened: {error}"))?;
             self.stop_project_runtime(&chats).await?;
             let project = catalog
                 .set_lifecycle(project_id, rua_project::ProjectLifecycle::Active)
@@ -3482,9 +3357,6 @@ impl ConversationInputIntake {
             self.project_catalog
                 .as_deref()
                 .ok_or("Project Catalog is unavailable")?,
-            self.project_bindings
-                .as_deref()
-                .ok_or("Project Resource Binding Store is unavailable")?,
             project_id,
         )
         .await
@@ -4227,9 +4099,8 @@ impl ConversationInputIntake {
                                     rua_config::ChatRunningConfig::from_agent_defaults(&running),
                                     None,
                                     crate::services::chat_configuration_capture::ChatConfigurationSelection {
-standalone_working_dir: None,
-project_id: None,
-project_working_directory_id: None,
+                                        execution_working_dir: None,
+                                        project_id: None,
                                         model: initial_model.clone(),
                                         thinking: None,
                                         collaboration_mode: serde_json::to_value(collaboration_mode).map_err(|error| error.to_string())?,
@@ -4366,10 +4237,8 @@ project_working_directory_id: None,
                 failure_kind: Some("business".to_string()),
             };
         }
-        let project = match catalog.get(project_id) {
-            Ok(Some(project)) if project.lifecycle == rua_project::ProjectLifecycle::Active => {
-                project
-            }
+        match catalog.get(project_id) {
+            Ok(Some(project)) if project.lifecycle == rua_project::ProjectLifecycle::Active => {}
             Ok(Some(_)) => {
                 return ConversationInputDeliveryOutcome::Rejected {
                     detail: "Archived Project cannot accept new work".to_string(),
@@ -4395,7 +4264,7 @@ project_working_directory_id: None,
         let Some(raw_chat_id) = request.chat_id.as_deref() else {
             return ConversationInputDeliveryOutcome::Rejected {
                 detail: "Project Chat id is required".to_string(),
-                target_device_id: Some(project.resource_device_id),
+                target_device_id: None,
                 failure_kind: Some("invalid_request".to_string()),
             };
         };
@@ -4404,7 +4273,7 @@ project_working_directory_id: None,
             Err(error) => {
                 return ConversationInputDeliveryOutcome::Rejected {
                     detail: error,
-                    target_device_id: Some(project.resource_device_id),
+                    target_device_id: None,
                     failure_kind: Some("invalid_request".to_string()),
                 };
             }
@@ -4414,21 +4283,21 @@ project_working_directory_id: None,
         {
             return ConversationInputDeliveryOutcome::Rejected {
                 detail: error.to_string(),
-                target_device_id: Some(project.resource_device_id),
+                target_device_id: None,
                 failure_kind: Some("chat_not_found".into()),
             };
         }
         if execution_agent_id.trim().is_empty() {
             return ConversationInputDeliveryOutcome::Rejected {
                 detail: "execution Agent id is required".to_string(),
-                target_device_id: Some(project.resource_device_id),
+                target_device_id: None,
                 failure_kind: Some("invalid_request".to_string()),
             };
         }
         let Some(source_device_id) = current_sync_device_id(&self.sync_device) else {
             return ConversationInputDeliveryOutcome::Rejected {
                 detail: "source Device identity is unavailable".to_string(),
-                target_device_id: Some(project.resource_device_id),
+                target_device_id: None,
                 failure_kind: Some("delivery".to_string()),
             };
         };
@@ -4442,17 +4311,17 @@ project_working_directory_id: None,
             Err(detail) => {
                 return ConversationInputDeliveryOutcome::Rejected {
                     detail,
-                    target_device_id: Some(project.resource_device_id),
+                    target_device_id: None,
                     failure_kind: Some("chat_not_ready".into()),
                 }
             }
         };
-        let mut selected_agent_id = match saved {
+        let selected_agent_id = match saved {
             Some(header) => {
                 if header.project_id.as_deref() != Some(project_id.as_str()) {
                     return ConversationInputDeliveryOutcome::Rejected {
                         detail: "Chat Project membership is fixed".into(),
-                        target_device_id: Some(project.resource_device_id),
+                        target_device_id: None,
                         failure_kind: Some("invalid_request".into()),
                     };
                 }
@@ -4461,7 +4330,7 @@ project_working_directory_id: None,
                     Err(detail) => {
                         return ConversationInputDeliveryOutcome::Rejected {
                             detail,
-                            target_device_id: Some(project.resource_device_id),
+                            target_device_id: None,
                             failure_kind: Some("chat_not_ready".into()),
                         }
                     }
@@ -4469,149 +4338,73 @@ project_working_directory_id: None,
             }
             None => execution_agent_id.trim().to_owned(),
         };
-        if project.resource_device_id == source_device_id {
-            if let Err(detail) = crate::services::conversation_authority_target::validate_chat_submit_materialization(
-                &scope_root, &chat_id, request.extra.get("expected_authority_epoch").and_then(serde_json::Value::as_str),
-            ).await {
-                return ConversationInputDeliveryOutcome::Rejected {
-                    detail, target_device_id: Some(project.resource_device_id),
-                    failure_kind: Some("chat_not_ready".into()),
-                };
-            }
-        }
-        let (placement, materialize_conversation) = match crate::services::conversation_authority_target::load_chat_authority_placement_target(
-            &scope_root,
-            &chat_id,
-        )
-        .await
+        let acknowledged = match load_optional_chat_authority_placement(&scope_root, &chat_id).await
         {
-            Ok(placement) => {
-                if placement.device_id != project.resource_device_id {
+            Ok(Some(_)) => None,
+            Ok(None) => match self
+                .remote_input_delivery
+                .read_source_pending(&address)
+                .await
+            {
+                Ok(pending) => pending,
+                Err(detail) => {
                     return ConversationInputDeliveryOutcome::Rejected {
-                        detail: "Project Chat authority does not match its resource Device"
-                            .to_string(),
-                        target_device_id: Some(project.resource_device_id),
-                        failure_kind: Some("business".to_string()),
-                    };
-                }
-                (
-                    crate::services::conversation_authority_placement::ConversationAuthorityPlacement {
-                        device_id: placement.device_id,
-                        authority_epoch: placement.authority_epoch,
-                        base_manifest_hash: placement.base_manifest_hash,
-                    },
-                    false,
-                )
-            }
-            Err(_) => {
-                let discovered = if project.resource_device_id != source_device_id {
-                    match crate::services::conversation_control_dispatcher::dispatch_conversation_control(self, ConversationControlDeviceCommand {
-                            command_id: format!(
-                                "project-submit-discover-{}",
-                                uuid::Uuid::new_v4()
-                            ),
-                            agent_id: selected_agent_id.clone(),
-                            address: address.clone(),
-                            source_device_id: source_device_id.clone(),
-                            target_device_id: project.resource_device_id.clone(),
-                            authority_epoch: ConversationAuthorityEpoch::from_parts(0, 0, [0; 8]),
-                            action: ConversationControlDeviceAction::Discover,
-                        })
-                        .await
-                    {
-                        Ok(ConversationControlDeviceResponse::View {
-                            execution_agent_id: Some(execution_agent_id),
-                            authority_placement: Some(placement),
-                            ..
-                        }) => {
-                            if placement.device_id != project.resource_device_id {
-                                return ConversationInputDeliveryOutcome::Rejected {
-                                    detail: "Project Chat authority does not match its resource Device"
-                                        .to_string(),
-                                    target_device_id: Some(project.resource_device_id),
-                                    failure_kind: Some("business".to_string()),
-                                };
-                            }
-                            if execution_agent_id.trim().is_empty() {
-                                return ConversationInputDeliveryOutcome::Rejected {
-                                    detail: "Project control discovery returned an empty selected Agent"
-                                        .to_string(),
-                                    target_device_id: Some(project.resource_device_id),
-                                    failure_kind: Some("protocol_error".to_string()),
-                                };
-                            }
-                            Some((execution_agent_id, placement))
-                        }
-                        Ok(ConversationControlDeviceResponse::View { .. }) => {
-                            return ConversationInputDeliveryOutcome::Rejected {
-                                detail: "Project control discovery returned incomplete authority state"
-                                    .to_string(),
-                                target_device_id: Some(project.resource_device_id),
-                                failure_kind: Some("protocol_error".to_string()),
-                            };
-                        }
-                        Ok(_) => {
-                            return ConversationInputDeliveryOutcome::Rejected {
-                                detail:
-                                    "Project control discovery returned an unexpected response"
-                                        .to_string(),
-                                target_device_id: Some(project.resource_device_id),
-                                failure_kind: Some("protocol_error".to_string()),
-                            };
-                        }
-                        Err(DeviceCommandDeliveryError::Rejected { reason, .. })
-                            if reason == "project_chat_not_found" =>
-                        {
-                            None
-                        }
-                        Err(error) => {
-                            return ConversationInputDeliveryOutcome::Rejected {
-                                detail: error.to_string(),
-                                target_device_id: Some(project.resource_device_id),
-                                failure_kind: Some(error.failure_kind().to_string()),
-                            };
-                        }
+                        detail,
+                        target_device_id: None,
+                        failure_kind: Some("chat_not_ready".into()),
                     }
-                } else {
-                    None
-                };
-                if let Some((execution_agent_id, placement)) = discovered {
-                    selected_agent_id = execution_agent_id;
-                    (placement, false)
-                } else {
-                let base_manifest_hash =
-                    match crate::services::conversation_manifest::initial_conversation_manifest_hash(
-                        &address,
-                    ) {
-                        Ok(hash) => hash,
-                        Err(error) => {
-                            return ConversationInputDeliveryOutcome::Rejected {
-                                detail: error.to_string(),
-                                target_device_id: Some(project.resource_device_id),
-                                failure_kind: Some("business".to_string()),
-                            };
-                        }
-                    };
-                (
-                    crate::services::conversation_authority_placement::ConversationAuthorityPlacement {
-                        device_id: project.resource_device_id.clone(),
-                        authority_epoch: ConversationAuthorityEpoch::next_for_device(
-                            &project.resource_device_id,
-                            None,
-                        ),
-                        base_manifest_hash,
-                    },
-                    true,
-                )
+                }
+            },
+            Err(detail) => {
+                return ConversationInputDeliveryOutcome::Rejected {
+                    detail,
+                    target_device_id: None,
+                    failure_kind: Some("chat_not_ready".into()),
                 }
             }
         };
-        let route =
-            ConversationAuthorityRouter.route_fixed_placement(&placement, Some(&source_device_id));
+        // A source-side receipt can arrive before the authoritative Chat header.
+        // Route this interval to the Device that already accepted the Chat.
+        let route = if let Some(pending) = acknowledged {
+            let expected = request
+                .extra
+                .get("expected_authority_epoch")
+                .and_then(serde_json::Value::as_str);
+            if expected.is_some_and(|value| value != pending.authority_epoch.to_string())
+                || pending.base_manifest_hash.is_none()
+            {
+                return ConversationInputDeliveryOutcome::Rejected {
+                    detail: "Chat authority placement is not ready; retry after synchronization"
+                        .into(),
+                    target_device_id: Some(pending.target_device_id),
+                    failure_kind: Some("chat_not_ready".into()),
+                };
+            }
+            ConversationAuthorityRouter.route_fixed_placement(
+                &ConversationAuthorityPlacement {
+                    device_id: pending.target_device_id,
+                    authority_epoch: pending.authority_epoch,
+                    base_manifest_hash: pending.base_manifest_hash.expect("validated receipt hash"),
+                },
+                Some(&source_device_id),
+            )
+        } else {
+            ConversationAuthorityRouter
+                .resolve_submit_route(ConversationSubmitRouteRequest {
+                    workspace_dir: Some(&scope_root),
+                    address: &address,
+                    request: &request,
+                    execution_agent_id: &selected_agent_id,
+                    local_device_id: Some(&source_device_id),
+                    acp_chat_registry: self.acp_chat_registry.as_ref(),
+                })
+                .await
+        };
         match route {
             ConversationSubmitRoute::LocalAuthority {
                 authority_device_id,
                 authority_epoch,
+                base_manifest_hash,
                 ..
             } => {
                 self.deliver_local_project_authority(
@@ -4624,7 +4417,7 @@ project_working_directory_id: None,
                     ConversationAuthorityPlacement {
                         device_id: authority_device_id,
                         authority_epoch,
-                        base_manifest_hash: placement.base_manifest_hash,
+                        base_manifest_hash,
                     },
                 )
                 .await
@@ -4633,7 +4426,8 @@ project_working_directory_id: None,
                 source_device_id,
                 target_device_id,
                 authority_epoch,
-                ..
+                base_manifest_hash,
+                materialize_conversation,
             } => {
                 let params = RemoteConversationInputParams {
                     address: &address,
@@ -4642,7 +4436,7 @@ project_working_directory_id: None,
                     source_device_id: &source_device_id,
                     target_device_id: &target_device_id,
                     authority_epoch,
-                    base_manifest_hash: &placement.base_manifest_hash,
+                    base_manifest_hash: &base_manifest_hash,
                     workspace_dir: Some(&scope_root),
                     materialize_conversation,
                 };
@@ -4655,7 +4449,7 @@ project_working_directory_id: None,
                     Err(detail) => {
                         return ConversationInputDeliveryOutcome::Rejected {
                             detail,
-                            target_device_id: Some(project.resource_device_id),
+                            target_device_id: None,
                             failure_kind: Some("invalid_request".to_string()),
                         };
                     }
@@ -4703,29 +4497,6 @@ project_working_directory_id: None,
             Ok(guard) => guard,
             Err(error) => return reject(error.to_string()),
         };
-        let Some(bindings) = self.project_bindings.as_ref() else {
-            return reject("Project Resource Binding Store is unavailable".to_string());
-        };
-        let binding = match bindings.get(project_id) {
-            Ok(Some(binding)) => binding,
-            Ok(None) => {
-                return reject(format!("Project Resource Binding not found: {project_id}"));
-            }
-            Err(error) => return reject(error.to_string()),
-        };
-        if binding.resource_device_id != placement.device_id {
-            return reject("Project Chat authority does not match its resource Device".to_string());
-        }
-        let _project = match self
-            .project_catalog
-            .as_ref()
-            .ok_or_else(|| "Project Catalog is unavailable".to_string())
-            .and_then(|catalog| catalog.get(project_id).map_err(|error| error.to_string()))
-        {
-            Ok(Some(project)) => project,
-            Ok(None) => return reject(format!("Project not found: {project_id}")),
-            Err(error) => return reject(error),
-        };
         let indexed =
             match crate::services::chat_index::get(&scope_root, address.chat_id().as_str()).await {
                 Ok(indexed) => indexed,
@@ -4739,33 +4510,6 @@ project_working_directory_id: None,
             Err(error) => return reject(error.to_string()),
         };
         let first_submission = indexed.is_none() && header.is_none();
-        let directory_key = crate::services::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY;
-        let directory_id = header
-            .as_ref()
-            .and_then(|header| header.extra.get(directory_key))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(if first_submission {
-                request
-                    .extra
-                    .get(directory_key)
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or(&binding.resources.primary_directory_id)
-            } else {
-                rua_project::INITIAL_PROJECT_DIRECTORY_ID
-            })
-            .to_string();
-        request
-            .extra
-            .insert(directory_key.into(), serde_json::json!(directory_id));
-        let working_dir = match crate::services::project_chat::working_directory(
-            &binding,
-            header.as_ref(),
-            Some(&directory_id),
-        ) {
-            Ok(path) => path,
-            Err(error) => return reject(error),
-        };
-
         if indexed.is_none() && header.is_some() {
             return reject(
                 "unindexed Project Chat storage does not match this submission".to_string(),
@@ -4800,6 +4544,21 @@ project_working_directory_id: None,
                 requested_agent_id, selected_agent_id
             ));
         }
+        let working_dir = match self
+            .execution_working_directory(
+                address.chat_id().as_str(),
+                &selected_agent_id,
+                &placement.device_id,
+            )
+            .await
+        {
+            Ok(cwd) => cwd,
+            Err(error) => return reject(error),
+        };
+        request.extra.insert(
+            rua_session::EXECUTION_DIRECTORY_KEY.into(),
+            serde_json::json!({"device_id":placement.device_id,"path":working_dir}),
+        );
         if let Err(error) = self.resolve_project_turn_agent(&selected_agent_id).await {
             return reject(error);
         }
@@ -4913,9 +4672,8 @@ project_working_directory_id: None,
                         running,
                         Some(&working_dir),
                         crate::services::chat_configuration_capture::ChatConfigurationSelection {
-                            standalone_working_dir: None,
+                            execution_working_dir: Some(working_dir.clone()),
                             project_id: Some(project_id.to_string()),
-                            project_working_directory_id: Some(directory_id.clone()),
                             model: initial_model.clone(),
                             thinking: request.extra.get(rua_chat::TURN_THINKING_KEY).cloned(),
                             collaboration_mode: request
@@ -5213,20 +4971,13 @@ project_working_directory_id: None,
         Ok(record)
     }
 
-    pub(crate) fn validate_acp_project_resources(
-        &self,
-        project_id: &ProjectId,
-    ) -> Result<(), String> {
-        let binding = self
-            .project_bindings
+    pub(crate) fn require_existing_project(&self, project_id: &ProjectId) -> Result<(), String> {
+        self.project_catalog
             .as_ref()
-            .ok_or("Project bindings unavailable")?
+            .ok_or("Project catalog unavailable")?
             .get(project_id)
-            .map_err(|error| error.to_string())?
-            .ok_or("Project binding missing")?;
-        if binding.resources.directories.len() > 1 {
-            return Err("ACP runners currently support one Project resource directory; choose the built-in Agent for this multi-directory Project".into());
-        }
+            .map_err(|e| e.to_string())?
+            .ok_or("Project not found")?;
         Ok(())
     }
 
@@ -5245,7 +4996,7 @@ project_working_directory_id: None,
             .and_then(serde_json::Value::as_str)
             .map(rua_core::ProjectId::new);
         if let Some(project_id) = project_id.as_ref() {
-            self.validate_acp_project_resources(project_id)?;
+            self.require_existing_project(project_id)?;
         }
         let selection: InitialAcpSelection = serde_json::from_value(value.clone())
             .map_err(|error| format!("invalid initial ACP selection: {error}"))?;
@@ -5304,7 +5055,7 @@ project_working_directory_id: None,
     ) -> Result<(), String> {
         let _resource_admission = self.project_work_admission(address).await?;
         if let Some(project_id) = self.chat_project_id(address).await?.as_ref() {
-            self.validate_acp_project_resources(project_id)?;
+            self.require_existing_project(project_id)?;
         }
         let registry = self
             .acp_chat_registry
@@ -5964,27 +5715,6 @@ project_working_directory_id: None,
         running_config: rua_config::ChatRunningConfig,
         current: &crate::services::product_hooks::ChatHookConfiguration,
     ) -> Result<crate::services::product_hooks::ChatConfigurationMaterialization, String> {
-        let project_id = header
-            .project_id
-            .as_ref()
-            .map(|id| rua_core::ProjectId::new(id.clone()));
-        let project_root = match project_id.as_ref() {
-            Some(project_id) => {
-                let binding = self
-                    .project_bindings
-                    .as_ref()
-                    .ok_or("Project Resource Binding Store unavailable")?
-                    .get(project_id)
-                    .map_err(|error| error.to_string())?
-                    .ok_or("Project Resource Binding missing")?;
-                Some(crate::services::project_chat::working_directory(
-                    &binding,
-                    Some(header),
-                    None,
-                )?)
-            }
-            None => None,
-        };
         let authority_device_id = header
             .extra
             .get("authority_placement")
@@ -5993,24 +5723,20 @@ project_working_directory_id: None,
             .filter(|value| !value.trim().is_empty())
             .ok_or("Chat Authority Device missing")?
             .to_string();
+        let cwd = crate::services::chat_context::saved_working_directory(
+            Some(header),
+            &authority_device_id,
+        );
         self.capture_chat_configuration(
             assignment,
             running_config,
-            project_root.as_deref(),
+            cwd.as_deref().filter(|_| header.project_id.is_some()),
             crate::services::chat_configuration_capture::ChatConfigurationSelection {
-                standalone_working_dir: crate::services::chat_context::saved_working_directory(
+                execution_working_dir: crate::services::chat_context::saved_working_directory(
                     Some(header),
                     &authority_device_id,
                 ),
                 project_id: header.project_id.clone(),
-                project_working_directory_id: header.project_id.as_ref().map(|_| {
-                    header
-                        .extra
-                        .get(crate::services::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY)
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or(rua_project::INITIAL_PROJECT_DIRECTORY_ID)
-                        .to_string()
-                }),
                 model: current.model.clone(),
                 thinking: current.thinking.clone(),
                 collaboration_mode: current.collaboration_mode.clone(),
@@ -6463,7 +6189,7 @@ project_working_directory_id: None,
         first_submission: Option<FirstAgentSubmission>,
     ) -> ConversationInputDeliveryOutcome {
         let working_dir = match self
-            .standalone_working_directory(&chat_id, agent_id, route_target.device_id)
+            .execution_working_directory(&chat_id, agent_id, route_target.device_id)
             .await
         {
             Ok(directory) => directory,
@@ -6621,11 +6347,9 @@ project_working_directory_id: None,
         .await
     }
 
-    pub(crate) async fn validate_collaboration_resource(
+    pub(crate) async fn validate_collaboration_project(
         &self,
         address: &ChatAddress,
-        device_id: &str,
-        working_dir: &Path,
     ) -> Result<(), String> {
         if let Some(project_id) = self.chat_project_id(address).await?.as_ref() {
             let catalog = self
@@ -6642,23 +6366,6 @@ project_working_directory_id: None,
             if project.lifecycle != rua_project::ProjectLifecycle::Active {
                 return Err("Project is not active".into());
             }
-            let binding = self
-                .project_bindings
-                .as_ref()
-                .ok_or("Project bindings unavailable")?
-                .get(project_id)
-                .map_err(|e| e.to_string())?
-                .ok_or("Project binding missing")?;
-            if project.resource_device_id != device_id
-                || binding.resource_device_id != device_id
-                || !binding
-                    .resources
-                    .directories
-                    .iter()
-                    .any(|directory| directory.resource_root == working_dir)
-            {
-                return Err("Collaboration must retain the Project resource binding".into());
-            }
         }
         Ok(())
     }
@@ -6671,12 +6378,8 @@ project_working_directory_id: None,
         persist: ConversationSubmissionPersistCallback,
     ) -> Result<ConversationInputDeliveryOutcome, String> {
         let _resource_admission = self.project_work_admission(&execution.address).await?;
-        self.validate_collaboration_resource(
-            &execution.address,
-            &placement.device_id,
-            &execution.working_dir,
-        )
-        .await?;
+        self.validate_collaboration_project(&execution.address)
+            .await?;
         let authority = self
             .conversation_authority
             .as_ref()
@@ -7043,20 +6746,6 @@ project_working_directory_id: None,
                 if project.lifecycle != rua_project::ProjectLifecycle::Active {
                     return Err("Archived Project cannot accept new work".to_string());
                 }
-                let bindings = self
-                    .project_bindings
-                    .as_ref()
-                    .ok_or_else(|| "Project Resource Binding Store is unavailable".to_string())?;
-                let binding = bindings
-                    .get(project_id)
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| format!("Project Resource Binding not found: {project_id}"))?;
-                if binding.resource_device_id != request.target_device_id {
-                    return Err(
-                        "Project Chat target does not match its resource Device".to_string()
-                    );
-                }
-
                 let scope_root = ChatStore::resolve(data_dir, request.address.clone())
                     .root()
                     .to_path_buf();
@@ -7067,31 +6756,6 @@ project_working_directory_id: None,
                     .await
                     .map_err(|error| error.to_string())?;
                 let first_submission = indexed.is_none() && header.is_none();
-                let directory_key =
-                    crate::services::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY;
-                let directory_id = header
-                    .as_ref()
-                    .and_then(|header| header.extra.get(directory_key))
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or(if first_submission {
-                        request
-                            .metadata
-                            .get(directory_key)
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or(&binding.resources.primary_directory_id)
-                    } else {
-                        rua_project::INITIAL_PROJECT_DIRECTORY_ID
-                    })
-                    .to_string();
-                request
-                    .metadata
-                    .insert(directory_key.into(), serde_json::json!(directory_id));
-                let working_dir = crate::services::project_chat::working_directory(
-                    &binding,
-                    header.as_ref(),
-                    Some(&directory_id),
-                )?;
-
                 let initial_model = if first_submission {
                     self.resolve_initial_authority_chat_model(
                         request.metadata.get("chat_model_slot").cloned(),
@@ -7108,6 +6772,17 @@ project_working_directory_id: None,
                         .ok_or_else(|| "Project Chat header is unavailable".to_string())?;
                     crate::services::project_chat::selection_from_header(header)?.agent_id
                 };
+                let working_dir = self
+                    .execution_working_directory(
+                        request.chat_id(),
+                        &selected_agent_id,
+                        &request.target_device_id,
+                    )
+                    .await?;
+                request.metadata.insert(
+                    rua_session::EXECUTION_DIRECTORY_KEY.into(),
+                    serde_json::json!({"device_id":request.target_device_id,"path":working_dir}),
+                );
                 if !first_submission && request.agent_id != selected_agent_id {
                     return Err(format!(
                         "stale Project Chat Agent Selection: requested '{}', current '{}'",
@@ -7136,12 +6811,6 @@ project_working_directory_id: None,
                                     request.chat_id(),
                                 )
                                 .await?;
-                        if placement.device_id != binding.resource_device_id {
-                            return Err(
-                                "Project Chat authority does not match its resource Device"
-                                    .to_string(),
-                            );
-                        }
                         crate::services::conversation_authority_placement::ConversationAuthorityPlacement {
                                 device_id: placement.device_id,
                                 authority_epoch: placement.authority_epoch,
@@ -7161,7 +6830,7 @@ project_working_directory_id: None,
                             );
                         }
                         crate::services::conversation_authority_placement::ConversationAuthorityPlacement {
-                                device_id: binding.resource_device_id.clone(),
+                                device_id: request.target_device_id.clone(),
                                 authority_epoch: request.authority_epoch,
                                 base_manifest_hash: expected_hash,
                             }
@@ -7364,9 +7033,8 @@ project_working_directory_id: None,
                                 project_id.as_ref()
                                     .map(|_| working_dir.as_path()),
                                 crate::services::chat_configuration_capture::ChatConfigurationSelection {
-standalone_working_dir: Some(working_dir.clone()),
-project_id: project_id.as_ref().map(ToString::to_string),
-project_working_directory_id: request.metadata.get(crate::services::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY).and_then(serde_json::Value::as_str).map(str::to_string),
+                                    execution_working_dir: Some(working_dir.clone()),
+                                    project_id: project_id.as_ref().map(ToString::to_string),
                                     model: initial_model.clone(),
                                     thinking: None,
                                     collaboration_mode: serde_json::to_value(collaboration_mode).map_err(|error| error.to_string())?,

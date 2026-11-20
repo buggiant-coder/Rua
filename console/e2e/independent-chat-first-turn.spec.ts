@@ -164,8 +164,7 @@ test("New chat restores one draft per Project or standalone group using the curr
   const projects = ["Photos", "Albums"].map((name) => ({
     project_id: name.toLowerCase(),
     display_name: name,
-    display_path: `/fixture/${name}`,
-    resource_device_id: "desktop",
+    resources: { revision: 1, directories: [] },
     lifecycle: "active",
   }));
   const agents = ["Default", "Research"].map((name) => ({

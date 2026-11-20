@@ -61,7 +61,7 @@ async fn task_activity(
             offset: 0,
         },
     };
-    match remote_project_task_response(&state, project_id.as_deref(), action).await {
+    match remote_project_task_response(&state, &chat_id, project_id.as_deref(), action).await {
         Ok(Some(crate::services::device_command_bus::ProjectDeviceResponse::TaskList {
             tasks,
         })) => {
@@ -79,7 +79,7 @@ async fn task_activity(
         }
         Ok(Some(_)) => {
             return ApiError::Internal(
-                "resource Device returned an unexpected Task response".to_string(),
+                "Chat authority returned an unexpected Task response".to_string(),
             )
             .into_response();
         }
@@ -171,13 +171,13 @@ async fn list_tasks(
         chat_id: chat_id.clone(),
         filter: filter.clone(),
     };
-    match remote_project_task_response(&state, project_id.as_deref(), action).await {
+    match remote_project_task_response(&state, &chat_id, project_id.as_deref(), action).await {
         Ok(Some(crate::services::device_command_bus::ProjectDeviceResponse::TaskList {
             tasks,
         })) => return Json(tasks).into_response(),
         Ok(Some(_)) => {
             return ApiError::Internal(
-                "resource Device returned an unexpected Task response".to_string(),
+                "Chat authority returned an unexpected Task response".to_string(),
             )
             .into_response();
         }
@@ -219,13 +219,13 @@ async fn get_task(
         chat_id: chat_id.clone(),
         task_id: task_id.clone(),
     };
-    match remote_project_task_response(&state, project_id.as_deref(), action).await {
+    match remote_project_task_response(&state, &chat_id, project_id.as_deref(), action).await {
         Ok(Some(crate::services::device_command_bus::ProjectDeviceResponse::Task { task })) => {
             return Json(task).into_response();
         }
         Ok(Some(_)) => {
             return ApiError::Internal(
-                "resource Device returned an unexpected Task response".to_string(),
+                "Chat authority returned an unexpected Task response".to_string(),
             )
             .into_response();
         }
@@ -257,13 +257,13 @@ async fn get_task_result(
             chat_id: chat_id.clone(),
             task_id: task_id.clone(),
         };
-    match remote_project_task_response(&state, project_id.as_deref(), action).await {
+    match remote_project_task_response(&state, &chat_id, project_id.as_deref(), action).await {
         Ok(Some(crate::services::device_command_bus::ProjectDeviceResponse::TaskResult {
             result,
         })) => return Json(result).into_response(),
         Ok(Some(_)) => {
             return ApiError::Internal(
-                "resource Device returned an unexpected Task response".to_string(),
+                "Chat authority returned an unexpected Task response".to_string(),
             )
             .into_response();
         }
@@ -308,13 +308,13 @@ async fn send_task_input(
             task_id: task_id.clone(),
             submission: submission.clone(),
         };
-    match remote_project_task_response(&state, project_id.as_deref(), action).await {
+    match remote_project_task_response(&state, &chat_id, project_id.as_deref(), action).await {
         Ok(Some(crate::services::device_command_bus::ProjectDeviceResponse::TaskInput {
             acceptance,
         })) => return Json(acceptance).into_response(),
         Ok(Some(_)) => {
             return ApiError::Internal(
-                "resource Device returned an unexpected Task response".to_string(),
+                "Chat authority returned an unexpected Task response".to_string(),
             )
             .into_response();
         }
@@ -384,13 +384,13 @@ async fn watch_task_for_chat(
             }
         }
     };
-    match remote_project_task_response(&state, project_id.as_deref(), action).await {
+    match remote_project_task_response(&state, &chat_id, project_id.as_deref(), action).await {
         Ok(Some(crate::services::device_command_bus::ProjectDeviceResponse::TaskWatch {
             status,
         })) => return Json(status).into_response(),
         Ok(Some(_)) => {
             return ApiError::Internal(
-                "resource Device returned an unexpected Task response".to_string(),
+                "Chat authority returned an unexpected Task response".to_string(),
             )
             .into_response();
         }
@@ -428,13 +428,13 @@ async fn cancel_task(
             chat_id: chat_id.clone(),
             task_id: task_id.clone(),
         };
-    match remote_project_task_response(&state, project_id.as_deref(), action).await {
+    match remote_project_task_response(&state, &chat_id, project_id.as_deref(), action).await {
         Ok(Some(crate::services::device_command_bus::ProjectDeviceResponse::Task { task })) => {
             return Json(task).into_response();
         }
         Ok(Some(_)) => {
             return ApiError::Internal(
-                "resource Device returned an unexpected Task response".to_string(),
+                "Chat authority returned an unexpected Task response".to_string(),
             )
             .into_response();
         }
@@ -473,13 +473,13 @@ async fn retry_task(
         task_id: task_id.clone(),
         authorization_agent_id: agent_id,
     };
-    match remote_project_task_response(&state, project_id.as_deref(), action).await {
+    match remote_project_task_response(&state, &chat_id, project_id.as_deref(), action).await {
         Ok(Some(crate::services::device_command_bus::ProjectDeviceResponse::Task { task })) => {
             return Json(task).into_response();
         }
         Ok(Some(_)) => {
             return ApiError::Internal(
-                "resource Device returned an unexpected Task response".to_string(),
+                "Chat authority returned an unexpected Task response".to_string(),
             )
             .into_response();
         }
@@ -544,6 +544,7 @@ async fn retry_task_for_owner(
 
 async fn remote_project_task_response(
     state: &AppState,
+    chat_id: &str,
     project_id: Option<&str>,
     action: impl FnOnce(rua_core::ProjectId) -> crate::services::device_command_bus::ProjectDeviceAction,
 ) -> Result<Option<crate::services::device_command_bus::ProjectDeviceResponse>, Response> {
@@ -551,15 +552,14 @@ async fn remote_project_task_response(
         return Ok(None);
     };
     let project_id = rua_core::ProjectId::new(project_id);
-    let project = match state.project_catalog.get(&project_id) {
-        Ok(Some(project)) => project,
-        Ok(None) => {
-            return Err(
-                ApiError::NotFound(format!("Project not found: {project_id}")).into_response(),
-            );
-        }
-        Err(error) => return Err(ApiError::Internal(error.to_string()).into_response()),
-    };
+    let workspace = rua_core::RuaRoot::new(&state.rua_root).chat_workspace();
+    let placement =
+        crate::services::conversation_authority_target::load_chat_authority_placement_target(
+            workspace.as_path(),
+            chat_id,
+        )
+        .await
+        .map_err(|detail| ApiError::Unavailable(detail).into_response())?;
     let source_device_id =
         match crate::services::device_context::current_sync_device_id(&state.sync_device) {
             Some(device_id) => device_id,
@@ -570,7 +570,7 @@ async fn remote_project_task_response(
                 .into_response());
             }
         };
-    if project.resource_device_id == source_device_id {
+    if placement.device_id == source_device_id {
         return Ok(None);
     }
     let session_manager = match crate::services::device_session_access::current_session_manager(
@@ -584,7 +584,7 @@ async fn remote_project_task_response(
     let command = crate::services::device_command_bus::ProjectDeviceCommand {
         command_id: format!("project-task-{}", uuid::Uuid::new_v4()),
         source_device_id,
-        target_device_id: project.resource_device_id,
+        target_device_id: placement.device_id,
         action: action(project_id),
     };
     crate::services::device_command_bus::deliver_project_device_command_via_session(

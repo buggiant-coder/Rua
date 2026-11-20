@@ -6,7 +6,7 @@ import CreateProjectDialog from "./CreateProjectDialog";
 const api = vi.hoisted(() => ({ browseDirectory: vi.fn(), create: vi.fn() }));
 vi.mock("@/api/modules/projects", () => ({ projectsApi: api }));
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (_: string, fallback: string) => fallback }),
+  useTranslation: () => ({ t: (key: string) => key }),
 }));
 vi.mock("@/components/DirectoryPicker", () => ({
   default: (props: {
@@ -47,13 +47,22 @@ vi.mock("@/ui", async () => {
     Modal: ({
       children,
       footer,
+      onOk,
+      okText,
+      okButtonProps,
     }: {
       children: React.ReactNode;
       footer: React.ReactNode;
+      onOk?: () => void;
+      okText?: string;
+      okButtonProps?: Record<string, unknown>;
     }) => (
       <div>
         {children}
         {footer}
+        <button onClick={onOk} {...okButtonProps}>
+          {okText}
+        </button>
       </div>
     ),
     Select,
@@ -109,16 +118,17 @@ describe("Project storage permission guidance", () => {
         devices={[device(true)]}
         onClose={vi.fn()}
         onCreated={vi.fn()}
-        onViewExisting={vi.fn()}
+        onViewDuplicate={vi.fn()}
       />,
     );
+    fireEvent.click(screen.getByText("projects.addFolder"));
     fireEvent.click(screen.getByText("Browse shared storage"));
-    await screen.findByText("Storage permission required");
+    await screen.findByText("projects.storagePermissionTitle");
     expect(api.browseDirectory).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByText("Grant access"));
+    fireEvent.click(screen.getByText("projects.grantStoragePermission"));
     expect(window.MobileStorage.requestAllFilesAccess).toHaveBeenCalledOnce();
     fireEvent(window, new Event("rua:foreground"));
-    expect(screen.getByTestId("retry-path")).toHaveTextContent("");
+    expect(screen.getByTestId("retry-path")).toHaveTextContent("~");
     granted = true;
     fireEvent(window, new Event("rua:foreground"));
     await waitFor(() =>
@@ -127,7 +137,7 @@ describe("Project storage permission guidance", () => {
       ),
     );
     expect(
-      screen.queryByText("Storage permission required"),
+      screen.queryByText("projects.storagePermissionTitle"),
     ).not.toBeInTheDocument();
   });
 
@@ -145,51 +155,43 @@ describe("Project storage permission guidance", () => {
         devices={[device(false)]}
         onClose={vi.fn()}
         onCreated={vi.fn()}
-        onViewExisting={vi.fn()}
+        onViewDuplicate={vi.fn()}
       />,
     );
+    fireEvent.click(screen.getByText("projects.addFolder"));
     fireEvent.click(screen.getByText("Browse shared storage"));
-    await screen.findByText("Storage permission required");
+    await screen.findByText("projects.storagePermissionTitle");
     expect(
-      screen.getByText(/on the selected resource device, then retry browsing/),
+      screen.getByText("projects.storagePermissionRemote"),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Grant access")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("projects.grantStoragePermission"),
+    ).not.toBeInTheDocument();
     expect(window.MobileStorage.requestAllFilesAccess).not.toHaveBeenCalled();
   });
 });
 
 describe("Project resource directory creation", () => {
-  it("submits multiple directories and the selected primary without losing earlier choices", async () => {
-    const onCreated = vi.fn();
-    const outcome = { project: { project_id: "multi" }, overlap_warnings: [] };
-    api.create.mockResolvedValueOnce(outcome);
+  it("creates a named Project with zero resources from an unpaired device", async () => {
+    const outcome = { project: { project_id: "new" }, overlap_warnings: [] };
+    api.create.mockResolvedValue(outcome);
+    const created = vi.fn();
     render(
       <CreateProjectDialog
         open
-        devices={[device(false)]}
+        devices={[]}
         onClose={vi.fn()}
-        onCreated={onCreated}
+        onCreated={created}
         onViewDuplicate={vi.fn()}
       />,
     );
-    fireEvent.change(screen.getByLabelText("Directory"), {
-      target: { value: "/work/app" },
-    });
-    fireEvent.click(screen.getByText("Add another folder"));
-    expect(screen.getByLabelText("Directory")).toHaveValue("");
-    fireEvent.change(screen.getByLabelText("Directory"), {
-      target: { value: "/work/docs" },
-    });
-    fireEvent.click(screen.getByRole("radio", { name: "/work/docs" }));
-    fireEvent.click(screen.getByRole("button", { name: "Create Project" }));
-    await waitFor(() =>
-      expect(api.create).toHaveBeenCalledWith(
-        "phone",
-        ["/work/app", "/work/docs"],
-        "app",
-        1,
-      ),
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "projects.displayName" }),
+      { target: { value: "Photos" } },
     );
-    expect(onCreated).toHaveBeenCalledWith(outcome);
+    fireEvent.click(screen.getByRole("button", { name: "projects.create" }));
+    await waitFor(() => expect(created).toHaveBeenCalledWith(outcome));
+    expect(api.create).toHaveBeenCalledWith("Photos", []);
+    expect(api.browseDirectory).not.toHaveBeenCalled();
   });
 });

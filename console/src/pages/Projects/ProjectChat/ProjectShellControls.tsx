@@ -35,17 +35,19 @@ import { subscribeConversationNavigation } from "@/layouts/conversationNavigatio
 import { extractFriendlyMessage } from "@/utils/error";
 import { usePullPastBottom } from "@/hooks/usePullPastBottom";
 
+import type { DeviceDto } from "@/api/modules/sync";
+import type { ProjectResourceDirectory } from "@/api/types/project";
+import { projectResourceDeviceLabel } from "../ProjectResourcePicker";
+import { deviceConnectivityLabel } from "@/components/DeviceConnectivity";
+
 import styles from "./index.module.less";
 import { GitHistoryGraph } from "./GitHistoryGraph";
 
 export type ProjectDrawerKind = "chats" | "workspace";
 
 type ProjectShellDrawerProps = {
-  workingDirectoryId?: string;
-  localResourceDevice?: boolean;
+  devices: DeviceDto[];
   project: ProjectDescriptor;
-  deviceLabel: string;
-  availabilityLabel: string;
   lazy: boolean;
   resourcePolicy: ProjectResourcePolicyView | null;
   policyLoading: boolean;
@@ -54,7 +56,7 @@ type ProjectShellDrawerProps = {
 };
 
 function resourceProfileTranslationKey(
-  profile: ProjectResourcePolicyView["policy"]["profile"],
+  profile: NonNullable<ProjectResourcePolicyView["policy"]>["profile"],
 ): string {
   switch (profile) {
     case "read-only":
@@ -72,9 +74,7 @@ export function ProjectShellDrawer(props: ProjectShellDrawerProps) {
   const projectId = props.project.project_id;
   const [project, setProject] = useState<ProjectDescriptor | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedDirectoryId, setDirectoryId] = useState(
-    props.workingDirectoryId,
-  );
+  const [selectedDirectoryId, setDirectoryId] = useState<string>();
 
   useEffect(() => {
     let generation = 0;
@@ -87,14 +87,10 @@ export function ProjectShellDrawer(props: ProjectShellDrawerProps) {
         setProject(current);
         setError(null);
         setDirectoryId((selected) => {
-          const directories = current.resources?.directories ?? [
-            { directory_id: "initial" },
-          ];
-          return directories.some(
-            (directory) => directory.directory_id === selected,
-          )
+          const directories = current.resources?.directories ?? [];
+          return directories.some((d) => d.directory_id === selected)
             ? selected
-            : current.resources?.primary_directory_id ?? "initial";
+            : directories[0]?.directory_id;
         });
       } catch (cause) {
         if (!disposed && request === generation)
@@ -111,10 +107,10 @@ export function ProjectShellDrawer(props: ProjectShellDrawerProps) {
     };
   }, [projectId]);
 
-  const directoryId =
-    selectedDirectoryId ??
-    project?.resources?.primary_directory_id ??
-    "initial";
+  const directories = project?.resources?.directories ?? [];
+  const directory =
+    directories.find((d) => d.directory_id === selectedDirectoryId) ??
+    directories[0];
   const [activeTab, setActiveTab] = useState("files");
   return (
     <Drawer
@@ -133,29 +129,30 @@ export function ProjectShellDrawer(props: ProjectShellDrawerProps) {
         />
       ) : (
         <>
-          <div style={{ padding: "12px 16px" }}>
-            <Select
-              aria-label={t("projects.workspace.targetDirectory")}
-              value={directoryId}
-              options={(
-                project.resources?.directories ?? [
-                  {
-                    directory_id: "initial",
-                    display_path: project.display_path,
-                  },
-                ]
-              ).map((directory) => ({
-                value: directory.directory_id,
-                label: directory.display_path,
-              }))}
-              onChange={setDirectoryId}
-            />
-          </div>
+          {directory && (
+            <div style={{ padding: "12px 16px" }}>
+              <Select
+                aria-label={t("projects.workspace.targetDirectory")}
+                value={directory.directory_id}
+                options={directories.map((d) => ({
+                  value: d.directory_id,
+                  label: [
+                    d.display_name,
+                    projectResourceDeviceLabel(d.device_id, props.devices),
+                    d.resource_root,
+                  ]
+                    .filter(Boolean)
+                    .join(" · "),
+                }))}
+                onChange={setDirectoryId}
+              />
+            </div>
+          )}
           <ProjectShellDrawerContent
-            key={`${project.project_id}:${directoryId}`}
+            key={`${project.project_id}:${directory?.directory_id ?? ""}`}
             {...props}
             project={project}
-            directoryId={directoryId}
+            directory={directory}
             activeTab={activeTab}
             onTabChange={setActiveTab}
           />
@@ -166,27 +163,31 @@ export function ProjectShellDrawer(props: ProjectShellDrawerProps) {
 }
 
 function ProjectShellDrawerContent({
-  directoryId,
-  localResourceDevice,
+  directory,
+  devices,
   activeTab,
   onTabChange,
   project,
-  deviceLabel,
-  availabilityLabel,
   lazy,
   resourcePolicy,
   policyLoading,
   policyError,
 }: ProjectShellDrawerProps & {
-  directoryId: string;
+  directory?: ProjectResourceDirectory;
   activeTab: string;
   onTabChange: (tab: string) => void;
 }) {
   const { t } = useTranslation();
-  const rootPath =
-    project.resources?.directories.find(
-      (directory) => directory.directory_id === directoryId,
-    )?.display_path ?? project.display_path;
+  const directoryId = directory?.directory_id;
+  const rootPath = directory?.resource_root ?? "";
+  const device = devices.find((d) => d.device_id === directory?.device_id);
+  const localResourceDevice = device?.is_self;
+  const deviceLabel =
+    directory && projectResourceDeviceLabel(directory.device_id, devices);
+  const availabilityLabel = deviceConnectivityLabel(
+    t,
+    device?.connectivity_state,
+  );
   const [listings, setListings] = useState(
     () => new Map<string, ProjectDirectoryListing>(),
   );
@@ -202,6 +203,7 @@ function ProjectShellDrawerContent({
 
   const loadDirectory = useCallback(
     async (path: string, initial = false) => {
+      if (!directoryId) return;
       if (initial) setFilesLoading(true);
       setFilesError(null);
       try {
@@ -232,6 +234,7 @@ function ProjectShellDrawerContent({
 
   const loadGit = useCallback(
     async (offset = 0) => {
+      if (!directoryId) return;
       const append = offset > 0;
       if (append) {
         setGitLoadingMore(true);
@@ -242,12 +245,7 @@ function ProjectShellDrawerContent({
       try {
         const [status, history] = await Promise.all([
           projectsApi.getGitStatus(project.project_id, directoryId),
-          projectsApi.getGitHistory(
-            project.project_id,
-            offset,
-            30,
-            directoryId,
-          ),
+          projectsApi.getGitHistory(project.project_id, directoryId, offset),
         ]);
         if (status) setGitStatus(status);
         setGitHistory((current) => {
@@ -285,11 +283,9 @@ function ProjectShellDrawerContent({
   });
 
   useEffect(() => {
-    setListings(new Map());
-    setExpanded(new Set());
-    void loadDirectory(rootPath, true);
-    void loadGit();
-  }, [loadDirectory, loadGit, rootPath]);
+    if (activeTab === "files") void loadDirectory(rootPath, true);
+    if (activeTab === "git") void loadGit();
+  }, [activeTab, loadDirectory, loadGit, rootPath]);
 
   const toggleDirectory = useCallback(
     (path: string) => {
@@ -453,19 +449,21 @@ function ProjectShellDrawerContent({
           <code title={rootPath}>{rootPath}</code>
         </span>
       </div>
-      <dl className={styles.workspaceFacts}>
-        <div>
-          <dt>
-            <Server size={13} />
-            {t("projects.workspace.resource")}
-          </dt>
-          <dd>{deviceLabel}</dd>
-        </div>
-        <div>
-          <dt>{t("projects.workspace.availability")}</dt>
-          <dd>{availabilityLabel}</dd>
-        </div>
-      </dl>
+      {directory && (
+        <dl className={styles.workspaceFacts}>
+          <div>
+            <dt>
+              <Server size={13} />
+              {t("projects.workspace.resource")}
+            </dt>
+            <dd>{deviceLabel}</dd>
+          </div>
+          <div>
+            <dt>{t("projects.workspace.availability")}</dt>
+            <dd>{availabilityLabel}</dd>
+          </div>
+        </dl>
+      )}
       <div className={styles.workspaceSectionLabel}>
         {t("projects.workspace.execution")}
       </div>
@@ -489,7 +487,11 @@ function ProjectShellDrawerContent({
               {t("projects.workspace.profile")}
             </dt>
             <dd>
-              {t(resourceProfileTranslationKey(resourcePolicy.policy.profile))}
+              {t(
+                resourcePolicy.policy
+                  ? resourceProfileTranslationKey(resourcePolicy.policy.profile)
+                  : "projects.workspace.agentPermissions",
+              )}
             </dd>
           </div>
           <div>
@@ -509,7 +511,7 @@ function ProjectShellDrawerContent({
 
   return (
     <>
-      {localResourceDevice && canOpenProjectDirectory() && (
+      {directoryId && localResourceDevice && canOpenProjectDirectory() && (
         <Btn
           variant="ghost"
           onClick={async () => {
@@ -542,7 +544,11 @@ function ProjectShellDrawerContent({
                 {t("projects.workspace.files")}
               </span>
             ),
-            children: filesPanel,
+            children: directory ? (
+              filesPanel
+            ) : (
+              <p>{t("projects.noResourceFolders")}</p>
+            ),
           },
           {
             key: "git",
@@ -555,7 +561,11 @@ function ProjectShellDrawerContent({
                 ) : null}
               </span>
             ),
-            children: gitPanel,
+            children: directory ? (
+              gitPanel
+            ) : (
+              <p>{t("projects.noResourceFolders")}</p>
+            ),
           },
           {
             key: "context",

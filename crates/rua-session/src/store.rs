@@ -5732,6 +5732,7 @@ fn turn_metadata_from_messages(
             "authority_device_id",
             "authority_epoch",
             "turn_agent_assignment",
+            crate::TURN_PROJECT_RESOURCES_KEY,
             "turn_model",
             "turn_thinking",
             rua_core::CHAT_COLLABORATION_MODE_META_KEY,

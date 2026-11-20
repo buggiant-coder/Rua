@@ -8,7 +8,7 @@ use rua_project::{ProjectCatalog, ProjectDescriptor};
 use crate::hlc::HlcTimestamp;
 use crate::merge_store::{live_cursor, tombstone_cursor, MergeStore};
 use crate::opaque_replica_log::SyncChange;
-use crate::sidecar::{LwwDecision, RecordState};
+use crate::sidecar::LwwDecision;
 use crate::sync_registry::{sync_cursor_record_id, ApplyOutcome, DomainSyncAdapter};
 use crate::{SyncError, SyncResult};
 
@@ -158,23 +158,52 @@ impl DomainSyncAdapter for ProjectCatalogSyncAdapter {
                 cursor: tombstone_cursor(change.hlc, None),
             });
         }
-        if let Some(cursor) = merge_store.get_record_cursor(&cursor_id)? {
-            if cursor.state == RecordState::Live && change.hlc <= cursor.hlc {
-                return Ok(ApplyOutcome::Skipped);
-            }
-        }
-
         let descriptor: ProjectDescriptor = serde_json::from_value(change.payload.clone())?;
         if descriptor.project_id != project_id {
             return Err(SyncError::Store(
                 "Project Descriptor record_id does not match project_id".to_string(),
             ));
         }
-        self.catalog
-            .apply_descriptor(descriptor)
-            .map_err(|error| SyncError::Store(error.to_string()))?;
-        Ok(ApplyOutcome::Applied {
-            cursor: live_cursor(change.hlc, None),
-        })
+        let metadata_cursor = merge_store.get_record_cursor(&cursor_id)?;
+        let apply_metadata = metadata_cursor
+            .as_ref()
+            .is_none_or(|cursor| change.hlc > cursor.hlc);
+        let revision = descriptor.resources.revision;
+        // Edits at the same revision use the existing HLC tie-break. A rename
+        // can carry an older collection, so its clock cannot order every revision.
+        let resources_key = format!("{cursor_id}/resources/{revision}");
+        let resources_cursor = merge_store.get_record_cursor(&resources_key)?;
+        if !apply_metadata {
+            let current = self
+                .catalog
+                .get(&project_id)
+                .map_err(|e| SyncError::Store(e.to_string()))?;
+            if current.is_some_and(|project| project.resources.revision > revision)
+                || resources_cursor
+                    .as_ref()
+                    .is_some_and(|cursor| cursor.hlc >= change.hlc)
+            {
+                return Ok(ApplyOutcome::Skipped);
+            }
+        }
+        let project = if apply_metadata {
+            self.catalog.apply_descriptor(descriptor)
+        } else {
+            self.catalog.apply_resource_snapshot(descriptor)
+        }
+        .map_err(|e| SyncError::Store(e.to_string()))?;
+        let cursor = if apply_metadata {
+            live_cursor(change.hlc, None)
+        } else {
+            metadata_cursor.expect("an older metadata event has a current cursor")
+        };
+        if project.resources.revision == revision {
+            Ok(ApplyOutcome::AppliedWithCursors {
+                cursor,
+                additional_cursors: vec![(resources_key, live_cursor(change.hlc, None))],
+            })
+        } else {
+            Ok(ApplyOutcome::Applied { cursor })
+        }
     }
 }

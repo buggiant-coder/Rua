@@ -1,11 +1,21 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { TaskRecord } from "../src/api/types/task";
 
+const executionDeviceId = "device-mac";
+const executionDirectory = "/Users/example/agents/default";
 const project = {
   project_id: "project-rua",
   display_name: "rua-rust",
-  resource_device_id: "device-mac",
-  display_path: "/Users/example/MyProjects/rua-rust",
+  resources: {
+    revision: 1,
+    directories: [
+      {
+        directory_id: "src",
+        device_id: "resource-mac",
+        resource_root: "/Users/example/MyProjects/rua-rust",
+      },
+    ],
+  },
   lifecycle: "active",
   created_at: "2026-08-01T00:00:00Z",
   updated_at: "2026-08-01T00:00:00Z",
@@ -15,7 +25,7 @@ const secondProject = {
   ...project,
   project_id: "project-codex",
   display_name: "codex",
-  display_path: "/Users/example/MyProjects/codex",
+  resources: { revision: 1, directories: [] },
 };
 
 const LONG_PROJECT_NAME =
@@ -132,7 +142,7 @@ function projectTaskRecord(chatId: string): TaskRecord {
         attempt_no: 1,
         state: "running",
         device: {
-          device_id: project.resource_device_id,
+          device_id: executionDeviceId,
           device_name: "Project workstation",
           host_profile: "desktop",
           authority_epoch: 1,
@@ -164,8 +174,16 @@ async function mockProjectChatApis(
     ...(options.longLabels
       ? {
           display_name: LONG_PROJECT_NAME,
-          resource_device_id: LONG_RESOURCE_DEVICE_ID,
-          display_path: LONG_PROJECT_PATH,
+          resources: {
+            revision: 1,
+            directories: [
+              {
+                directory_id: "src",
+                device_id: LONG_RESOURCE_DEVICE_ID,
+                resource_root: LONG_PROJECT_PATH,
+              },
+            ],
+          },
         }
       : {}),
   };
@@ -362,6 +380,20 @@ async function mockProjectChatApis(
     if (path === "/projects/project-rua") {
       return json(projectFixture);
     }
+    if (path === "/projects/project-rua/workspace/files") {
+      const directory = projectFixture.resources.directories.find(
+        (entry) => entry.directory_id === url.searchParams.get("directory_id"),
+      );
+      return directory
+        ? json({
+            device_id: directory.device_id,
+            path: directory.resource_root,
+            parent_path: null,
+            entries: [],
+            roots: [],
+          })
+        : json({ detail: "Resource directory not found" }, 404);
+    }
     if (path === "/projects/project-codex") {
       return json(secondProject);
     }
@@ -449,7 +481,7 @@ async function mockProjectChatApis(
           attempt_no: task.attempt_no,
           state: "accepted",
           device: {
-            device_id: project.resource_device_id,
+            device_id: executionDeviceId,
             device_name: "Project workstation",
             host_profile: "desktop",
             authority_epoch: 1,
@@ -473,8 +505,8 @@ async function mockProjectChatApis(
           policy: {
             profile: "resource-write",
             source: "project_default",
-            cwd: projectFixture.display_path,
-            writable_roots: [projectFixture.display_path],
+            cwd: executionDirectory,
+            writable_roots: [executionDirectory],
             dedicated_operations_root_confined: true,
             tool_guard_enabled: true,
             approval_mode: "ask_first",
@@ -522,10 +554,10 @@ async function mockProjectChatApis(
             active: true,
             runner: "codex",
             session_id: "session-codex",
-            cwd: projectFixture.display_path,
+            cwd: executionDirectory,
             chat_id: chatId,
-            workspace_dir: projectFixture.display_path,
-            target_device_id: projectFixture.resource_device_id,
+            workspace_dir: executionDirectory,
+            target_device_id: executionDeviceId,
           },
         });
       }
@@ -538,10 +570,10 @@ async function mockProjectChatApis(
           active: acpActive,
           runner: acpActive ? "codex" : null,
           session_id: acpActive ? "session-codex" : null,
-          cwd: acpActive ? projectFixture.display_path : null,
+          cwd: acpActive ? executionDirectory : null,
           chat_id: chatId,
-          workspace_dir: projectFixture.display_path,
-          target_device_id: projectFixture.resource_device_id,
+          workspace_dir: executionDirectory,
+          target_device_id: executionDeviceId,
         });
       }
       if (child === "agent-selection" && route.request().method() === "GET") {
@@ -604,12 +636,18 @@ async function mockProjectChatApis(
               ? runningMessages
               : [],
           title: chat.name,
+          meta: {
+            execution_directory: {
+              device_id: executionDeviceId,
+              path: executionDirectory,
+            },
+          },
           status: chat.status,
           model: chat.model,
           control: {
             revision: 1,
             placement: {
-              authority_device_id: projectFixture.resource_device_id,
+              authority_device_id: executionDeviceId,
               authority_epoch: "epoch-project-rua",
               switchable: false,
             },
@@ -618,7 +656,7 @@ async function mockProjectChatApis(
                 ? {
                     turn_id: "turn-running",
                     phase: "streaming",
-                    authority_device_id: projectFixture.resource_device_id,
+                    authority_device_id: executionDeviceId,
                     authority_epoch: "epoch-project-rua",
                     driver: "rua",
                     started_at: "2026-08-01T03:00:00Z",
@@ -917,18 +955,19 @@ test("Long Project labels remain contained in the production workspace", async (
     longLabels: true,
   });
   await page.getByRole("button", { name: "Workspace" }).click();
-  const drawer = page.getByRole("complementary", { name: "Workspace" });
+  const drawer = page.getByRole("dialog");
   await expect(drawer).toBeVisible();
+  await drawer.getByRole("tab", { name: "Context" }).click();
+  const panel = drawer.getByRole("tabpanel");
   await expect(
-    drawer.getByText(LONG_PROJECT_NAME, { exact: true }),
+    panel.getByText(LONG_PROJECT_NAME, { exact: true }),
   ).toBeVisible();
   await expect(
-    drawer.getByText(LONG_RESOURCE_DEVICE_ID.slice(0, 12)),
+    panel.getByText(LONG_RESOURCE_DEVICE_ID, { exact: true }),
   ).toBeVisible();
-  await expect(drawer.getByText(LONG_CHAT_NAME)).toBeVisible();
   await expect(
-    drawer.getByText(LONG_PROJECT_PATH, { exact: true }),
-  ).toHaveCount(2);
+    panel.getByText(LONG_PROJECT_PATH, { exact: true }),
+  ).toBeVisible();
   await expect(page.getByText(LONG_AGENT_NAME, { exact: true })).toBeVisible();
   await expect(page.getByText(LONG_MODEL_NAME, { exact: true })).toBeVisible();
   await page.waitForTimeout(220);
@@ -1135,7 +1174,9 @@ test("Project Lazy Chat keeps mobile draft editable while offline", async ({
 }, testInfo) => {
   const input = await openProjectChat(page, true);
   await expect(
-    page.getByTitle("resource-device · Not connected"),
+    page
+      .locator(".rua-owned-chat-page")
+      .getByText("This device", { exact: true }),
   ).toBeVisible();
   await input.fill("Keep this phone draft");
   await expect(input).toHaveValue("Keep this phone draft");
