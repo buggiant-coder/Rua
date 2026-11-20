@@ -185,6 +185,14 @@ Cross-device enforcement, capability availability, and resource revocation durin
 active operations still require explicit design. This decision does not equate
 Tool Guard with an OS sandbox or make directory association unrestricted access.
 
+When existing policy requests a user's approval for a file on another Device,
+the user decides in the Chat where they requested the work. For example, the
+computer shows the phone, the file path, and the requested operation. A single
+approval there applies to that call. The phone verifies the decision, its local
+tool policy, and filesystem access before acting. The one decision covers the
+user interaction on both devices. A target denial or an unavailable device is
+reported in the originating Chat.
+
 ### D7 - Agent switches replace the Agent contribution and retain Chat choices
 
 Confirmed by the user on 2026-11-19. Apply the existing Project Chat switching
