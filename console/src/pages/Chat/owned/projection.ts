@@ -102,6 +102,7 @@ export type ConversationAssistantResponse = {
   started_at?: string;
   finished_at?: string;
 
+  turn_agent_name?: string;
   acp_origin_runner?: string;
   variants: AssistantResponseVariant[];
 };
@@ -323,6 +324,18 @@ function isAcpHistoryPreviewMessage(msg: Message): boolean {
   );
 }
 
+// The accepted Turn records its executor on its input or output messages.
+function turnAgentName(message: Message): string | undefined {
+  const metadata = objectRecord(message.metadata);
+  const nested = objectRecord(metadata?.metadata);
+  const assignment = objectRecord(
+    metadata?.turn_agent_assignment ?? nested?.turn_agent_assignment,
+  );
+  if (typeof assignment?.agent_name === "string" && assignment.agent_name)
+    return assignment.agent_name;
+  if (typeof assignment?.agent_id === "string") return assignment.agent_id;
+}
+
 function acpOriginRunner(msg: Message): string | undefined {
   const metadata = objectRecord(msg.metadata);
   const nestedMetadata = objectRecord(metadata?.metadata);
@@ -413,6 +426,8 @@ function buildAssistantResponse(
   status: ConversationAssistantResponse["status"] = "completed",
   selectedVariantOverrides: Record<string, string> = {},
   acpOriginRunner?: string,
+  inputAgent?: string,
+  inputTurnId?: string,
 ): ConversationAssistantResponse {
   const variantSource = output.find((msg) =>
     Array.isArray(msg.assistant_response_variants),
@@ -456,6 +471,21 @@ function buildAssistantResponse(
     status === "generating"
       ? selectedOutput
       : normalizeReasoningOnlyOutput(selectedOutput);
+  const turnIds = new Set(
+    normalizedOutput.map((message) => message.turn_id).filter(Boolean),
+  );
+  const assignedNames = new Set(
+    normalizedOutput.map(turnAgentName).filter(Boolean),
+  );
+  if (
+    inputAgent &&
+    (!turnIds.size || (inputTurnId && turnIds.has(inputTurnId)))
+  )
+    assignedNames.add(inputAgent);
+  const sourceAgent =
+    turnIds.size <= 1 && assignedNames.size === 1
+      ? assignedNames.values().next().value
+      : undefined;
   const startedAt =
     typeof metadataSource?.started_at === "string"
       ? metadataSource.started_at
@@ -476,6 +506,7 @@ function buildAssistantResponse(
     started_at: startedAt,
     finished_at: finishedAt,
     acp_origin_runner: acpOriginRunner,
+    turn_agent_name: sourceAgent,
     variants,
   };
 }
@@ -591,6 +622,8 @@ function projectConversationWithMemo(
   const items: ConversationProjectionItem[] = [];
   let i = 0;
   let precedingUserId: string | undefined;
+  let pendingInputTurnId: string | undefined;
+  let pendingTurnAgent: string | undefined;
   let pendingAcpOriginRunner: string | undefined;
   let pendingUserBelongsToActiveTurn = false;
 
@@ -684,6 +717,8 @@ function projectConversationWithMemo(
               ? baseTurnActivity.userMessageId
               : undefined)
         : false;
+      pendingInputTurnId = userTurnId;
+      pendingTurnAgent = turnAgentName(msg);
       pendingAcpOriginRunner = acpRunner;
       i += 1;
       continue;
@@ -712,6 +747,8 @@ function projectConversationWithMemo(
           generating,
           options.selectedVariantOverrides,
           pendingAcpOriginRunner,
+          pendingTurnAgent,
+          pendingInputTurnId,
           ...sourceOutput,
         ],
         () => {
@@ -725,12 +762,16 @@ function projectConversationWithMemo(
               : responseStatusFromOutput(output, "completed"),
             options.selectedVariantOverrides,
             pendingAcpOriginRunner,
+            pendingTurnAgent,
+            pendingInputTurnId,
           );
         },
       );
       items.push(assistant);
       precedingUserId = undefined;
       pendingAcpOriginRunner = undefined;
+      pendingTurnAgent = undefined;
+      pendingInputTurnId = undefined;
       pendingUserBelongsToActiveTurn = false;
     }
   }
@@ -749,6 +790,8 @@ function projectConversationWithMemo(
         "generating",
         options.selectedVariantOverrides,
         pendingAcpOriginRunner ?? activeTurnAcpOriginRunner,
+        pendingTurnAgent,
+        pendingInputTurnId,
       ),
     );
   }

@@ -1,5 +1,4 @@
 import type { AgentsRunningConfig } from "./agent";
-import type { ProjectChatAgentState } from "./project";
 import type { TaskChatAddress } from "./task";
 
 export type ChatStatus = "idle" | "running";
@@ -96,6 +95,29 @@ export interface ConversationBackgroundWorkView {
   error?: string | null;
 }
 
+export interface ChatAgentSelection {
+  agent_id: string;
+  selected_at: string;
+  revision: number;
+}
+
+export type ChatAgentSwitchBlocker =
+  | "active_turn"
+  | "queued_input"
+  | "unresolved_approval"
+  | "unanswered_prompt"
+  | "active_acp_binding"
+  | "fixed_collaboration_executor"
+  | "archived_chat"
+  | "archived_project";
+
+export interface ChatAgentState {
+  selection: ChatAgentSelection;
+  selected_agent_available: boolean;
+  switchable: boolean;
+  blockers: ChatAgentSwitchBlocker[];
+}
+
 export interface ConversationControlView {
   revision: number;
   authority_device_id?: string | null;
@@ -105,7 +127,7 @@ export interface ConversationControlView {
   acp: ConversationAcpControlView;
   model?: ModelSlot | null;
   running_config?: AgentsRunningConfig | null;
-  project_chat_agent_state?: ProjectChatAgentState | null;
+  chat_agent_state?: ChatAgentState | null;
   allowed_controls: ConversationAllowedControls;
   background_work?: ConversationBackgroundWorkView | null;
 }
@@ -194,7 +216,7 @@ export interface ChatHistory {
   active_turn?: ConversationActiveTurn | null;
   control?: ConversationControlView | null;
   model?: ModelSlot | null;
-  meta?: Record<string, unknown>;
+  meta?: Record<string, unknown> & { chat_agent_state?: ChatAgentState | null };
   title?: string | null;
   oldest_turn_ordinal?: number | null;
   newest_turn_ordinal?: number | null;

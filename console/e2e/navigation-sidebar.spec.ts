@@ -79,7 +79,7 @@ function history(path: string, lists = chatLists): ChatHistory {
       },
       ...(isProject
         ? {
-            project_chat_agent_state: {
+            chat_agent_state: {
               selection: {
                 agent_id: path.startsWith("/projects/second-project/")
                   ? "research"
@@ -502,7 +502,7 @@ test("project execution Agent controls its independent list without changing ord
   await page.goto(secondProjectPath);
   await expectSavedReply(page, "手机验收方案");
   await expect(
-    header(page).getByRole("button", { name: "项目对话智能体", exact: true }),
+    header(page).getByRole("button", { name: "对话智能体", exact: true }),
   ).toContainText("研究智能体");
   const navigation = sidebar(page).getByRole("navigation", {
     name: "对话",
@@ -634,7 +634,7 @@ test("top selectors retain independent scope and chat management stays explicitl
   await page.goto(projectPath);
   await expectSavedReply(page, "侧栏交互设计");
   await expect(
-    header(page).getByRole("button", { name: "项目对话智能体", exact: true }),
+    header(page).getByRole("button", { name: "对话智能体", exact: true }),
   ).toBeVisible();
   await expect(
     header(page).getByRole("button", { name: "选择项目", exact: true }),
@@ -1513,7 +1513,7 @@ for (const scenario of [
         async (route) => {
           const result = history(targetPath);
           (
-            result.meta!.project_chat_agent_state as {
+            result.meta!.chat_agent_state as {
               selection: { agent_id: string };
             }
           ).selection.agent_id = "default";

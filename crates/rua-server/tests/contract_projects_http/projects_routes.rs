@@ -957,7 +957,8 @@ async fn local_project_chat_first_submit_materializes_history_by_chat_id() {
     )
     .await;
     assert_eq!(
-        response_json(unavailable_history).await["meta"]["project_chat_selected_agent_available"],
+        response_json(unavailable_history).await["meta"]["chat_agent_state"]
+            ["selected_agent_available"],
         false
     );
     let unavailable_submit = request(
@@ -1032,7 +1033,7 @@ async fn local_project_chat_first_submit_materializes_history_by_chat_id() {
     .await;
     let blocked_history = response_json(blocked_history).await;
     assert_eq!(
-        blocked_history["meta"]["project_chat_agent_state"]["blockers"],
+        blocked_history["meta"]["chat_agent_state"]["blockers"],
         json!(["active_turn"])
     );
     let authority = std::sync::Arc::clone(&test.state.conversation_authority);
@@ -1058,11 +1059,11 @@ async fn local_project_chat_first_submit_materializes_history_by_chat_id() {
     .await;
     let history_after_delete = response_json(history_after_delete).await;
     assert_eq!(
-        history_after_delete["meta"]["project_chat_agent_state"]["selection"]["agent_id"],
+        history_after_delete["meta"]["chat_agent_state"]["selection"]["agent_id"],
         "code"
     );
     assert_eq!(
-        history_after_delete["meta"]["project_chat_selected_agent_available"],
+        history_after_delete["meta"]["chat_agent_state"]["selected_agent_available"],
         false
     );
     assert!(!history_after_delete["messages"]

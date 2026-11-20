@@ -15,3 +15,9 @@ mod resource_editor;
 
 #[path = "contract_projects_http/unified_discovery.rs"]
 mod unified_discovery;
+
+#[path = "contract_projects_http/switch_task_approval.rs"]
+mod switch_task_approval;
+
+#[path = "contract_projects_http/unified_agent_switch.rs"]
+mod unified_agent_switch;

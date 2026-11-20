@@ -130,26 +130,6 @@ export interface ProjectDuplicateResponse {
   actions: Array<"view" | "reopen">;
 }
 
-export interface ProjectChatAgentSelection {
-  agent_id: string;
-  selected_at: string;
-  revision: number;
-}
-
-export type ProjectAgentSwitchBlocker =
-  | "active_turn"
-  | "queued_input"
-  | "unresolved_approval"
-  | "unanswered_prompt"
-  | "active_acp_binding";
-
-export interface ProjectChatAgentState {
-  selection: ProjectChatAgentSelection;
-  selected_agent_available: boolean;
-  switchable: boolean;
-  blockers: ProjectAgentSwitchBlocker[];
-}
-
 export type ProjectSidebarSort =
   | "manual"
   | "name"

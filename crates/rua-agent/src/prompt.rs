@@ -9,12 +9,12 @@ use crate::profile::AgentProfile;
 
 pub fn build_execution_environment_prompt(
     layout: &RuntimeLayout,
-    workspace_dir: &Path,
+    working_dir: &Path,
     host_profile: &str,
     device_id: Option<&str>,
     device_name: Option<&str>,
 ) -> String {
-    let contract = layout.agent_path_contract(workspace_dir);
+    let contract = layout.agent_path_contract(working_dir);
     let mut lines = vec!["## Execution environment".to_string()];
 
     match (device_name, device_id) {
@@ -39,7 +39,10 @@ pub fn build_execution_environment_prompt(
         lines.push("- Agent subprocesses run in the native host runtime.".to_string());
     }
 
-    lines.push(format!("- Agent workspace: `{}`.", contract.workspace_dir));
+    lines.push(format!(
+        "- Current working directory: `{}`.",
+        contract.workspace_dir
+    ));
 
     if layout.host_profile.is_mobile() || layout.os_family == "android" {
         lines.push(

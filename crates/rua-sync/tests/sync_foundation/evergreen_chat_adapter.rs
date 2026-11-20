@@ -259,6 +259,75 @@ async fn complete_chat_configuration_roundtrip_preserves_head_and_snapshot() {
     );
 }
 
+#[tokio::test]
+async fn receiving_an_agent_switch_before_its_snapshot_keeps_one_consistent_selection() {
+    let target = tempfile::tempdir().unwrap();
+    let id = "photo-chat";
+    let address = ChatAddress::new(id);
+    let scope = rua_core::ChatStore::resolve(target.path(), address.clone());
+    let store = WorkspaceSessionStore::new(scope.root());
+    let mut header = ChatSessionHeader::new(ChatMetadata {
+        chat_id: id.into(),
+        agent_id: "first".into(),
+        title: "Album".into(),
+        created_at: "2026-08-01T00:00:00Z".into(),
+        last_activity_at: "2026-08-01T00:00:00Z".into(),
+        pinned: false,
+        archived: false,
+        preview: None,
+    });
+    header.extra.insert(
+        "hook_configuration".into(),
+        serde_json::json!({"epoch":"first-epoch","selected_agent_id":"first"}),
+    );
+    store.save_chat_header(&header).await.unwrap();
+    let mut registry = SyncRegistry::new();
+    registry
+        .register(Arc::new(EvergreenChatSyncAdapter::new(
+            target.path().to_owned(),
+            "replica",
+        )))
+        .unwrap();
+    let cursor = tempfile::tempdir().unwrap();
+    let merge = MergeStore::open(cursor.path()).unwrap();
+    let change = |id: &str, record: &str, value: serde_json::Value, time| {
+        EvergreenChatSyncAdapter::file_change(id, &address, record, value, "source", hlc(time))
+    };
+    let audit = serde_json::json!([{"previous_agent_id":"first","selected_agent_id":"second","revision":2}]);
+    let head = change(
+        "switch",
+        "configuration_head",
+        serde_json::json!({"epoch":"second-epoch","agent_id":"second","agent_switch_events":audit}),
+        20,
+    );
+    registry.apply_change(&head, &merge).await.unwrap();
+    assert!(store.load_chat_header(id).await.is_err());
+    let projected = store.load_stored_chat_header(id).await.unwrap().unwrap();
+    assert_eq!(projected.agent_id, "second");
+    assert_eq!(projected.extra[rua_session::AGENT_SWITCH_EVENTS_KEY], audit);
+    let late = change(
+        "late-header",
+        "session",
+        serde_json::to_value(&header).unwrap(),
+        30,
+    );
+    registry.apply_change(&late, &merge).await.unwrap();
+    let next = change(
+        "config",
+        "configurations/second-epoch.json",
+        serde_json::json!({"epoch":"second-epoch","selected_agent_id":"second"}),
+        10,
+    );
+    registry.apply_change(&next, &merge).await.unwrap();
+    let visible = store.load_chat_header(id).await.unwrap().unwrap();
+    assert_eq!(visible.agent_id, "second");
+    assert_eq!(
+        visible.extra["hook_configuration"]["selected_agent_id"],
+        "second"
+    );
+    assert_eq!(visible.extra[rua_session::AGENT_SWITCH_EVENTS_KEY], audit);
+}
+
 fn hlc(wall_ms: u64) -> HlcTimestamp {
     HlcTimestamp {
         wall_ms,

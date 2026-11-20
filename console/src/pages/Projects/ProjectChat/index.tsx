@@ -33,12 +33,7 @@ import type {
   ChatSpec,
   ModelSlot,
 } from "@/api/types";
-import type {
-  ProjectAgentSwitchBlocker,
-  ProjectChatAgentSelection,
-  ProjectChatAgentState,
-  ProjectDescriptor,
-} from "@/api/types/project";
+import type { ProjectDescriptor } from "@/api/types/project";
 import { deviceConnectivityLabel } from "@/components/DeviceConnectivity";
 import { useMultiDeviceFeatureAvailability } from "@/hooks/useMultiDeviceFeatureAvailability";
 import { useAgentStore } from "@/stores/agentStore";
@@ -95,9 +90,9 @@ import {
   projectChatExecutionAgent,
   rememberProjectChat,
   resolveProjectChatPath,
-  setProjectChatDraftAgent,
 } from "../projectChatNavigation";
-import ProjectAgentSelector from "./ProjectAgentSelector";
+import ChatAgentSelector from "@/pages/Chat/ChatAgentSelector";
+import { useChatAgentSelection } from "@/pages/Chat/useChatAgentSelection";
 import ProjectChatsDrawer from "./ProjectChatsDrawer";
 import {
   ProjectShellDrawer,
@@ -136,10 +131,6 @@ export default function ProjectChatPage({
     conversationId: chatId,
     unmaterialized: initialData.unmaterialized,
   });
-  const initialSelection = initialData.initialHistory
-    ? projectAgentSelectionFromHistory(initialData.initialHistory)
-    : null;
-  const lastSelectionRevisionRef = useRef(initialSelection?.revision ?? -1);
   const [history, setHistory] = useState<ChatHistory | null>(
     initialData.initialHistory ?? null,
   );
@@ -198,23 +189,22 @@ export default function ProjectChatPage({
     readChatBlockPreferences,
   );
   const optimisticAcpControlBaselineRef = useRef<string | null>(null);
-  const agents = useAgentStore((state) => state.agents);
-  const agentsLoading = useAgentStore(
-    (state) =>
-      state.catalogLoading ||
-      (!state.catalogLoaded && state.catalogError === null),
-  );
-  const agentsLoaded = useAgentStore((state) => state.catalogLoaded);
-  const ensureAgentCatalogLoaded = useAgentStore(
-    (state) => state.ensureCatalogLoaded,
-  );
-  const [switchingAgent, setSwitchingAgent] = useState(false);
-  const [executionAgentId, setExecutionAgentId] = useState(() =>
+  const {
+    selectedAgentId: executionAgentId,
+    observeHistory,
+    restoreDraftAgent,
+    fixedExecutor,
+    selectorProps,
+    submitDisabledReason: agentDisabledReason,
+  } = useChatAgentSelection(
+    chatId,
+    projectId,
     lazy
       ? projectChatExecutionAgent(projectId, chatId)
-      : initialData.initialHistory?.agent_id ??
-        initialSelection?.agent_id ??
-        "default",
+      : initialData.initialHistory?.agent_id ?? "default",
+    initialData.initialHistory,
+    lazyRef,
+    history,
   );
   useLayoutEffect(
     () =>
@@ -225,14 +215,6 @@ export default function ProjectChatPage({
       }),
     [projectId, chatId, executionAgentId],
   );
-  const [agentResolved, setAgentResolved] = useState(Boolean(executionAgentId));
-  const [selectedAgentAvailable, setSelectedAgentAvailable] = useState(
-    initialData.initialHistory?.meta?.project_chat_selected_agent_available ===
-      true,
-  );
-  const [switchBlockers, setSwitchBlockers] = useState<
-    ProjectAgentSwitchBlocker[]
-  >([]);
   const projectTarget = useMemo(
     () => ({
       projectId,
@@ -263,24 +245,6 @@ export default function ProjectChatPage({
   );
 
   useEffect(() => {
-    void ensureAgentCatalogLoaded().catch((error) => {
-      console.error("Failed to load Project Agent candidates:", error);
-      setSelectedAgentAvailable(false);
-      toast.error(t("projects.chat.agentLoadFailed"));
-    });
-  }, [ensureAgentCatalogLoaded, t]);
-
-  useEffect(() => {
-    if (!agentsLoaded || !lazyRef.current) return;
-    const current = projectChatExecutionAgent(projectId, chatId);
-    setExecutionAgentId(current);
-    setAgentResolved(true);
-    setSelectedAgentAvailable(
-      agents.some((agent) => agent.id === current && agent.enabled),
-    );
-  }, [agents, agentsLoaded, chatId, lazyRef, projectId]);
-
-  useEffect(() => {
     if (drawer !== "workspace" || lazy) {
       setResourcePolicy(null);
       setResourcePolicyLoading(false);
@@ -309,34 +273,19 @@ export default function ProjectChatPage({
     };
   }, [chatId, drawer, executionAgentId, lazy, projectId, t]);
 
-  useEffect(() => {
-    if (!agentResolved || agentsLoading || lazy) return;
-    setSelectedAgentAvailable(
-      agents.some((agent) => agent.id === executionAgentId && agent.enabled),
-    );
-  }, [agentResolved, agents, agentsLoading, executionAgentId, lazy]);
-
   const archived = projectLifecycle === "archived";
   const availabilityLabel = archived
     ? t("projects.archived")
     : deviceConnectivityLabel(t, projectDevice?.connectivity_state);
-  const switchBlockedReason = switchBlockers[0]
-    ? t(projectAgentSwitchBlockerTranslationKey(switchBlockers[0]))
-    : undefined;
   const submitDisabledReason = archived
     ? t("projects.chat.archivedSubmitDisabled")
-    : !agentResolved || agentsLoading
-    ? t("projects.chat.resolvingAgent")
-    : !selectedAgentAvailable
-    ? t("projects.chat.selectAvailableAgent")
-    : undefined;
+    : agentDisabledReason;
 
   const handleStatefulOperationAccepted = useCallback(() => {
     if (!lazyRef.current) return;
     statefulOperationAccepted();
     invalidateConversationNavigation({ chatId }, false, projectId);
     clearProjectChatDraftState(projectId, chatId);
-    setAgentResolved(true);
   }, [chatId, lazyRef, projectId, statefulOperationAccepted]);
 
   const handleHistoryChange = useCallback(
@@ -347,7 +296,6 @@ export default function ProjectChatPage({
       if (lazyRef.current) {
         if (!authoritativeHistoryObserved(nextHistory)) return;
         clearProjectChatDraftState(projectId, chatId);
-        setAgentResolved(true);
       }
 
       if (historyProvesConversationMaterialized(nextHistory)) {
@@ -363,25 +311,9 @@ export default function ProjectChatPage({
           invalidateConversationNavigation({ chatId }, false, projectId);
         }
       }
-      const agentState = projectAgentStateFromHistory(nextHistory);
-      const selection = agentState?.selection;
-      if (!selection && nextHistory.agent_id) {
-        setExecutionAgentId(nextHistory.agent_id);
-        setAgentResolved(true);
-      }
-      if (selection && selection.revision >= lastSelectionRevisionRef.current) {
-        lastSelectionRevisionRef.current = selection.revision;
-        setExecutionAgentId(selection.agent_id);
-        setAgentResolved(true);
-        if (agentState) {
-          setSelectedAgentAvailable(agentState.selected_agent_available);
-          setSwitchBlockers(agentState.blockers);
-          return;
-        }
-      }
-      setSwitchBlockers(projectAgentSwitchBlockersFromHistory(nextHistory));
+      observeHistory(nextHistory);
     },
-    [authoritativeHistoryObserved, chatId, lazyRef, projectId],
+    [authoritativeHistoryObserved, chatId, lazyRef, projectId, observeHistory],
   );
 
   const applyCommittedChatModel = useCallback((model: ChatHistory["model"]) => {
@@ -399,44 +331,6 @@ export default function ProjectChatPage({
       applyCommittedChatModel(model);
     },
     [applyCommittedChatModel, lazyRef, setDraftModel],
-  );
-
-  const handleAgentSelect = useCallback(
-    async (agentId: string) => {
-      if (lazyRef.current) {
-        setProjectChatDraftAgent(projectId, chatId, agentId);
-        useAgentStore.getState().setSelectedAgent(agentId);
-        setExecutionAgentId(agentId);
-        setSelectedAgentAvailable(true);
-        return;
-      }
-      if (!executionAgentId) return;
-      setSwitchingAgent(true);
-      try {
-        const state = await projectChatsApi.switchAgent(
-          projectId,
-          chatId,
-          executionAgentId,
-          agentId,
-        );
-        lastSelectionRevisionRef.current = state.selection.revision;
-        setExecutionAgentId(state.selection.agent_id);
-        invalidateConversationNavigation({ chatId }, false, projectId);
-        setSelectedAgentAvailable(state.selected_agent_available);
-        setSwitchBlockers(state.blockers);
-        useAgentStore.getState().setSelectedAgent(state.selection.agent_id);
-        toast.success(t("projects.chat.agentSwitched"));
-      } catch (error) {
-        toast.error(
-          error instanceof Error
-            ? error.message
-            : t("projects.chat.agentSwitchFailed"),
-        );
-      } finally {
-        setSwitchingAgent(false);
-      }
-    },
-    [chatId, executionAgentId, lazyRef, projectId, t],
   );
 
   const handleProjectSelect = useCallback(
@@ -470,14 +364,10 @@ export default function ProjectChatPage({
       lazy ? draftModel : history?.model,
     );
     if (nextChatId === chatId) {
-      const agent = useAgentStore.getState().selectedAgent;
-      setExecutionAgentId(agent);
-      setSelectedAgentAvailable(
-        agents.some((item) => item.id === agent && item.enabled),
-      );
+      restoreDraftAgent(useAgentStore.getState().selectedAgent);
     }
     return nextChatId;
-  }, [agents, chatId, draftModel, history?.model, lazy, projectId]);
+  }, [chatId, draftModel, history?.model, lazy, projectId, restoreDraftAgent]);
 
   const handleNewChat = useCallback(() => {
     setDrawer(null);
@@ -664,7 +554,7 @@ export default function ProjectChatPage({
             key: "acp-enter",
             icon: <Zap size={14} />,
             label: t("chat.acpEnter.menu"),
-            disabled: acpActive,
+            disabled: acpActive || fixedExecutor,
             onClick: () => setAcpEnterOpen(true),
           },
         ]
@@ -754,17 +644,14 @@ export default function ProjectChatPage({
           ) : null
         }
       >
-        <ProjectAgentSelector
-          agents={agents}
-          selectedAgentId={executionAgentId}
-          loading={agentsLoading || !agentResolved}
-          switching={switchingAgent}
-          confirmSelection={!lazy}
-          switchable={
-            !archived && agentResolved && (lazy || switchBlockers.length === 0)
+        <ChatAgentSelector
+          {...selectorProps}
+          switchable={!archived && selectorProps.switchable}
+          switchBlockedReason={
+            archived
+              ? t("projects.chat.archivedSubmitDisabled")
+              : selectorProps.switchBlockedReason
           }
-          switchBlockedReason={switchBlockedReason}
-          onSelect={handleAgentSelect}
         />
         <ProjectSelector
           currentProject={{
@@ -800,7 +687,7 @@ export default function ProjectChatPage({
               </span>
             </>
           ) : null}
-          {!history?.meta?.collaboration && (
+          {!fixedExecutor && (
             <button
               type="button"
               className="rua-owned-chat-acp-banner-exit"
@@ -961,99 +848,6 @@ export default function ProjectChatPage({
       />
     </div>
   );
-}
-
-function projectAgentSelectionFromHistory(
-  history: ChatHistory,
-): ProjectChatAgentSelection | null {
-  return projectAgentStateFromHistory(history)?.selection ?? null;
-}
-
-function projectAgentStateFromHistory(
-  history: ChatHistory,
-): ProjectChatAgentState | null {
-  const controlState = history.control?.project_chat_agent_state;
-  if (controlState) return controlState;
-  const state = history.meta?.project_chat_agent_state;
-  if (!state || typeof state !== "object") return null;
-  const candidate = state as Record<string, unknown>;
-  if (
-    !candidate.selection ||
-    typeof candidate.selection !== "object" ||
-    typeof candidate.selected_agent_available !== "boolean" ||
-    typeof candidate.switchable !== "boolean" ||
-    !Array.isArray(candidate.blockers)
-  )
-    return null;
-  return state as unknown as ProjectChatAgentState;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function projectAgentSwitchBlockersFromHistory(
-  history: ChatHistory,
-): ProjectAgentSwitchBlocker[] {
-  const state = projectAgentStateFromHistory(history);
-  if (state) {
-    return state.blockers.filter(isProjectAgentSwitchBlocker);
-  }
-
-  const blockers: ProjectAgentSwitchBlocker[] = [];
-  if (history.active_turn || history.status === "running") {
-    blockers.push("active_turn");
-  }
-  if ((history.control?.queue?.entries?.length || 0) > 0) {
-    blockers.push("queued_input");
-  }
-  if (
-    history.control?.acp?.active ||
-    (history.meta?.acp_binding && typeof history.meta.acp_binding === "object")
-  ) {
-    blockers.push("active_acp_binding");
-  }
-  const hasPrompt = history.messages.some(
-    (message) =>
-      isRecord(message) &&
-      (message.type === "ask_user_request" ||
-        (isRecord(message.metadata) &&
-          message.metadata.action_type === "ask_user")),
-  );
-  if (hasPrompt) blockers.push("unanswered_prompt");
-  return blockers;
-}
-
-function isProjectAgentSwitchBlocker(
-  value: unknown,
-): value is ProjectAgentSwitchBlocker {
-  return (
-    typeof value === "string" &&
-    [
-      "active_turn",
-      "queued_input",
-      "unresolved_approval",
-      "unanswered_prompt",
-      "active_acp_binding",
-    ].includes(value)
-  );
-}
-
-function projectAgentSwitchBlockerTranslationKey(
-  blocker: ProjectAgentSwitchBlocker,
-): string {
-  switch (blocker) {
-    case "active_turn":
-      return "projects.chat.switchBlocker.activeTurn";
-    case "queued_input":
-      return "projects.chat.switchBlocker.queuedInput";
-    case "unresolved_approval":
-      return "projects.chat.switchBlocker.unresolvedApproval";
-    case "unanswered_prompt":
-      return "projects.chat.switchBlocker.unansweredPrompt";
-    case "active_acp_binding":
-      return "projects.chat.switchBlocker.activeAcp";
-  }
 }
 
 function mostRecentlyActiveChat(chats: ChatSpec[]): ChatSpec | null {

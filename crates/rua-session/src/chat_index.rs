@@ -470,6 +470,48 @@ pub fn get_sync(workspace_dir: &Path, chat_id: &str) -> Result<Option<ChatIndexR
         .map_err(|error| format!("read Chat Index record: {error}"))
 }
 
+/// Stage the filter change before publishing the authoritative Session configuration head.
+/// SQLite rolls the unpublished row back if the head write fails. Startup reconstructs the
+/// row from the head if the process stops between the filesystem and SQLite commits.
+pub(crate) fn publish_agent_switch(
+    workspace: &Path,
+    chat_id: &str,
+    agent_id: &str,
+    head_path: &Path,
+    previous_head: &[u8],
+    next_head: &[u8],
+) -> rua_core::Result<()> {
+    let mut connection =
+        open_connection(workspace).map_err(|message| rua_core::RuaError::Io { message })?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| rua_core::RuaError::Io {
+            message: format!("begin Chat Agent index update: {error}"),
+        })?;
+    let changed = transaction
+        .execute(
+            "UPDATE chat_index SET meta_json = json_set(meta_json, '$.agent_id', ?1)
+         WHERE id = ?2 AND json_type(meta_json) = 'object'",
+            params![agent_id, chat_id],
+        )
+        .map_err(|error| rua_core::RuaError::Io {
+            message: format!("update Chat Agent index: {error}"),
+        })?;
+    if changed != 1 {
+        return Err(rua_core::RuaError::Validation {
+            message: format!("Missing or invalid Chat index entry: {chat_id}"),
+        });
+    }
+    crate::store::write_bytes_atomic_sync(head_path, next_head)?;
+    if let Err(error) = transaction.commit() {
+        crate::store::write_bytes_atomic_sync(head_path, previous_head)?;
+        return Err(rua_core::RuaError::Io {
+            message: format!("commit Chat Agent index update: {error}"),
+        });
+    }
+    Ok(())
+}
+
 pub fn upsert_sync(workspace_dir: &Path, record: &ChatIndexRecord) -> Result<(), String> {
     open_connection(workspace_dir)?
         .execute(

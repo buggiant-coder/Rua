@@ -130,24 +130,6 @@ describe("projectChatsApi", () => {
     });
   });
 
-  it("commits Agent selection through the canonical Project Chat route", async () => {
-    await projectChatsApi.switchAgent(
-      "project/one",
-      "chat/one",
-      "default",
-      "code",
-    );
-
-    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/agent-selection", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        expected_agent_id: "default",
-        agent_id: "code",
-      }),
-    });
-  });
-
   it("routes Project model, options, Stop, and queue controls through canonical siblings", async () => {
     const config = {
       max_iters: 12,

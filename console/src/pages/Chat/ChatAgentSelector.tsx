@@ -6,9 +6,9 @@ import type { AgentSummary } from "@/api/types/agents";
 import { Modal, Popover } from "@/ui";
 import { getAgentDisplayName } from "@/utils/agentDisplayName";
 
-import styles from "./index.module.less";
+import styles from "./ChatAgentSelector.module.less";
 
-type ProjectAgentSelectorProps = {
+type ChatAgentSelectorProps = {
   agents: AgentSummary[];
   selectedAgentId: string;
   loading: boolean;
@@ -16,10 +16,11 @@ type ProjectAgentSelectorProps = {
   switchable: boolean;
   confirmSelection: boolean;
   switchBlockedReason?: string;
+  onOpen?: () => void;
   onSelect: (agentId: string) => Promise<void>;
 };
 
-export default function ProjectAgentSelector({
+export default function ChatAgentSelector({
   agents,
   selectedAgentId,
   loading,
@@ -27,8 +28,9 @@ export default function ProjectAgentSelector({
   switchable,
   confirmSelection,
   switchBlockedReason,
+  onOpen,
   onSelect,
-}: ProjectAgentSelectorProps) {
+}: ChatAgentSelectorProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const selected = agents.find((agent) => agent.id === selectedAgentId);
@@ -130,7 +132,10 @@ export default function ProjectAgentSelector({
       trigger="click"
       placement="bottom-start"
       open={open}
-      onOpenChange={setOpen}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (nextOpen) onOpen?.();
+      }}
       overlayClassName={styles.agentPopoverOverlay}
     >
       <button

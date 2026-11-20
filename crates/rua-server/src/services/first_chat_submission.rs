@@ -56,8 +56,21 @@ pub(crate) async fn persist_first_agent_submission(
                 let staging_store = WorkspaceSessionStore::new(&staging_root);
                 let configuration_value = serde_json::to_value(&snapshot.configuration)
                     .map_err(|error| error.to_string())?;
+                let execution_directory = snapshot
+                    .configuration
+                    .capability_configuration
+                    .as_ref()
+                    .and_then(|capabilities| {
+                        capabilities.extra.get(rua_session::EXECUTION_DIRECTORY_KEY)
+                    })
+                    .cloned()
+                    .ok_or("First Chat configuration has no execution directory")?;
                 staging_store
                     .update_chat_header(address.chat_id().as_str(), |header| {
+                        header.extra.insert(
+                            rua_session::EXECUTION_DIRECTORY_KEY.into(),
+                            execution_directory,
+                        );
                         if let Some(user_id) = input
                             .extra
                             .get("user_id")

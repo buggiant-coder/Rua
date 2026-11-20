@@ -33,15 +33,11 @@ test.skip(
 );
 
 function projectChatPath(baseUrl: string): string {
-  return `${baseUrl}/projects/${encodeURIComponent(
-    projectId!,
-  )}/chats/${encodeURIComponent(chatId!)}`;
+  return `${baseUrl}/chats/${encodeURIComponent(chatId!)}`;
 }
 
 function apiPath(suffix: string): string {
-  return `/api/projects/${encodeURIComponent(
-    projectId!,
-  )}/chats/${encodeURIComponent(chatId!)}${suffix}`;
+  return `/api/chats/${encodeURIComponent(chatId!)}${suffix}`;
 }
 
 async function configureContext(
@@ -51,16 +47,18 @@ async function configureContext(
   await context.addInitScript(
     ({ project, chat, provider, model, isLazy }) => {
       localStorage.setItem("language", "en");
-      localStorage.setItem(`rua_project_last_chat_${project}`, chat);
+      localStorage.setItem(`rua_last_chat_id_project:${project}`, chat);
       localStorage.setItem("rua_project_last_project", project);
-      if (!isLazy) return;
-      sessionStorage.setItem(`rua_project_lazy_chat_${project}:${chat}`, "1");
-      sessionStorage.setItem(
-        `rua_project_chat_agent_${project}:${chat}`,
-        "default",
+      if (!isLazy || sessionStorage.getItem("three-server-draft-seeded"))
+        return;
+      sessionStorage.setItem("three-server-draft-seeded", "1");
+      localStorage.setItem(`rua_draft_chat_id_project:${project}`, chat);
+      localStorage.setItem(
+        `rua_chat_draft_context_${chat}`,
+        JSON.stringify({ agentId: "default", projectId: project }),
       );
       sessionStorage.setItem(
-        `rua_project_chat_model_${project}:${chat}`,
+        `rua_draft_chat_model_project:${project}:${chat}`,
         JSON.stringify({
           provider_id: provider,
           model,
@@ -233,7 +231,7 @@ test("Project Chat uses canonical authority routes for two live viewers before S
       );
     });
     await controller
-      .getByRole("button", { name: "Project Chat Agent", exact: true })
+      .getByRole("button", { name: "Chat Agent", exact: true })
       .click();
     await controller.getByRole("button", { name: /Code Agent/ }).click();
     await controller
@@ -244,13 +242,13 @@ test("Project Chat uses canonical authority routes for two live viewers before S
 
     await expect(
       controller.getByRole("button", {
-        name: "Project Chat Agent",
+        name: "Chat Agent",
         exact: true,
       }),
     ).toContainText("Code Agent");
     await expect(
       secondViewer.getByRole("button", {
-        name: "Project Chat Agent",
+        name: "Chat Agent",
         exact: true,
       }),
     ).toContainText("Code Agent");
@@ -264,7 +262,7 @@ test("Project Chat uses canonical authority routes for two live viewers before S
     ).toBeVisible({ timeout: 30_000 });
     await expect(
       secondViewer.getByRole("button", {
-        name: "Project Chat Agent",
+        name: "Chat Agent",
         exact: true,
       }),
     ).toContainText("Code Agent");

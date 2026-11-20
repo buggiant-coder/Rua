@@ -66,7 +66,7 @@ pub struct ConversationControlView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub running_config: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project_chat_agent_state: Option<crate::services::project_chat::ProjectChatAgentState>,
+    pub chat_agent_state: Option<crate::services::project_chat::ChatAgentState>,
     pub allowed_controls: ConversationAllowedControls,
 }
 
@@ -1539,8 +1539,9 @@ impl ConversationAuthority {
             "Conversation submission Stream Key must match Active Turn address"
         );
         let gate = self.transition_gate_at(&address);
-        let _transition = gate.lock().await;
+        let transition = gate.lock().await;
         self.accept_submission_inner_locked(
+            &transition,
             streams,
             stream_key,
             start,
@@ -1553,8 +1554,9 @@ impl ConversationAuthority {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn accept_submission_inner_locked(
+    pub(crate) async fn accept_submission_inner_locked(
         &self,
+        _transition: &tokio::sync::MutexGuard<'_, ()>,
         streams: &ActiveStreamRegistry,
         stream_key: &StreamKey,
         mut start: ConversationActiveTurnStart,
@@ -1569,6 +1571,26 @@ impl ConversationAuthority {
             "Conversation submission Stream Key must match Active Turn address"
         );
         let submission_id = ensure_submission_id(&mut pending);
+        // Intake prepares an execution context before acquiring admission. A switch
+        // that won the gate invalidates that context, including its Agent runtime.
+        let configuration_key = crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY;
+        if let Some(prepared_agent_id) = pending
+            .extra
+            .get(configuration_key)
+            .and_then(|value| value.get("selected_agent_id"))
+            .and_then(serde_json::Value::as_str)
+        {
+            if self
+                .product_hooks
+                .chat_configuration(&address)
+                .await
+                .is_some_and(|current| current.selected_agent_id != prepared_agent_id)
+            {
+                return Err(
+                    "Chat Agent selection changed before input admission; submit again".into(),
+                );
+            }
+        }
         if pending
             .extra
             .get(FIRST_CHAT_SUBMISSION_CANDIDATE_KEY)
@@ -2086,6 +2108,14 @@ impl ConversationAuthority {
             .load_chat_header(address.chat_id().as_str())
             .await
             .map_err(|error| ChatMetadataStoreError::Internal(error.to_string()))?;
+        if header
+            .as_ref()
+            .is_some_and(|header| header.agent_id != execution_agent_id)
+        {
+            return Err(ChatMetadataStoreError::Conflict(
+                "Chat Agent selection changed before ACP entered".into(),
+            ));
+        }
         let mut refresh_collaboration_binding = false;
         if let Some(value) = header.as_ref().and_then(|header| {
             header
@@ -2445,16 +2475,16 @@ impl ConversationAuthority {
             .await;
     }
 
-    pub async fn publish_project_agent_state_snapshot(
+    pub async fn publish_chat_agent_state_snapshot(
         &self,
         address: &ChatAddress,
         meta: &serde_json::Value,
-        state: crate::services::project_chat::ProjectChatAgentState,
+        state: crate::services::project_chat::ChatAgentState,
     ) {
         let revision = self.next_revision(address).await;
         let mut control = self.control_view_at_revision(address, meta, revision).await;
-        control.project_chat_agent_state = Some(state);
-        self.publish_control_view(address, "project_agent_selection_updated", control)
+        control.chat_agent_state = Some(state);
+        self.publish_control_view(address, "chat_agent_selection_updated", control)
             .await;
     }
 
@@ -2619,7 +2649,7 @@ impl ConversationAuthority {
             },
             model: meta.get(CHAT_MODEL_META_KEY).cloned(),
             running_config: None,
-            project_chat_agent_state: None,
+            chat_agent_state: None,
             allowed_controls: ConversationAllowedControls {
                 stop: active_turn_present || can_pause_queue,
                 queue: active_turn_present,

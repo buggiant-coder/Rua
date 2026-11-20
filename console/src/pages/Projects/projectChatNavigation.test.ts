@@ -1,3 +1,4 @@
+import { saveDraftChatContext } from "../Chat/chatContext";
 import { chatPath } from "../Chat/conversationAddress";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as drafts from "../Chat/drafts";
@@ -18,7 +19,6 @@ import {
   materializeProjectChat,
   rememberProjectChat,
   resolveProjectChatPath,
-  setProjectChatDraftAgent,
 } from "./projectChatNavigation";
 
 const { projectChatsApiMock } = vi.hoisted(() => ({
@@ -77,7 +77,7 @@ describe("projectChatNavigation", () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue("project-chat-3");
     const chatId = openChatDraft("project-1");
 
-    setProjectChatDraftAgent("project-1", chatId, "qa");
+    saveDraftChatContext(chatId, { projectId: "project-1", agentId: "qa" });
 
     expect(projectChatExecutionAgent("project-1", chatId)).toBe("qa");
   });

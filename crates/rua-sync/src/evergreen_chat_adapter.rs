@@ -410,6 +410,11 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
                 )
                 .await
                 .map_err(|error| SyncError::Store(error.to_string()))?;
+        } else if relative == "configuration_head" {
+            rua_session::WorkspaceSessionStore::new(self.scope_root(&address))
+                .apply_replicated_configuration_head(address.chat_id().as_str(), &change.payload)
+                .await
+                .map_err(|error| SyncError::Store(error.to_string()))?;
         } else if relative.starts_with("messages/") {
             write_message_log_payload(&path, &change.payload)?;
         } else {

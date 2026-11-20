@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
-import ProjectAgentSelector from "./ProjectAgentSelector";
+import ChatAgentSelector from "./ChatAgentSelector";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -37,9 +37,9 @@ const baseProps = {
   onSelect: vi.fn().mockResolvedValue(undefined),
 };
 
-describe("ProjectAgentSelector", () => {
+describe("ChatAgentSelector", () => {
   it("does not expose the selected Agent id while the catalog is loading", () => {
-    render(<ProjectAgentSelector {...baseProps} agents={[]} loading={true} />);
+    render(<ChatAgentSelector {...baseProps} agents={[]} loading={true} />);
 
     expect(screen.queryByText("agent-private-id")).not.toBeInTheDocument();
     expect(screen.getByText("Agent")).toBeInTheDocument();
@@ -47,7 +47,7 @@ describe("ProjectAgentSelector", () => {
 
   it("shows the Agent name as soon as the catalog is available", () => {
     render(
-      <ProjectAgentSelector
+      <ChatAgentSelector
         {...baseProps}
         agents={[
           {
@@ -65,7 +65,7 @@ describe("ProjectAgentSelector", () => {
   });
 
   it("shows an unavailable state after loading instead of using the id as a name", () => {
-    render(<ProjectAgentSelector {...baseProps} agents={[]} loading={false} />);
+    render(<ChatAgentSelector {...baseProps} agents={[]} loading={false} />);
 
     expect(screen.getAllByText("Unavailable Agent").length).toBeGreaterThan(0);
     expect(screen.queryByText("agent-private-id")).not.toBeInTheDocument();

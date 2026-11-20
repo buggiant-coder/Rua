@@ -1,9 +1,6 @@
 import { openChatDraft } from "../Chat/chatNavigation";
 import { chatPath } from "../Chat/conversationAddress";
-import {
-  readDraftChatContext,
-  saveDraftChatContext,
-} from "../Chat/chatContext";
+import { readDraftChatContext } from "../Chat/chatContext";
 import * as drafts from "../Chat/drafts";
 import {
   forgetRememberedProject,
@@ -36,14 +33,6 @@ export function projectChatExecutionAgent(
 ): string {
   const context = readDraftChatContext(chatId);
   return context?.projectId === projectId ? context.agentId : "default";
-}
-
-export function setProjectChatDraftAgent(
-  projectId: string,
-  chatId: string,
-  agentId: string,
-): void {
-  saveDraftChatContext(chatId, { agentId, projectId });
 }
 
 const PROJECT_CHAT_DIRECTORY_PREFIX = "rua_project_chat_directory_";

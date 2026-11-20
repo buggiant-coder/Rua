@@ -1,10 +1,10 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 
 use chrono::{DateTime, Utc};
 use rua_core::ChatAddress;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, Mutex as AsyncMutex, OwnedMutexGuard, RwLock};
 use uuid::Uuid;
 
 const BROADCAST_CAPACITY: usize = 256;
@@ -371,6 +371,7 @@ impl std::error::Error for ApprovalAuthorityError {}
 
 #[derive(Debug)]
 pub struct ApprovalAuthority {
+    chat_registrations: Mutex<HashMap<ChatAddress, Weak<AsyncMutex<()>>>>,
     requests: RwLock<HashMap<String, ApprovalRequest>>,
     reuse_rules: RwLock<HashMap<String, ApprovalReuseRule>>,
     agent_rule_store: Option<Arc<dyn AgentScopeRuleStore>>,
@@ -398,6 +399,7 @@ impl ApprovalAuthority {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         Self {
+            chat_registrations: Mutex::default(),
             requests: RwLock::new(HashMap::new()),
             reuse_rules: RwLock::new(HashMap::new()),
             agent_rule_store: None,
@@ -409,6 +411,7 @@ impl ApprovalAuthority {
     pub fn with_agent_rule_store(agent_rule_store: Arc<dyn AgentScopeRuleStore>) -> Self {
         let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         Self {
+            chat_registrations: Mutex::default(),
             requests: RwLock::new(HashMap::new()),
             reuse_rules: RwLock::new(HashMap::new()),
             agent_rule_store: Some(agent_rule_store),
@@ -423,6 +426,7 @@ impl ApprovalAuthority {
     ) -> Self {
         let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         Self {
+            chat_registrations: Mutex::default(),
             requests: RwLock::new(HashMap::new()),
             reuse_rules: RwLock::new(HashMap::new()),
             agent_rule_store: Some(agent_rule_store),
@@ -439,7 +443,33 @@ impl ApprovalAuthority {
         self.requests.read().await.get(id).cloned()
     }
 
+    /// An Agent switch holds this Chat's registration guard from its pending
+    /// approval check through publication of the new selection.
+    pub async fn hold_chat_registrations(&self, address: &ChatAddress) -> OwnedMutexGuard<()> {
+        let gate = {
+            let mut gates = self
+                .chat_registrations
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if let Some(gate) = gates.get(address).and_then(Weak::upgrade) {
+                gate
+            } else {
+                if gates.len() >= 256 {
+                    gates.retain(|_, gate| gate.strong_count() > 0);
+                }
+                let gate = Arc::new(AsyncMutex::new(()));
+                gates.insert(address.clone(), Arc::downgrade(&gate));
+                gate
+            }
+        };
+        gate.lock_owned().await
+    }
+
     pub async fn create_request(&self, input: ApprovalRequestInput) -> ApprovalRequest {
+        let _registration = match input.owner.as_chat_address() {
+            Some(address) => Some(self.hold_chat_registrations(address).await),
+            None => None,
+        };
         let reuse_options =
             reuse_options_for(&input.owner, &input.tool_name, &input.tool_call.args);
         let request = ApprovalRequest {

@@ -172,6 +172,11 @@ pub enum ConversationControlDeviceAction {
     },
     Discover,
     View,
+    ViewAgentSelection,
+    SwitchAgent {
+        expected_agent_id: String,
+        agent_id: String,
+    },
     ViewRunningConfig,
     ViewConfiguration,
     UpdateConfiguration {
@@ -251,6 +256,9 @@ pub enum ConversationControlDeviceResponse {
         execution_agent_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         authority_placement: Option<ConversationAuthorityPlacement>,
+    },
+    AgentSelection {
+        state: crate::services::project_chat::ChatAgentState,
     },
     RunningConfig {
         running: serde_json::Value,
@@ -625,12 +633,6 @@ pub enum ProjectDeviceAction {
     Reopen {
         project_id: rua_core::ProjectId,
     },
-    SwitchChatAgent {
-        project_id: rua_core::ProjectId,
-        chat_id: String,
-        expected_agent_id: String,
-        agent_id: String,
-    },
     UpdateChat {
         project_id: rua_core::ProjectId,
         chat_id: String,
@@ -723,9 +725,6 @@ pub enum ProjectDeviceResponse {
     },
     Reopened {
         result: crate::services::project_lifecycle::ProjectReopenResult,
-    },
-    ChatAgentSelection {
-        state: crate::services::project_chat::ProjectChatAgentState,
     },
     ChatUpdated {
         chat: serde_json::Value,
@@ -2404,37 +2403,6 @@ impl DeviceCommandHandler {
                     },
                 }
             }
-            ProjectDeviceAction::SwitchChatAgent {
-                project_id,
-                chat_id,
-                expected_agent_id,
-                agent_id,
-            } => {
-                let Some(intake) = self.conversation_input_intake.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "project_runtime_unavailable".to_string(),
-                        detail: "Project Chat input runtime is unavailable".to_string(),
-                    };
-                };
-                match intake
-                    .switch_project_chat_agent(
-                        &project_id,
-                        &chat_id,
-                        &expected_agent_id,
-                        &agent_id,
-                        &command.source_device_id,
-                    )
-                    .await
-                {
-                    Ok(state) => DeviceCommandResponse::Project {
-                        response: ProjectDeviceResponse::ChatAgentSelection { state },
-                    },
-                    Err(detail) => DeviceCommandResponse::Rejected {
-                        reason: "project_agent_switch_rejected".to_string(),
-                        detail,
-                    },
-                }
-            }
             ProjectDeviceAction::UpdateChat {
                 project_id,
                 chat_id,
@@ -3378,6 +3346,8 @@ impl DeviceCommandHandler {
                 }
             }
             ConversationControlDeviceAction::ApprovalSnapshot
+            | ConversationControlDeviceAction::ViewAgentSelection
+            | ConversationControlDeviceAction::SwitchAgent { .. }
             | ConversationControlDeviceAction::StopTurn { .. }
             | ConversationControlDeviceAction::PauseQueuedInputs { .. }
             | ConversationControlDeviceAction::DeliverBackgroundResult { .. }
@@ -5167,17 +5137,6 @@ impl ProjectDeviceCommand {
             | ProjectDeviceAction::Archive { project_id }
             | ProjectDeviceAction::Reopen { project_id } => {
                 validate_id(project_id.as_str())?;
-            }
-            ProjectDeviceAction::SwitchChatAgent {
-                project_id,
-                chat_id,
-                expected_agent_id,
-                agent_id,
-            } => {
-                validate_id(project_id.as_str())?;
-                validate_id(chat_id)?;
-                validate_id(expected_agent_id)?;
-                validate_id(agent_id)?;
             }
             ProjectDeviceAction::UpdateChat {
                 project_id,

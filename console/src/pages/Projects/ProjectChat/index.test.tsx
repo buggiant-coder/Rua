@@ -58,7 +58,11 @@ const {
   taskDrawerProps,
   exportConversationMock,
 } = vi.hoisted(() => ({
-  historyApiMock: { getChat: vi.fn() },
+  historyApiMock: {
+    getChat: vi.fn(),
+    getAgentState: vi.fn(),
+    switchAgent: vi.fn(),
+  },
   agentsApiMock: {
     listAgents: vi.fn(),
     getAgentRunningConfig: vi.fn(),
@@ -72,7 +76,6 @@ const {
     getChat: vi.fn(),
     updateChat: vi.fn(),
     deleteChat: vi.fn(),
-    switchAgent: vi.fn(),
     getResourcePolicy: vi.fn(),
   },
   projectsApiMock: {
@@ -248,7 +251,7 @@ vi.mock("@/pages/Chat/owned/OwnedConversationSurface", () => ({
               control: {
                 acp: { active: false },
                 queue: { entries: [], paused: false },
-                project_chat_agent_state: {
+                chat_agent_state: {
                   selection: {
                     agent_id: "default",
                     selected_at: "2026-08-01T00:00:00Z",
@@ -277,7 +280,7 @@ vi.mock("@/pages/Chat/owned/OwnedConversationSurface", () => ({
               control: {
                 acp: { active: false },
                 queue: { entries: [], paused: false },
-                project_chat_agent_state: {
+                chat_agent_state: {
                   selection: {
                     agent_id: "default",
                     selected_at: "2026-08-01T00:00:00Z",
@@ -306,7 +309,7 @@ vi.mock("@/pages/Chat/owned/OwnedConversationSurface", () => ({
               control: {
                 acp: { active: false },
                 queue: { entries: [], paused: false },
-                project_chat_agent_state: {
+                chat_agent_state: {
                   selection: {
                     agent_id: "deleted-agent",
                     selected_at: "2026-08-01T00:00:00Z",
@@ -354,6 +357,9 @@ const secondProject = {
 describe("ProjectChat loader", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    historyApiMock.getAgentState.mockResolvedValue(
+      materializedHistory().control.chat_agent_state,
+    );
     sessionStorage.clear();
     projectsApiMock.get.mockResolvedValue(project);
     projectsApiMock.list.mockResolvedValue([project]);
@@ -410,6 +416,9 @@ describe("ProjectChatPage", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    historyApiMock.getAgentState.mockResolvedValue(
+      materializedHistory().control.chat_agent_state,
+    );
     sessionStorage.clear();
     localStorage.clear();
     useAgentStore.setState({
@@ -873,7 +882,7 @@ describe("ProjectChatPage", () => {
       switchable: boolean;
       blockers: never[];
     }) => void;
-    projectChatsApiMock.switchAgent.mockReturnValue(
+    historyApiMock.switchAgent.mockReturnValue(
       new Promise((resolve) => {
         resolveSwitch = resolve;
       }),
@@ -893,23 +902,24 @@ describe("ProjectChatPage", () => {
     });
     expect(useAgentStore.getState().selectedAgent).toBe("ordinary-agent");
 
-    fireEvent.click(screen.getByRole("button", { name: "Project Chat Agent" }));
-    expect(projectChatsApiMock.switchAgent).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: /Code Agent/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Chat Agent" }));
+    expect(historyApiMock.switchAgent).not.toHaveBeenCalled();
+    const codeAgent = screen.getByRole("button", { name: /Code Agent/ });
+    await waitFor(() => expect(codeAgent).toBeEnabled());
+    fireEvent.click(codeAgent);
     fireEvent.click(
       await screen.findByRole("button", { name: "Switch Agent" }),
     );
 
     await waitFor(() =>
-      expect(projectChatsApiMock.switchAgent).toHaveBeenCalledWith(
-        "project-1",
+      expect(historyApiMock.switchAgent).toHaveBeenCalledWith(
         "chat-materialized",
         "default",
         "code",
       ),
     );
     expect(
-      screen.getByRole("button", { name: "Project Chat Agent" }),
+      screen.getByRole("button", { name: "Chat Agent" }),
     ).toHaveTextContent("Default Agent");
 
     expect(getProjectNavigationAgent()?.agentId).toBe("default");
@@ -927,7 +937,7 @@ describe("ProjectChatPage", () => {
     });
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Project Chat Agent" }),
+        screen.getByRole("button", { name: "Chat Agent" }),
       ).toHaveTextContent("Code Agent"),
     );
     expect(getProjectNavigationAgent()).toEqual({
@@ -984,6 +994,8 @@ describe("ProjectChatPage", () => {
     });
     expect(await screen.findByText("Default Agent")).toBeVisible();
 
+    const refreshLists = vi.fn();
+    const unsubscribe = subscribeConversationNavigation(refreshLists);
     act(() => {
       (
         surfaceProps.current?.onHistoryChange as
@@ -1002,7 +1014,7 @@ describe("ProjectChatPage", () => {
           active_turn: null,
           queue: { entries: [], paused: false },
           acp: { active: false },
-          project_chat_agent_state: {
+          chat_agent_state: {
             selection: {
               agent_id: "code",
               selected_at: "2026-08-01T00:01:00Z",
@@ -1027,10 +1039,16 @@ describe("ProjectChatPage", () => {
     });
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Project Chat Agent" }),
+        screen.getByRole("button", { name: "Chat Agent" }),
       ).toHaveTextContent("Code Agent"),
     );
     expect(surfaceProps.current?.executionAgentId).toBe("code");
+    expect(refreshLists).toHaveBeenCalledWith(
+      { chatId: "chat-live-selection" },
+      false,
+      "project-1",
+    );
+    refreshLists.mockClear();
 
     act(() => {
       (
@@ -1043,7 +1061,7 @@ describe("ProjectChatPage", () => {
         control: {
           acp: { active: false },
           queue: { entries: [], paused: false },
-          project_chat_agent_state: {
+          chat_agent_state: {
             selection: {
               agent_id: "default",
               selected_at: "2026-08-01T00:00:00Z",
@@ -1057,9 +1075,11 @@ describe("ProjectChatPage", () => {
       });
     });
     expect(
-      screen.getByRole("button", { name: "Project Chat Agent" }),
+      screen.getByRole("button", { name: "Chat Agent" }),
     ).toHaveTextContent("Code Agent");
     expect(surfaceProps.current?.executionAgentId).toBe("code");
+    expect(refreshLists).not.toHaveBeenCalled();
+    unsubscribe();
   });
 
   it("keeps an unavailable durable selection without falling back", async () => {
@@ -1073,7 +1093,7 @@ describe("ProjectChatPage", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Project Chat Agent" }),
+        screen.getByRole("button", { name: "Chat Agent" }),
       ).toHaveTextContent("Unavailable Agent"),
     );
     expect(screen.queryByText("deleted-agent")).not.toBeInTheDocument();
@@ -1117,16 +1137,18 @@ describe("ProjectChatPage", () => {
       initialHistory: null,
     });
     await screen.findByText("Default Agent");
-    fireEvent.click(screen.getByRole("button", { name: "Project Chat Agent" }));
-    fireEvent.click(screen.getByRole("button", { name: /Code Agent/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Chat Agent" }));
+    const codeAgent = screen.getByRole("button", { name: /Code Agent/ });
+    await waitFor(() => expect(codeAgent).toBeEnabled());
+    fireEvent.click(codeAgent);
 
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Project Chat Agent" }),
+        screen.getByRole("button", { name: "Chat Agent" }),
       ).toHaveTextContent("Code Agent"),
     );
     expect(useAgentStore.getState().selectedAgent).toBe("code");
-    expect(projectChatsApiMock.switchAgent).not.toHaveBeenCalled();
+    expect(historyApiMock.switchAgent).not.toHaveBeenCalled();
   });
 
   it("preserves an unavailable global Agent choice and blocks submission until a valid selection", async () => {
@@ -1928,7 +1950,7 @@ describe("ProjectChatPage", () => {
       ),
     );
     expect(useAgentStore.getState().selectedAgent).toBe("agent-independent");
-    expect(projectChatsApiMock.switchAgent).not.toHaveBeenCalled();
+    expect(historyApiMock.switchAgent).not.toHaveBeenCalled();
   });
 
   it("opens management from navigation and preserves unrelated query and hash", async () => {
@@ -2075,7 +2097,7 @@ function materializedHistory(
     control: {
       acp: { active: false },
       queue: { entries: [], paused: false },
-      project_chat_agent_state: {
+      chat_agent_state: {
         selection: {
           agent_id: agentId,
           selected_at: "2026-08-01T00:00:00Z",

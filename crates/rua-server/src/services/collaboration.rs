@@ -1158,23 +1158,27 @@ impl CollaborationService {
                 .extra
                 .insert("selected_agent_id".into(), serde_json::json!(agent_id));
             header.project_id = source_header.project_id.clone();
-            if project_id.is_some() {
-                let directory_key = super::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY;
-                let directory_id = source_header
-                    .extra
-                    .get(directory_key)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        serde_json::json!(rua_project::INITIAL_PROJECT_DIRECTORY_ID)
-                    });
-                configuration
-                    .capability_configuration
-                    .as_mut()
-                    .ok_or("Project Chat configuration requires captured capabilities")?
-                    .extra
-                    .insert(directory_key.into(), directory_id.clone());
-                header.extra.insert(directory_key.into(), directory_id);
-            }
+            let (directory_key, directory) = if project_id.is_some() {
+                let key = super::project_chat::PROJECT_WORKING_DIRECTORY_META_KEY;
+                let id = source_header.extra.get(key).cloned().unwrap_or_else(|| {
+                    serde_json::json!(rua_project::INITIAL_PROJECT_DIRECTORY_ID)
+                });
+                (key, id)
+            } else {
+                (
+                    rua_session::EXECUTION_DIRECTORY_KEY,
+                    serde_json::json!({
+                        "device_id": self.current_device_id(), "path": caller.working_dir
+                    }),
+                )
+            };
+            configuration
+                .capability_configuration
+                .as_mut()
+                .ok_or("Chat configuration requires captured capabilities")?
+                .extra
+                .insert(directory_key.into(), directory.clone());
+            header.extra.insert(directory_key.into(), directory);
             header.extra.insert(
                 CHAT_HOOK_CONFIGURATION_META_KEY.into(),
                 serde_json::to_value(&configuration).map_err(|e| e.to_string())?,

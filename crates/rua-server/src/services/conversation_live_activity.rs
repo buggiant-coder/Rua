@@ -53,6 +53,7 @@ pub struct ConversationLiveActivity {
     data_dir: PathBuf,
 
     conversation_authority: Option<Arc<ConversationAuthority>>,
+    input_intake: Option<super::conversation_input_intake::ConversationInputIntake>,
     history_sync_tx: Option<tokio::sync::mpsc::UnboundedSender<ConversationHistorySyncRequest>>,
     chat_activity_wake_hub: Option<Arc<ChatActivityWakeHub>>,
     active_stream_broadcast_hub: Option<Arc<ActiveStreamBroadcastHub>>,
@@ -77,6 +78,7 @@ impl ConversationLiveActivity {
             device_network,
             data_dir,
             conversation_authority: None,
+            input_intake: None,
             history_sync_tx: None,
             chat_activity_wake_hub: None,
             active_stream_broadcast_hub: None,
@@ -88,6 +90,14 @@ impl ConversationLiveActivity {
 
     pub fn with_conversation_authority(mut self, authority: Arc<ConversationAuthority>) -> Self {
         self.conversation_authority = Some(authority);
+        self
+    }
+
+    pub(crate) fn with_input_intake(
+        mut self,
+        intake: super::conversation_input_intake::ConversationInputIntake,
+    ) -> Self {
+        self.input_intake = Some(intake);
         self
     }
 
@@ -120,7 +130,6 @@ impl ConversationLiveActivity {
         viewer_id: &str,
         position: Option<ConversationActivityPosition>,
     ) -> SseOutputStream {
-        let chat_id = address.chat_id().as_str();
         let (out_tx, out_rx) =
             tokio::sync::mpsc::channel::<std::result::Result<String, Infallible>>(64);
         let key = StreamKey::new(
@@ -136,23 +145,10 @@ impl ConversationLiveActivity {
                 }
                 None => hub.subscribe_chat(address, &BTreeMap::new()).await,
             };
-            if let Some(authority) = self.conversation_authority.as_ref() {
-                if self.local_is_current_authority(address).await {
-                    let scope = rua_core::ChatStore::resolve(&self.data_dir, address.clone());
-                    if let Ok(Some(meta)) =
-                        crate::services::conversation_authority_target::load_chat_control_meta(
-                            scope.root(),
-                            chat_id,
-                        )
-                        .await
-                    {
-                        let control = authority.control_view(&key.address, &meta).await;
-                        let payload = hub.conversation_activity_snapshot(
-                            conversation_control_payload(address, "viewer_attached", control),
-                        );
-                        let _ = out_tx.send(Ok(payload)).await;
-                    }
-                }
+            if let Some(payload) = self.initial_local_control(address).await {
+                let _ = out_tx
+                    .send(Ok(hub.conversation_activity_snapshot(payload)))
+                    .await;
             }
             spawn_local_broadcast_forwarder(
                 self.clone(),
@@ -162,24 +158,8 @@ impl ConversationLiveActivity {
             );
         } else {
             if let Some(authority) = self.conversation_authority.as_ref() {
-                if self.local_is_current_authority(address).await {
-                    let scope = rua_core::ChatStore::resolve(&self.data_dir, address.clone());
-                    if let Ok(Some(meta)) =
-                        crate::services::conversation_authority_target::load_chat_control_meta(
-                            scope.root(),
-                            chat_id,
-                        )
-                        .await
-                    {
-                        let control = authority.control_view(&key.address, &meta).await;
-                        let _ = out_tx
-                            .send(Ok(conversation_control_payload(
-                                address,
-                                "viewer_attached",
-                                control,
-                            )))
-                            .await;
-                    }
+                if let Some(payload) = self.initial_local_control(address).await {
+                    let _ = out_tx.send(Ok(payload)).await;
                 }
                 let rx = authority.subscribe_control_events(&key.address).await;
                 spawn_control_forwarder(
@@ -214,6 +194,29 @@ impl ConversationLiveActivity {
                 rx.recv().await.map(|item| (item, rx))
             })
             .fuse(),
+        ))
+    }
+
+    async fn initial_local_control(&self, address: &ChatAddress) -> Option<String> {
+        let authority = self.conversation_authority.as_ref()?;
+        if !self.local_is_current_authority(address).await {
+            return None;
+        }
+        let root = rua_core::ChatStore::resolve(&self.data_dir, address.clone());
+        let meta = super::conversation_authority_target::load_chat_control_meta(
+            root.root(),
+            address.chat_id().as_str(),
+        )
+        .await
+        .ok()??;
+        let mut control = authority.control_view(address, &meta).await;
+        if let Some(intake) = self.input_intake.as_ref() {
+            control.chat_agent_state = intake.chat_agent_state(address).await.ok();
+        }
+        Some(conversation_control_payload(
+            address,
+            "viewer_attached",
+            control,
         ))
     }
 

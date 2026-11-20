@@ -55,7 +55,12 @@ const chats = [
   ...pages,
 ];
 
-async function mockDiscoveryServer(page: Page) {
+async function mockDiscoveryServer(
+  page: Page,
+  selection = { rejectOnce: "", blockers: [] as string[] },
+) {
+  const rowsById = chats.map((row) => ({ ...row }));
+  const revisions = new Map<string, number>();
   const projects = Object.entries(projectNames).map(
     ([project_id, display_name]) => ({
       project_id,
@@ -100,7 +105,7 @@ async function mockDiscoveryServer(page: Page) {
         queries.push(url);
         const q = url.searchParams;
         const projectId = scopePath?.[1] || q.get("project_id");
-        const rows = chats.filter(
+        const rows = rowsById.filter(
           (row) =>
             (!projectId || row.project_id === projectId) &&
             (q.get("without_project") !== "true" || !row.project_id) &&
@@ -140,19 +145,77 @@ async function mockDiscoveryServer(page: Page) {
           headers: { "X-Total-Count": String(rows.length) },
         });
       }
+      const selecting = rowsById.find(
+        (row) => path === `/chats/${row.id}/agent-selection`,
+      );
+      if (selecting) {
+        const blockers = selecting.collaboration
+          ? ["fixed_collaboration_executor"]
+          : selection.blockers;
+        if (route.request().method() === "PATCH") {
+          const { expected_agent_id, agent_id } = route
+            .request()
+            .postDataJSON();
+          if (
+            selection.rejectOnce ||
+            blockers.length ||
+            expected_agent_id !== selecting.agent_id
+          ) {
+            const detail =
+              selection.rejectOnce || blockers.join(", ") || "Agent changed";
+            selection.rejectOnce = "";
+            return route.fulfill({ status: 409, json: { detail } });
+          }
+          selecting.agent_id = agent_id;
+          revisions.set(selecting.id, (revisions.get(selecting.id) ?? 1) + 1);
+        }
+        return json({
+          selection: {
+            agent_id: selecting.agent_id,
+            revision: revisions.get(selecting.id) ?? 1,
+            selected_at: selecting.updated_at,
+          },
+          selected_agent_available: true,
+          switchable: !blockers.length,
+          blockers,
+        });
+      }
       const hit = /^\/chats\/([^/]+)(?:\/metadata)?$/.exec(path);
-      const row = hit && chats.find((item) => item.id === hit[1]);
+      const row = hit && rowsById.find((item) => item.id === hit[1]);
       if (row) {
         if (path.endsWith("/metadata")) return json(row);
         return json({
           ...row,
           title: row.name,
+          meta: row.collaboration
+            ? {
+                collaboration: {
+                  source: { chat_id: photo.id },
+                  source_available: true,
+                  executor: { kind: "agent", agent_id: row.agent_id },
+                  executor_agent_id: row.agent_id,
+                  configuration: {
+                    status: "ready",
+                    desired_source_epoch: "1",
+                    applied_source_epoch: "1",
+                  },
+                },
+              }
+            : {},
           model,
           messages: [
             {
               id: `message-${row.id}`,
               turn_id: `turn-${row.id}`,
               role: "assistant",
+              metadata: {
+                metadata: {
+                  turn_agent_assignment: {
+                    agent_id: "previous",
+                    agent_name: "Original Turn Agent",
+                  },
+                },
+              },
               content: [
                 { type: "text", text: `Saved history for ${row.name}` },
               ],
@@ -292,7 +355,7 @@ test("one discovery panel lists and searches across Projects with the same visib
     page.getByText(`Saved history for ${photo.name}`, { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Project Chat Agent", exact: true }),
+    page.getByRole("button", { name: "Chat Agent", exact: true }),
   ).toContainText("Research");
   if (await panel.isVisible()) await search.click();
   const group = sidebar.getByRole("button", { name: "Photos", exact: true });
@@ -306,6 +369,79 @@ test("one discovery panel lists and searches across Projects with the same visib
     page.getByText(`Saved history for ${photo.name}`, { exact: true }),
   ).toBeVisible();
 });
+
+for (const row of [standalone, photo]) {
+  test(`switches the Agent in place for ${row.name} and preserves the original Turn`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const state = {
+      rejectOnce: "Agent switch blocked: unresolved_approval",
+      blockers: [] as string[],
+    };
+    await mockDiscoveryServer(page, state);
+    await page.goto(`/chats/${row.id}`);
+    const selector = page.getByRole("button", {
+      name: "Chat Agent",
+      exact: true,
+    });
+    const transcript = page.locator('[data-rua-chat-role="assistant"]');
+    const input = page.locator(".rua-owned-composer textarea");
+    await expect(selector).toContainText("Research");
+    await expect(transcript).toContainText("Original Turn Agent");
+    await input.fill("Keep this pending input");
+    const pick = async () => {
+      await selector.click();
+      await page
+        .getByRole("button", { name: /Default.*Switch at stable boundary/ })
+        .click();
+      await page
+        .getByRole("dialog")
+        .getByRole("button", { name: "Switch Agent", exact: true })
+        .click();
+    };
+    await pick();
+    await expect(
+      page.getByText("Resolve the pending approval before switching Agent", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(selector).toContainText("Research");
+    await expect(input).toHaveValue("Keep this pending input");
+    state.blockers = ["active_acp_binding"];
+    await selector.click();
+    await expect(
+      page.getByRole("button", { name: /Default.*Exit ACP/ }),
+    ).toBeDisabled();
+    await selector.click();
+    state.blockers = [];
+
+    await pick();
+    await expect(selector).toContainText("Default");
+    await expect(input).toHaveValue("Keep this pending input");
+    await expect(transcript).toContainText("Original Turn Agent");
+    await expect(page).toHaveURL(new RegExp(`/chats/${row.id}$`));
+    const sidebar = page.locator("#desktop-navigation");
+    await sidebar
+      .getByRole("button", { name: "Search chats", exact: true })
+      .click();
+    const discovery = sidebar.getByRole("region", { name: "Chat discovery" });
+    const agent = discovery.getByRole("combobox", { name: "Agent filter" });
+    await agent.selectOption({ label: "Research" });
+    await expect(discovery.getByText(row.name, { exact: true })).toHaveCount(0);
+    await agent.selectOption({ label: "Default" });
+    await expect(discovery.getByText(row.name, { exact: true })).toBeVisible();
+    await page.reload();
+    await expect(selector).toContainText("Default");
+    await expect(transcript).toContainText("Original Turn Agent");
+    await expect(input).toHaveValue("Keep this pending input");
+    await page.goto(`/chats/${collaboration.id}`);
+    await selector.click();
+    await expect(
+      page.getByRole("button", { name: /Default.*fixed executor/ }),
+    ).toBeDisabled();
+  });
+}
 
 test("two windows suppress an open Chat and present one notification that returns to its turn", async ({
   page,

@@ -740,6 +740,77 @@ pub struct ProjectionBoundary {
     pub created_at: String,
 }
 
+use crate::AGENT_SWITCH_EVENTS_KEY;
+
+/// The selected Agent and its configuration share one atomic publication point.
+#[derive(Clone, Serialize, Deserialize)]
+struct ChatConfigurationHead {
+    epoch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    agent_switch_events: Vec<Value>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
+}
+
+impl ChatConfigurationHead {
+    fn from_header(epoch: &str, header: &ChatSessionHeader) -> Result<Self> {
+        let events = header
+            .extra
+            .get(AGENT_SWITCH_EVENTS_KEY)
+            .map(|events| {
+                events
+                    .as_array()
+                    .cloned()
+                    .ok_or_else(|| rua_core::RuaError::Validation {
+                        message: "Invalid Chat Agent selection history".into(),
+                    })
+            })
+            .transpose()?
+            .unwrap_or_default();
+        Ok(Self {
+            epoch: epoch.to_owned(),
+            agent_id: Some(header.agent_id.clone()),
+            agent_switch_events: events,
+            extra: Default::default(),
+        })
+    }
+
+    fn validate_configuration(&self, configuration: &Value) -> Result<()> {
+        if let (Some(agent), Some(selected)) = (
+            &self.agent_id,
+            configuration
+                .get("selected_agent_id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty()),
+        ) {
+            if agent != selected {
+                return Err(rua_core::RuaError::Validation {
+                    message: "Changing the selected Agent requires a complete Chat Agent switch"
+                        .into(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_selection(&self, header: &mut ChatSessionHeader) {
+        if let Some(agent_id) = &self.agent_id {
+            header.agent_id.clone_from(agent_id);
+            header.metadata.agent_id.clone_from(agent_id);
+            if self.agent_switch_events.is_empty() {
+                header.extra.remove(AGENT_SWITCH_EVENTS_KEY);
+            } else {
+                header.extra.insert(
+                    AGENT_SWITCH_EVENTS_KEY.into(),
+                    Value::Array(self.agent_switch_events.clone()),
+                );
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ChatSessionHeader {
     #[serde(default = "default_chat_schema_version")]
@@ -1093,31 +1164,21 @@ impl WorkspaceSessionStore {
         &self,
         chat_id: &str,
     ) -> Result<Option<ChatSessionHeader>> {
-        let path = self.chat_header_path(chat_id);
-        let content = match tokio::fs::read_to_string(&path).await {
-            Ok(content) => content,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(rua_core::RuaError::Io {
-                    message: format!(
-                        "failed to read chat session header {}: {error}",
-                        path.display()
-                    ),
-                })
-            }
+        let Some(mut header) = self.read_session_header(chat_id).await? else {
+            return Ok(None);
         };
-        serde_json::from_str(&content)
-            .map(Some)
-            .map_err(|error| rua_core::RuaError::Io {
-                message: format!(
-                    "failed to parse chat session header {}: {error}",
-                    path.display()
-                ),
-            })
+        if let Some(head) = self.read_configuration_head(chat_id).await? {
+            head.apply_selection(&mut header);
+        }
+        Ok(Some(header))
+    }
+
+    async fn read_session_header(&self, chat_id: &str) -> Result<Option<ChatSessionHeader>> {
+        read_header_file(&self.chat_header_path(chat_id)).await
     }
 
     pub async fn load_chat_header(&self, chat_id: &str) -> Result<Option<ChatSessionHeader>> {
-        let Some(mut header) = self.load_stored_chat_header(chat_id).await? else {
+        let Some(mut header) = self.read_session_header(chat_id).await? else {
             return Ok(None);
         };
         header.extra.remove("projection_cache");
@@ -1128,13 +1189,16 @@ impl WorkspaceSessionStore {
             );
         }
         header.extra.remove("hook_configuration");
-        if let Some(epoch) = self.load_configuration_head(chat_id).await? {
+        if let Some(head) = self.read_configuration_head(chat_id).await? {
+            head.apply_selection(&mut header);
+            let epoch = &head.epoch;
             let configuration = self
-                .load_configuration_snapshot(chat_id, &epoch)
+                .load_configuration_snapshot(chat_id, epoch)
                 .await?
                 .ok_or_else(|| rua_core::RuaError::Validation {
                     message: format!("Chat configuration snapshot {epoch} is unavailable"),
                 })?;
+            head.validate_configuration(&configuration)?;
             for key in ["model", "thinking"] {
                 match configuration.get(key).filter(|value| !value.is_null()) {
                     Some(value) => {
@@ -1156,27 +1220,25 @@ impl WorkspaceSessionStore {
         let head_lock = chat_write_lock_for_path(self.configuration_head_path(&header.chat_id));
         let _head_guard = head_lock.lock().await;
         let mut header = header.clone();
+        let mut head = self.read_configuration_head(&header.chat_id).await?;
         if let Some(configuration) = header.extra.get("hook_configuration") {
             self.save_configuration_snapshot(&header.chat_id, configuration)
                 .await?;
-            if self
-                .load_configuration_head(&header.chat_id)
-                .await?
-                .is_none()
-            {
+            if head.is_none() {
                 let epoch = configuration["epoch"]
                     .as_str()
                     .expect("validated configuration epoch");
-                write_json_atomic(
-                    &self.configuration_head_path(&header.chat_id),
-                    &serde_json::json!({"epoch": epoch}),
-                )
-                .await?;
+                let initial = ChatConfigurationHead::from_header(epoch, &header)?;
+                initial.validate_configuration(configuration)?;
+                write_json_atomic(&self.configuration_head_path(&header.chat_id), &initial).await?;
+                head = Some(initial);
             }
         }
-        if let Some(epoch) = self.load_configuration_head(&header.chat_id).await? {
+        if let Some(head) = head {
+            head.apply_selection(&mut header);
+            let epoch = &head.epoch;
             let configuration = self
-                .load_configuration_snapshot(&header.chat_id, &epoch)
+                .load_configuration_snapshot(&header.chat_id, epoch)
                 .await?
                 .ok_or_else(|| rua_core::RuaError::Validation {
                     message: format!("Chat configuration snapshot {epoch} is unavailable"),
@@ -1217,11 +1279,41 @@ impl WorkspaceSessionStore {
         write_json_atomic(&path, &incoming).await
     }
 
+    /// Replication may deliver the head before its immutable snapshot or Session file.
+    /// Use the same publication lock as local configuration edits and Agent switches.
+    pub async fn apply_replicated_configuration_head(
+        &self,
+        chat_id: &str,
+        value: &Value,
+    ) -> Result<()> {
+        let head: ChatConfigurationHead =
+            serde_json::from_value(value.clone()).map_err(|error| {
+                rua_core::RuaError::Validation {
+                    message: format!("invalid replicated Chat configuration head: {error}"),
+                }
+            })?;
+        self.configuration_snapshot_path(chat_id, &head.epoch)?;
+        let path = self.configuration_head_path(chat_id);
+        let lock = chat_write_lock_for_path(path.clone());
+        let _guard = lock.lock().await;
+        write_json_atomic(&path, value).await
+    }
+
     pub fn configuration_head_path(&self, chat_id: &str) -> PathBuf {
         self.chat_dir(chat_id).join("configuration_head.json")
     }
 
     async fn load_configuration_head(&self, chat_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .read_configuration_head(chat_id)
+            .await?
+            .map(|head| head.epoch))
+    }
+
+    async fn read_configuration_head(
+        &self,
+        chat_id: &str,
+    ) -> Result<Option<ChatConfigurationHead>> {
         let bytes = match tokio::fs::read(self.configuration_head_path(chat_id)).await {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -1231,17 +1323,12 @@ impl WorkspaceSessionStore {
                 })
             }
         };
-        let value: Value =
+        let head: ChatConfigurationHead =
             serde_json::from_slice(&bytes).map_err(|error| rua_core::RuaError::Validation {
                 message: format!("invalid Chat configuration head: {error}"),
             })?;
-        let epoch = value.get("epoch").and_then(Value::as_str).ok_or_else(|| {
-            rua_core::RuaError::Validation {
-                message: "Chat configuration head has no epoch".to_string(),
-            }
-        })?;
-        self.configuration_snapshot_path(chat_id, epoch)?;
-        Ok(Some(epoch.to_string()))
+        self.configuration_snapshot_path(chat_id, &head.epoch)?;
+        Ok(Some(head))
     }
 
     async fn publish_configuration_head(
@@ -1252,19 +1339,30 @@ impl WorkspaceSessionStore {
     ) -> Result<()> {
         let lock = chat_write_lock_for_path(self.configuration_head_path(chat_id));
         let _guard = lock.lock().await;
-        let current = self.load_configuration_head(chat_id).await?;
-        if current.as_deref() != expected_epoch {
+        let current = self.read_configuration_head(chat_id).await?;
+        if current.as_ref().map(|head| head.epoch.as_str()) != expected_epoch {
             return Err(rua_core::RuaError::Validation {
                 message: "Chat configuration changed; reload before updating".to_string(),
             });
         }
         self.save_configuration_snapshot(chat_id, configuration)
             .await?;
-        write_json_atomic(
-            &self.configuration_head_path(chat_id),
-            &serde_json::json!({"epoch": configuration["epoch"]}),
-        )
-        .await
+        let epoch = configuration["epoch"].as_str().expect("validated epoch");
+        let mut head = match current {
+            Some(head) => head,
+            None => {
+                let header = self.read_session_header(chat_id).await?.ok_or_else(|| {
+                    rua_core::RuaError::NotFound {
+                        resource: "Chat".into(),
+                        id: chat_id.into(),
+                    }
+                })?;
+                ChatConfigurationHead::from_header(epoch, &header)?
+            }
+        };
+        head.validate_configuration(configuration)?;
+        head.epoch = epoch.to_owned();
+        write_json_atomic(&self.configuration_head_path(chat_id), &head).await
     }
 
     pub fn configuration_snapshot_path(&self, chat_id: &str, epoch: &str) -> Result<PathBuf> {
@@ -1364,6 +1462,106 @@ impl WorkspaceSessionStore {
         }
         self.save_chat_header(&header).await?;
         Ok(true)
+    }
+
+    /// Commits the complete Agent selection while the caller holds admission to the Chat.
+    pub async fn commit_chat_agent_switch(
+        &self,
+        chat_id: &str,
+        expected_agent_id: &str,
+        expected_epoch: Option<&str>,
+        new_agent_id: &str,
+        event: Value,
+        configuration: &Value,
+    ) -> Result<()> {
+        let lock = self.chat_write_lock(chat_id);
+        let session_guard = lock.lock_owned().await;
+        let head_path = self.configuration_head_path(chat_id);
+        let head_lock = chat_write_lock_for_path(head_path.clone());
+        let head_guard = head_lock.lock_owned().await;
+        let mut header = self.read_session_header(chat_id).await?.ok_or_else(|| {
+            rua_core::RuaError::NotFound {
+                resource: "Chat".into(),
+                id: chat_id.into(),
+            }
+        })?;
+        let head = self
+            .read_configuration_head(chat_id)
+            .await?
+            .ok_or_else(|| rua_core::RuaError::Validation {
+                message: "Chat configuration head is missing".into(),
+            })?;
+        head.apply_selection(&mut header);
+        if header.agent_id != expected_agent_id || Some(head.epoch.as_str()) != expected_epoch {
+            return Err(rua_core::RuaError::Validation {
+                message: "Chat configuration changed; reload before updating".into(),
+            });
+        }
+        if header
+            .extra
+            .contains_key(crate::collaboration::COLLABORATION_META_KEY)
+        {
+            return Err(rua_core::RuaError::Validation {
+                message: "Chat has a fixed Agent".into(),
+            });
+        }
+        let epoch = configuration
+            .get("epoch")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if epoch.is_empty()
+            || epoch == head.epoch
+            || configuration
+                .get("selected_agent_id")
+                .and_then(Value::as_str)
+                != Some(new_agent_id)
+            || event.get("selected_agent_id").and_then(Value::as_str) != Some(new_agent_id)
+            || event.get("previous_agent_id").and_then(Value::as_str) != Some(expected_agent_id)
+        {
+            return Err(rua_core::RuaError::Validation {
+                message:
+                    "Chat Agent switch does not match the candidate configuration or audit event"
+                        .into(),
+            });
+        }
+
+        let mut next = ChatConfigurationHead::from_header(epoch, &header)?;
+        next.extra.clone_from(&head.extra);
+        next.agent_id = Some(new_agent_id.to_owned());
+        next.agent_switch_events.push(event);
+        // Immutable snapshots are written first. Until the head moves, every reader sees
+        // the previous Agent and configuration, including after a crash or failed write.
+        self.save_configuration_snapshot(chat_id, configuration)
+            .await?;
+        let previous = serde_json::to_vec_pretty(&head).map_err(|e| rua_core::RuaError::Io {
+            message: e.to_string(),
+        })?;
+        let next = serde_json::to_vec_pretty(&next).map_err(|e| rua_core::RuaError::Io {
+            message: e.to_string(),
+        })?;
+        let workspace = self
+            .sessions_dir
+            .parent()
+            .expect("sessions has a workspace parent")
+            .to_owned();
+        let chat_id = chat_id.to_owned();
+        let new_agent_id = new_agent_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            // A cancelled HTTP future must not drop these locks during the disk commit.
+            let _guards = (session_guard, head_guard);
+            crate::chat_index::publish_agent_switch(
+                &workspace,
+                &chat_id,
+                &new_agent_id,
+                &head_path,
+                &previous,
+                &next,
+            )
+        })
+        .await
+        .map_err(|e| rua_core::RuaError::Io {
+            message: format!("publish Chat Agent selection: {e}"),
+        })?
     }
 
     pub async fn replace_chat_configuration(
@@ -5328,25 +5526,13 @@ impl WorkspaceSessionStore {
             {
                 continue;
             }
-            let header_path = path.join("session.json");
-            if !header_path.exists() {
+            // Read the entry by its actual path (directory names can be encoded).
+            let Some(mut header) = read_header_file(&path.join("session.json")).await? else {
                 continue;
+            };
+            if let Some(head) = self.read_configuration_head(&header.chat_id).await? {
+                head.apply_selection(&mut header);
             }
-            let content = tokio::fs::read_to_string(&header_path).await.map_err(|e| {
-                rua_core::RuaError::Io {
-                    message: format!(
-                        "failed to read chat session header {}: {e}",
-                        header_path.display()
-                    ),
-                }
-            })?;
-            let header: ChatSessionHeader =
-                serde_json::from_str(&content).map_err(|e| rua_core::RuaError::Io {
-                    message: format!(
-                        "failed to parse chat session header {}: {e}",
-                        header_path.display()
-                    ),
-                })?;
             headers.push(header);
         }
 
@@ -5913,6 +6099,29 @@ fn hex_digest(bytes: &[u8]) -> String {
         })
 }
 
+async fn read_header_file(path: &Path) -> Result<Option<ChatSessionHeader>> {
+    let content = match tokio::fs::read_to_string(path).await {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(rua_core::RuaError::Io {
+                message: format!(
+                    "failed to read chat session header {}: {error}",
+                    path.display()
+                ),
+            })
+        }
+    };
+    serde_json::from_str(&content)
+        .map(Some)
+        .map_err(|error| rua_core::RuaError::Io {
+            message: format!(
+                "failed to parse chat session header {}: {error}",
+                path.display()
+            ),
+        })
+}
+
 async fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let path = path.to_path_buf();
     let bytes = serde_json::to_vec_pretty(value).map_err(|e| rua_core::RuaError::Io {
@@ -5928,7 +6137,7 @@ async fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         })?
 }
 
-fn write_bytes_atomic_sync(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_bytes_atomic_sync(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().ok_or_else(|| rua_core::RuaError::Io {
         message: format!("path has no parent: {}", path.display()),
     })?;

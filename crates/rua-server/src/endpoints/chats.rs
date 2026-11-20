@@ -514,6 +514,10 @@ pub fn router() -> Router<AppState> {
             "/chats/{chatId}/running-config",
             get(get_chat_running_config_agent).put(put_chat_running_config_agent),
         )
+        .route(
+            "/chats/{chatId}/agent-selection",
+            get(get_chat_agent_selection).patch(switch_chat_agent),
+        )
         .route("/chats/{chatId}/metadata", get(get_chat_metadata_agent))
         .route(
             "/chats/{chatId}/configuration",
@@ -646,6 +650,71 @@ async fn chat_configuration_agent(
         }
         Ok(_) => {
             ApiError::Internal("unexpected Chat configuration response".to_string()).into_response()
+        }
+        Err(error) => error.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ChatAgentSwitchRequest {
+    expected_agent_id: String,
+    agent_id: String,
+}
+
+async fn get_chat_agent_selection(
+    State(state): State<AppState>,
+    ChatPath((agent_id, chat_id)): ChatPath<(String, String)>,
+) -> Response {
+    chat_agent_selection(
+        &state,
+        &agent_id,
+        &chat_id,
+        ConversationControlDeviceAction::ViewAgentSelection,
+    )
+    .await
+}
+
+async fn switch_chat_agent(
+    State(state): State<AppState>,
+    ChatPath((agent_id, chat_id)): ChatPath<(String, String)>,
+    Json(body): Json<ChatAgentSwitchRequest>,
+) -> Response {
+    if body.expected_agent_id.trim().is_empty() || body.agent_id.trim().is_empty() {
+        return ApiError::BadRequest("expected_agent_id and agent_id must not be empty".into())
+            .into_response();
+    }
+    chat_agent_selection(
+        &state,
+        &agent_id,
+        &chat_id,
+        ConversationControlDeviceAction::SwitchAgent {
+            expected_agent_id: body.expected_agent_id.trim().to_owned(),
+            agent_id: body.agent_id.trim().to_owned(),
+        },
+    )
+    .await
+}
+
+async fn chat_agent_selection(
+    state: &AppState,
+    agent_id: &str,
+    chat_id: &str,
+    action: ConversationControlDeviceAction,
+) -> Response {
+    match dispatch_agent_chat_control(
+        state,
+        agent_id,
+        state.chat_workspace().as_path(),
+        chat_id,
+        action,
+    )
+    .await
+    {
+        Ok(ConversationControlDeviceResponse::AgentSelection { state }) => {
+            Json(state).into_response()
+        }
+        Ok(_) => {
+            ApiError::Internal("unexpected Chat Agent selection response".into()).into_response()
         }
         Err(error) => error.into_response(),
     }
@@ -1898,17 +1967,21 @@ pub(crate) async fn get_chat_core(
         meta["collaboration"] =
             serde_json::to_value(collaboration).expect("collaboration relation serializes");
     }
-    if let Some(project_id) = current_chat.project_id() {
+    // A replica can serve durable history offline. Only its Authority knows live blockers.
+    if current_chat
+        .authority_placement()
+        .and_then(|p| p.get("device_id"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|device| {
+            Some(device) == device_id_from_sync_device(&state.sync_device).as_deref()
+        })
+    {
         if let Ok(agent_state) = state
             .conversation_input_intake
-            .project_chat_agent_state(&rua_core::ProjectId::new(project_id), chat_id)
+            .chat_agent_state(address)
             .await
         {
-            if let Ok(agent_state_value) = serde_json::to_value(&agent_state) {
-                meta["project_chat_selected_agent_available"] =
-                    serde_json::Value::Bool(agent_state.selected_agent_available);
-                meta["project_chat_agent_state"] = agent_state_value;
-            }
+            meta["chat_agent_state"] = serde_json::json!(agent_state);
         }
     }
     let durable_coverage =
@@ -3057,7 +3130,9 @@ fn chat_command_delivery_error(error: DeviceCommandDeliveryError, operation: &st
     }
     match error {
         DeviceCommandDeliveryError::Rejected { reason, detail } => {
-            if reason == "approval_store_failed" {
+            if reason == "chat_agent_switch_rejected" {
+                ApiError::Conflict(detail)
+            } else if reason == "approval_store_failed" {
                 ApiError::Internal(detail)
             } else if reason == "approval_wrong_scope" || reason.contains("not_found") {
                 ApiError::NotFound(detail)

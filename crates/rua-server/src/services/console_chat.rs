@@ -3452,14 +3452,6 @@ impl ConsoleChatService {
             let running_config = running_config;
             let runtime_context_manager = runtime.context_manager().await;
             let ws_context = rua_agent::context::load_workspace_context(&agent_workspace_dir).await;
-            let execution_environment_prompt =
-                Some(rua_agent::prompt::build_execution_environment_prompt(
-                    &RuntimeLayout::from_current_process(Some(&host_profile)),
-                    &working_dir,
-                    &host_profile,
-                    (!device_id_str.is_empty()).then_some(device_id_str.as_str()),
-                    device_name_snapshot.as_deref(),
-                ));
             let header = match rua_session::WorkspaceSessionStore::new(&scope_root)
                 .load_chat_header(address.chat_id().as_str())
                 .await
@@ -3474,6 +3466,19 @@ impl ConsoleChatService {
                     return;
                 }
             };
+            let working_dir = crate::services::chat_context::saved_working_directory(
+                Some(&header),
+                &device_id_str,
+            )
+            .unwrap_or(working_dir);
+            let execution_environment_prompt =
+                Some(rua_agent::prompt::build_execution_environment_prompt(
+                    &RuntimeLayout::from_current_process(Some(&host_profile)),
+                    &working_dir,
+                    &host_profile,
+                    (!device_id_str.is_empty()).then_some(device_id_str.as_str()),
+                    device_name_snapshot.as_deref(),
+                ));
             let external_channel = header
                 .extra
                 .get(rua_session::external_chat::EXTERNAL_CHANNEL_META_KEY)
@@ -4726,12 +4731,13 @@ impl ConsoleChatFacadeImpl {
     }
 
     pub fn with_conversation_authority(mut self, authority: Arc<ConversationAuthority>) -> Self {
-        self.live_activity = self
-            .live_activity
-            .with_conversation_authority(Arc::clone(&authority));
         self.input_intake = self
             .input_intake
             .with_conversation_authority(Arc::clone(&authority));
+        self.live_activity = self
+            .live_activity
+            .with_conversation_authority(Arc::clone(&authority))
+            .with_input_intake(self.input_intake.clone());
         self.conversation_authority = Some(authority);
         self
     }

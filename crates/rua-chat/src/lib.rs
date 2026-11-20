@@ -12,7 +12,6 @@ pub use rua_session::chat_index::{ChatSortField, SortOrder};
 pub use rua_session::ChatTag;
 
 const CHAT_POLICY_KEY: &str = "chat_policy";
-const SELECTED_AGENT_ID_KEY: &str = "selected_agent_id";
 const CHAT_MODEL_KEY: &str = "model";
 const CHAT_THINKING_KEY: &str = "thinking";
 const AUTHORITY_PLACEMENT_KEY: &str = "authority_placement";
@@ -80,11 +79,25 @@ impl ChatPolicy {
     }
 
     pub fn from_metadata(project_id: Option<&str>, metadata: &serde_json::Value) -> Self {
-        metadata
+        let policy: Self = metadata
             .get(CHAT_POLICY_KEY)
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_else(|| Self::for_project(project_id))
+            .unwrap_or_else(|| Self::for_project(project_id));
+        policy.with_origin(
+            metadata
+                .get(rua_session::collaboration::COLLABORATION_META_KEY)
+                .is_some(),
+        )
+    }
+
+    fn with_origin(mut self, collaboration: bool) -> Self {
+        self.agent_assignment = if collaboration {
+            AgentAssignmentPolicy::Fixed
+        } else {
+            AgentAssignmentPolicy::Selectable
+        };
+        self
     }
 }
 
@@ -152,7 +165,6 @@ impl Chat {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatSetting {
     Policy(ChatPolicy),
-    SelectedAgent(String),
     Model(serde_json::Value),
     Thinking(serde_json::Value),
     AuthorityPlacement(serde_json::Value),
@@ -259,7 +271,12 @@ impl ChatService {
             .map_err(|error| rua_core::RuaError::Validation {
                 message: format!("invalid Chat Policy for {address}: {error}"),
             })?
-            .unwrap_or_else(|| ChatPolicy::for_project(header.project_id.as_deref()));
+            .unwrap_or_else(|| ChatPolicy::for_project(header.project_id.as_deref()))
+            .with_origin(
+                header
+                    .extra
+                    .contains_key(rua_session::collaboration::COLLABORATION_META_KEY),
+            );
 
         let model = model_slot_from_header(&header);
         let thinking = model_and_thinking_from_header(&header).1.cloned();
@@ -291,20 +308,6 @@ impl ChatService {
         address: &ChatAddress,
         setting: ChatSetting,
     ) -> Result<Chat> {
-        let updates_agent = matches!(&setting, ChatSetting::SelectedAgent(_));
-        if let ChatSetting::SelectedAgent(agent_id) = &setting {
-            if let Some(chat) = self.load(address).await? {
-                if chat.policy.agent_assignment == AgentAssignmentPolicy::Fixed
-                    && chat.selected_agent_id() != Some(agent_id.as_str())
-                {
-                    return Err(rua_core::RuaError::Validation {
-                        message:
-                            "Chat has a fixed Agent; create a new Chat to choose another Agent"
-                                .into(),
-                    });
-                }
-            }
-        }
         let scope_root = self.workspace.as_path();
         let session_store = WorkspaceSessionStore::new(scope_root);
         let (key, value) = match setting {
@@ -314,9 +317,6 @@ impl ChatService {
                     message: format!("failed to serialize Chat Policy: {error}"),
                 })?,
             ),
-            ChatSetting::SelectedAgent(agent_id) => {
-                (SELECTED_AGENT_ID_KEY, serde_json::Value::String(agent_id))
-            }
             ChatSetting::Model(model) => (CHAT_MODEL_KEY, model),
             ChatSetting::Thinking(thinking) => (CHAT_THINKING_KEY, thinking),
             ChatSetting::AuthorityPlacement(placement) => (AUTHORITY_PLACEMENT_KEY, placement),
@@ -356,22 +356,13 @@ impl ChatService {
                         );
                     }
                 }
-                if key == SELECTED_AGENT_ID_KEY {
-                    let agent_id = value.as_str().expect("selected Agent setting is a string");
-                    header.agent_id = agent_id.to_string();
-                    header.metadata.agent_id = agent_id.to_string();
-                } else {
-                    header.extra.insert(key.to_string(), value);
-                }
+                header.extra.insert(key.to_string(), value);
             })
             .await?;
         if !updated {
             return Err(rua_core::RuaError::Io {
                 message: format!("Chat Session File not found: {address}"),
             });
-        }
-        if updates_agent {
-            return self.repair_projection(address).await;
         }
         self.load(address)
             .await?
@@ -1230,7 +1221,7 @@ pub fn project_chat_header(
     meta.extend(header.extra.clone());
     // Configuration snapshots and selection audit history are loaded when opening a Chat.
     meta.remove("hook_configuration");
-    meta.remove("project_agent_switch_events");
+    meta.remove(rua_session::AGENT_SWITCH_EVENTS_KEY);
     meta.insert(
         "agent_id".into(),
         serde_json::Value::String(header.agent_id.clone()),

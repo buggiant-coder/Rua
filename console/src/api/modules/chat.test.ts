@@ -16,6 +16,21 @@ import { request } from "../request";
 import { chatApi } from "./chat";
 
 describe("chatApi file helpers", () => {
+  it("reads and commits Agent selection for the addressed Chat", async () => {
+    await chatApi.getAgentState("chat/one");
+    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/agent-selection");
+    await chatApi.switchAgent("chat/one", "default", "code");
+
+    expect(request).toHaveBeenCalledWith("/chats/chat%2Fone/agent-selection", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        expected_agent_id: "default",
+        agent_id: "code",
+      }),
+    });
+  });
+
   it("requests only scoped Chat metadata and forwards cancellation", async () => {
     const controller = new AbortController();
     await chatApi.getMetadata("chat/one", "agent/one", {

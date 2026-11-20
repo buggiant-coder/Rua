@@ -1310,7 +1310,7 @@ impl ActiveStreamBroadcastDeviceSessionHandler {
             .await
             .map_err(|error| error.to_string())?;
         let workspace_dir = target.scope_root;
-        let project_agent_state = target.project_agent_state;
+        let chat_agent_state = target.chat_agent_state;
         let placement =
             crate::services::conversation_authority_target::load_chat_authority_placement_target(
                 &workspace_dir,
@@ -1318,7 +1318,7 @@ impl ActiveStreamBroadcastDeviceSessionHandler {
             )
             .await?;
         if placement.device_id != initial_state.local_device_id {
-            if project_agent_state.is_none()
+            if !target.resource_bound
                 && request
                     .authority_epoch
                     .is_some_and(|expected_epoch| placement.authority_epoch > expected_epoch)
@@ -1340,7 +1340,7 @@ impl ActiveStreamBroadcastDeviceSessionHandler {
         }
         if let Some(expected_epoch) = request.authority_epoch {
             if placement.authority_epoch != expected_epoch {
-                if project_agent_state.is_none() && placement.authority_epoch > expected_epoch {
+                if !target.resource_bound && placement.authority_epoch > expected_epoch {
                     return Ok(Some(ActiveStreamBroadcastFrame::AuthorityRedirect {
                         device_delivery_id: format!("authority-redirect:{address}"),
                         address: address.clone(),
@@ -1356,7 +1356,7 @@ impl ActiveStreamBroadcastDeviceSessionHandler {
                     "Conversation Live Activity targets a stale authority Epoch".to_string()
                 );
             }
-        } else if project_agent_state.is_none() {
+        } else if !target.resource_bound {
             return Err(
                 "initial Agent Conversation Control View requires Authority Epoch".to_string(),
             );
@@ -1386,7 +1386,7 @@ impl ActiveStreamBroadcastDeviceSessionHandler {
                 );
         }
         let mut control = initial_state.authority.control_view(address, &meta).await;
-        control.project_chat_agent_state = project_agent_state;
+        control.chat_agent_state = chat_agent_state;
         let payload = serde_json::json!({
             "type": "conversation_control",
             "address": address,

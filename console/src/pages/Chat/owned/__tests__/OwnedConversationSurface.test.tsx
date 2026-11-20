@@ -1847,7 +1847,6 @@ describe("OwnedConversationSurface", () => {
 
     await waitFor(() =>
       expect(mockDecideApproval).toHaveBeenCalledWith(
-        { agentId: "default", projectId: undefined },
         "chat-1",
         "approval-1",
         {
@@ -1933,7 +1932,6 @@ describe("OwnedConversationSurface", () => {
 
     await waitFor(() =>
       expect(mockDecideAcpPermission).toHaveBeenCalledWith(
-        "default",
         "chat-1",
         "acp-permission-1",
         "allow_session",
@@ -2015,7 +2013,6 @@ describe("OwnedConversationSurface", () => {
 
     await waitFor(() =>
       expect(mockDecideApproval).toHaveBeenCalledWith(
-        { agentId: "default", projectId: undefined },
         "chat-1",
         "approval-1",
         {
@@ -2088,7 +2085,6 @@ describe("OwnedConversationSurface", () => {
 
     await waitFor(() =>
       expect(mockDecideApproval).toHaveBeenCalledWith(
-        { agentId: "default", projectId: undefined },
         "chat-1",
         "approval-1",
         {

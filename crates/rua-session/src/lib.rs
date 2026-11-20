@@ -67,3 +67,9 @@ pub use store::{
     TurnLifecycleStatus, WorkspaceSessionStore, PROJECTION_EXCLUSIONS_FORMAT_VERSION,
 };
 pub use turn_writer::TurnWriter;
+
+/// Device and native path captured for the Chat execution directory.
+pub const EXECUTION_DIRECTORY_KEY: &str = "execution_directory";
+
+/// Ordered changes to the selected Agent of a materialized Chat.
+pub const AGENT_SWITCH_EVENTS_KEY: &str = "agent_switch_events";

@@ -78,10 +78,6 @@ pub fn router() -> Router<AppState> {
             "/chats/{chatId}/resource-policy",
             get(get_project_resource_policy),
         )
-        .route(
-            "/chats/{chatId}/agent-selection",
-            patch(switch_project_chat_agent),
-        )
 }
 
 async fn get_project_sidebar(State(state): State<AppState>) -> Response {
@@ -190,12 +186,6 @@ struct RenameProjectRequest {
 #[derive(Debug, Deserialize)]
 struct ProjectLifecycleConfirmRequest {
     confirmed: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProjectChatAgentSwitchRequest {
-    expected_agent_id: String,
-    agent_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1247,108 +1237,6 @@ async fn apply_project_chat_model_update(
         }
     };
     Json(chat).into_response()
-}
-
-async fn switch_project_chat_agent(
-    State(state): State<AppState>,
-    Path(chat_id): Path<String>,
-    Json(body): Json<ProjectChatAgentSwitchRequest>,
-) -> Response {
-    let project_id =
-        match crate::services::chat_context::load_chat_context(&state.rua_root, &chat_id).await {
-            Ok(Some(context)) => match context.project_id {
-                Some(id) => id,
-                None => return ApiError::BadRequest("Chat has no Project".into()).into_response(),
-            },
-            Ok(None) => {
-                return ApiError::NotFound(format!("Chat not found: {chat_id}")).into_response()
-            }
-            Err(error) => return error.into_response(),
-        };
-    if body.expected_agent_id.trim().is_empty() || body.agent_id.trim().is_empty() {
-        return ApiError::BadRequest(
-            "expected_agent_id and agent_id must not be empty".to_string(),
-        )
-        .into_response();
-    }
-    let project_id = ProjectId::new(project_id);
-    let project = match state.project_catalog.get(&project_id) {
-        Ok(Some(project)) => project,
-        Ok(None) => {
-            return ApiError::NotFound(format!("Project not found: {project_id}")).into_response();
-        }
-        Err(error) => return ApiError::Internal(error.to_string()).into_response(),
-    };
-    if project.lifecycle != ProjectLifecycle::Active {
-        return ApiError::Conflict("Archived Project cannot switch Agent".to_string())
-            .into_response();
-    }
-    let chat_id = match crate::services::console_chat::resolve_chat_id(&chat_id) {
-        Ok(chat_id) => chat_id,
-        Err(error) => return ApiError::BadRequest(error).into_response(),
-    };
-    let Some(source_device_id) =
-        crate::services::device_context::current_sync_device_id(&state.sync_device)
-    else {
-        return ApiError::Conflict("source Device identity is unavailable".to_string())
-            .into_response();
-    };
-
-    let result = if source_device_id == project.resource_device_id {
-        state
-            .conversation_input_intake
-            .switch_project_chat_agent(
-                &project_id,
-                &chat_id,
-                body.expected_agent_id.trim(),
-                body.agent_id.trim(),
-                &source_device_id,
-            )
-            .await
-    } else {
-        let session_manager = match crate::services::device_session_access::current_session_manager(
-            &state.device_network,
-        )
-        .await
-        {
-            Ok(manager) => manager,
-            Err(error) => return ApiError::Unavailable(error).into_response(),
-        };
-        let command = crate::services::device_command_bus::ProjectDeviceCommand {
-            command_id: format!("project-agent-switch-{}", uuid::Uuid::new_v4()),
-            source_device_id,
-            target_device_id: project.resource_device_id,
-            action: crate::services::device_command_bus::ProjectDeviceAction::SwitchChatAgent {
-                project_id,
-                chat_id,
-                expected_agent_id: body.expected_agent_id.trim().to_string(),
-                agent_id: body.agent_id.trim().to_string(),
-            },
-        };
-        match crate::services::device_command_bus::deliver_project_device_command_via_session(
-            &session_manager,
-            &command,
-            std::time::Duration::from_secs(10),
-        )
-        .await
-        {
-            Ok(
-                crate::services::device_command_bus::ProjectDeviceResponse::ChatAgentSelection {
-                    state,
-                },
-            ) => Ok(state),
-            Ok(_) => Err("resource Device returned an unexpected Project response".to_string()),
-            Err(error) if error.failure_kind() == "device_offline" => {
-                return ApiError::Unavailable(error.to_string()).into_response();
-            }
-            Err(error) => Err(error.to_string()),
-        }
-    };
-
-    match result {
-        Ok(state) => Json(state).into_response(),
-        Err(error) => ApiError::Conflict(error).into_response(),
-    }
 }
 
 fn placement_error(error: ProjectPlacementError) -> Response {

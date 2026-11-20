@@ -1820,6 +1820,8 @@ html.mobile-mode .rua-chat-markdown {
 
 .rua-chat-origin-badge {
   left: var(--chat-bubble-radius);
+  background: var(--bg);
+  color: var(--text-2);
 }
 .rua-chat-origin-badge--acp {
   background: var(--bg);

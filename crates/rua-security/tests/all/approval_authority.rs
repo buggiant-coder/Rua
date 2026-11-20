@@ -37,6 +37,45 @@ fn bash_request(tool_call_id: &str, command: &str) -> ApprovalRequestInput {
 }
 
 #[tokio::test]
+async fn switching_one_chat_serializes_pending_approval_creation_only_for_that_chat() {
+    let authority = ApprovalAuthority::new();
+    let address = ChatAddress::new("chat-1");
+    let transition = authority.hold_chat_registrations(&address).await;
+    let pending_task = authority.create_request(request("task:old:attempt:1", "edit"));
+    tokio::pin!(pending_task);
+    tokio::select! {
+        biased;
+        _ = &mut pending_task => panic!("approval registration bypassed this Chat's switch"),
+        () = async {} => {}
+    }
+    for independent_owner in [
+        ApprovalOwner::chat(ChatAddress::new("other")),
+        ApprovalOwner::runtime_session("agent-1", "chat-1"),
+    ] {
+        let request = authority
+            .create_request(ApprovalRequestInput {
+                owner: independent_owner.clone(),
+                ..request("independent", "edit")
+            })
+            .await;
+        assert_eq!(request.owner, independent_owner);
+    }
+    assert!(authority
+        .list_pending_for_address(&address)
+        .await
+        .is_empty());
+    drop(transition);
+    let pending = pending_task.await;
+    let _next_switch = authority.hold_chat_registrations(&address).await;
+    assert_eq!(
+        authority.list_pending_for_address(&address).await,
+        vec![pending.clone()]
+    );
+    assert_eq!(pending.agent_id, "agent-1");
+    assert_eq!(pending.owner, ApprovalOwner::chat(address));
+}
+
+#[tokio::test]
 async fn snapshot_keeps_multiple_pending_requests_for_one_chat() {
     let authority = ApprovalAuthority::new();
     let mut events = authority.subscribe();

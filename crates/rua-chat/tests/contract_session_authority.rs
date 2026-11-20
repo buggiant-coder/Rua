@@ -437,7 +437,7 @@ async fn non_list_settings_accumulate_in_session_file_without_touching_index() {
 }
 
 #[tokio::test]
-async fn explicit_fixed_agent_policy_rejects_selecting_a_different_agent() {
+async fn collaboration_origin_controls_agent_selection_for_existing_chat_policies() {
     let root = tempfile::tempdir().unwrap();
     let address = ChatAddress::new("fixed-agent");
     seed_two_turn_chat(root.path(), &address).await;
@@ -453,10 +453,26 @@ async fn explicit_fixed_agent_policy_rejects_selecting_a_different_agent() {
         )
         .await
         .unwrap();
-    let error = service
-        .update_setting(&address, ChatSetting::SelectedAgent("agent-b".into()))
+    let store = WorkspaceSessionStore::new(service.storage_root());
+    seed_agent_configuration(&store, &address).await;
+    assert_eq!(
+        service.policy(&address).await.unwrap().agent_assignment,
+        AgentAssignmentPolicy::Selectable
+    );
+    store
+        .update_chat_header(address.chat_id().as_str(), |header| {
+            header.extra.insert(
+                rua_session::collaboration::COLLABORATION_META_KEY.into(),
+                serde_json::json!({"source":{"chat_id":"source"}}),
+            );
+        })
         .await
-        .unwrap_err();
+        .unwrap();
+    assert_eq!(
+        service.policy(&address).await.unwrap().agent_assignment,
+        AgentAssignmentPolicy::Fixed
+    );
+    let error = switch_to_agent_b(&store, &address).await.unwrap_err();
     assert!(error.to_string().contains("fixed"));
     assert_eq!(
         service
@@ -1255,22 +1271,13 @@ async fn combined_agent_and_project_lifecycle_uses_one_chat_service() {
         service.load(&project).await.unwrap().unwrap().policy(),
         &ChatPolicy::for_project(Some("project-a"))
     );
-    assert_eq!(
-        service
-            .update_setting(&agent, ChatSetting::SelectedAgent("agent-b".into()))
-            .await
-            .unwrap()
-            .selected_agent_id(),
-        Some("agent-b")
-    );
-    assert_eq!(
-        service
-            .update_setting(&project, ChatSetting::SelectedAgent("agent-b".to_string()))
-            .await
-            .unwrap()
-            .selected_agent_id(),
-        Some("agent-b")
-    );
+    let store = WorkspaceSessionStore::new(service.storage_root());
+    for address in [&agent, &project] {
+        seed_agent_configuration(&store, address).await;
+        switch_to_agent_b(&store, address).await.unwrap();
+        let current = service.load(address).await.unwrap().unwrap();
+        assert_eq!(current.selected_agent_id(), Some("agent-b"));
+    }
     assert_eq!(service.storage_root(), root.path().join("chats"));
     let reloaded = ChatService::new(root.path())
         .load(&project)
@@ -1279,6 +1286,110 @@ async fn combined_agent_and_project_lifecycle_uses_one_chat_service() {
         .unwrap();
     assert_eq!(reloaded.project_id(), Some("project-a"));
     assert_eq!(reloaded.selected_agent_id(), Some("agent-b"));
+}
+
+async fn seed_agent_configuration(store: &WorkspaceSessionStore, address: &ChatAddress) {
+    store
+        .update_chat_header(address.chat_id().as_str(), |header| {
+            header.extra.insert(
+                "hook_configuration".into(),
+                serde_json::json!({
+                    "epoch":"initial", "selected_agent_id":"agent-a", "running_config":{}
+                }),
+            );
+        })
+        .await
+        .unwrap();
+}
+
+async fn switch_to_agent_b(
+    store: &WorkspaceSessionStore,
+    address: &ChatAddress,
+) -> rua_core::Result<()> {
+    store.commit_chat_agent_switch(
+        address.chat_id().as_str(), "agent-a", Some("initial"), "agent-b",
+        serde_json::json!({"previous_agent_id":"agent-a","selected_agent_id":"agent-b","revision":2}),
+        &serde_json::json!({"epoch":"switched", "selected_agent_id":"agent-b","running_config":{}}),
+    ).await
+}
+
+#[tokio::test]
+async fn selection_audit_configuration_and_discovery_recover_together_after_interrupted_publication(
+) {
+    let root = tempfile::tempdir().unwrap();
+    let service = ChatService::new(root.path());
+    let address = ChatAddress::new("switched-chat");
+    let id = address.chat_id().as_str();
+    seed_two_turn_chat(root.path(), &address).await;
+    let store = WorkspaceSessionStore::new(service.storage_root());
+    seed_agent_configuration(&store, &address).await;
+    let original = store.load_chat_header(id).await.unwrap().unwrap();
+    let previous_row = chat_index::get(service.storage_root(), id)
+        .await
+        .unwrap()
+        .unwrap();
+    // A failing SQLite write cannot publish the new Agent or its epoch.
+    let mut invalid = previous_row.clone();
+    invalid.meta = serde_json::json!([]);
+    chat_index::upsert(service.storage_root(), invalid)
+        .await
+        .unwrap();
+    assert!(switch_to_agent_b(&store, &address).await.is_err());
+    assert_eq!(store.load_chat_header(id).await.unwrap().unwrap(), original);
+    chat_index::upsert(service.storage_root(), previous_row.clone())
+        .await
+        .unwrap();
+    switch_to_agent_b(&store, &address).await.unwrap();
+    let row = chat_index::get(service.storage_root(), id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.meta["agent_id"], "agent-b");
+    assert!(switch_to_agent_b(&store, &address).await.is_err());
+
+    // Crash after durable head publication but before SQLite commit. The raw Session
+    // still holds its original selection and a late metadata writer has the old header.
+    chat_index::upsert(service.storage_root(), previous_row)
+        .await
+        .unwrap();
+    let reopened = ChatService::new(root.path());
+    reopened.rebuild_index().await.unwrap();
+    let rebuilt = chat_index::get(reopened.storage_root(), id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rebuilt.meta["agent_id"], "agent-b");
+    let reopened_store = WorkspaceSessionStore::new(reopened.storage_root());
+    reopened_store.save_chat_header(&original).await.unwrap();
+    let mut config = reopened_store
+        .load_configuration_snapshot(id, "switched")
+        .await
+        .unwrap()
+        .unwrap();
+    config["epoch"] = serde_json::json!("refreshed");
+    reopened_store
+        .replace_chat_configuration(id, "switched", config)
+        .await
+        .unwrap();
+    let header = reopened_store.load_chat_header(id).await.unwrap().unwrap();
+    assert_eq!(header.agent_id, "agent-b");
+    assert_eq!(header.metadata.agent_id, "agent-b");
+    assert_eq!(
+        header.extra["hook_configuration"]["selected_agent_id"],
+        "agent-b"
+    );
+    assert_eq!(
+        header.extra[rua_session::AGENT_SWITCH_EVENTS_KEY][0]["revision"],
+        2
+    );
+    assert_eq!(
+        header.extra[rua_session::AGENT_SWITCH_EVENTS_KEY]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(header.turn_index, original.turn_index);
 }
 
 async fn seed_two_turn_chat(rua_root: &std::path::Path, address: &ChatAddress) {

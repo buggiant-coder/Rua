@@ -5,6 +5,33 @@ use rua_session::WorkspaceSessionStore;
 use crate::errors::ApiError;
 use crate::state::AppState;
 
+pub(crate) fn saved_working_directory(
+    header: Option<&rua_session::ChatSessionHeader>,
+    device_id: &str,
+) -> Option<std::path::PathBuf> {
+    let directory = header?.extra.get(rua_session::EXECUTION_DIRECTORY_KEY)?;
+    if directory.get("device_id")?.as_str()? != device_id {
+        return None;
+    }
+    directory
+        .get("path")?
+        .as_str()
+        .map(std::path::PathBuf::from)
+}
+
+pub(crate) async fn working_directory_on_device(
+    scope: &Path,
+    chat_id: &str,
+    device_id: &str,
+    default: std::path::PathBuf,
+) -> Result<std::path::PathBuf, String> {
+    let header = WorkspaceSessionStore::new(scope)
+        .load_stored_chat_header(chat_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(saved_working_directory(header.as_ref(), device_id).unwrap_or(default))
+}
+
 /// Configuration belongs to the saved Chat, never to its URL or the current selector.
 #[derive(Debug, Clone)]
 pub struct ChatContext {

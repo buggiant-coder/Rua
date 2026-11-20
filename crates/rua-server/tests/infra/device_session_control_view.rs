@@ -42,7 +42,9 @@ use rua_server::services::conversation_authority::{
     ConversationAuthorityPlacementView, ConversationDriverKind, ConversationInputAcceptanceMode,
     ConversationInputPayload, ConversationInputQueueView,
 };
-use rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch;
+use rua_server::services::conversation_authority_placement::{
+    ConversationAuthorityEpoch, ConversationAuthorityPlacement,
+};
 use rua_server::services::conversation_history_readiness::ConversationHistorySyncRequest;
 use rua_server::services::conversation_live_activity::ConversationLiveActivity;
 use rua_server::services::conversation_manifest::{
@@ -684,7 +686,7 @@ fn v8_chat_command_variants_round_trip() {
         },
         model: None,
         running_config: Some(running.clone()),
-        project_chat_agent_state: None,
+        chat_agent_state: None,
         allowed_controls: ConversationAllowedControls {
             stop: false,
             queue: true,
@@ -2862,7 +2864,7 @@ async fn remote_project_approval_and_acp_use_resource_authority_without_controll
         entered["status"]["workspace_dir"],
         target_repo.to_string_lossy().as_ref()
     );
-    let switch_state = rua_server::services::project_chat::project_chat_agent_state(
+    let switch_state = rua_server::services::project_chat::chat_agent_state(
         target_scope.root(),
         &address,
         true,
@@ -2871,9 +2873,9 @@ async fn remote_project_approval_and_acp_use_resource_authority_without_controll
     )
     .await
     .unwrap();
-    assert!(switch_state.blockers.contains(
-        &rua_server::services::project_chat::ProjectAgentSwitchBlocker::ActiveAcpBinding
-    ));
+    assert!(switch_state
+        .blockers
+        .contains(&rua_server::services::project_chat::ChatAgentSwitchBlocker::ActiveAcpBinding));
 
     let status = source_app
         .clone()
@@ -3085,23 +3087,21 @@ async fn remote_project_approval_and_acp_use_resource_authority_without_controll
         })
         .await
         .unwrap();
-    let code_agent = target_state
-        .agent_service
-        .get_agent("code")
+    let switched = target_state
+        .conversation_input_intake
+        .switch_chat_agent(
+            &address,
+            "default",
+            "code",
+            &target_device_id,
+            &ConversationAuthorityPlacement {
+                device_id: placement.device_id,
+                authority_epoch: placement.authority_epoch,
+                base_manifest_hash: placement.base_manifest_hash,
+            },
+        )
         .await
-        .unwrap()
-        .expect("Code Agent");
-    let switched = rua_server::services::project_chat::switch_project_chat_agent(
-        target_scope.root(),
-        &address,
-        "default",
-        &code_agent,
-        &target_device_id,
-        &target_state.conversation_authority,
-        approval_authority,
-    )
-    .await
-    .unwrap();
+        .unwrap();
     assert_eq!(switched.selection.agent_id, "code");
     assert_eq!(approval_authority.list_chat_rules(&address).await.len(), 1);
     assert_eq!(
@@ -3624,13 +3624,16 @@ async fn collaboration_device_command_is_idempotent_epoch_gated_and_rebuilds_pro
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn remote_project_agent_switch_is_live_for_two_viewers_without_controller_storage() {
+async fn remote_project_agent_switch_is_live_for_two_viewers_with_replicated_headers() {
     let first_dir = TempDir::new().expect("first controller state");
     let first_state = AppState::from_tempdir(first_dir.path().to_path_buf(), ServerProfile::Test);
     let second_dir = TempDir::new().expect("second controller state");
     let second_state = AppState::from_tempdir(second_dir.path().to_path_buf(), ServerProfile::Test);
     let target_dir = TempDir::new().expect("target state");
     let target_state = AppState::from_tempdir(target_dir.path().to_path_buf(), ServerProfile::Test);
+    install_test_device(&first_state, 111);
+    install_test_device(&second_state, 113);
+    install_test_device(&target_state, 112);
     seed_fixture_provider(
         &target_state,
         vec![fixture_provider_model("project-switch-model")],
@@ -3701,6 +3704,10 @@ async fn remote_project_agent_switch_is_live_for_two_viewers_without_controller_
     )
     .await;
 
+    rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(target_scope.root()))
+        .repair_projection(&address)
+        .await
+        .unwrap();
     let first = build_runtime(
         111,
         network_secret,
@@ -3747,14 +3754,15 @@ async fn remote_project_agent_switch_is_live_for_two_viewers_without_controller_
     *second_state.device_network.lock().await = Some(second.runtime.clone());
     for state in [&first_state, &second_state] {
         let scope = rua_core::ChatStore::resolve(&state.rua_root, address.clone());
-        assert!(
-            WorkspaceSessionStore::new(scope.root())
-                .load_chat_header(chat_id)
-                .await
-                .unwrap()
-                .is_none(),
-            "controller has no Project Chat Header"
-        );
+        let replica = WorkspaceSessionStore::new(target_scope.root())
+            .load_chat_header(chat_id)
+            .await
+            .unwrap()
+            .unwrap();
+        WorkspaceSessionStore::new(scope.root())
+            .save_chat_header(&replica)
+            .await
+            .unwrap();
     }
 
     let first_app = rua_server::router::build_app(first_state.clone(), None);
@@ -3763,10 +3771,7 @@ async fn remote_project_agent_switch_is_live_for_two_viewers_without_controller_
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/console/live",
-                    project.project_id
-                ))
+                .uri(format!("/api/chats/{chat_id}/console/live"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
@@ -3789,10 +3794,7 @@ async fn remote_project_agent_switch_is_live_for_two_viewers_without_controller_
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/console/live",
-                    project.project_id
-                ))
+                .uri(format!("/api/chats/{chat_id}/console/live"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
@@ -3809,22 +3811,19 @@ async fn remote_project_agent_switch_is_live_for_two_viewers_without_controller_
     let mut second_viewer = second_live.into_body().into_data_stream();
     let second_initial = read_project_live_control(&mut second_viewer, "viewer_attached").await;
     assert_eq!(
-        first_initial["control"]["project_chat_agent_state"]["selection"]["agent_id"],
+        first_initial["control"]["chat_agent_state"]["selection"]["agent_id"],
         "default"
     );
     assert_eq!(
-        first_initial["control"]["project_chat_agent_state"],
-        second_initial["control"]["project_chat_agent_state"]
+        first_initial["control"]["chat_agent_state"],
+        second_initial["control"]["chat_agent_state"]
     );
 
     let switched = first_app
         .oneshot(
             Request::builder()
                 .method(Method::PATCH)
-                .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/agent-selection",
-                    project.project_id
-                ))
+                .uri(format!("/api/chats/{chat_id}/agent-selection"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
@@ -3852,23 +3851,23 @@ async fn remote_project_agent_switch_is_live_for_two_viewers_without_controller_
     assert_eq!(switched["selection"]["revision"], 2);
 
     let first_updated =
-        read_project_live_control(&mut first_viewer, "project_agent_selection_updated").await;
+        read_project_live_control(&mut first_viewer, "chat_agent_selection_updated").await;
     let second_updated =
-        read_project_live_control(&mut second_viewer, "project_agent_selection_updated").await;
+        read_project_live_control(&mut second_viewer, "chat_agent_selection_updated").await;
     assert_eq!(
-        first_updated["control"]["project_chat_agent_state"],
-        second_updated["control"]["project_chat_agent_state"]
+        first_updated["control"]["chat_agent_state"],
+        second_updated["control"]["chat_agent_state"]
     );
     assert_eq!(
-        first_updated["control"]["project_chat_agent_state"]["selection"]["agent_id"],
+        first_updated["control"]["chat_agent_state"]["selection"]["agent_id"],
         "code"
     );
     assert_eq!(
-        first_updated["control"]["project_chat_agent_state"]["selected_agent_available"],
+        first_updated["control"]["chat_agent_state"]["selected_agent_available"],
         true
     );
     assert_eq!(
-        first_updated["control"]["project_chat_agent_state"]["blockers"],
+        first_updated["control"]["chat_agent_state"]["blockers"],
         serde_json::json!([])
     );
     assert!(
@@ -5091,17 +5090,25 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
             driver_detail: None,
         })
         .await;
-    let switched = deliver_project_device_command_via_session(
+    let first_placement =
+        rua_server::services::conversation_authority_target::load_chat_authority_placement_target(
+            target_scope.root(),
+            chat_id,
+        )
+        .await
+        .unwrap();
+    let switched = deliver_conversation_control_via_session(
         source.runtime.session_manager(),
-        &ProjectDeviceCommand {
-            command_id: "project-agent-switch-remote".to_string(),
+        &ConversationControlDeviceCommand {
+            command_id: "chat-agent-switch-remote".into(),
+            agent_id: "default".into(),
+            address: ChatAddress::new(chat_id),
+            authority_epoch: first_placement.authority_epoch,
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
-            action: ProjectDeviceAction::SwitchChatAgent {
-                project_id: created.project.project_id.clone(),
-                chat_id: chat_id.to_string(),
-                expected_agent_id: "default".to_string(),
-                agent_id: "code".to_string(),
+            action: ConversationControlDeviceAction::SwitchAgent {
+                expected_agent_id: "default".into(),
+                agent_id: "code".into(),
             },
         },
         Duration::from_secs(5),
@@ -5110,10 +5117,10 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
     .unwrap();
     assert!(matches!(
         switched,
-        ProjectDeviceResponse::ChatAgentSelection {
-            state: rua_server::services::project_chat::ProjectChatAgentState {
+        ConversationControlDeviceResponse::AgentSelection {
+            state: rua_server::services::project_chat::ChatAgentState {
                 selection:
-                    rua_server::services::project_chat::ProjectChatAgentSelection {
+                    rua_server::services::project_chat::ChatAgentSelection {
                         agent_id,
                         revision: 2,
                         ..
@@ -5127,19 +5134,13 @@ async fn remote_project_first_submit_materializes_on_resource_device() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(switched_header.extra["selected_agent_id"], "code");
+    assert_eq!(switched_header.agent_id, "code");
     assert!(target_state
         .conversation_authority
         .active_turn(&sibling_address)
         .await
         .is_some());
-    let first_placement =
-        rua_server::services::conversation_authority_target::load_chat_authority_placement_target(
-            target_scope.root(),
-            chat_id,
-        )
-        .await
-        .unwrap();
+
     let first_address = ChatAddress::new(chat_id);
     target_state
         .conversation_authority

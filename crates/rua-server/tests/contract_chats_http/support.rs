@@ -196,6 +196,12 @@ pub async fn seed_materialized_chat(test: &TestApp, agent_id: &str, name: &str) 
                 .collect()
         })
         .unwrap_or_default();
+    let directory = serde_json::json!({"device_id":device,"path":runtime.workspace_dir()});
+    let mut capabilities = runtime.capability_configuration(None).await.unwrap();
+    capabilities.extra.insert(
+        rua_session::EXECUTION_DIRECTORY_KEY.into(),
+        directory.clone(),
+    );
     let configuration = test
         .state
         .product_hooks
@@ -214,9 +220,7 @@ pub async fn seed_materialized_chat(test: &TestApp, agent_id: &str, name: &str) 
                 tool_config_snapshot: rua_tool::tool_config_secret_io::ToolConfigSnapshot::capture(
                     &Value::Object(configs),
                 ),
-                capability_configuration: Some(
-                    runtime.capability_configuration(None).await.unwrap(),
-                ),
+                capability_configuration: Some(capabilities),
                 model: draft
                     .get("model")
                     .filter(|value| !value.is_null())
@@ -232,6 +236,9 @@ pub async fn seed_materialized_chat(test: &TestApp, agent_id: &str, name: &str) 
         )
         .await
         .unwrap();
+    header
+        .extra
+        .insert(rua_session::EXECUTION_DIRECTORY_KEY.into(), directory);
     header.extra.insert(
         "hook_configuration".into(),
         serde_json::to_value(configuration).unwrap(),

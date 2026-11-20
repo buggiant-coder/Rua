@@ -3079,9 +3079,19 @@ const AssistantCard = memo(function AssistantCard({
       data-rua-tap-reveal={tapRevealed ? "true" : undefined}
       onClick={() => onTapReveal?.(item.id)}
     >
-      {acpOrigin && (
-        <span className="rua-chat-origin-badge rua-chat-origin-badge--acp">
-          ACP{acpOrigin.runner ? ` · ${acpOrigin.runner}` : ""}
+      {(item.turn_agent_name || acpOrigin) && (
+        <span
+          className={`rua-chat-origin-badge${
+            acpOrigin ? " rua-chat-origin-badge--acp" : ""
+          }`}
+        >
+          {[
+            item.turn_agent_name,
+            acpOrigin &&
+              (acpOrigin.runner ? `ACP · ${acpOrigin.runner}` : "ACP"),
+          ]
+            .filter(Boolean)
+            .join(" · ")}
         </span>
       )}
       {(startedTime || finishedTime) && (

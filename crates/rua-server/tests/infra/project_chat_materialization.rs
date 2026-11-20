@@ -17,10 +17,9 @@ use rua_server::services::product_hooks::{
     NATIVE_TERMINAL_DEFINITION_ID,
 };
 use rua_server::services::project_chat::{
-    materialize_first_project_turn, materialize_project_chat_draft, project_chat_agent_state,
-    selection_from_assignment, switch_project_chat_agent,
-    switch_project_chat_agent_with_configuration, ProjectAgentSwitchBlocker,
-    ProjectChatMaterializationSnapshot, PROJECT_AGENT_SWITCH_EVENTS_META_KEY,
+    chat_agent_state, materialize_first_project_turn, materialize_project_chat_draft,
+    selection_from_assignment, ChatAgentSwitch, ChatAgentSwitchBlocker,
+    ProjectChatMaterializationSnapshot,
 };
 use rua_server::services::scope_composition::{HookBinding, SelectionSource};
 use rua_session::WorkspaceSessionStore;
@@ -842,23 +841,16 @@ async fn agent_switch_is_chat_local_and_preserves_historical_turn_assignment() {
         .await;
 
     let running_scope = ChatStore::resolve(temp.path(), running.clone());
-    let running_state = switch_project_chat_agent(
+    let blocked = ChatAgentSwitch::begin(
         running_scope.root(),
         &running,
         "default",
-        &agent_detail("code", "Code Agent"),
-        "controller",
+        "code",
         &authority,
         &approvals,
     )
-    .await
-    .unwrap();
-    assert_eq!(running_state.selection.agent_id, "code");
-    assert!(!running_state.switchable);
-    assert_eq!(
-        running_state.blockers,
-        vec![ProjectAgentSwitchBlocker::ActiveTurn]
-    );
+    .await;
+    assert!(blocked.err().unwrap().contains("active_turn"));
     let running_store = rua_session::WorkspaceSessionStore::new(running_scope.root());
     let running_turns = running_store
         .read_turn_range(running.chat_id().as_str(), 1, usize::MAX)
@@ -873,22 +865,31 @@ async fn agent_switch_is_chat_local_and_preserves_historical_turn_assignment() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(running_header.agent_id, "code");
+    assert_eq!(running_header.agent_id, "default");
 
-    let state = switch_project_chat_agent(
+    let candidate = ChatHookConfiguration {
+        selected_agent_id: "code".into(),
+        model: Some(
+            serde_json::json!({"provider_id": "fixture", "model": "fixture-model", "reasoning_effort": "high"}),
+        ),
+        ..configuration(Default::default())
+    };
+    let state = ChatAgentSwitch::begin(
         idle_scope.root(),
         &idle,
         "default",
-        &agent_detail("code", "Code Agent"),
-        "controller",
+        "code",
         &authority,
         &approvals,
     )
     .await
+    .unwrap()
+    .commit(&candidate, "controller")
+    .await
     .unwrap();
     assert_eq!(state.selection.agent_id, "code");
     assert_eq!(state.selection.revision, 2);
-    let reloaded = rua_server::services::project_chat::load_project_chat_agent_selection(
+    let reloaded = rua_server::services::project_chat::load_chat_agent_selection(
         idle_scope.root(),
         idle.chat_id().as_str(),
     )
@@ -903,29 +904,38 @@ async fn agent_switch_is_chat_local_and_preserves_historical_turn_assignment() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        header.extra[PROJECT_AGENT_SWITCH_EVENTS_META_KEY][0]["previous_agent_id"],
+        header.extra[rua_session::AGENT_SWITCH_EVENTS_KEY][0]["previous_agent_id"],
         "default"
     );
     assert_eq!(
-        header.extra[PROJECT_AGENT_SWITCH_EVENTS_META_KEY][0]["selected_agent_id"],
+        header.extra[rua_session::AGENT_SWITCH_EVENTS_KEY][0]["selected_agent_id"],
         "code"
     );
     assert_eq!(header.agent_id, "code");
     assert_eq!(header.extra["model"]["model"], "fixture-model");
     assert_eq!(header.extra["model"]["reasoning_effort"], "high");
-    let second = switch_project_chat_agent(
+    let candidate = ChatHookConfiguration {
+        selected_agent_id: "default".into(),
+        model: Some(
+            serde_json::json!({"provider_id": "fixture", "model": "fixture-model", "reasoning_effort": "high"}),
+        ),
+        ..configuration(Default::default())
+    };
+    let second = ChatAgentSwitch::begin(
         idle_scope.root(),
         &idle,
         "code",
-        &agent_detail("default", "Default Agent"),
-        "controller",
+        "default",
         &authority,
         &approvals,
     )
     .await
+    .unwrap()
+    .commit(&candidate, "controller")
+    .await
     .unwrap();
     assert_eq!(second.selection.revision, 3);
-    let reloaded = rua_server::services::project_chat::load_project_chat_agent_selection(
+    let reloaded = rua_server::services::project_chat::load_chat_agent_selection(
         idle_scope.root(),
         idle.chat_id().as_str(),
     )
@@ -1016,16 +1026,17 @@ async fn project_agent_switch_replaces_stale_agent_hook_bindings() {
         Some(previous.clone())
     );
 
-    switch_project_chat_agent_with_configuration(
+    ChatAgentSwitch::begin(
         scope.root(),
         &address,
         "default",
-        &agent_detail("code", "Code Agent"),
-        "controller",
+        "code",
         &rua_server::services::conversation_authority::ConversationAuthority::new(),
         &ApprovalAuthority::new(),
-        Some(&candidate),
     )
+    .await
+    .unwrap()
+    .commit(&candidate, "controller")
     .await
     .unwrap();
     hooks
@@ -1046,6 +1057,135 @@ async fn project_agent_switch_replaces_stale_agent_hook_bindings() {
         .iter()
         .any(|revision| revision == &format!("{NATIVE_TERMINAL_DEFINITION_ID}@v1")));
     assert_eq!(hooks.chat_configuration(&address).await, Some(persisted));
+}
+
+#[tokio::test]
+async fn agent_switch_serializes_input_prepared_for_the_previous_agent() {
+    use rua_server::services::conversation_authority::ConversationAuthority;
+    use rua_server::services::foreground_operation::ForegroundOperationRegistry;
+    use rua_server::streaming::{ActiveStreamRegistry, Priority, StreamKey};
+    use std::sync::Arc;
+    let temp = tempfile::tempdir().unwrap();
+    let address = ChatAddress::new("00000000-0000-4000-8000-000000001516");
+    let placement = placement("resource-device");
+    materialize(temp.path(), &address, &placement).await;
+    let scope = ChatStore::resolve(temp.path(), address.clone());
+    let hooks = Arc::new(ProductHookService::new());
+    let authority = Arc::new(ConversationAuthority::with_product_hooks(
+        Arc::new(ForegroundOperationRegistry::new(false)),
+        Arc::clone(&hooks),
+    ));
+    let old = configuration(Default::default());
+    hooks.adopt_chat_configuration(&address, old.clone()).await;
+    let mut pending = first_turn_input(&placement);
+    pending.extra.insert(
+        "hook_configuration".into(),
+        serde_json::to_value(old).unwrap(),
+    );
+    let approvals = ApprovalAuthority::new();
+    let switch = ChatAgentSwitch::begin(
+        scope.root(),
+        &address,
+        "default",
+        "code",
+        &authority,
+        &approvals,
+    )
+    .await
+    .unwrap();
+    let streams = ActiveStreamRegistry::new();
+    let key = StreamKey::new("console", address.clone(), Priority::Normal);
+    let input = authority.accept_submission(
+        &streams,
+        &key,
+        ConversationActiveTurnStart {
+            address: address.clone(),
+            driver: ConversationDriverKind::Rua,
+            authority_device_id: placement.device_id,
+            authority_epoch: placement.authority_epoch,
+            driver_detail: None,
+        },
+        pending,
+        None,
+        None,
+    );
+    tokio::pin!(input);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut input)
+            .await
+            .is_err()
+    );
+    let candidate = ChatHookConfiguration {
+        selected_agent_id: "code".into(),
+        ..configuration(Default::default())
+    };
+    switch.commit(&candidate, "controller").await.unwrap();
+    hooks.adopt_chat_configuration(&address, candidate).await;
+    drop(switch);
+    assert!(input
+        .await
+        .err()
+        .unwrap()
+        .contains("Agent selection changed"));
+    assert!(authority.active_turn(&address).await.is_none());
+    assert!(authority.queue_snapshot(&address).await.is_empty());
+}
+
+#[tokio::test]
+async fn idle_acp_and_collaboration_each_reject_an_agent_switch_without_changing_the_chat() {
+    use rua_server::services::conversation_authority::ConversationAuthority;
+    let dir = tempfile::tempdir().unwrap();
+    let address = ChatAddress::new("00000000-0000-4000-8000-000000001517");
+    let placement = placement("resource-device");
+    materialize(dir.path(), &address, &placement).await;
+    let scope = ChatStore::resolve(dir.path(), address.clone());
+    let store = WorkspaceSessionStore::new(scope.root());
+    let baseline = store
+        .load_chat_header(address.chat_id().as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let authority = ConversationAuthority::new();
+    let approvals = ApprovalAuthority::new();
+    for (key, value, blocker) in [
+        (
+            "acp_binding",
+            serde_json::json!({"runner":"codex", "device_id":"resource-device"}),
+            "active_acp_binding",
+        ),
+        (
+            rua_session::collaboration::COLLABORATION_META_KEY,
+            serde_json::json!({"executor":{"kind":"agent","agent_id":"default"}}),
+            "fixed_collaboration_executor",
+        ),
+    ] {
+        let mut header = baseline.clone();
+        header.extra.insert(key.to_owned(), value.clone());
+        store.save_chat_header(&header).await.unwrap();
+        let error = ChatAgentSwitch::begin(
+            scope.root(),
+            &address,
+            "default",
+            "code",
+            &authority,
+            &approvals,
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(error.contains(blocker), "{error}");
+        let saved = store
+            .load_chat_header(address.chat_id().as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.agent_id, baseline.agent_id);
+        assert_eq!(
+            saved.extra["hook_configuration"],
+            baseline.extra["hook_configuration"]
+        );
+        assert_eq!(saved.extra[key], value);
+    }
 }
 
 #[tokio::test]
@@ -1112,20 +1252,38 @@ async fn agent_switch_boundary_reports_every_chat_local_blocker() {
     );
     store.save_chat_header(&header).await.unwrap();
 
-    let state = project_chat_agent_state(scope.root(), &address, true, &authority, &approvals)
+    let state = chat_agent_state(scope.root(), &address, true, &authority, &approvals)
         .await
         .unwrap();
     assert!(!state.switchable);
     assert_eq!(
         state.blockers,
         vec![
-            ProjectAgentSwitchBlocker::ActiveTurn,
-            ProjectAgentSwitchBlocker::QueuedInput,
-            ProjectAgentSwitchBlocker::UnresolvedApproval,
-            ProjectAgentSwitchBlocker::UnansweredPrompt,
-            ProjectAgentSwitchBlocker::ActiveAcpBinding,
+            ChatAgentSwitchBlocker::ActiveTurn,
+            ChatAgentSwitchBlocker::QueuedInput,
+            ChatAgentSwitchBlocker::UnresolvedApproval,
+            ChatAgentSwitchBlocker::UnansweredPrompt,
+            ChatAgentSwitchBlocker::ActiveAcpBinding,
         ]
     );
+
+    let error = ChatAgentSwitch::begin(
+        scope.root(),
+        &address,
+        "default",
+        "code",
+        &authority,
+        &approvals,
+    )
+    .await
+    .err()
+    .expect("blocked switch");
+    for blocker in state.blockers {
+        assert!(
+            error.contains(serde_json::to_value(blocker).unwrap().as_str().unwrap()),
+            "{error}"
+        );
+    }
 
     rua_tool::extended::ask_user::AskUserService::global()
         .clear_by_session(address.chat_id().as_str())

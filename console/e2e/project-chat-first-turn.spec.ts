@@ -105,7 +105,6 @@ function projectTaskRecord(chatId: string): TaskRecord {
     spec: {
       owner: {
         chat_address: {
-          scope: { kind: "project", project_id: project.project_id },
           chat_id: chatId,
         },
       },
@@ -238,13 +237,12 @@ async function mockProjectChatApis(
   const projectTasks = new Map<string, TaskRecord>();
 
   await page.addInitScript(() => {
-    sessionStorage.setItem(
-      "rua_project_lazy_chat_project-rua:00000000-0000-4000-8000-000000000405",
-      "1",
-    );
-    sessionStorage.setItem(
-      "rua_project_chat_agent_project-rua:00000000-0000-4000-8000-000000000405",
-      "default",
+    localStorage.setItem("language", "en");
+    const chatId = "00000000-0000-4000-8000-000000000405";
+    localStorage.setItem("rua_draft_chat_id_project:project-rua", chatId);
+    localStorage.setItem(
+      `rua_chat_draft_context_${chatId}`,
+      JSON.stringify({ projectId: "project-rua", agentId: "default" }),
     );
   });
   await page.route("**/api/**", async (route) => {
@@ -368,7 +366,8 @@ async function mockProjectChatApis(
       return json(secondProject);
     }
     if (
-      path === "/projects/project-rua/chats" &&
+      path === "/chats" &&
+      url.searchParams.get("project_id") === "project-rua" &&
       route.request().method() === "GET"
     ) {
       const search = (url.searchParams.get("search") || "").toLowerCase();
@@ -381,9 +380,7 @@ async function mockProjectChatApis(
         "X-Total-Count": String(filtered.length),
       });
     }
-    const controlMatch = path.match(
-      /^\/projects\/project-rua\/chats\/([^/]+)\/(.+)$/,
-    );
+    const controlMatch = path.match(/^\/chats\/([^/]+)\/(.+)$/);
     if (controlMatch) {
       const chatId = decodeURIComponent(controlMatch[1]);
       const child = controlMatch[2];
@@ -547,6 +544,24 @@ async function mockProjectChatApis(
           target_device_id: projectFixture.resource_device_id,
         });
       }
+      if (child === "agent-selection" && route.request().method() === "GET") {
+        const blockers = [
+          ...(chats.find((chat) => chat.id === chatId)?.status === "running"
+            ? ["active_turn"]
+            : []),
+          ...(acpActive ? ["active_acp_binding"] : []),
+        ];
+        return json({
+          selection: {
+            agent_id: selectedAgentId,
+            revision: selectionRevision,
+            selected_at: "2026-08-01T04:00:00Z",
+          },
+          selected_agent_available: true,
+          switchable: blockers.length === 0,
+          blockers,
+        });
+      }
       if (child === "agent-selection" && route.request().method() === "PATCH") {
         const body = requestBody as {
           expected_agent_id?: string;
@@ -556,7 +571,7 @@ async function mockProjectChatApis(
           body.expected_agent_id !== selectedAgentId ||
           typeof body.agent_id !== "string"
         ) {
-          return json({ detail: "Project Chat Agent changed" }, 409);
+          return json({ detail: "Chat Agent changed" }, 409);
         }
         selectedAgentId = body.agent_id;
         selectionRevision += 1;
@@ -572,7 +587,7 @@ async function mockProjectChatApis(
         });
       }
     }
-    const chatMatch = path.match(/^\/projects\/project-rua\/chats\/([^/]+)$/);
+    const chatMatch = path.match(/^\/chats\/([^/]+)$/);
     if (chatMatch) {
       const chatId = decodeURIComponent(chatMatch[1]);
       const chat = chats.find((candidate) => candidate.id === chatId);
@@ -580,6 +595,8 @@ async function mockProjectChatApis(
 
       if (route.request().method() === "GET") {
         return json({
+          agent_id: selectedAgentId,
+          project_id: projectFixture.project_id,
           messages:
             projectFixture.lifecycle === "archived"
               ? archivedMessages
@@ -620,7 +637,7 @@ async function mockProjectChatApis(
               enter_acp: true,
               exit_acp: false,
             },
-            project_chat_agent_state: {
+            chat_agent_state: {
               selection: {
                 agent_id: selectedAgentId,
                 selected_at: "2026-08-01T00:00:00Z",
@@ -748,12 +765,14 @@ async function openProjectChat(
     mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 },
   );
   const suffix = mobile ? "?_mobile=1" : "";
-  await page.goto(`/projects/project-rua/chats/${chatId}${suffix}`, {
+  await page.goto(`/chats/${chatId}${suffix}`, {
     waitUntil: "networkidle",
   });
   const projectName = options.longLabels ? LONG_PROJECT_NAME : "rua-rust";
   const agentName = options.longLabels ? LONG_AGENT_NAME : "Default Agent";
-  await expect(page.getByText(projectName, { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Select Project", exact: true }),
+  ).toContainText(projectName);
   if (mobile) {
     await expect(page.locator(`[title="${agentName}"]`)).toBeVisible();
   } else {
@@ -814,7 +833,7 @@ test("Project running Chat keeps the Codex conversation layout and blocks Agent 
   await expect(assistantMessage).toBeVisible();
 
   const agentControl = page.getByRole("button", {
-    name: "Project Chat Agent",
+    name: "Chat Agent",
   });
   await expect(agentControl).toHaveAttribute(
     "data-switch-blocked-reason",
@@ -933,12 +952,8 @@ test("Project Agent selector opens from the controller-local replica", async ({
     }
   });
   await openProjectChat(page, false);
-  await page
-    .getByRole("button", { name: /Project Chat Agent|项目对话智能体/i })
-    .click();
-  await expect(
-    page.getByText("Project Chat Agent", { exact: true }),
-  ).toBeVisible();
+  await page.getByRole("button", { name: /Chat Agent|对话智能体/i }).click();
+  await expect(page.getByText("Chat Agent", { exact: true })).toBeVisible();
   await expect(page.getByText("Code Agent", { exact: true })).toBeVisible();
   await expect(page.getByText("Disabled Agent", { exact: true })).toBeVisible();
   expect(switchRequests).toBe(0);
@@ -953,12 +968,12 @@ test("Project Task controls follow the current Agent after a switch", async ({
   page,
 }) => {
   const state = await mockProjectChatApis(page);
-  await page.goto("/projects/project-rua/chats/chat-review", {
+  await page.goto("/chats/chat-review", {
     waitUntil: "domcontentloaded",
   });
 
   const agentControl = page.getByRole("button", {
-    name: /Project Chat Agent|项目对话智能体/i,
+    name: /Chat Agent|对话智能体/i,
   });
   await agentControl.click();
   await page.getByRole("button", { name: /Code Agent/ }).click();
@@ -1020,6 +1035,7 @@ test("Project Task controls follow the current Agent after a switch", async ({
       request.method() === "POST",
   );
   await drawer.getByRole("button", { name: /Cancel|取消/ }).click();
+  await drawer.getByRole("button", { name: "Confirm cancellation" }).click();
   await cancelRequest;
   await expect(
     drawer.getByRole("button", { name: /Retry|重试/i }),
@@ -1034,13 +1050,13 @@ test("Project Task controls follow the current Agent after a switch", async ({
   const retry = await retryRequest;
   expect(retry.postDataJSON()).toEqual({ authorization_agent_id: "code" });
   expect(retry.url()).toContain(
-    "/api/projects/project-rua/chats/chat-review/tasks/project-task-running/retry",
+    "/api/chats/chat-review/tasks/project-task-running/retry",
   );
   expect(
     state.apiRequests.some(
       (request) =>
         request.path ===
-          "/projects/project-rua/chats/chat-review/tasks/project-task-running/retry" &&
+          "/chats/chat-review/tasks/project-task-running/retry" &&
         request.method === "POST",
     ),
   ).toBe(true);
@@ -1166,9 +1182,7 @@ test("Project Chats drawer opens an existing Chat on mobile", async ({
     .filter({ hasText: "Implement concurrent chats" })
     .click();
 
-  await expect(page).toHaveURL(
-    /\/projects\/project-rua\/chats\/chat-running$/,
-  );
+  await expect(page).toHaveURL(/\/chats\/chat-running$/);
   expect(await page.evaluate(() => window.history.length)).toBe(
     historyLength + 1,
   );
@@ -1185,9 +1199,7 @@ test("Project Chats drawer opens an existing Chat on mobile", async ({
     .filter({ hasText: "Implement concurrent chats" })
     .click();
 
-  await expect(page).toHaveURL(
-    /\/projects\/project-rua\/chats\/chat-running$/,
-  );
+  await expect(page).toHaveURL(/\/chats\/chat-running$/);
   await expect(page.locator(".rua-owned-session-drawer")).toHaveCount(0);
 });
 
@@ -1197,7 +1209,7 @@ test("Project Chat drawer manages rows and busy deletion without stopping siblin
   const state = await mockProjectChatApis(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   const lazyChatId = "00000000-0000-4000-8000-000000000405";
-  await page.goto(`/projects/project-rua/chats/${lazyChatId}`, {
+  await page.goto(`/chats/${lazyChatId}`, {
     waitUntil: "networkidle",
   });
 
@@ -1223,14 +1235,10 @@ test("Project Chat drawer manages rows and busy deletion without stopping siblin
   await drawer.getByRole("button", { name: "Delete Renamed review" }).click();
   await page.getByRole("button", { name: "Delete", exact: true }).click();
   await expect(drawer.getByText("Renamed review")).toHaveCount(0);
-  await expect(page).toHaveURL(
-    new RegExp(`/projects/project-rua/chats/${lazyChatId}$`),
-  );
+  await expect(page).toHaveURL(new RegExp(`/chats/${lazyChatId}$`));
 
   await drawer.getByText("Implement concurrent chats").click();
-  await expect(page).toHaveURL(
-    /\/projects\/project-rua\/chats\/chat-running$/,
-  );
+  await expect(page).toHaveURL(/\/chats\/chat-running$/);
   await page.getByRole("button", { name: "Project Chats" }).click();
   const runningDrawer = page.getByRole("complementary", {
     name: "Project Chats",
@@ -1241,9 +1249,7 @@ test("Project Chat drawer manages rows and busy deletion without stopping siblin
   await expect(page.getByText(/hard-stop only this Chat/i)).toBeVisible();
   await page.getByRole("button", { name: "Stop and Delete" }).click();
 
-  await expect(page).toHaveURL(
-    /\/projects\/project-rua\/chats\/chat-pinned$/,
-  );
+  await expect(page).toHaveURL(/\/chats\/chat-pinned$/);
   expect(state.managementRequests).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
@@ -1278,7 +1284,7 @@ test("Project Model, Reasoning, Options, and ACP use canonical controls without 
     localStorage.setItem("rua-skin", "pill");
   });
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/projects/project-rua/chats/chat-running", {
+  await page.goto("/chats/chat-running", {
     waitUntil: "domcontentloaded",
   });
 
@@ -1317,9 +1323,7 @@ test("Project Model, Reasoning, Options, and ACP use canonical controls without 
     const panel = document.querySelector<HTMLElement>(
       "[data-rua-model-thinking-panel] > div",
     );
-    const composer = document.querySelector<HTMLElement>(
-      ".rua-owned-composer",
-    );
+    const composer = document.querySelector<HTMLElement>(".rua-owned-composer");
     if (!panel || !composer) return null;
     const panelStyle = getComputedStyle(panel);
     const composerStyle = getComputedStyle(composer);
@@ -1346,7 +1350,7 @@ test("Project Model, Reasoning, Options, and ACP use canonical controls without 
       state.apiRequests.some(
         (request) =>
           request.method === "PATCH" &&
-          request.path === "/projects/project-rua/chats/chat-running" &&
+          request.path === "/chats/chat-running" &&
           JSON.stringify(request.body).includes('"model":"qwen-max"'),
       ),
     )
@@ -1358,7 +1362,7 @@ test("Project Model, Reasoning, Options, and ACP use canonical controls without 
       state.apiRequests.some(
         (request) =>
           request.method === "PATCH" &&
-          request.path === "/projects/project-rua/chats/chat-running" &&
+          request.path === "/chats/chat-running" &&
           JSON.stringify(request.body).includes('"thinking_strength":"high"'),
       ),
     )
@@ -1382,7 +1386,7 @@ test("Project Model, Reasoning, Options, and ACP use canonical controls without 
       state.apiRequests.some(
         (request) =>
           request.method === "GET" &&
-          request.path === "/projects/project-rua/chats/chat-running/options",
+          request.path === "/chats/chat-running/options",
       ),
     )
     .toBe(true);
@@ -1392,7 +1396,7 @@ test("Project Model, Reasoning, Options, and ACP use canonical controls without 
       state.apiRequests.some(
         (request) =>
           request.method === "PUT" &&
-          request.path === "/projects/project-rua/chats/chat-running/options",
+          request.path === "/chats/chat-running/options",
       ),
     )
     .toBe(true);
@@ -1409,7 +1413,7 @@ test("Project Model, Reasoning, Options, and ACP use canonical controls without 
   const enterRequest = state.apiRequests.find(
     (request) =>
       request.method === "POST" &&
-      request.path === "/projects/project-rua/chats/chat-running/acp/enter",
+      request.path === "/chats/chat-running/acp/enter",
   );
   expect(enterRequest).toBeDefined();
   expect(JSON.stringify(enterRequest?.body)).not.toContain("target_device_id");
@@ -1420,8 +1424,7 @@ test("Project Model, Reasoning, Options, and ACP use canonical controls without 
       state.apiRequests.some(
         (request) =>
           request.method === "POST" &&
-          request.path ===
-            "/projects/project-rua/chats/chat-running/acp/exit",
+          request.path === "/chats/chat-running/acp/exit",
       ),
     )
     .toBe(true);

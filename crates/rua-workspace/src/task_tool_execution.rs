@@ -172,9 +172,28 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             }
             None => None,
         };
-        let working_dir = project_root
-            .clone()
-            .unwrap_or_else(|| runtime.workspace_dir());
+        let working_dir = match &project_root {
+            Some(root) => root.clone(),
+            None => {
+                let directory = configuration
+                    .extra
+                    .get(rua_session::EXECUTION_DIRECTORY_KEY)
+                    .ok_or("Task configuration has no captured execution directory")?;
+                let device = directory
+                    .get("device_id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or("Task execution directory has no Device")?;
+                if runtime.task_runtime().device_context().device_id.as_deref() != Some(device) {
+                    return Err("Task execution directory belongs to another Device".into());
+                }
+                directory
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .map(std::path::PathBuf::from)
+                    .filter(|p| p.is_absolute())
+                    .ok_or("Task execution directory has no absolute path")?
+            }
+        };
         let toolkit = runtime
             .task_toolkit_for_configuration(
                 scope.root(),

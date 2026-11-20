@@ -77,7 +77,8 @@ import {
   type ConversationApiTarget,
 } from "@/api/modules/conversation";
 import { useAgentStore } from "@/stores/agentStore";
-import AgentBadge from "@/components/AgentBadge";
+import ChatAgentSelector from "./ChatAgentSelector";
+import { useChatAgentSelection } from "./useChatAgentSelection";
 import ContentTransitionFrame from "@/layouts/ContentTransitionFrame";
 import {
   ChatOptionRow,
@@ -127,7 +128,6 @@ import {
   saveLastChatId,
 } from "./chatNavigation";
 import { useConversationLifecycle } from "./useConversationLifecycle";
-import { saveDraftChatContext } from "./chatContext";
 import { chatPath } from "./conversationAddress";
 import { navigateWithPageTransition } from "../../layouts/pageTransition";
 import {
@@ -768,7 +768,6 @@ export function AgentChatPage({
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
-  const [selectedAgent, setExecutionAgent] = useState(agentId);
   const [sessionDrawerPath, setSessionDrawerPath] = useState<string | null>(
     null,
   );
@@ -892,14 +891,14 @@ export function AgentChatPage({
   const authorityPlacementMutationSeqRef = useRef(0);
   const authorityPlacementMutationInFlightRef = useRef(false);
   const effectiveChatId = chatId;
-  const activeChatKey =
-    effectiveChatId && selectedAgent ? `chat:${effectiveChatId}` : null;
+  const activeChatKey = effectiveChatId ? `chat:${effectiveChatId}` : null;
   const lazy =
     unmaterialized ??
     (Boolean(effectiveChatId) &&
       loadDraftConversationId(chatDraftScope()) === effectiveChatId);
   const {
     lazy: conversationLazy,
+    lazyRef,
     draftModel: draftChatModel,
     draftDevice: draftChatDevice,
     setDraftDevice,
@@ -918,6 +917,21 @@ export function AgentChatPage({
     activeChatKey && currentChatSnapshot?.key === activeChatKey
       ? currentChatSnapshot.history
       : null;
+  const {
+    selectedAgentId: selectedAgent,
+    restoreDraftAgent,
+    observeHistory,
+    fixedExecutor,
+    selectorProps,
+    submitDisabledReason,
+  } = useChatAgentSelection(
+    chatId,
+    null,
+    agentId,
+    initialHistory,
+    lazyRef,
+    currentChatHistory,
+  );
   const activeChatModel = draftChatModel ?? currentChatHistory?.model ?? null;
   const setCurrentChatHistory = useCallback(
     (update: SetStateAction<ChatHistory | null>) => {
@@ -964,10 +978,6 @@ export function AgentChatPage({
   }, [effectiveChatId, selectedAgent]);
 
   useEffect(() => {
-    setExecutionAgent(agentId);
-  }, [agentId, chatId]);
-
-  useEffect(() => {
     if (chatId && !conversationLazy) saveLastChatId(chatId);
   }, [chatId, conversationLazy]);
 
@@ -992,7 +1002,7 @@ export function AgentChatPage({
   const startNewChat = () => {
     const draftId = openChatDraft(undefined, activeChatModel);
     if (draftId === effectiveChatId)
-      setExecutionAgent(useAgentStore.getState().selectedAgent);
+      restoreDraftAgent(useAgentStore.getState().selectedAgent);
     cancelPreparedChatTransition();
     closeSessionList();
     navigateWithPageTransition(navigate, chatPath(draftId));
@@ -1054,7 +1064,7 @@ export function AgentChatPage({
       if (!effectiveChatId || !history) return;
       authoritativeHistoryObserved(history);
       if (historyProvesConversationMaterialized(history)) {
-        if (history.agent_id) setExecutionAgent(history.agent_id);
+        observeHistory(history);
         const navigationKey = JSON.stringify([
           sourceChatKey,
           history.agent_id,
@@ -1081,6 +1091,7 @@ export function AgentChatPage({
     [
       activeChatKey,
       authoritativeHistoryObserved,
+      observeHistory,
       effectiveChatId,
       setCurrentChatHistory,
     ],
@@ -1800,7 +1811,8 @@ export function AgentChatPage({
         </Tooltip>
       ),
 
-      disabled: !effectiveChatId || acpStatusUnknown || acpActive,
+      disabled:
+        !effectiveChatId || acpStatusUnknown || acpActive || fixedExecutor,
       onClick: () => setACPEnterOpen(true),
     },
     ...(mobileRuntime
@@ -1875,15 +1887,7 @@ export function AgentChatPage({
           ) : null
         }
       >
-        <AgentBadge
-          agentId={selectedAgent}
-          onAgentChange={(nextAgentId) => {
-            if (conversationLazy) {
-              saveDraftChatContext(chatId, { agentId: nextAgentId });
-              setExecutionAgent(nextAgentId);
-            }
-          }}
-        />
+        <ChatAgentSelector {...selectorProps} />
         <ProjectSelector
           currentProject={null}
           projects={projects}
@@ -1927,7 +1931,7 @@ export function AgentChatPage({
               </span>
             </>
           )}
-          {!currentChatHistory?.meta?.collaboration && (
+          {!fixedExecutor && (
             <button
               type="button"
               className="rua-owned-chat-acp-banner-exit"
@@ -1972,6 +1976,8 @@ export function AgentChatPage({
             key={effectiveChatId ? `chat:${effectiveChatId}` : selectedAgent}
             address={{ chatId: effectiveChatId }}
             executionAgentId={selectedAgent}
+            submitDisabled={Boolean(submitDisabledReason)}
+            submitDisabledReason={submitDisabledReason}
             unmaterialized={conversationLazy}
             deferInitialAttach={conversationLazy}
             onSubmitAccepted={handleSubmitAccepted}

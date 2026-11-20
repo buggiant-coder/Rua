@@ -6,6 +6,7 @@ import type {
   ChatSpec,
   ChatTag,
   ChatHistory,
+  ChatAgentState,
   ChatDeleteResponse,
   ChatUpdateRequest,
   ConversationAuthorityPlacementUpdateRequest,
@@ -109,6 +110,24 @@ function chatQueryParams(params?: ChatListParams): URLSearchParams {
 }
 
 export const chatApi = {
+  getAgentState: (chatId: string) =>
+    request<ChatAgentState>(
+      `/chats/${encodeURIComponent(chatId)}/agent-selection`,
+    ),
+
+  switchAgent: (chatId: string, expectedAgentId: string, agentId: string) =>
+    request<ChatAgentState>(
+      `/chats/${encodeURIComponent(chatId)}/agent-selection`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expected_agent_id: expectedAgentId,
+          agent_id: agentId,
+        }),
+      },
+    ),
+
   getRunningConfig: (chatId: string, _agentId?: string) =>
     request<ChatRunningConfig>(
       `/chats/${encodeURIComponent(chatId)}/running-config`,

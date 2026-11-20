@@ -30,6 +30,45 @@ function assistantAt(
 }
 
 describe("projectConversation", () => {
+  it("labels a historical response from its accepted Turn and leaves mixed-turn output unattributed", () => {
+    const input = {
+      id: "accepted",
+      role: "user",
+      turn_id: "first",
+      content: "First request",
+      metadata: {
+        metadata: {
+          turn_agent_assignment: { agent_id: "a", agent_name: "Origin A" },
+        },
+      },
+    };
+    const reply = {
+      id: "answer",
+      role: "assistant",
+      turn_id: "first",
+      content: "First result",
+    };
+    const history = { agent_id: "b", messages: [input, reply] };
+    expect(
+      assistantAt(projectConversation("chat", history), 1).turn_agent_name,
+    ).toBe("Origin A");
+    const taskResult = {
+      id: "task",
+      role: "assistant",
+      turn_id: "later",
+      content: "Background result",
+    };
+    expect(
+      assistantAt(
+        projectConversation("chat", {
+          ...history,
+          messages: [input, reply, taskResult],
+        }),
+        1,
+      ).turn_agent_name,
+    ).toBeUndefined();
+  });
+
   it("preserves completed response identity and objects when older turns are prepended", () => {
     const project = createConversationProjector();
     const user = {

@@ -1119,7 +1119,18 @@ describe("owned ChatPage route identity", () => {
   });
 
   it("opens a saved Chat with its own Agent and keeps the global preference", async () => {
-    useAgentStore.setState({ selectedAgent: "agent-a" });
+    const agent = {
+      id: "agent-b",
+      name: "Agent B",
+      enabled: true,
+      workspace_dir: "",
+      description: "",
+    };
+    useAgentStore.setState({
+      selectedAgent: "agent-a",
+      agents: [agent],
+      catalogLoaded: true,
+    });
     chatApiMock.getChat.mockResolvedValue({
       agent_id: "agent-b",
       messages: [],
@@ -1132,9 +1143,9 @@ describe("owned ChatPage route identity", () => {
         "agent-b",
       ),
     );
-    expect(screen.getByLabelText(label("agent.switchAgent"))).toHaveTextContent(
-      "agent-b",
-    );
+    expect(
+      screen.getByLabelText(label("projects.chat.agent")),
+    ).toHaveTextContent("Agent B");
     expect(useAgentStore.getState().selectedAgent).toBe("agent-a");
   });
 
@@ -2035,7 +2046,7 @@ describe("owned ChatPage route identity", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByLabelText(label("agent.switchAgent")),
+        screen.getByLabelText(label("projects.chat.agent")),
       ).toBeInTheDocument(),
     );
     expect(screen.getByText("小Rua")).toBeInTheDocument();

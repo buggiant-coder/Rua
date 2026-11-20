@@ -192,7 +192,7 @@ test("New chat restores one draft per Project or standalone group using the curr
       },
     ],
     meta: {
-      project_chat_agent_state: {
+      chat_agent_state: {
         selection: { agent_id: "default", revision: 1 },
         selected_agent_available: true,
         switchable: true,
@@ -275,8 +275,8 @@ test("New chat restores one draft per Project or standalone group using the curr
           agent_id: body.agent_id,
           model: body.model,
           meta: {
-            project_chat_agent_state: {
-              ...savedHistory.meta.project_chat_agent_state,
+            chat_agent_state: {
+              ...savedHistory.meta.chat_agent_state,
               selection: { agent_id: body.agent_id, revision: 1 },
             },
           },
@@ -310,7 +310,7 @@ test("New chat restores one draft per Project or standalone group using the curr
   const input = page.locator(".rua-owned-composer textarea");
   const header = page.locator(".rua-owned-chat-header");
   const projectAgent = header.getByRole("button", {
-    name: "Project Chat Agent",
+    name: "Chat Agent",
     exact: true,
   });
   const newIn = (group: string) =>
@@ -347,16 +347,16 @@ test("New chat restores one draft per Project or standalone group using the curr
   await expect(page).toHaveURL(standaloneUrl);
   await expect(input).toHaveValue("Standalone pending input");
   await header
-    .getByRole("button", { name: "Switch agent", exact: true })
+    .getByRole("button", { name: "Chat Agent", exact: true })
     .click();
   await page
-    .getByRole("button", { name: "Research Switch agent", exact: true })
+    .getByRole("button", { name: /Research/ })
     .click();
   await header.getByRole("button", { name: "New chat", exact: true }).click();
   await expect(page).toHaveURL(standaloneUrl);
   await expect(input).toHaveValue("Standalone pending input");
   await expect(
-    header.getByRole("button", { name: "Switch agent", exact: true }),
+    header.getByRole("button", { name: "Chat Agent", exact: true }),
   ).toContainText("Research");
 
   await newIn("Photos");

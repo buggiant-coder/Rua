@@ -37,10 +37,8 @@ pub fn working_directory(
     Ok(directory.resource_root.clone())
 }
 
-pub const PROJECT_AGENT_SWITCH_EVENTS_META_KEY: &str = "project_agent_switch_events";
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProjectChatAgentSelection {
+pub struct ChatAgentSelection {
     pub agent_id: String,
     pub selected_at: String,
     pub revision: u64,
@@ -53,8 +51,8 @@ pub struct ProjectChatMaterializationSnapshot {
     pub configuration: crate::services::product_hooks::ChatHookConfiguration,
 }
 
-pub fn selection_from_assignment(assignment: &TurnAgentAssignment) -> ProjectChatAgentSelection {
-    ProjectChatAgentSelection {
+pub fn selection_from_assignment(assignment: &TurnAgentAssignment) -> ChatAgentSelection {
+    ChatAgentSelection {
         agent_id: assignment.agent_id.clone(),
         selected_at: assignment.assigned_at.clone(),
         revision: 1,
@@ -62,7 +60,7 @@ pub fn selection_from_assignment(assignment: &TurnAgentAssignment) -> ProjectCha
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProjectAgentSwitchEvent {
+pub struct ChatAgentSwitchEvent {
     pub event_id: String,
     pub previous_agent_id: String,
     pub selected_agent_id: String,
@@ -73,21 +71,24 @@ pub struct ProjectAgentSwitchEvent {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ProjectAgentSwitchBlocker {
+pub enum ChatAgentSwitchBlocker {
     ActiveTurn,
     QueuedInput,
     UnresolvedApproval,
     UnansweredPrompt,
     ActiveAcpBinding,
+    FixedCollaborationExecutor,
+    ArchivedChat,
+    ArchivedProject,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProjectChatAgentState {
-    pub selection: ProjectChatAgentSelection,
+pub struct ChatAgentState {
+    pub selection: ChatAgentSelection,
     pub selected_agent_available: bool,
     pub switchable: bool,
     #[serde(default)]
-    pub blockers: Vec<ProjectAgentSwitchBlocker>,
+    pub blockers: Vec<ChatAgentSwitchBlocker>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -251,7 +252,7 @@ pub async fn persist_first_project_submission(
 pub async fn materialize_project_chat_draft(
     scope_root: &Path,
     address: &ChatAddress,
-    selection: &ProjectChatAgentSelection,
+    selection: &ChatAgentSelection,
     placement: &ConversationAuthorityPlacement,
     snapshot: ProjectChatMaterializationSnapshot,
 ) -> Result<(), String> {
@@ -482,7 +483,7 @@ async fn stage_first_turn(
 async fn stage_project_chat_draft(
     staging_root: &Path,
     address: &ChatAddress,
-    selection: &ProjectChatAgentSelection,
+    selection: &ChatAgentSelection,
     placement: &ConversationAuthorityPlacement,
     snapshot: ProjectChatMaterializationSnapshot,
 ) -> Result<(), String> {
@@ -539,43 +540,39 @@ async fn stage_project_chat_header(
         .map_err(|error| error.to_string())
 }
 
-pub fn selection_from_header(
-    header: &ChatSessionHeader,
-) -> Result<ProjectChatAgentSelection, String> {
+pub fn selection_from_header(header: &ChatSessionHeader) -> Result<ChatAgentSelection, String> {
     let selected_agent_id = header.agent_id.trim();
     if selected_agent_id.is_empty() {
         return Err("Chat selected Agent is missing".into());
     }
-    let events: Vec<ProjectAgentSwitchEvent> = header
+    let events: Vec<ChatAgentSwitchEvent> = header
         .extra
-        .get(PROJECT_AGENT_SWITCH_EVENTS_META_KEY)
+        .get(rua_session::AGENT_SWITCH_EVENTS_KEY)
         .cloned()
         .map(serde_json::from_value)
         .transpose()
-        .map_err(|error| format!("invalid Project Agent switch audit log: {error}"))?
+        .map_err(|error| format!("invalid Chat Agent switch audit log: {error}"))?
         .unwrap_or_default();
     let (selected_at, revision) = match events.last() {
         Some(event) => {
             if event.selected_agent_id != selected_agent_id {
-                return Err(
-                    "Project Chat selected Agent does not match its switch audit log".into(),
-                );
+                return Err("Chat selected Agent does not match its switch audit log".into());
             }
             (event.committed_at.clone(), event.revision)
         }
         None => (header.metadata.created_at.clone(), 1),
     };
-    Ok(ProjectChatAgentSelection {
+    Ok(ChatAgentSelection {
         agent_id: selected_agent_id.to_string(),
         selected_at,
         revision,
     })
 }
 
-pub async fn load_project_chat_agent_selection(
+pub async fn load_chat_agent_selection(
     scope_root: &Path,
     chat_id: &str,
-) -> Result<ProjectChatAgentSelection, String> {
+) -> Result<ChatAgentSelection, String> {
     let header = WorkspaceSessionStore::new(scope_root)
         .load_chat_header(chat_id)
         .await
@@ -584,173 +581,156 @@ pub async fn load_project_chat_agent_selection(
     selection_from_header(&header)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn switch_project_chat_agent(
-    scope_root: &Path,
-    address: &ChatAddress,
-    expected_agent_id: &str,
-    next_agent: &crate::endpoints::dto::AgentDetail,
-    source_device_id: &str,
-    authority: &crate::services::conversation_authority::ConversationAuthority,
-    approval_authority: &rua_security::ApprovalAuthority,
-) -> Result<ProjectChatAgentState, String> {
-    switch_project_chat_agent_with_configuration(
-        scope_root,
-        address,
-        expected_agent_id,
-        next_agent,
-        source_device_id,
-        authority,
-        approval_authority,
-        None,
-    )
-    .await
+impl ChatAgentState {
+    pub(crate) fn check_switch(
+        &self,
+        expected_agent_id: &str,
+        next_agent_id: &str,
+    ) -> Result<(), String> {
+        if self.selection.agent_id != expected_agent_id {
+            return Err(format!(
+                "Chat Agent selection changed from '{expected_agent_id}' to '{}'",
+                self.selection.agent_id
+            ));
+        }
+        if self.selection.agent_id != next_agent_id && !self.switchable {
+            return Err(format!(
+                "Chat Agent switch blocked by {}",
+                serde_json::json!(self.blockers)
+            ));
+        }
+        Ok(())
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn switch_project_chat_agent_with_configuration(
-    scope_root: &Path,
-    address: &ChatAddress,
-    expected_agent_id: &str,
-    next_agent: &crate::endpoints::dto::AgentDetail,
-    source_device_id: &str,
-    authority: &crate::services::conversation_authority::ConversationAuthority,
-    approval_authority: &rua_security::ApprovalAuthority,
-    configuration: Option<&crate::services::product_hooks::ChatHookConfiguration>,
-) -> Result<ProjectChatAgentState, String> {
-    if !next_agent.enabled {
-        return Err(format!("Agent '{}' is disabled", next_agent.id));
+/// Agent replacement shares admission with foreground input, configuration updates and approvals.
+pub struct ChatAgentSwitch<'a> {
+    pub(crate) header: ChatSessionHeader,
+    pub(crate) state: ChatAgentState,
+    next_agent_id: &'a str,
+    scope_root: &'a Path,
+    address: &'a ChatAddress,
+    _transition: tokio::sync::OwnedMutexGuard<()>,
+    _approvals: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl<'a> ChatAgentSwitch<'a> {
+    pub async fn begin(
+        scope_root: &'a Path,
+        address: &'a ChatAddress,
+        expected_agent_id: &str,
+        next_agent_id: &'a str,
+        authority: &crate::services::conversation_authority::ConversationAuthority,
+        approvals: &rua_security::ApprovalAuthority,
+    ) -> Result<Self, String> {
+        let transition = authority.transition_gate(address).lock_owned().await;
+        let registrations = approvals.hold_chat_registrations(address).await;
+        let header = WorkspaceSessionStore::new(scope_root)
+            .load_chat_header(address.chat_id().as_str())
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Chat not found: {}", address.chat_id()))?;
+        let state =
+            chat_agent_state_from_header(address, &header, true, authority, approvals).await?;
+        state.check_switch(expected_agent_id, next_agent_id)?;
+        Ok(Self {
+            header,
+            state,
+            scope_root,
+            address,
+            next_agent_id,
+            _transition: transition,
+            _approvals: registrations,
+        })
     }
 
-    let gate = authority.transition_gate(address);
-    let _transition = gate.lock().await;
-    let store = WorkspaceSessionStore::new(scope_root);
-    let header = store
-        .load_chat_header(address.chat_id().as_str())
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("Project Chat not found: {}", address.chat_id()))?;
-    let current = selection_from_header(&header)?;
-    if header
-        .extra
-        .contains_key(rua_session::collaboration::COLLABORATION_META_KEY)
-        && current.agent_id != next_agent.id
-    {
-        return Err("Collaboration executor is fixed; create another Chat to change Agent".into());
-    }
-    if current.agent_id != expected_agent_id {
-        return Err(format!(
-            "Project Chat Agent Selection changed from '{}' to '{}'",
-            expected_agent_id, current.agent_id
-        ));
-    }
-
-    let blockers =
-        project_agent_switch_blockers(address, &header, authority, approval_authority).await;
-
-    if current.agent_id == next_agent.id {
-        rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope_root))
-            .repair_projection(address)
+    pub async fn commit(
+        &self,
+        configuration: &crate::services::product_hooks::ChatHookConfiguration,
+        source_device_id: &str,
+    ) -> Result<ChatAgentState, String> {
+        configuration.validate()?;
+        let header = &self.header;
+        let current = &self.state.selection;
+        if configuration.selected_agent_id != self.next_agent_id {
+            return Err("Chat configuration does not match the requested Agent".into());
+        }
+        if current.agent_id == configuration.selected_agent_id {
+            return Ok(self.state.clone());
+        }
+        let store = WorkspaceSessionStore::new(self.scope_root);
+        let committed_at = Utc::now().to_rfc3339();
+        let next = ChatAgentSelection {
+            agent_id: configuration.selected_agent_id.clone(),
+            selected_at: committed_at.clone(),
+            revision: current.revision.saturating_add(1),
+        };
+        let event = ChatAgentSwitchEvent {
+            event_id: format!("chat-agent-switch-{}", uuid::Uuid::new_v4()),
+            previous_agent_id: current.agent_id.clone(),
+            selected_agent_id: next.agent_id.clone(),
+            source_device_id: source_device_id.to_string(),
+            committed_at,
+            revision: next.revision,
+        };
+        let configuration_key = crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY;
+        let expected_epoch = header
+            .extra
+            .get(configuration_key)
+            .and_then(|value| value.get("epoch"))
+            .and_then(serde_json::Value::as_str);
+        store
+            .commit_chat_agent_switch(
+                self.address.chat_id().as_str(),
+                &current.agent_id,
+                expected_epoch,
+                &next.agent_id,
+                serde_json::to_value(event).map_err(|error| error.to_string())?,
+                &serde_json::to_value(configuration).map_err(|error| error.to_string())?,
+            )
             .await
             .map_err(|error| error.to_string())?;
-        return Ok(ProjectChatAgentState {
-            selection: current,
+        Ok(ChatAgentState {
+            selection: next,
             selected_agent_available: true,
-            switchable: blockers.is_empty(),
-            blockers,
-        });
-    }
-
-    let committed_at = Utc::now().to_rfc3339();
-    let next = ProjectChatAgentSelection {
-        agent_id: next_agent.id.clone(),
-        selected_at: committed_at.clone(),
-        revision: current.revision.saturating_add(1),
-    };
-    let event = ProjectAgentSwitchEvent {
-        event_id: format!("project-agent-switch-{}", uuid::Uuid::new_v4()),
-        previous_agent_id: current.agent_id,
-        selected_agent_id: next.agent_id.clone(),
-        source_device_id: source_device_id.to_string(),
-        committed_at,
-        revision: next.revision,
-    };
-    let configuration_key = crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY;
-    let expected_epoch = header
-        .extra
-        .get(configuration_key)
-        .and_then(|value| value.get("epoch"));
-    let configuration = configuration
-        .map(serde_json::to_value)
-        .transpose()
-        .map_err(|error| error.to_string())?;
-    let event = serde_json::to_value(event).map_err(|error| error.to_string())?;
-    let updated = store
-        .try_update_chat_header(address.chat_id().as_str(), |latest| {
-            if latest.agent_id != expected_agent_id
-                || latest
-                    .extra
-                    .get(configuration_key)
-                    .and_then(|value| value.get("epoch"))
-                    != expected_epoch
-            {
-                return Err(rua_core::RuaError::Validation {
-                    message: "Chat configuration changed; reload before updating".into(),
-                });
-            }
-            latest
-                .extra
-                .entry(PROJECT_AGENT_SWITCH_EVENTS_META_KEY.to_string())
-                .or_insert_with(|| serde_json::Value::Array(Vec::new()))
-                .as_array_mut()
-                .ok_or_else(|| rua_core::RuaError::Validation {
-                    message: "Project Agent switch audit log is invalid".into(),
-                })?
-                .push(event);
-            latest.agent_id.clone_from(&next.agent_id);
-            latest.metadata.agent_id.clone_from(&next.agent_id);
-            rua_chat::apply_chat_defaults(latest);
-            if let Some(configuration) = configuration {
-                latest
-                    .extra
-                    .insert(configuration_key.to_owned(), configuration);
-            }
-            Ok(())
+            switchable: true,
+            blockers: vec![],
         })
-        .await
-        .map_err(|error| error.to_string())?;
-    if !updated {
-        return Err(format!("Project Chat not found: {}", address.chat_id()));
     }
-
-    rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope_root))
-        .repair_projection(address)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(ProjectChatAgentState {
-        selection: next,
-        selected_agent_available: true,
-        switchable: blockers.is_empty(),
-        blockers,
-    })
 }
 
-pub async fn project_chat_agent_state(
+pub async fn chat_agent_state(
     scope_root: &Path,
     address: &ChatAddress,
     selected_agent_available: bool,
     authority: &crate::services::conversation_authority::ConversationAuthority,
     approval_authority: &rua_security::ApprovalAuthority,
-) -> Result<ProjectChatAgentState, String> {
+) -> Result<ChatAgentState, String> {
     let header = WorkspaceSessionStore::new(scope_root)
         .load_chat_header(address.chat_id().as_str())
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Project Chat not found: {}", address.chat_id()))?;
-    let selection = selection_from_header(&header)?;
-    let blockers =
-        project_agent_switch_blockers(address, &header, authority, approval_authority).await;
-    Ok(ProjectChatAgentState {
+    chat_agent_state_from_header(
+        address,
+        &header,
+        selected_agent_available,
+        authority,
+        approval_authority,
+    )
+    .await
+}
+
+pub(crate) async fn chat_agent_state_from_header(
+    address: &ChatAddress,
+    header: &ChatSessionHeader,
+    selected_agent_available: bool,
+    authority: &crate::services::conversation_authority::ConversationAuthority,
+    approval_authority: &rua_security::ApprovalAuthority,
+) -> Result<ChatAgentState, String> {
+    let selection = selection_from_header(header)?;
+    let blockers = chat_agent_switch_blockers(address, header, authority, approval_authority).await;
+    Ok(ChatAgentState {
         selection,
         selected_agent_available,
         switchable: blockers.is_empty(),
@@ -758,37 +738,46 @@ pub async fn project_chat_agent_state(
     })
 }
 
-async fn project_agent_switch_blockers(
+async fn chat_agent_switch_blockers(
     address: &ChatAddress,
     header: &ChatSessionHeader,
     authority: &crate::services::conversation_authority::ConversationAuthority,
     approval_authority: &rua_security::ApprovalAuthority,
-) -> Vec<ProjectAgentSwitchBlocker> {
+) -> Vec<ChatAgentSwitchBlocker> {
     let mut blockers = Vec::new();
     if authority.active_turn(address).await.is_some() {
-        blockers.push(ProjectAgentSwitchBlocker::ActiveTurn);
+        blockers.push(ChatAgentSwitchBlocker::ActiveTurn);
     }
     if !authority.queue_snapshot(address).await.is_empty() {
-        blockers.push(ProjectAgentSwitchBlocker::QueuedInput);
+        blockers.push(ChatAgentSwitchBlocker::QueuedInput);
     }
     if !approval_authority
         .list_pending_for_address(address)
         .await
         .is_empty()
     {
-        blockers.push(ProjectAgentSwitchBlocker::UnresolvedApproval);
+        blockers.push(ChatAgentSwitchBlocker::UnresolvedApproval);
     }
     if rua_tool::extended::ask_user::AskUserService::global()
         .get_pending_by_session(address.chat_id().as_str())
         .await
         .is_some()
     {
-        blockers.push(ProjectAgentSwitchBlocker::UnansweredPrompt);
+        blockers.push(ChatAgentSwitchBlocker::UnansweredPrompt);
     }
     if crate::services::conversation_authority_placement::chat_acp_binding_active(
         &serde_json::Value::Object(header.extra.clone()),
     ) {
-        blockers.push(ProjectAgentSwitchBlocker::ActiveAcpBinding);
+        blockers.push(ChatAgentSwitchBlocker::ActiveAcpBinding);
+    }
+    if header
+        .extra
+        .contains_key(rua_session::collaboration::COLLABORATION_META_KEY)
+    {
+        blockers.push(ChatAgentSwitchBlocker::FixedCollaborationExecutor);
+    }
+    if header.metadata.archived {
+        blockers.push(ChatAgentSwitchBlocker::ArchivedChat);
     }
     blockers
 }

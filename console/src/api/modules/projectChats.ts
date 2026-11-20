@@ -26,7 +26,6 @@ import type {
   StopChatRequest,
   LlmDebugCaptureStatus,
 } from "./chat";
-import type { ProjectChatAgentState } from "../types/project";
 
 export type ProjectChatListParams = Omit<
   ChatListParams,
@@ -370,22 +369,4 @@ export const projectChatsApi = {
 
   livePath: (projectId: string, chatId: string) =>
     `${projectChatPath(projectId, chatId)}/console/live`,
-
-  switchAgent: (
-    projectId: string,
-    chatId: string,
-    expectedAgentId: string,
-    agentId: string,
-  ) =>
-    request<ProjectChatAgentState>(
-      `${projectChatPath(projectId, chatId)}/agent-selection`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          expected_agent_id: expectedAgentId,
-          agent_id: agentId,
-        }),
-      },
-    ),
 };

@@ -260,7 +260,7 @@
       "title": "プロジェクトチャット",
       "new": "新規プロジェクトチャット",
       "model": "プロジェクトチャットのモデル",
-      "agent": "プロジェクトチャットのエージェント",
+      "agent": "チャットのエージェント",
       "agentFallback": "エージェント",
       "unavailableAgent": "利用できないエージェント",
       "unavailableSelection": "選択したエージェントは利用できません",
@@ -274,7 +274,7 @@
       "agentSwitched": "エージェントを切り替えました",
       "agentSwitchFailed": "エージェントを切り替えられませんでした",
       "archivedSubmitDisabled": "アーカイブ済みプロジェクトは新しい作業を受け付けません",
-      "resolvingAgent": "プロジェクトチャットのエージェントを確認中",
+      "resolvingAgent": "チャットのエージェントを確認中",
       "selectAvailableAgent": "送信前に利用可能なエージェントを選択してください",
       "exitAcpFailed": "ACP を終了できませんでした",
       "close": "プロジェクトチャットを閉じる",
@@ -312,7 +312,10 @@
         "queuedInput": "キューの入力を消去してから切り替えてください",
         "unresolvedApproval": "保留中の承認を解決してから切り替えてください",
         "unansweredPrompt": "保留中の質問に回答してから切り替えてください",
-        "activeAcp": "ACP を終了してから切り替えてください"
+        "activeAcp": "ACP を終了してから切り替えてください",
+        "archivedChat": "エージェントを切り替える前にチャットのアーカイブを解除してください",
+        "archivedProject": "エージェントを切り替える前にプロジェクトのアーカイブを解除してください",
+        "fixedCollaborationExecutor": "このコラボレーションチャットの実行者は固定されています"
       }
     },
     "workspace": {
