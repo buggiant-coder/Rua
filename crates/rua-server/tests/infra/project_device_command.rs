@@ -9,8 +9,8 @@ use rua_device_network::{
     DeviceSessionConfig,
 };
 use rua_server::services::device_command_bus::{
-    deliver_project_device_command_via_session, DeviceCommandHandler, ProjectDeviceAction,
-    ProjectDeviceCommand, ProjectDeviceResponse,
+    deliver_project_device_command_via_session, deliver_read_check_via_session,
+    DeviceCommandHandler, ProjectDeviceAction, ProjectDeviceCommand, ProjectDeviceResponse,
 };
 use tempfile::TempDir;
 use tokio::sync::{Mutex, Notify};
@@ -235,14 +235,70 @@ fn directory_command_binds_authenticated_source_and_intended_target() {
     ));
 }
 
-struct DisconnectAfterCreate {
+fn read_check_request(
+    source: &str,
+    target: &str,
+) -> rua_server::services::device_read_check::DeviceReadCheckRequest {
+    use rua_server::services::{
+        conversation_authority_placement::ConversationAuthorityEpoch,
+        device_read_check::DeviceReadCheckRequest,
+    };
+    DeviceReadCheckRequest {
+        source_device_id: source.into(),
+        target_device_id: target.into(),
+        address: rua_core::ChatAddress::new(uuid::Uuid::new_v4().to_string()),
+        agent_id: "agent".into(),
+        authority_epoch: ConversationAuthorityEpoch::next_for_device(source, None),
+        configuration_epoch: "config".into(),
+        turn_id: "turn".into(),
+        tool_call_id: "call".into(),
+        approval_id: "approval".into(),
+        dispatch_token: uuid::Uuid::new_v4(),
+        arguments: serde_json::json!({"device_id":target,"file_path":"/fixture.txt"}),
+    }
+}
+
+#[tokio::test]
+async fn read_permission_check_requires_the_authenticated_route_and_local_context() {
+    let dir = TempDir::new().unwrap();
+    let handler = DeviceCommandHandler::new(dir.path().join("commands"), "target".into());
+    let request = read_check_request("source", "target");
+    for (peer, source, target, argument_device, expected) in [
+        (None, "source", "target", "target", "denied"),
+        (Some("other"), "source", "target", "target", "denied"),
+        (Some("source"), "source", "other", "other", "denied"),
+        (Some("target"), "target", "target", "target", "denied"),
+        (Some("source"), "source", "target", "other", "denied"),
+        (Some("source"), "source", "target", "target", "unavailable"),
+    ] {
+        let mut request = request.clone();
+        request.source_device_id = source.into();
+        request.target_device_id = target.into();
+        request.arguments["device_id"] = argument_device.into();
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "command": "read_check", "payload": request
+        }))
+        .unwrap();
+        let response = match peer {
+            Some(peer) => handler.handle_command_from(peer, &payload).await,
+            None => handler.handle_command(&payload).await,
+        }
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&response).unwrap(),
+            serde_json::json!({"status":"read_check","response":{"outcome":expected}})
+        );
+    }
+}
+
+struct DisconnectBeforeReply {
     handler: DeviceCommandHandler,
     sessions: std::sync::Mutex<Option<rua_device_network::DeviceSessionManager>>,
     calls: std::sync::atomic::AtomicUsize,
 }
 
 #[async_trait::async_trait]
-impl DeviceSessionCommandHandler for DisconnectAfterCreate {
+impl DeviceSessionCommandHandler for DisconnectBeforeReply {
     async fn handle_command(&self, _payload: &[u8]) -> Result<Vec<u8>, String> {
         Err("Authenticated Device Session required".into())
     }
@@ -261,6 +317,39 @@ impl DeviceSessionCommandHandler for DisconnectAfterCreate {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_permission_check_uses_the_paired_session_once_on_lost_reply() {
+    use rua_server::services::device_read_check::DeviceReadCheckReply;
+    use std::sync::atomic::Ordering;
+    let temp = TempDir::new().unwrap();
+    let source = build_peer(1, [44; 32], Vec::new(), None).await;
+    let target_id = hex::encode(peer_entry(2).device_id);
+    let receiver = Arc::new(DisconnectBeforeReply {
+        handler: DeviceCommandHandler::new(temp.path().join("commands"), target_id.clone()),
+        sessions: Default::default(),
+        calls: Default::default(),
+    });
+    let target = build_peer(2, [44; 32], vec![peer_entry(1)], Some(receiver.clone())).await;
+    install_connectable_peer(&source, &target);
+    let request = read_check_request(&source.device_id, &target_id);
+    let check = || {
+        deliver_read_check_via_session(
+            source.runtime.session_manager(),
+            &request,
+            Duration::from_secs(5),
+        )
+    };
+
+    assert_eq!(check().await.unwrap(), DeviceReadCheckReply::Unavailable);
+    assert_eq!(receiver.calls.load(Ordering::SeqCst), 1);
+
+    *receiver.sessions.lock().unwrap() = Some(target.runtime.session_manager().clone());
+    assert!(check().await.is_err());
+    assert_eq!(receiver.calls.load(Ordering::SeqCst), 2);
+    source.runtime.shutdown().await.unwrap();
+    target.runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn console_directory_create_reports_lost_receipt_without_repeating_the_write() {
     use axum::http::{Method, StatusCode};
     use serde_json::json;
@@ -270,7 +359,7 @@ async fn console_directory_create_reports_lost_receipt_without_repeating_the_wri
     let source = build_peer(1, [44; 32], Vec::new(), None).await;
     let target_device =
         hex::encode(&iroh::SecretKey::from_bytes(&[2; 32]).public().as_bytes()[..8]);
-    let receiver = Arc::new(DisconnectAfterCreate {
+    let receiver = Arc::new(DisconnectBeforeReply {
         handler: DeviceCommandHandler::new(
             temp.path().join("device_commands"),
             target_device.clone(),

@@ -259,6 +259,7 @@ pub struct ReactAgentRuntime {
     task_runtime: Option<Arc<rua_task::TaskRuntime>>,
     collaboration_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
     chat_media_loader: Option<Arc<dyn rua_core::ChatMediaLoader>>,
+    device_read_access: Option<Arc<dyn rua_core::tool::DeviceReadAccess>>,
     sync_transfer_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
     approval_channel: Option<Arc<dyn ApprovalChannel>>,
     approval_timeout: std::time::Duration,
@@ -690,6 +691,7 @@ impl ReactAgentRuntime {
             task_runtime: None,
             collaboration_runtime: None,
             chat_media_loader: None,
+            device_read_access: None,
             sync_transfer_runtime: None,
             approval_channel: None,
             approval_timeout: std::time::Duration::from_secs(300),
@@ -1856,6 +1858,14 @@ impl ReactAgentRuntime {
         self
     }
 
+    pub fn with_device_read_access(
+        mut self,
+        access: Option<Arc<dyn rua_core::tool::DeviceReadAccess>>,
+    ) -> Self {
+        self.device_read_access = access;
+        self
+    }
+
     pub fn with_chat_media_loader(
         mut self,
         loader: Option<Arc<dyn rua_core::ChatMediaLoader>>,
@@ -2800,6 +2810,7 @@ impl AgentRuntime for ReactAgentRuntime {
                 task_session: None,
                 collaboration_runtime: self.collaboration_runtime.clone(),
                 chat_media_loader: self.chat_media_loader.clone(),
+                device_read_access: self.device_read_access.clone(),
                 sync_transfer_runtime: self.sync_transfer_runtime.clone(),
                 event_tx: None,
                 execution_output_max_tokens,

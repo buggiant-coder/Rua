@@ -1043,6 +1043,18 @@ impl ApprovalAuthority {
         target_device_id: &str,
         file_path: &str,
     ) -> Option<String> {
+        self.consume_authenticated_read_once_if(ctx, target_device_id, file_path, |_| true)
+            .await
+    }
+
+    /// Check the live dispatch under the approval write lock immediately before consumption.
+    pub async fn consume_authenticated_read_once_if(
+        &self,
+        ctx: &crate::ToolCallContext,
+        target_device_id: &str,
+        file_path: &str,
+        claim_dispatch: impl FnOnce(&str) -> bool,
+    ) -> Option<String> {
         let address = ctx.approval_owner.as_chat_address()?;
         let turn_id = ctx.metadata.get("turn_id")?.as_str()?;
         let tool_call_id = ctx.metadata.get("tool_call_id")?.as_str()?;
@@ -1086,6 +1098,7 @@ impl ApprovalAuthority {
             || request.tool_call.args != ctx.tool_input
             || request.authenticated_user_decision.as_ref()?.decision
                 != AuthenticatedApprovalDecision::RunOnce
+            || !claim_dispatch(&request.id)
         {
             return None;
         }
@@ -1304,6 +1317,16 @@ impl ApprovalAuthority {
         rules
     }
 
+    pub(crate) async fn chat_rules_for_inspection(
+        &self,
+        address: &ChatAddress,
+    ) -> Result<Vec<ApprovalReuseRule>, String> {
+        match &self.chat_rule_store {
+            Some(store) => store.list_chat_rules(address),
+            None => Ok(self.list_chat_rules(address).await),
+        }
+    }
+
     pub async fn delete_chat_rules(&self, address: &ChatAddress) -> Result<(), String> {
         if let Some(store) = &self.chat_rule_store {
             store.delete_chat_rules(address)?;
@@ -1455,7 +1478,7 @@ fn reuse_options_for(
         .collect()
 }
 
-fn matcher_matches_tool_call(
+pub(crate) fn matcher_matches_tool_call(
     matcher: &ApprovalReuseMatcher,
     tool_name: &str,
     args: &serde_json::Value,

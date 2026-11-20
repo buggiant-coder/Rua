@@ -9081,6 +9081,7 @@ dependencies = [
  "rua-task",
  "rua-text-search",
  "rua-usage",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -9092,6 +9093,7 @@ dependencies = [
  "url",
  "uuid",
  "vte",
+ "winx",
  "wiremock",
 ]
 
@@ -12691,6 +12693,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "80d0f4e272c85def139476380b12f9ac60926689dd2e01d4923222f40580869d"
 dependencies = [
  "winapi",
+]
+
+[[package]]
+name = "winx"
+version = "0.36.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f3fd376f71958b862e7afb20cfe5a22830e1963462f3a17f49d82a6c1d1f42d"
+dependencies = [
+ "bitflags 2.11.1",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

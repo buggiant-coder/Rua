@@ -6,6 +6,9 @@ use rua_core::{event::RuntimeEvent, ChatAddress};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, watch, Mutex as AsyncMutex, RwLock};
 
+mod read_dispatch;
+pub use read_dispatch::ReadDispatchPermit;
+
 use crate::services::chat_metadata_store::{
     apply_confirmed_authority_placement as persist_confirmed_authority_placement,
     clear_acp_binding, persist_acp_binding, update_authority_placement, AcpBindingMetadata,
@@ -241,6 +244,7 @@ pub struct ConversationAuthority {
     interjected_turns: RwLock<HashMap<ChatAddress, String>>,
     revisions: RwLock<HashMap<ChatAddress, u64>>,
     transition_gates: StdMutex<HashMap<ChatAddress, Weak<AsyncMutex<()>>>>,
+    read_dispatches: read_dispatch::ReadDispatches,
     control_events: RwLock<HashMap<ChatAddress, broadcast::Sender<String>>>,
     global_control_events: broadcast::Sender<ConversationControlEvent>,
     history_replacement: crate::services::history_replacement::HistoryReplacementCoordinator,
@@ -492,6 +496,7 @@ impl ConversationAuthority {
             interjected_turns: RwLock::new(HashMap::new()),
             revisions: RwLock::new(HashMap::new()),
             transition_gates: StdMutex::new(HashMap::new()),
+            read_dispatches: Default::default(),
             control_events: RwLock::new(HashMap::new()),
             global_control_events,
             history_replacement:

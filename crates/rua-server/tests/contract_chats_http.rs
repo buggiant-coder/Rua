@@ -4,5 +4,7 @@ mod chat_search;
 mod chats_lifecycle;
 #[path = "contract_chats_http/support.rs"]
 mod support;
+#[path = "contract_chats_http/target_file_read.rs"]
+mod target_file_read;
 #[path = "contract_chats_http/tasks.rs"]
 mod tasks;

@@ -2033,6 +2033,81 @@ impl ConversationInputIntake {
                     control: authority.control_view(&target.address, &meta).await,
                 })
             }
+            ConversationControlDeviceAction::ClaimReadApproval {
+                dispatch_token,
+                approval_id,
+                turn_id,
+                tool_call_id,
+                arguments,
+            } => {
+                let unavailable = || {
+                    reject(
+                        "read_approval_unavailable",
+                        "This file read has no matching active one-time user decision".into(),
+                    )
+                };
+                let gate = authority.transition_gate(&target.address);
+                let _transition = gate.lock().await;
+                let active = authority
+                    .active_turn(&target.address)
+                    .await
+                    .ok_or_else(unavailable)?;
+                if active.turn_id != turn_id
+                    || active.authority_device_id != command.target_device_id
+                    || active.authority_epoch != command.authority_epoch
+                    || active.driver != ConversationDriverKind::Rua
+                    || active.phase != crate::services::conversation_authority::ConversationActiveTurnPhase::RunningTool
+                    || command.source_device_id == command.target_device_id
+                    || target.execution_agent_id != command.agent_id
+                {
+                    return Err(unavailable());
+                }
+                let approvals = self.approval_authority.as_ref().ok_or_else(unavailable)?;
+                let request = approvals
+                    .request(&approval_id)
+                    .await
+                    .ok_or_else(unavailable)?;
+                if request.agent_id != target.execution_agent_id
+                    || request.owner.as_chat_address() != Some(&target.address)
+                    || request.turn_id != turn_id
+                    || request.tool_call_id != tool_call_id
+                    || request.tool_name != "read"
+                    || request.tool_call.args != arguments
+                {
+                    return Err(unavailable());
+                }
+                let path = arguments
+                    .get("file_path")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(unavailable)?;
+                let mut ctx = rua_security::ToolCallContext::new(
+                    &target.execution_agent_id,
+                    target.address.chat_id().as_str(),
+                    "read",
+                    request.tool_call.args,
+                )
+                .with_chat_address(target.address);
+                ctx.metadata.insert("turn_id".into(), turn_id.into());
+                ctx.metadata
+                    .insert("tool_call_id".into(), tool_call_id.into());
+                let approval_id = approvals
+                    .consume_authenticated_read_once_if(
+                        &ctx,
+                        &command.source_device_id,
+                        path,
+                        |id| {
+                            id == approval_id
+                                && authority.claim_read_dispatch(
+                                    dispatch_token,
+                                    id,
+                                    &command.source_device_id,
+                                )
+                        },
+                    )
+                    .await
+                    .ok_or_else(unavailable)?;
+                Ok(ConversationControlDeviceResponse::ReadApprovalClaimed { approval_id })
+            }
             ConversationControlDeviceAction::ApprovalSnapshot => {
                 let approval_authority = self.approval_authority.as_ref().ok_or_else(|| {
                     reject(

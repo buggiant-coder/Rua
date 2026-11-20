@@ -14,6 +14,15 @@ use crate::context::{ToolExecutionContext, DEFAULT_READ_LINES};
 use crate::error::ToolError;
 use crate::schema::ToolSpec;
 
+mod opened;
+pub use opened::OpenedRegularFile;
+
+pub(crate) enum ReadSource {
+    Path,
+    Media(rua_core::ResolvedChatMedia),
+    Opened(OpenedRegularFile),
+}
+
 fn file_read_state() -> &'static Mutex<HashMap<PathBuf, SystemTime>> {
     static STATE: OnceLock<Mutex<HashMap<PathBuf, SystemTime>>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -86,14 +95,14 @@ impl ReadFileTool {
         args: serde_json::Value,
         ctx: &ToolExecutionContext,
     ) -> std::result::Result<ToolResult, ToolError> {
-        self.read_from(args, ctx, None, true).await
+        self.read_from(args, ctx, ReadSource::Path, true).await
     }
 
     pub(crate) async fn read_from(
         &self,
         args: serde_json::Value,
         ctx: &ToolExecutionContext,
-        media: Option<rua_core::ResolvedChatMedia>,
+        source: ReadSource,
         emit_directory_hint: bool,
     ) -> std::result::Result<ToolResult, ToolError> {
         let file_path = args["file_path"]
@@ -102,6 +111,10 @@ impl ReadFileTool {
                 tool: "read".into(),
                 message: "missing or invalid 'file_path' field".into(),
             })?;
+        let already_open = matches!(source, ReadSource::Opened(_));
+        if already_open && ctx.is_cancelled() {
+            return Ok(ToolResult::error(&ctx.trace_id, "Read cancelled"));
+        }
 
         let start_line = match args.get("start_line") {
             Some(value) if !value.is_null() => match value.as_u64() {
@@ -146,15 +159,12 @@ impl ReadFileTool {
             ));
         }
 
-        let read_path = media
-            .as_ref()
-            .map(|m| m.path.as_path())
-            .unwrap_or_else(|| std::path::Path::new(file_path));
-        let resolved = match if media.is_some() {
-            ctx.workspace_fs.resolve_host_path(read_path)
-        } else {
-            ctx.workspace_fs.resolve(read_path)
-        } {
+        let resolved = match &source {
+            ReadSource::Path => ctx.workspace_fs.resolve(file_path),
+            ReadSource::Media(media) => ctx.workspace_fs.resolve_host_path(&media.path),
+            ReadSource::Opened(file) => Ok(file.backing_path.clone()),
+        };
+        let resolved = match resolved {
             Ok(path) => path,
             Err(ToolError::FileNotFound { .. }) => {
                 return Ok(ToolResult::error(
@@ -165,7 +175,11 @@ impl ReadFileTool {
             Err(e) => return Err(e),
         };
 
-        let metadata = match fs::metadata(&resolved).await {
+        let metadata = match &source {
+            ReadSource::Opened(file) => file.file.metadata().await,
+            _ => fs::metadata(&resolved).await,
+        };
+        let metadata = match metadata {
             Ok(m) => m,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(ToolResult::error(
@@ -176,7 +190,7 @@ impl ReadFileTool {
             Err(error) => return Err(error.into()),
         };
 
-        if metadata.is_dir() {
+        if metadata.is_dir() && !already_open {
             return directory_page(&args, &resolved, file_path, ctx, limit, emit_directory_hint)
                 .await;
         }
@@ -198,7 +212,11 @@ impl ReadFileTool {
             .min(ctx.limits.max_read_lines)
             .max(1);
         let tool_limited = limit.is_none() || limit.is_some_and(|n| n > ctx.limits.max_read_lines);
-        let mut reader = tokio::io::BufReader::new(fs::File::open(&resolved).await?);
+        let file = match source {
+            ReadSource::Opened(file) => file.file,
+            _ => fs::File::open(&resolved).await?,
+        };
+        let mut reader = tokio::io::BufReader::new(file);
         let budget = ctx.raw_capture_max_bytes.max(1);
         if reader.fill_buf().await?.contains(&0) {
             return Err(ToolError::BinaryFile {
@@ -307,8 +325,10 @@ impl ReadFileTool {
                 result.truncation = Some(meta);
             }
         }
-        if let Ok(mtime) = metadata.modified() {
-            record_file_mtime(&resolved, mtime);
+        if !already_open {
+            if let Ok(mtime) = metadata.modified() {
+                record_file_mtime(&resolved, mtime);
+            }
         }
 
         Ok(result)

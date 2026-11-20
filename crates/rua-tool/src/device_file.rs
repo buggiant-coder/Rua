@@ -6,6 +6,7 @@ use rua_core::RuaError;
 use serde_json::{json, Value};
 
 use crate::context::{SecurityContext, ToolExecutionContext, ToolExecutionLimits};
+use crate::core::read_file::{OpenedRegularFile, ReadSource};
 use crate::error::ToolError;
 use crate::fs::WorkspaceFs;
 
@@ -44,6 +45,23 @@ pub(crate) async fn call(
     args: Value,
     ctx: ToolContext,
 ) -> rua_core::Result<ToolResult> {
+    call_local(tool, args, ctx, None).await
+}
+
+pub(crate) async fn read_opened_file(
+    args: Value,
+    ctx: ToolContext,
+    file: OpenedRegularFile,
+) -> rua_core::Result<ToolResult> {
+    call_local("read", args, ctx, Some(file)).await
+}
+
+async fn call_local(
+    tool: &'static str,
+    args: Value,
+    ctx: ToolContext,
+    opened: Option<OpenedRegularFile>,
+) -> rua_core::Result<ToolResult> {
     let target = args.get("device_id");
     let call_id = ctx
         .metadata
@@ -80,11 +98,29 @@ pub(crate) async fn call(
             }
             _ => None,
         };
-        if let Some(reason) = problem {
-            let location = json!({
+        if let Some(problem) = problem {
+            let mut location = json!({
                 "device_id": requested, "execution_device_id": execution,
                 "paths": paths, "path": paths.first(), "coverage": "unavailable", "dispatched": false,
             });
+            let mut reason = problem.to_owned();
+            if tool == "read"
+                && opened.is_none()
+                && requested.is_some()
+                && execution.is_some()
+                && requested != execution
+            {
+                if let Some(access) = &ctx.device_read_access {
+                    use rua_core::tool::DeviceReadCheck;
+                    let (status, detail) = match access.check(&ctx, &args).await? {
+                        DeviceReadCheck::Denied(detail) => ("denied", detail),
+                        DeviceReadCheck::Unavailable(detail) => ("unavailable", detail),
+                        DeviceReadCheck::Checked => ("checked", "the target checked the requested path against its policy; no file content was read".into()),
+                    };
+                    location["target_permission_check"] = json!(status);
+                    reason = detail;
+                }
+            }
             let mut result = ToolResult::error(
                 &call_id,
                 format!("{tool} was not dispatched: {reason}. Location {location}. Report this missing scope and defer edits that depend on it."),
@@ -95,18 +131,21 @@ pub(crate) async fn call(
     }
     let device_id = ctx.local_device_id.as_deref();
     let requested_error = |error| at_location(error, device_id, &paths);
-    let media = if tool == "read" {
-        match path {
+    let source = if let Some(file) = opened {
+        ReadSource::Opened(file)
+    } else if tool == "read" {
+        let media = match path {
             Some(path) => ctx
                 .open_chat_media_reference(path)
                 .await
                 .map_err(requested_error)?,
             None => None,
-        }
+        };
+        media.map_or(ReadSource::Path, ReadSource::Media)
     } else {
-        None
+        ReadSource::Path
     };
-    let root = if media.is_some() {
+    let root = if matches!(source, ReadSource::Media(_)) {
         WorkspaceFs::new(&ctx.working_dir)
     } else {
         WorkspaceFs::for_execution(
@@ -157,7 +196,7 @@ pub(crate) async fn call(
     let mut result = match tool {
         "read" => {
             crate::ReadFileTool
-                .read_from(args, &exec_ctx, media, device_id.is_none())
+                .read_from(args, &exec_ctx, source, device_id.is_none())
                 .await
         }
         "edit" => {

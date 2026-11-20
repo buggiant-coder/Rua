@@ -460,6 +460,13 @@ impl AgentManager {
         )))
     }
 
+    pub(crate) fn registered_agent_enabled(&self, id: &str) -> Result<Option<bool>> {
+        let config = self.load_config()?;
+        Ok(self
+            .load_registered_agent(&config, id)?
+            .map(|_| Self::agent_enabled_from_config(&config, id)))
+    }
+
     pub async fn get_agent_status(&self, id: &str) -> Result<Option<dto::AgentStatus>> {
         let config = self.load_config()?;
         Ok(self

@@ -409,6 +409,7 @@ impl RemoteUserNotificationTransport for NeverNotificationTransport {
 #[derive(Clone, Default)]
 struct CapturingAgentRuntime {
     requests: Arc<tokio::sync::Mutex<Vec<AgentRequest>>>,
+    held_tool_calls: Option<(Vec<ToolCall>, Arc<Notify>)>,
 }
 
 #[async_trait]
@@ -419,15 +420,29 @@ impl AgentRuntime for CapturingAgentRuntime {
     ) -> rua_core::Result<Pin<Box<dyn futures::Stream<Item = Result<RuntimeEvent, RuaError>> + Send>>>
     {
         self.requests.lock().await.push(req.clone());
-        Ok(Box::pin(futures::stream::iter(vec![
-            Ok(RuntimeEvent::Start {
-                session_id: req.session_id.clone(),
-                agent_id: Some(req.agent_id.clone()),
+        let mut events = vec![Ok(RuntimeEvent::Start {
+            session_id: req.session_id.clone(),
+            agent_id: Some(req.agent_id.clone()),
+        })];
+        let release = self.held_tool_calls.as_ref().map(|(calls, release)| {
+            events.extend(
+                calls
+                    .iter()
+                    .cloned()
+                    .map(|call| Ok(RuntimeEvent::ToolCall { call })),
+            );
+            Arc::clone(release)
+        });
+        Ok(Box::pin(futures::stream::iter(events).chain(
+            futures::stream::once(async move {
+                if let Some(release) = release {
+                    release.notified().await;
+                }
+                Ok(RuntimeEvent::End {
+                    finish_reason: Some("stop".into()),
+                })
             }),
-            Ok(RuntimeEvent::End {
-                finish_reason: Some("stop".to_string()),
-            }),
-        ])))
+        )))
     }
 
     async fn cancel(&self, _session_id: &rua_core::id::SessionId) -> rua_core::Result<()> {
@@ -11099,6 +11114,18 @@ impl RemoteInputConfirmationFixture {
         }
     }
 
+    async fn send_control(
+        &self,
+        command: &ConversationControlDeviceCommand,
+    ) -> Result<ConversationControlDeviceResponse, DeviceCommandDeliveryError> {
+        deliver_conversation_control_via_session(
+            self.source.runtime.session_manager(),
+            command,
+            Duration::from_secs(5),
+        )
+        .await
+    }
+
     async fn persisted_users(&self) -> Vec<rua_session::MessageLogEntry> {
         let scope = rua_core::ChatStore::resolve(
             &self.target_state.rua_root,
@@ -11249,6 +11276,215 @@ async fn conversation_control_requires_authenticated_source_and_local_target_for
     assert_eq!(request["id"], pending.id);
     assert_eq!(request["status"], "approved");
     assert!(request["authenticated_user_decision"].is_null());
+    fixture.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_approval_claim_is_bound_to_the_running_turn_requesting_device_and_one_decision() {
+    use rua_server::services::conversation_authority::ConversationActiveTurnPhase;
+    let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
+    let owner = &fixture.target_state;
+    let release = Arc::new(Notify::new());
+    let arguments = serde_json::json!({
+        "device_id": fixture.source.device_id, "file_path": "/selected/note.txt", "limit": 3,
+    });
+    let mut other_device = arguments.clone();
+    other_device["device_id"] = serde_json::json!("another-file-device");
+    let calls = [
+        ToolCall::new("read-once", "read", arguments.clone()),
+        ToolCall::new("ordinary", "read", arguments.clone()),
+        ToolCall::new("wrong-device", "read", other_device),
+        ToolCall::new("ended", "read", arguments.clone()),
+    ];
+    owner
+        .registry
+        .get_or_create("default")
+        .await
+        .unwrap()
+        .set_react_runtime(Arc::new(CapturingAgentRuntime {
+            held_tool_calls: Some((calls.to_vec(), Arc::clone(&release))),
+            ..Default::default()
+        }))
+        .await;
+    assert_eq!(fixture.submit().await["accepted"], true);
+    let address = ChatAddress::new(fixture.chat_id.clone());
+    let turn = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            if let Some(turn) = owner.conversation_authority.active_turn(&address).await {
+                if turn.phase == ConversationActiveTurnPhase::RunningTool {
+                    break turn;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the admitted Turn reached its ToolCall events");
+    let approvals = owner.security.approval_authority();
+    let mut claims = Vec::new();
+    for call in calls {
+        let pending = approvals
+            .create_request(ApprovalRequestInput {
+                agent_id: "default".into(),
+                owner: rua_security::ApprovalOwner::chat(address.clone()),
+                turn_id: turn.turn_id.clone(),
+                tool_call_id: call.id.clone(),
+                tool_name: call.name,
+                trigger: ApprovalTrigger::approval_mode("approval required"),
+                tool_call: ToolCallSnapshot {
+                    display: "read /selected/note.txt".into(),
+                    args: call.arguments.clone(),
+                },
+            })
+            .await;
+        let decision = rua_security::ApprovalDecision::RunOnce {
+            decided_by: "webui".into(),
+        };
+        if call.id == "ordinary" {
+            approvals
+                .decide_for_agent("default", &pending.id, decision)
+                .await
+                .unwrap();
+        } else {
+            approvals
+                .decide_for_authenticated_user("default", &pending.id, decision, "fixture-user")
+                .await
+                .unwrap();
+        }
+        claims.push(ConversationControlDeviceCommand {
+            command_id: format!("claim-{}", call.id),
+            agent_id: "default".into(),
+            address: address.clone(),
+            source_device_id: fixture.source.device_id.clone(),
+            target_device_id: fixture.target.device_id.clone(),
+            authority_epoch: turn.authority_epoch,
+            action: ConversationControlDeviceAction::ClaimReadApproval {
+                dispatch_token: uuid::Uuid::nil(),
+                approval_id: pending.id,
+                turn_id: turn.turn_id.clone(),
+                tool_call_id: call.id,
+                arguments: call.arguments,
+            },
+        });
+    }
+    let [valid, ordinary, wrong_device, ended]: [ConversationControlDeviceCommand; 4] =
+        claims.try_into().unwrap();
+    let denied = |result| {
+        assert!(
+            matches!(result,
+                Err(DeviceCommandDeliveryError::Rejected { ref reason, .. }) if reason == "read_approval_unavailable"
+            ),
+            "{result:?}"
+        )
+    };
+    let with_token = |command: &ConversationControlDeviceCommand, token| {
+        let mut command = command.clone();
+        let ConversationControlDeviceAction::ClaimReadApproval { dispatch_token, .. } =
+            &mut command.action
+        else {
+            unreachable!()
+        };
+        *dispatch_token = token;
+        command
+    };
+    let issue = |command: &ConversationControlDeviceCommand, device: &str| {
+        let ConversationControlDeviceAction::ClaimReadApproval { approval_id, .. } =
+            &command.action
+        else {
+            unreachable!()
+        };
+        let permit = owner
+            .conversation_authority
+            .begin_read_dispatch(approval_id, device);
+        let command = with_token(command, permit.token());
+        (permit, command)
+    };
+
+    denied(fixture.send_control(&valid).await);
+    let resource_device = fixture.source.device_id.as_str();
+    let (old_permit, dropped) = issue(&valid, resource_device);
+    drop(old_permit);
+    let (permit, valid) = issue(&valid, resource_device);
+    denied(fixture.send_control(&dropped).await);
+    let (_ordinary_permit, ordinary) = issue(&ordinary, resource_device);
+    let (_wrong_device_permit, wrong_device) = issue(&wrong_device, "another-file-device");
+    let (_ended_permit, ended) = issue(&ended, resource_device);
+    let (_other_target_permit, other_target) = issue(&valid, "another-file-device");
+    let other_approval = with_token(&ended, permit.token());
+    let mut changed_args = valid.clone();
+    let mut wrong_turn = valid.clone();
+    if let ConversationControlDeviceAction::ClaimReadApproval { arguments, .. } =
+        &mut changed_args.action
+    {
+        arguments["limit"] = serde_json::json!(4);
+    }
+    if let ConversationControlDeviceAction::ClaimReadApproval { turn_id, .. } =
+        &mut wrong_turn.action
+    {
+        *turn_id = "different-turn".into();
+    }
+    for invalid in [
+        &changed_args,
+        &wrong_turn,
+        &ordinary,
+        &wrong_device,
+        &other_target,
+        &other_approval,
+    ] {
+        denied(fixture.send_control(invalid).await);
+    }
+    let ConversationControlDeviceAction::ClaimReadApproval { approval_id, .. } = &valid.action
+    else {
+        unreachable!()
+    };
+    let snapshot_command = ConversationControlDeviceCommand {
+        command_id: "read-dispatch-snapshot".into(),
+        action: ConversationControlDeviceAction::ApprovalSnapshot,
+        ..valid.clone()
+    };
+    let ConversationControlDeviceResponse::ApprovalSnapshot { snapshot } =
+        fixture.send_control(&snapshot_command).await.unwrap()
+    else {
+        panic!("expected an approval snapshot");
+    };
+    assert!(snapshot["resolved"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|request| request["id"] == *approval_id));
+    assert!(!snapshot.to_string().contains(&permit.token().to_string()));
+    let response = fixture
+        .send_control(&valid)
+        .await
+        .expect("file device claims the active read once");
+    assert!(
+        matches!(response, ConversationControlDeviceResponse::ReadApprovalClaimed {approval_id: id} if id == *approval_id)
+    );
+    denied(fixture.send_control(&valid).await);
+    let new_command = ConversationControlDeviceCommand {
+        command_id: "retry-with-new-id".into(),
+        ..valid.clone()
+    };
+    denied(fixture.send_control(&new_command).await);
+    assert_eq!(
+        approvals.request(approval_id).await.unwrap().status,
+        rua_security::AuthorityStatus::Consumed
+    );
+
+    release.notify_one();
+    tokio::time::timeout(Duration::from_secs(8), async {
+        while owner
+            .conversation_authority
+            .active_turn(&address)
+            .await
+            .is_some()
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Turn completed");
+    denied(fixture.send_control(&ended).await);
     fixture.shutdown().await;
 }
 

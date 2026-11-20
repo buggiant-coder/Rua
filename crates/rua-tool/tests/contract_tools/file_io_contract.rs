@@ -30,6 +30,151 @@ fn patch_arg(patch: &str) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn opened_regular_read_uses_the_selected_handle_for_the_normal_text_window() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("selected.txt");
+    std::fs::write(&path, "first\nsecond\nthird\n").unwrap();
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("desktop".into());
+    ctx.metadata.insert("tool_call_id".into(), json!("read-1"));
+    let args = json!({"device_id":"desktop","file_path":path,"start_line":2,"limit":1});
+    let ordinary = ReadFileTool.call(args.clone(), ctx.clone()).await.unwrap();
+    let opened = ReadFileTool
+        .open_regular_file(&path, root.path())
+        .await
+        .unwrap();
+    assert_eq!(opened.public_path(), path);
+    assert_eq!(opened.backing_path(), path.canonicalize().unwrap());
+
+    std::fs::rename(&path, root.path().join("previous.txt")).unwrap();
+    std::fs::write(&path, "replacement\nreplacement\n").unwrap();
+    let selected = ReadFileTool
+        .read_opened_file(opened, args, ctx)
+        .await
+        .unwrap();
+    assert_eq!(selected, ordinary);
+    assert!(selected.text_content().contains("2 | second"));
+    assert_eq!(selected.metadata["file_location"]["device_id"], "desktop");
+    assert_eq!(selected.metadata["continuation"]["start_line"], 3);
+}
+
+#[tokio::test]
+async fn opened_regular_read_keeps_byte_truncation_and_checks_the_file_and_device() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("selected.txt");
+    std::fs::write(&path, "a whole long line with a bounded output").unwrap();
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("desktop".into());
+    ctx.raw_capture_max_bytes = 10;
+    ctx.metadata.insert("tool_call_id".into(), json!("read-1"));
+    let args = json!({"device_id":"desktop","file_path":path});
+    let ordinary = ReadFileTool.call(args.clone(), ctx.clone()).await.unwrap();
+    let open = || ReadFileTool.open_regular_file(&path, root.path());
+    let selected = ReadFileTool
+        .read_opened_file(open().await.unwrap(), args.clone(), ctx.clone())
+        .await
+        .unwrap();
+    assert_eq!(selected, ordinary);
+    assert_eq!(selected.metadata["byte_range"]["end_exclusive"], 10);
+    assert_eq!(selected.metadata["continuation"]["byte_offset"], 10);
+    assert_eq!(selected.metadata["file_location"]["coverage"], "partial");
+
+    std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+    ctx.raw_capture_max_bytes = 20;
+    let lines = ReadFileTool
+        .read_opened_file(open().await.unwrap(), args.clone(), ctx.clone())
+        .await
+        .unwrap();
+    assert!(lines.truncation.is_some());
+    assert_eq!(
+        lines,
+        ReadFileTool.call(args.clone(), ctx.clone()).await.unwrap()
+    );
+
+    for changed in [
+        json!({"device_id":"other","file_path":path}),
+        json!({"device_id":"desktop","file_path":root.path().join("other.txt")}),
+    ] {
+        assert!(ReadFileTool
+            .read_opened_file(open().await.unwrap(), changed, ctx.clone())
+            .await
+            .is_err());
+    }
+    let mut page = args.clone();
+    page["after"] = json!("a");
+    assert!(
+        ReadFileTool
+            .read_opened_file(open().await.unwrap(), page, ctx.clone())
+            .await
+            .unwrap()
+            .is_error
+    );
+    ctx.cancel = Some(tokio::sync::watch::channel(true).1);
+    let stopped = ReadFileTool
+        .read_opened_file(open().await.unwrap(), args, ctx)
+        .await
+        .unwrap();
+    assert!(stopped.is_error && stopped.text_content().contains("Read cancelled"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn opened_regular_read_accepts_file_aliases_and_rejects_special_files_and_protected_names() {
+    use std::os::unix::fs::symlink;
+    use std::path::Path;
+    let root = tempfile::tempdir().unwrap();
+    let selected = root.path().join("selected.txt");
+    std::fs::write(&selected, "sample").unwrap();
+    let alias = root.path().join("alias");
+    symlink(&selected, &alias).unwrap();
+    let opened = ReadFileTool
+        .open_regular_file(&alias, root.path())
+        .await
+        .unwrap();
+    assert_eq!(opened.public_path(), alias);
+    assert_eq!(
+        opened.resolved_public_path(),
+        selected.canonicalize().unwrap()
+    );
+    assert_eq!(opened.backing_path(), opened.resolved_public_path());
+
+    let protected = root.path().join(".secret");
+    std::fs::create_dir(&protected).unwrap();
+    std::fs::write(protected.join("fixture"), "fixture").unwrap();
+    let protected_alias = root.path().join("protected-alias");
+    symlink(protected.join("fixture"), &protected_alias).unwrap();
+    assert!(matches!(
+        ReadFileTool
+            .open_regular_file(&protected_alias, root.path())
+            .await,
+        Err(rua_core::RuaError::Security { .. })
+    ));
+    let directory_alias = root.path().join("directory-alias");
+    symlink(root.path(), &directory_alias).unwrap();
+    let fifo = root.path().join("fifo");
+    assert!(std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success());
+    for path in [
+        root.path(),
+        &directory_alias,
+        &fifo,
+        Path::new("/dev/null"),
+        Path::new("media/704d76eb-dee7-47d7-bef3-915891f200db"),
+    ] {
+        assert!(
+            ReadFileTool
+                .open_regular_file(path, root.path())
+                .await
+                .is_err(),
+            "{path:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn read_file_reports_missing_directory_and_line_range_errors() {
     let root = tempfile::tempdir().expect("tempdir");
     std::fs::write(
@@ -794,6 +939,41 @@ async fn edit_stops_and_reports_an_unconfirmed_write_when_the_directory_cannot_b
 }
 
 #[tokio::test]
+async fn checked_remote_read_reports_target_policy_without_reading_its_local_namesake() {
+    use rua_core::tool::{DeviceReadAccess, DeviceReadCheck};
+
+    struct CheckedRead(serde_json::Value);
+    #[async_trait::async_trait]
+    impl DeviceReadAccess for CheckedRead {
+        async fn check(
+            &self,
+            ctx: &ToolContext,
+            args: &serde_json::Value,
+        ) -> rua_core::Result<DeviceReadCheck> {
+            assert_eq!(args, &self.0);
+            assert_eq!(ctx.local_device_id.as_deref(), Some("desktop"));
+            Ok(DeviceReadCheck::Checked)
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("photo.txt");
+    std::fs::write(&path, "desktop-only marker").unwrap();
+    let args = json!({"file_path":path,"device_id":"phone","limit":4});
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("desktop".into());
+    ctx.device_read_access = Some(std::sync::Arc::new(CheckedRead(args.clone())));
+    let result = ReadFileTool.call(args, ctx).await.unwrap();
+    assert!(result.is_error);
+    assert_eq!(
+        result.metadata["file_location"]["target_permission_check"],
+        "checked"
+    );
+    assert_eq!(result.metadata["file_location"]["dispatched"], false);
+    assert!(!result.text_content().contains("desktop-only marker"));
+}
+
+#[tokio::test]
 async fn selected_other_device_never_opens_or_edits_a_local_namesake() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("photo.txt");
@@ -877,22 +1057,20 @@ async fn huge_text_and_binary_inputs_are_bounded_before_formatting() {
     assert_eq!(tail.text_content(), "     2 | tail\n");
 }
 
-#[cfg(all(unix, feature = "search"))]
-#[tokio::test]
-async fn android_single_file_grep_returns_only_the_public_guest_path() {
-    use rua_tool::extended::search::GrepSearchTool;
+#[cfg(unix)]
+fn android_file_fixture(
+    env: &str,
+    test: &str,
+) -> Option<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf)> {
     use std::path::PathBuf;
 
-    const ENV: &str = "RUA_TEST_SINGLE_FILE_GREP_ROOT";
-    const TEST: &str =
-        "file_io_contract::android_single_file_grep_returns_only_the_public_guest_path";
-    let Some(root) = std::env::var_os(ENV).map(PathBuf::from) else {
+    let Some(root) = std::env::var_os(env).map(PathBuf::from) else {
         // Run in a child so the mobile profile cannot affect other tests in this binary.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", TEST, "--nocapture"])
-            .env(ENV, &root)
+            .args(["--exact", test, "--nocapture"])
+            .env(env, &root)
             .env("RUA_HOST_PROFILE", "mobile-apk")
             .env("RUA_ANDROID_NATIVE_DIR", root.join("native"))
             .env("RUA_ANDROID_DATA_DIR", root.join("data"))
@@ -905,7 +1083,7 @@ async fn android_single_file_grep_returns_only_the_public_guest_path() {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        return;
+        return None;
     };
     let backing = root.join("data/runtime/debian");
     let cwd = root.join("home/workspace");
@@ -920,7 +1098,53 @@ async fn android_single_file_grep_returns_only_the_public_guest_path() {
     std::fs::write(root.join("native/libproot.so"), []).unwrap();
     std::fs::write(backing.join("usr/bin/env"), []).unwrap();
     std::fs::write(backing.join("etc/release-marker"), "guest hit\n").unwrap();
+    Some((root, backing, cwd))
+}
 
+#[cfg(unix)]
+#[tokio::test]
+async fn opened_regular_read_uses_the_android_guest_to_resolve_file_aliases() {
+    use std::path::Path;
+    let Some((root, backing, cwd)) = android_file_fixture(
+        "RUA_TEST_OPENED_REGULAR_ROOT",
+        "file_io_contract::opened_regular_read_uses_the_android_guest_to_resolve_file_aliases",
+    ) else {
+        return;
+    };
+    std::os::unix::fs::symlink("/etc/release-marker", backing.join("etc/selected")).unwrap();
+    let public = Path::new("/etc/selected");
+    let opened = ReadFileTool.open_regular_file(public, &cwd).await.unwrap();
+    assert_eq!(opened.public_path(), public);
+    assert_eq!(
+        opened.resolved_public_path(),
+        Path::new("/etc/release-marker")
+    );
+    assert_eq!(opened.backing_path(), backing.join("etc/release-marker"));
+    let ctx = ToolContext {
+        working_dir: cwd,
+        local_device_id: Some("phone".into()),
+        tool_result_store_dir: Some(root.join("tool-results")),
+        ..Default::default()
+    };
+    let read = ReadFileTool
+        .read_opened_file(opened, json!({"device_id":"phone","file_path":public}), ctx)
+        .await
+        .unwrap();
+    assert_eq!(read.metadata["file_location"]["path"], "/etc/selected");
+    assert!(read.text_content().contains("1 | guest hit"));
+    assert!(!read.text_content().contains(backing.to_str().unwrap()));
+}
+
+#[cfg(all(unix, feature = "search"))]
+#[tokio::test]
+async fn android_single_file_grep_returns_only_the_public_guest_path() {
+    use rua_tool::extended::search::GrepSearchTool;
+    let Some((root, backing, cwd)) = android_file_fixture(
+        "RUA_TEST_SINGLE_FILE_GREP_ROOT",
+        "file_io_contract::android_single_file_grep_returns_only_the_public_guest_path",
+    ) else {
+        return;
+    };
     let public_file = "/etc/release-marker";
     let result = GrepSearchTool
         .call(

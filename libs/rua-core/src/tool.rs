@@ -28,6 +28,22 @@ pub const DEFAULT_TOOL_OLD_MAX_BYTES: usize = 3_000;
 
 pub const DEFAULT_TOKEN_ESTIMATE_DIVISOR: f64 = 4.0;
 
+pub enum DeviceReadCheck {
+    Unavailable(String),
+    Denied(String),
+    Checked,
+}
+
+#[async_trait::async_trait]
+pub trait DeviceReadAccess: Send + Sync {
+    /// Ask the file's Device to check this foreground Chat's requested read.
+    async fn check(
+        &self,
+        ctx: &ToolContext,
+        arguments: &serde_json::Value,
+    ) -> crate::Result<DeviceReadCheck>;
+}
+
 #[derive(Clone)]
 pub struct ToolContext {
     pub agent_id: String,
@@ -49,6 +65,7 @@ pub struct ToolContext {
     pub collaboration_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
 
     pub chat_media_loader: Option<Arc<dyn crate::ChatMediaLoader>>,
+    pub device_read_access: Option<Arc<dyn DeviceReadAccess>>,
 
     pub sync_transfer_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
 
@@ -101,6 +118,7 @@ impl Default for ToolContext {
             task_session: None,
             collaboration_runtime: None,
             chat_media_loader: None,
+            device_read_access: None,
             sync_transfer_runtime: None,
             event_tx: None,
             execution_output_max_tokens: DEFAULT_TOOL_EXECUTION_OUTPUT_MAX_TOKENS,

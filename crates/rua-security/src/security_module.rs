@@ -19,6 +19,23 @@ use crate::models::{GuardDecision, ToolCallContext, ToolGuardFinding};
 
 pub type AgentId = String;
 
+/// The target's policy for a single file. Confirmation must be verified by the caller.
+#[must_use = "a required one-time confirmation must be verified before reading"]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileReadAdmission {
+    Allowed,
+    RequiresUserConfirmation,
+}
+
+/// Distinguishes an explicit policy rejection from a missing or unreadable policy.
+#[derive(Debug, thiserror::Error)]
+pub enum FileReadPolicyError {
+    #[error("{0}")]
+    Denied(String),
+    #[error("{0}")]
+    Unavailable(String),
+}
+
 #[derive(Debug, Clone)]
 pub enum SecurityVerdict {
     Allow,
@@ -92,6 +109,81 @@ impl SecurityModule {
 
     pub fn approval_authority(&self) -> &Arc<ApprovalAuthority> {
         &self.approval_authority
+    }
+
+    /// Evaluate the captured and current policies against the supplied local names of the file.
+    /// This records no approval and consumes no decision, including during Ask First.
+    pub async fn inspect_chat_file_read(
+        &self,
+        ctx: &ToolCallContext,
+        captured: &SecurityConfig,
+        local_names: &[&str],
+    ) -> Result<FileReadAdmission, FileReadPolicyError> {
+        use FileReadPolicyError::{Denied, Unavailable};
+
+        let address = ctx
+            .approval_owner
+            .as_chat_address()
+            .ok_or_else(|| Denied("File read requires a Chat".into()))?;
+        let requested_name = ctx
+            .tool_input
+            .get("file_path")
+            .and_then(serde_json::Value::as_str);
+        if ctx.tool_name != "read"
+            || requested_name.is_none()
+            || requested_name != local_names.first().copied()
+        {
+            return Err(Denied("File read must match the requested path".into()));
+        }
+        let current = self
+            .config_store
+            .load(&ctx.agent_id)
+            .map_err(|e| Unavailable(e.to_string()))?;
+        let chat_rules = self
+            .approval_authority
+            .chat_rules_for_inspection(address)
+            .await
+            .map_err(Unavailable)?;
+        let mut admission = FileReadAdmission::Allowed;
+        for config in std::iter::once(captured).chain((captured != &current).then_some(&current)) {
+            let mut rules = snapshot_permission_rules(config).map_err(Unavailable)?;
+            rules.extend(chat_rules.iter().map(ApprovalReuseRule::to_stored));
+            let allowed = rules.iter().any(|rule| {
+                rule.enabled
+                    && rule.effect == crate::PermissionRuleEffect::Allow
+                    && crate::approval_authority::matcher_matches_tool_call(
+                        &rule.matcher,
+                        "read",
+                        &ctx.tool_input,
+                    )
+            });
+            let engine = ToolGuardEngine::new(config, self.paths.as_deref());
+            let mode = canonical_approval_mode_preset(&config.tool_guard.approval_mode);
+            for path in local_names {
+                let mut operation = ctx.clone();
+                operation.tool_input["file_path"] = serde_json::json!(path);
+                check_file_read_denials(&operation.tool_input, &rules).map_err(Denied)?;
+                let guard = engine.evaluate(&operation);
+                if guard.decision == GuardDecision::Deny {
+                    return Err(Denied(format!(
+                        "File read denied by security rules: {}",
+                        guard
+                            .findings
+                            .iter()
+                            .map(|f| f.rule_id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )));
+                }
+                if !allowed
+                    && (mode.requires_approval_for_tool(&operation.tool_name)
+                        || guard.decision == GuardDecision::RequiresApproval)
+                {
+                    admission = FileReadAdmission::RequiresUserConfirmation;
+                }
+            }
+        }
+        Ok(admission)
     }
 
     pub async fn hard_deny_reason(&self, ctx: &ToolCallContext) -> Option<String> {
@@ -429,14 +521,7 @@ impl SecurityModule {
         effect: crate::PermissionRuleEffect,
     ) -> Result<Option<ApprovalReuseRule>, String> {
         if let Some(config) = ctx.security_snapshot.as_ref() {
-            let rules = config
-                .extra
-                .get(PERMISSION_RULES_KEY)
-                .cloned()
-                .map(serde_json::from_value::<Vec<StoredApprovalReuseRule>>)
-                .transpose()
-                .map_err(|error| format!("Invalid security snapshot permission rules: {error}"))?
-                .unwrap_or_default();
+            let rules = snapshot_permission_rules(config)?;
             return self
                 .approval_authority
                 .find_permission_rule_with_snapshot(
@@ -543,6 +628,46 @@ fn primary_finding(findings: &[ToolGuardFinding]) -> &ToolGuardFinding {
 }
 
 const PERMISSION_RULES_KEY: &str = "permission_rules";
+
+fn snapshot_permission_rules(
+    config: &SecurityConfig,
+) -> Result<Vec<StoredApprovalReuseRule>, String> {
+    config
+        .extra
+        .get(PERMISSION_RULES_KEY)
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map(|rules| rules.unwrap_or_default())
+        .map_err(|error| format!("Invalid security snapshot permission rules: {error}"))
+}
+
+fn check_file_read_denials(
+    args: &serde_json::Value,
+    rules: &[StoredApprovalReuseRule],
+) -> Result<(), String> {
+    use crate::approval_authority::matcher_matches_tool_call;
+    use crate::PermissionRuleEffect;
+
+    // A read invoked on its own Device may omit the routing argument. Its exact
+    // local deny still applies to the same file when a remote Chat supplies it.
+    let mut local_args = args.clone();
+    if let Some(fields) = local_args.as_object_mut() {
+        fields.remove("device_id");
+    }
+    if let Some(rule) = rules.iter().find(|rule| {
+        rule.enabled
+            && rule.effect == PermissionRuleEffect::Deny
+            && (matcher_matches_tool_call(&rule.matcher, "read", args)
+                || matcher_matches_tool_call(&rule.matcher, "read", &local_args))
+    }) {
+        return Err(format!(
+            "File read denied by permission rule '{}'",
+            rule.label
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug)]
 struct ConfigBackedAgentScopeRuleStore {

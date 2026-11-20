@@ -834,6 +834,13 @@ impl AppState {
             ),
         );
         let workspace_context = Arc::new(WorkspaceContext {
+            device_read_access: Some(Arc::new(
+                crate::services::device_read_check::ForegroundReadAccess {
+                    authority: Arc::downgrade(&conversation_authority),
+                    approvals: Arc::downgrade(security_module.approval_authority()),
+                    network: Arc::downgrade(&device_network_cell),
+                },
+            )),
             chat_media_loader: Some(Arc::new(
                 crate::services::chat_media_loader::RuntimeChatMediaLoader {
                     rua_root: data_dir.clone(),
@@ -1265,8 +1272,19 @@ impl AppState {
                 let command_handler = Arc::new(
                     crate::services::device_command_bus::DeviceCommandHandler::new(
                         data_dir.join("device_commands"),
-                        local_device_id,
+                        local_device_id.clone(),
                     )
+                    .with_read_check_context(Arc::new(
+                        crate::services::chat_file_read_admission::TargetFileReadContext::new(
+                            data_dir.clone(),
+                            local_device_id,
+                            Arc::clone(&project_catalog),
+                            Arc::clone(&agent_service),
+                            Arc::clone(&tool_catalog),
+                            Arc::clone(&tool_config_store),
+                            Arc::clone(&security_module),
+                        ),
+                    ))
                     .with_remote_history_sync(remote_history_sync_tx.clone())
                     .with_acp_chat_registry(
                         Arc::clone(&acp_chat_registry),
@@ -2097,8 +2115,12 @@ impl AppState {
         let handler = Arc::new(
             crate::services::device_command_bus::DeviceCommandHandler::new(
                 self.rua_root.join("device_commands"),
-                local_device_id,
+                local_device_id.clone(),
             )
+            .with_read_check_context(Arc::new(crate::services::chat_file_read_admission::TargetFileReadContext::new(
+                self.rua_root.clone(), local_device_id, Arc::clone(&self.project_catalog), Arc::clone(&self.agent_service),
+                Arc::clone(&self.tool_catalog), Arc::clone(&self.tool_config_store), Arc::clone(&self.security),
+            )))
             .with_remote_history_sync(self.remote_history_sync_tx.clone())
             .with_acp_chat_registry(
                 Arc::clone(&self.acp_chat_registry),

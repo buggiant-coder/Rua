@@ -1711,6 +1711,7 @@ impl WorkspaceRuntime {
             .with_task_runtime(Arc::clone(&self.ctx.task_runtime))
             .with_collaboration_runtime(Arc::clone(&self.ctx.collaboration_runtime))
             .with_chat_media_loader(self.chat_media_loader())
+            .with_device_read_access(self.ctx.device_read_access.clone())
             .with_sync_transfer_runtime(Arc::clone(&self.ctx.sync_transfer_runtime))
             .with_plugin_registry(Arc::clone(&self.ctx.plugin_registry))
             .with_active_plugin_registry(Arc::clone(&self.ctx.active_plugin_registry));

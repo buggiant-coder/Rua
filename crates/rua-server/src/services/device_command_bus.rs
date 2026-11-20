@@ -13,6 +13,9 @@ use rua_config::types::acp::{default_builtin_runners, AcpAgentConfig, ToolParseM
 use rua_core::{ChatAddress, ChatStore};
 use rua_security::approval_authority::ApprovalReuseMatcher;
 
+use crate::services::chat_file_read_admission::{
+    TargetChatRead, TargetFileReadContext, TargetReadRejection,
+};
 use crate::services::chat_metadata_store::{AcpBindingMetadata, ChatMetadataRecord};
 use crate::services::console_chat::CONSOLE_CHANNEL_ID;
 use crate::services::conversation_authority::{
@@ -28,6 +31,7 @@ use crate::services::conversation_history_readiness::{
 };
 use crate::services::conversation_input_intake::ConversationInputIntake;
 use crate::services::conversation_manifest::{load_conversation_manifest, ConversationManifest};
+use crate::services::device_read_check::{DeviceReadCheckReply, DeviceReadCheckRequest};
 use crate::services::terminal::{
     OpenTerminalSessionRequest, TerminalActivityFrame, TerminalError, TerminalProfileList,
     TerminalPtyGeometry, TerminalSessionAttachment, TerminalSessionAuthority,
@@ -219,6 +223,13 @@ pub enum ConversationControlDeviceAction {
         control_command_id: String,
     },
     ApprovalSnapshot,
+    ClaimReadApproval {
+        dispatch_token: uuid::Uuid,
+        approval_id: String,
+        turn_id: String,
+        tool_call_id: String,
+        arguments: serde_json::Value,
+    },
     DecideApproval {
         approval_id: String,
         decision: ConversationApprovalDecision,
@@ -320,6 +331,9 @@ pub enum ConversationControlDeviceResponse {
     },
     ApprovalDecided {
         request: serde_json::Value,
+    },
+    ReadApprovalClaimed {
+        approval_id: String,
     },
 }
 
@@ -1011,6 +1025,7 @@ pub(crate) enum DeviceCommandEnvelope {
     Terminal(TerminalDeviceCommand),
     SyncTransfer(SyncTransferDeviceCommand),
     ChatMediaPrepare(ChatMediaPrepareCommand),
+    ReadCheck(DeviceReadCheckRequest),
     Project(ProjectDeviceCommand),
     Collaboration(CollaborationDeviceCommand),
 }
@@ -1024,6 +1039,15 @@ impl DeviceCommandEnvelope {
             Self::AcpChat(command) => ("acp_chat", command.command_id.as_str()),
             Self::RemoteChatControl(command) => {
                 ("remote_chat_control", command.command_id.as_str())
+            }
+            // A retry must observe the current Turn and the consumed decision.
+            Self::ConversationControl(command)
+                if matches!(
+                    command.action,
+                    ConversationControlDeviceAction::ClaimReadApproval { .. }
+                ) =>
+            {
+                return None
             }
             Self::ConversationControl(command) => {
                 ("conversation_control", command.command_id.as_str())
@@ -1041,6 +1065,7 @@ impl DeviceCommandEnvelope {
             Self::Terminal(command) => ("terminal", command.command_id.as_str()),
             Self::SyncTransfer(command) => ("sync_transfer", command.command_id.as_str()),
             Self::ChatMediaPrepare(command) => ("chat_media_prepare", command.command_id.as_str()),
+            Self::ReadCheck(_) => return None,
             Self::Project(command) => ("project", command.command_id.as_str()),
             Self::Collaboration(command) => ("collaboration", command.command_id.as_str()),
         };
@@ -1081,6 +1106,9 @@ pub enum DeviceCommandResponse {
     },
     ChatMediaPrepared {
         response: ChatMediaPreparedResponse,
+    },
+    ReadCheck {
+        response: DeviceReadCheckReply,
     },
     Project {
         response: ProjectDeviceResponse,
@@ -1275,6 +1303,7 @@ pub struct DeviceCommandHandler {
         Option<Arc<std::sync::RwLock<Option<rua_device_network::DeviceSessionManager>>>>,
     chat_media_transfers:
         Option<Arc<crate::services::chat_media_transfer::ChatMediaTransferRegistry>>,
+    read_check_context: Option<Arc<TargetFileReadContext>>,
     sync_transfer_operations: Arc<crate::services::sync_transfer::SourceTransferOperationStore>,
     project_catalog: Option<Arc<rua_project::ProjectCatalog>>,
     task_runtime: Option<Arc<rua_task::TaskRuntime>>,
@@ -1355,6 +1384,7 @@ impl DeviceCommandHandler {
             command_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             sync_transfer_session_manager: None,
             chat_media_transfers: None,
+            read_check_context: None,
             sync_transfer_operations: Arc::new(
                 crate::services::sync_transfer::SourceTransferOperationStore::new(),
             ),
@@ -1424,6 +1454,11 @@ impl DeviceCommandHandler {
         session_manager: Arc<std::sync::RwLock<Option<rua_device_network::DeviceSessionManager>>>,
     ) -> Self {
         self.sync_transfer_session_manager = Some(session_manager);
+        self
+    }
+
+    pub fn with_read_check_context(mut self, context: Arc<TargetFileReadContext>) -> Self {
+        self.read_check_context = Some(context);
         self
     }
 
@@ -1514,6 +1549,21 @@ impl DeviceCommandHandler {
             }
         };
         let route = match &envelope {
+            DeviceCommandEnvelope::ReadCheck(request)
+                if validate_session_source(peer, &request.source_device_id).is_err()
+                    || request.source_device_id.trim().is_empty()
+                    || request.target_device_id != self.local_device_id
+                    || request.source_device_id == request.target_device_id
+                    || request
+                        .arguments
+                        .get("device_id")
+                        .and_then(serde_json::Value::as_str)
+                        != Some(request.target_device_id.as_str()) =>
+            {
+                return DeviceCommandResponse::ReadCheck {
+                    response: DeviceReadCheckReply::Denied,
+                };
+            }
             DeviceCommandEnvelope::Project(command) => command
                 .validate_session_route(peer, &self.local_device_id)
                 .map_err(|error| ("invalid_project_route", error)),
@@ -1598,10 +1648,47 @@ impl DeviceCommandHandler {
             DeviceCommandEnvelope::ChatMediaPrepare(command) => {
                 self.handle_chat_media_prepare(command).await
             }
+            DeviceCommandEnvelope::ReadCheck(request) => DeviceCommandResponse::ReadCheck {
+                response: self.check_read_metadata(&request).await,
+            },
             DeviceCommandEnvelope::Project(command) => self.handle_project(command).await,
             DeviceCommandEnvelope::Collaboration(command) => {
                 self.handle_collaboration(command).await
             }
+        }
+    }
+
+    async fn check_read_metadata(&self, request: &DeviceReadCheckRequest) -> DeviceReadCheckReply {
+        let Some(context) = &self.read_check_context else {
+            return DeviceReadCheckReply::Unavailable;
+        };
+        let read = TargetChatRead {
+            address: &request.address,
+            agent_id: &request.agent_id,
+            authority_device_id: &request.source_device_id,
+            authority_epoch: request.authority_epoch,
+            configuration_epoch: &request.configuration_epoch,
+            turn_id: &request.turn_id,
+            tool_call_id: &request.tool_call_id,
+            tool_name: "read",
+            args: &request.arguments,
+        };
+        if let Err(rejection) = context.check_authority(&read).await {
+            return rejection.into();
+        }
+        let manager = self
+            .sync_transfer_session_manager
+            .as_ref()
+            .and_then(|cell| cell.read().ok().and_then(|manager| manager.clone()));
+        let Some(manager) = manager else {
+            return DeviceReadCheckReply::Unavailable;
+        };
+        if !request.verify_at_origin(&manager).await {
+            return DeviceReadCheckReply::Unavailable;
+        }
+        match context.check_metadata(&read).await {
+            Ok(()) => DeviceReadCheckReply::Checked,
+            Err(rejection) => rejection.into(),
         }
     }
 
@@ -3002,6 +3089,7 @@ impl DeviceCommandHandler {
                 }
             }
             ConversationControlDeviceAction::ApprovalSnapshot
+            | ConversationControlDeviceAction::ClaimReadApproval { .. }
             | ConversationControlDeviceAction::ViewAgentSelection
             | ConversationControlDeviceAction::SetExecutionDirectory { .. }
             | ConversationControlDeviceAction::SwitchAgent { .. }
@@ -4731,6 +4819,15 @@ fn validate_session_source(
     }
 }
 
+impl From<TargetReadRejection> for DeviceReadCheckReply {
+    fn from(rejection: TargetReadRejection) -> Self {
+        match rejection {
+            TargetReadRejection::Denied => Self::Denied,
+            TargetReadRejection::Unavailable => Self::Unavailable,
+        }
+    }
+}
+
 impl ProjectDeviceCommand {
     pub fn validate_session_route(
         &self,
@@ -4973,6 +5070,24 @@ pub async fn deliver_remote_chat_control_via_session(
     {
         DeviceCommandResponse::RemoteChatControl { response } => Ok(response),
         response => unexpected_response(response, "remote Chat control"),
+    }
+}
+
+pub async fn deliver_read_check_via_session(
+    session_manager: &rua_device_network::DeviceSessionManager,
+    request: &DeviceReadCheckRequest,
+    timeout: Duration,
+) -> Result<DeviceReadCheckReply, DeviceCommandDeliveryError> {
+    match deliver_envelope_via_session(
+        session_manager,
+        &request.target_device_id,
+        DeviceCommandEnvelope::ReadCheck(request.clone()),
+        timeout,
+    )
+    .await?
+    {
+        DeviceCommandResponse::ReadCheck { response } => Ok(response),
+        response => unexpected_response(response, "Read permission check"),
     }
 }
 
@@ -5258,9 +5373,23 @@ async fn deliver_envelope_via_session(
     timeout: Duration,
 ) -> Result<DeviceCommandResponse, DeviceCommandDeliveryError> {
     let payload = serde_json::to_vec(&envelope)?;
-    let response_bytes = session_manager
-        .command_to(target_device_id, &payload, timeout)
-        .await?;
+    // Neither half of a one-time approval check can be repeated after a lost reply.
+    let response_bytes = match envelope {
+        DeviceCommandEnvelope::ReadCheck(_)
+        | DeviceCommandEnvelope::ConversationControl(ConversationControlDeviceCommand {
+            action: ConversationControlDeviceAction::ClaimReadApproval { .. },
+            ..
+        }) => {
+            session_manager
+                .command_once_to(target_device_id, &payload, timeout)
+                .await?
+        }
+        _ => {
+            session_manager
+                .command_to(target_device_id, &payload, timeout)
+                .await?
+        }
+    };
     let response: DeviceCommandResponse = serde_json::from_slice(&response_bytes)?;
     match response {
         DeviceCommandResponse::AuthorityRedirect { redirect } => Err(
@@ -5301,6 +5430,7 @@ fn device_command_response_kind(response: &DeviceCommandResponse) -> &'static st
         DeviceCommandResponse::Terminal { .. } => "Terminal",
         DeviceCommandResponse::SyncTransfer { .. } => "Sync Transfer",
         DeviceCommandResponse::ChatMediaPrepared { .. } => "Chat Media Prepared",
+        DeviceCommandResponse::ReadCheck { .. } => "Read permission check",
         DeviceCommandResponse::Project { .. } => "Project",
         DeviceCommandResponse::Collaboration { .. } => "Collaboration",
         DeviceCommandResponse::Rejected { .. } => "Rejected",
