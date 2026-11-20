@@ -1043,6 +1043,11 @@ async fn huge_text_and_binary_inputs_are_bounded_before_formatting() {
         .await
         .unwrap();
     assert!(!first.is_error);
+    let local_hint = json!({"file_path":"long.txt","byte_offset":200});
+    assert!(first
+        .text_content()
+        .contains(&format!("Continue with read({local_hint}).")));
+    assert_eq!(first.text_content().matches("read(").count(), 1);
     assert_eq!(first.metadata["continuation"]["byte_offset"], 200);
     let second = ReadFileTool
         .call(first.metadata["continuation"].clone(), ctx.clone())
@@ -1263,4 +1268,65 @@ async fn byte_pages_reconstruct_lossy_text_without_splitting_valid_utf8() {
     }
     assert_eq!(offset as usize, bytes.len());
     assert_eq!(shown, String::from_utf8_lossy(bytes));
+}
+
+#[tokio::test]
+async fn device_read_line_continuation_names_one_device_and_path() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("notes.txt");
+    std::fs::write(&file, "first\nsecond\nthird\n").unwrap();
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("desktop".into());
+    ctx.raw_capture_max_bytes = 23;
+    let first = ReadFileTool
+        .call(
+            json!({"device_id":"desktop","file_path":"notes.txt"}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
+    let next = &first.metadata["continuation"];
+    assert_eq!(next["file_path"], json!(file.canonicalize().unwrap()));
+    assert_eq!(next["device_id"], "desktop");
+    assert_eq!(next["start_line"], 2);
+    let hint = format!("read({next})");
+    let body = first.text_content();
+    assert_eq!(body.matches("read(").count(), 1, "{body}");
+    assert!(body.contains(&hint), "{body}");
+    assert_eq!(
+        first
+            .truncation
+            .as_ref()
+            .unwrap()
+            .continuation_hint
+            .as_deref(),
+        Some(hint.as_str())
+    );
+    let page = ReadFileTool.call(next.clone(), ctx).await.unwrap();
+    assert!(page.text_content().contains("2 | second"));
+}
+
+#[tokio::test]
+async fn device_read_byte_continuation_names_one_device_and_path() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("notes.txt");
+    std::fs::write(&file, "12345678abcdefghABCDEFGH").unwrap();
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("desktop".into());
+    ctx.raw_capture_max_bytes = 8;
+    let mut args = json!({"device_id":"desktop","file_path":"notes.txt"});
+    for expected_offset in [8, 16] {
+        let page = ReadFileTool.call(args, ctx.clone()).await.unwrap();
+        let next = &page.metadata["continuation"];
+        assert_eq!(next["file_path"], json!(file.canonicalize().unwrap()));
+        assert_eq!(next["device_id"], "desktop");
+        assert_eq!(next["byte_offset"], expected_offset);
+        let body = page.text_content();
+        assert_eq!(body.matches("read(").count(), 1, "{body}");
+        assert!(body.contains(&format!("read({next})")), "{body}");
+        args = next.clone();
+    }
+    let last = ReadFileTool.call(args, ctx).await.unwrap();
+    assert!(last.text_content().contains("ABCDEFGH"));
+    assert!(!last.metadata.contains_key("continuation"));
 }

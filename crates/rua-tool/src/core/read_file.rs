@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
@@ -95,7 +95,7 @@ impl ReadFileTool {
         args: serde_json::Value,
         ctx: &ToolExecutionContext,
     ) -> std::result::Result<ToolResult, ToolError> {
-        self.read_from(args, ctx, ReadSource::Path, true).await
+        self.read_from(args, ctx, ReadSource::Path, None).await
     }
 
     pub(crate) async fn read_from(
@@ -103,7 +103,7 @@ impl ReadFileTool {
         args: serde_json::Value,
         ctx: &ToolExecutionContext,
         source: ReadSource,
-        emit_directory_hint: bool,
+        device_location: Option<(&str, &Path)>,
     ) -> std::result::Result<ToolResult, ToolError> {
         let file_path = args["file_path"]
             .as_str()
@@ -112,7 +112,7 @@ impl ReadFileTool {
                 message: "missing or invalid 'file_path' field".into(),
             })?;
         let already_open = matches!(source, ReadSource::Opened(_));
-        if already_open && ctx.is_cancelled() {
+        if ctx.is_cancelled() {
             return Ok(ToolResult::error(&ctx.trace_id, "Read cancelled"));
         }
 
@@ -191,8 +191,15 @@ impl ReadFileTool {
         };
 
         if metadata.is_dir() && !already_open {
-            return directory_page(&args, &resolved, file_path, ctx, limit, emit_directory_hint)
-                .await;
+            return directory_page(
+                &args,
+                &resolved,
+                file_path,
+                ctx,
+                limit,
+                device_location.is_none(),
+            )
+            .await;
         }
         if !metadata.is_file() {
             return Ok(ToolResult::error(
@@ -233,7 +240,15 @@ impl ReadFileTool {
                     "Use a nonnegative byte_offset without start_line or limit.",
                 ));
             };
-            return text_bytes(&mut reader, offset, metadata.len(), file_path, ctx).await;
+            return text_bytes(
+                &mut reader,
+                offset,
+                metadata.len(),
+                file_path,
+                ctx,
+                device_location.is_none(),
+            )
+            .await;
         }
         let mut byte_position = 0u64;
         // Skip preceding lines without allocating them, including very long lines.
@@ -291,8 +306,15 @@ impl ReadFileTool {
             let line = format!("{line_no:>6} | {}\n", text.trim_end_matches(['\r', '\n']));
             if output.len() + line.len() > budget {
                 if count == 0 {
-                    return text_bytes(&mut reader, byte_position, metadata.len(), file_path, ctx)
-                        .await;
+                    return text_bytes(
+                        &mut reader,
+                        byte_position,
+                        metadata.len(),
+                        file_path,
+                        ctx,
+                        device_location.is_none(),
+                    )
+                    .await;
                 }
                 has_more = true;
                 byte_limited = true;
@@ -306,11 +328,17 @@ impl ReadFileTool {
         has_more |= !reader.fill_buf().await?.is_empty();
         let mut result = ToolResult::text(&ctx.trace_id, &output);
         if has_more {
-            result.metadata.insert("continuation".into(), serde_json::json!({"file_path":file_path,"start_line":line_no,"limit":requested_limit}));
+            let mut next = serde_json::json!({"file_path":file_path,"start_line":line_no,"limit":requested_limit});
+            if let Some((device_id, public_path)) = device_location {
+                next["device_id"] = device_id.into();
+                next["file_path"] = serde_json::json!(public_path);
+            }
             if byte_limited || tool_limited {
-                let hint = format!(
-                    "read(file_path={file_path:?}, start_line={line_no}, limit={requested_limit})"
-                );
+                let hint = if device_location.is_some() {
+                    format!("read({next})")
+                } else {
+                    format!("read(file_path={file_path:?}, start_line={line_no}, limit={requested_limit})")
+                };
                 let meta = crate::result_store::continuation_meta(
                     "read",
                     None,
@@ -324,6 +352,7 @@ impl ReadFileTool {
                 result.content = vec![agent_types::ContentPart::Text { text: body }];
                 result.truncation = Some(meta);
             }
+            result.metadata.insert("continuation".into(), next);
         }
         if !already_open {
             if let Ok(mtime) = metadata.modified() {
@@ -341,6 +370,7 @@ async fn text_bytes(
     length: u64,
     path: &str,
     ctx: &ToolExecutionContext,
+    emit_hint: bool,
 ) -> std::result::Result<ToolResult, ToolError> {
     if offset >= length {
         return Ok(ToolResult::error(
@@ -394,9 +424,11 @@ async fn text_bytes(
     );
     if end < length {
         let next = serde_json::json!({"file_path":path,"byte_offset":end});
-        result.content.push(agent_types::ContentPart::Text {
-            text: format!("\nText bytes {offset}..{end} of {length}. Continue with read({next})."),
-        });
+        let mut text = format!("\nText bytes {offset}..{end} of {length}.");
+        if emit_hint {
+            text.push_str(&format!(" Continue with read({next})."));
+        }
+        result.content.push(agent_types::ContentPart::Text { text });
         result.metadata.insert("continuation".into(), next);
     }
     Ok(result)

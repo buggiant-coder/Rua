@@ -196,7 +196,12 @@ async fn call_local(
     let mut result = match tool {
         "read" => {
             crate::ReadFileTool
-                .read_from(args, &exec_ctx, source, device_id.is_none())
+                .read_from(
+                    args,
+                    &exec_ctx,
+                    source,
+                    device_id.zip(paths.first().map(|p| p.as_path())),
+                )
                 .await
         }
         "edit" => {
@@ -244,9 +249,16 @@ async fn call_local(
         }
     }
     if ctx.local_device_id.is_some() {
+        let read_hint_in_body = tool == "read"
+            && result
+                .truncation
+                .as_ref()
+                .is_some_and(|meta| meta.continuation_hint.is_some());
         let suffix = match result.metadata.get("continuation") {
-            Some(next) => format!("\nLocation {location}. Continue with {tool}({next})."),
-            None => format!("\nLocation {location}."),
+            Some(next) if !read_hint_in_body => {
+                format!("\nLocation {location}. Continue with {tool}({next}).")
+            }
+            _ => format!("\nLocation {location}."),
         };
         result
             .content

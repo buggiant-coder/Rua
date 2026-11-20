@@ -10,6 +10,8 @@ mod media_contract;
 mod phone_use_contract;
 #[path = "contract_tools/qwenpaw_parity_contract.rs"]
 mod qwenpaw_parity_contract;
+#[path = "contract_tools/read_cancellation.rs"]
+mod read_cancellation;
 #[path = "contract_tools/registry_contract.rs"]
 mod registry_contract;
 #[path = "contract_tools/repair_validate_contract.rs"]
