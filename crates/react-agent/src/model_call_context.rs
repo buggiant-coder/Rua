@@ -432,6 +432,18 @@ impl ModelCallContext {
                 sections.insert(section.kind, section);
             }
         }
+        if let Some(instructions) = &ctx.tool_ctx.agents_instructions {
+            sections.remove(&ModelCallSectionKind::ProjectInstructions);
+            if let Some(content) = instructions
+                .snapshot_for_model()
+                .filter(|content| !content.trim().is_empty())
+            {
+                sections.insert(
+                    ModelCallSectionKind::ProjectInstructions,
+                    ModelCallSection::new(ModelCallSectionKind::ProjectInstructions, content),
+                );
+            }
+        }
         if let Some(guidance) = guidance.filter(|value| !value.trim().is_empty()) {
             sections.insert(
                 ModelCallSectionKind::RuntimeGuidance,

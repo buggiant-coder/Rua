@@ -42,6 +42,7 @@ use react_agent::{
 use rua_provider::manager::ProviderManager;
 use rua_provider::{FallbackPolicy, FallbackResolver, ModelFactory};
 
+pub mod agents_instructions;
 mod command_dispatch;
 pub use command_dispatch::CommandRuntimeDispatcherAdapter;
 
@@ -260,6 +261,8 @@ pub struct ReactAgentRuntime {
     collaboration_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
     chat_media_loader: Option<Arc<dyn rua_core::ChatMediaLoader>>,
     device_read_access: Option<Arc<dyn rua_core::tool::DeviceReadAccess>>,
+    agents_instruction_loader:
+        Option<Arc<dyn rua_core::agents_instruction_discovery::AgentsInstructionLoader>>,
     sync_transfer_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
     approval_channel: Option<Arc<dyn ApprovalChannel>>,
     approval_timeout: std::time::Duration,
@@ -692,6 +695,7 @@ impl ReactAgentRuntime {
             collaboration_runtime: None,
             chat_media_loader: None,
             device_read_access: None,
+            agents_instruction_loader: None,
             sync_transfer_runtime: None,
             approval_channel: None,
             approval_timeout: std::time::Duration::from_secs(300),
@@ -1866,6 +1870,14 @@ impl ReactAgentRuntime {
         self
     }
 
+    pub fn with_agents_instruction_loader(
+        mut self,
+        loader: Arc<dyn rua_core::agents_instruction_discovery::AgentsInstructionLoader>,
+    ) -> Self {
+        self.agents_instruction_loader = Some(loader);
+        self
+    }
+
     pub fn with_chat_media_loader(
         mut self,
         loader: Option<Arc<dyn rua_core::ChatMediaLoader>>,
@@ -2691,10 +2703,10 @@ impl AgentRuntime for ReactAgentRuntime {
                 agent_prompt_context,
             ));
         }
-        if let Some(project_instructions) = project_instructions {
+        if let Some(project_instructions) = project_instructions.as_ref() {
             model_call_sections.push(react_agent::ModelCallSection::new(
                 react_agent::ModelCallSectionKind::ProjectInstructions,
-                project_instructions,
+                project_instructions.clone(),
             ));
         }
         if let Some(bootstrap_section) = bootstrap_section {
@@ -2774,7 +2786,7 @@ impl AgentRuntime for ReactAgentRuntime {
                 .unwrap_or(rua_core::tool::DEFAULT_TOKEN_ESTIMATE_DIVISOR);
             let configured_user_timezone = self.configured_user_timezone()?;
 
-            let tool_ctx = ToolContext {
+            let mut tool_ctx = ToolContext {
                 local_device_id: local_device_id.clone(),
                 agent_id: req.agent_id.to_string(),
                 session_id: security_session_id.clone(),
@@ -2812,6 +2824,7 @@ impl AgentRuntime for ReactAgentRuntime {
                 collaboration_runtime: self.collaboration_runtime.clone(),
                 chat_media_loader: self.chat_media_loader.clone(),
                 device_read_access: self.device_read_access.clone(),
+                agents_instructions: None,
                 device_read_confirmation_wait: None,
                 sync_transfer_runtime: self.sync_transfer_runtime.clone(),
                 event_tx: None,
@@ -2821,6 +2834,16 @@ impl AgentRuntime for ReactAgentRuntime {
                 old_max_bytes,
                 token_estimate_divisor,
             };
+            if let Some(loader) = &self.agents_instruction_loader {
+                let instructions = agents_instructions::TurnAgentsInstructions::prepare(
+                    Arc::clone(loader),
+                    project_instructions,
+                    &tool_ctx,
+                    cancel.clone(),
+                )
+                .await?;
+                tool_ctx.agents_instructions = Some(Arc::new(instructions));
+            }
             builder = builder.tool_ctx(tool_ctx);
         }
 

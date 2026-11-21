@@ -36,6 +36,7 @@ pub fn test_context(working_dir: PathBuf) -> Arc<WorkspaceContext> {
         collaboration_runtime: Arc::new(()),
         chat_media_loader: None,
         device_read_access: None,
+        agents_instruction_loader: None,
         sync_transfer_runtime: Arc::new(()),
         tool_config_store: Arc::new(rua_tool::ToolConfigStore::new(Arc::new(
             rua_tool::AgentToolsCells::new(cell_store, working_dir.join("workspaces")),

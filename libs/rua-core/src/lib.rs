@@ -1,3 +1,5 @@
+pub mod agents_instruction_discovery;
+pub mod agents_instructions;
 pub mod chat;
 pub mod chat_media;
 pub mod chat_store;

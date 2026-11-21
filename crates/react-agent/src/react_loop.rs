@@ -1648,6 +1648,15 @@ async fn execute_single_tool_with_emit(
         });
     }
     let result = result?;
+    if result
+        .metadata
+        .get("agents_instructions")
+        .and_then(serde_json::Value::as_str)
+        == Some("reconsider")
+    {
+        trace.finish("instructions_reconsider");
+        return Ok(result);
+    }
     if let Some(boundary) = tool_observer_boundary {
         let event = if result.is_error {
             crate::ToolObservationEvent::Failed
@@ -1833,6 +1842,12 @@ async fn execute_single_tool_canonical(
         };
     }
     let call = &effective_call;
+    if let Some(result) =
+        reconsider_for_agents_instructions(call, tool_ctx, cancel, event_tx, emit_result_event)
+            .await?
+    {
+        return Ok(result);
+    }
     trace.set("effective_tool_name", call.name.clone());
 
     debug!(
@@ -1995,6 +2010,17 @@ async fn execute_single_tool_canonical(
                     ApprovalResult::AllowWithModifiedArgs { args } => {
                         let mut modified_call = call.clone();
                         modified_call.arguments = args;
+                        if let Some(result) = reconsider_for_agents_instructions(
+                            &modified_call,
+                            tool_ctx,
+                            cancel,
+                            event_tx,
+                            emit_result_event,
+                        )
+                        .await?
+                        {
+                            return Ok(result);
+                        }
                         return execute_approved_tool(
                             &modified_call,
                             toolkit,
@@ -2027,6 +2053,49 @@ async fn execute_single_tool_canonical(
         trace,
     )
     .await
+}
+
+async fn reconsider_for_agents_instructions(
+    call: &ToolCall,
+    tool_ctx: &rua_core::tool::ToolContext,
+    cancel: &CancellationToken,
+    event_tx: &tokio::sync::mpsc::Sender<AgentEvent>,
+    emit_result_event: bool,
+) -> Result<Option<ToolResult>, AgentError> {
+    let Some(instructions) = &tool_ctx.agents_instructions else {
+        return Ok(None);
+    };
+    let decision = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(AgentError::Cancelled),
+        decision = instructions.before_tool(call, tool_ctx, cancel.clone()) => decision,
+    };
+    let reason = match decision {
+        Ok(rua_core::agents_instructions::AgentsInstructionDecision::Continue) => return Ok(None),
+        Ok(rua_core::agents_instructions::AgentsInstructionDecision::Reconsider { reason }) => {
+            reason
+        }
+        Err(rua_core::RuaError::Cancelled) => return Err(AgentError::Cancelled),
+        Err(error) => {
+            warn!(tool = %call.name, %error, "AGENTS.md discovery unavailable; continuing the tool");
+            return Ok(None);
+        }
+    };
+    let mut result = ToolResult::text(
+        call.id.clone(),
+        format!("Tool '{}' was not executed. {reason} Review the newly loaded AGENTS.md instructions before deciding whether to issue another tool call.", call.name),
+    );
+    result.name = Some(call.name.clone());
+    result
+        .metadata
+        .insert("execution_status".into(), "not_executed".into());
+    result
+        .metadata
+        .insert("agents_instructions".into(), "reconsider".into());
+    if emit_result_event {
+        emit_tool_result(event_tx, &result).await;
+    }
+    Ok(Some(result))
 }
 
 #[allow(clippy::too_many_arguments)]

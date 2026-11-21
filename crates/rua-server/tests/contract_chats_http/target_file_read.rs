@@ -17,6 +17,9 @@ use serde_json::{json, Value};
 
 use super::support::{build_app, create_agent, seed_materialized_chat, TestApp};
 
+#[path = "target_file_read/agents_instructions.rs"]
+mod agents_instructions;
+
 const AGENT: &str = "target-reader";
 const AUTHORITY: &str = "0123456789abcdef";
 

@@ -20,6 +20,8 @@ pub struct WorkspaceContext {
     pub collaboration_runtime: Arc<dyn std::any::Any + Send + Sync>,
     pub chat_media_loader: Option<Arc<dyn rua_core::ChatMediaLoader>>,
     pub device_read_access: Option<Arc<dyn rua_core::tool::DeviceReadAccess>>,
+    pub agents_instruction_loader:
+        Option<Arc<dyn rua_core::agents_instruction_discovery::AgentsInstructionLoader>>,
     pub sync_transfer_runtime: Arc<dyn std::any::Any + Send + Sync>,
     pub tool_config_store: Arc<rua_tool::ToolConfigStore>,
     pub tool_before_boundary: Option<Arc<dyn react_agent::ToolBeforeBoundary>>,

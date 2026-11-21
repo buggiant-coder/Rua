@@ -1,4 +1,5 @@
 pub mod agent_tools_cells;
+pub mod agents_instructions;
 pub mod annotations;
 pub mod builtin;
 pub mod config_store;

@@ -3498,17 +3498,8 @@ impl ConsoleChatService {
                 return;
             }
             let project_resources = req.extra.get(rua_session::TURN_PROJECT_RESOURCES_KEY);
-            let mut project_instructions = match project_id.as_ref() {
-                Some(project_id) => {
-                    crate::services::project_instructions::load_project_instructions(
-                        &working_dir,
-                        project_id,
-                    )
-                    .await
-                    .map(|instructions| instructions.model_instruction())
-                }
-                None => None,
-            };
+            // Directory AGENTS.md content is captured by the per-Turn runtime coordinator.
+            let mut project_instructions = None;
             if let Some(resources) = project_resources {
                 let directories: Vec<_> = resources["directories"]
                     .as_array()

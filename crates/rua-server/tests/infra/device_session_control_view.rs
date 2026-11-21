@@ -101,6 +101,9 @@ mod approved_phone_file;
 #[path = "device_session_control_view/remote_file_operations.rs"]
 mod remote_file_operations;
 
+#[path = "device_session_control_view/agents_instructions.rs"]
+mod agents_instructions;
+
 fn epoch(wall_ms: u64) -> ConversationAuthorityEpoch {
     ConversationAuthorityEpoch::from_parts(wall_ms, 0, [0; 8])
 }
@@ -6042,10 +6045,7 @@ async fn remote_project_turns_use_execution_cwd_and_do_not_scan_resource_directo
 
     let requests = captured.requests.lock().await.clone();
     assert_eq!(requests.len(), 2);
-    for (request, expected_marker, rejected_marker) in [
-        (&requests[0], FIRST_MARKER, SECOND_MARKER),
-        (&requests[1], SECOND_MARKER, FIRST_MARKER),
-    ] {
+    for (index, request) in requests.iter().enumerate() {
         assert_eq!(
             request.working_dir.as_deref(),
             Some(execution_directory.as_path())
@@ -6061,26 +6061,40 @@ async fn remote_project_turns_use_execution_cwd_and_do_not_scan_resource_directo
             request.conversation_store_dir.as_deref(),
             Some(target_state.chat_workspace().as_path())
         );
-        let instructions = request
+        let resources_context = request
             .metadata
             .get(rua_agent::hooks::PROJECT_INSTRUCTIONS_METADATA_KEY)
             .and_then(serde_json::Value::as_str)
-            .expect("Project Instructions runtime metadata");
-        assert!(instructions.contains(expected_marker));
-        assert!(!instructions.contains(rejected_marker));
-        assert!(!instructions.contains(CONTROLLER_MARKER));
-        assert!(!instructions.contains(RESOURCE_MARKER));
+            .expect("Project resource inventory runtime metadata");
+        // Console captures the inventory. The real Agent runtime loads AGENTS.md
+        // through its per-Turn coordinator, which this recording runtime replaces.
+        for marker in [
+            FIRST_MARKER,
+            SECOND_MARKER,
+            CONTROLLER_MARKER,
+            RESOURCE_MARKER,
+        ] {
+            assert!(!resources_context.contains(marker));
+        }
         let directories = request.metadata[rua_session::TURN_PROJECT_RESOURCES_KEY]["directories"]
             .as_array()
             .unwrap();
-        if expected_marker == FIRST_MARKER {
+        if index == 0 {
             assert_eq!(directories.len(), 1);
             assert_eq!(
                 directories[0]["resource_root"],
                 serde_json::json!(target_repo)
             );
+            assert!(resources_context.contains(
+                &serde_json::json!([{
+                    "device_id":target_device_id,
+                    "path":target_repo,
+                }])
+                .to_string()
+            ));
         } else {
             assert!(directories.is_empty());
+            assert!(resources_context.contains("[]"));
         }
     }
 

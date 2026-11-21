@@ -1,3 +1,5 @@
+#[path = "all/agents_instructions.rs"]
+mod agents_instructions;
 #[path = "all/approval_blocking.rs"]
 mod approval_blocking;
 #[path = "all/ask_user_shortcircuit.rs"]

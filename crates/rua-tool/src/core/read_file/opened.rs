@@ -142,13 +142,13 @@ impl ReadFileTool {
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn opened_path(file: &File) -> io::Result<PathBuf> {
+pub(crate) fn opened_path(file: &File) -> io::Result<PathBuf> {
     use std::os::fd::AsRawFd;
     std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
 }
 
 #[cfg(target_vendor = "apple")]
-fn opened_path(file: &File) -> io::Result<PathBuf> {
+pub(crate) fn opened_path(file: &File) -> io::Result<PathBuf> {
     use std::os::unix::ffi::OsStringExt;
     Ok(std::ffi::OsString::from_vec(rustix::fs::getpath(file)?.into_bytes()).into())
 }
@@ -166,7 +166,7 @@ fn local_drive_path(path: &Path) -> rua_core::Result<&Path> {
 }
 
 #[cfg(windows)]
-fn opened_path(file: &File) -> io::Result<PathBuf> {
+pub(crate) fn opened_path(file: &File) -> io::Result<PathBuf> {
     winx::file::get_file_path(file)
 }
 
@@ -176,7 +176,7 @@ fn opened_path(file: &File) -> io::Result<PathBuf> {
     target_vendor = "apple",
     windows
 )))]
-fn opened_path(_: &File) -> io::Result<PathBuf> {
+pub(crate) fn opened_path(_: &File) -> io::Result<PathBuf> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "Cannot verify the path of an open file on this platform",

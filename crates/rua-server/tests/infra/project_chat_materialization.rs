@@ -1454,11 +1454,11 @@ async fn project_turns_capture_resources_at_claim_and_keep_their_execution_direc
             .unwrap();
     let key = rua_session::TURN_PROJECT_RESOURCES_KEY;
     assert_eq!(first.metadata[key], serde_json::json!(project.resources));
-    let prompt = first.metadata[rua_agent::hooks::PROJECT_INSTRUCTIONS_METADATA_KEY]
+    let resource_context = first.metadata[rua_agent::hooks::PROJECT_INSTRUCTIONS_METADATA_KEY]
         .as_str()
         .unwrap();
     for value in ["phone-a", "laptop-b", root.to_str().unwrap()] {
-        assert!(prompt.contains(value), "{prompt}");
+        assert!(resource_context.contains(value), "{resource_context}");
     }
     assert!(!first.metadata.contains_key("project_resource_roots"));
     let queued = intake
@@ -1556,10 +1556,12 @@ async fn project_turns_capture_resources_at_claim_and_keep_their_execution_direc
             .unwrap()
             .unwrap();
     assert_eq!(second.metadata[key], serde_json::json!(updated.resources));
-    let prompt = second.metadata[rua_agent::hooks::PROJECT_INSTRUCTIONS_METADATA_KEY]
+    let resource_context = second.metadata[rua_agent::hooks::PROJECT_INSTRUCTIONS_METADATA_KEY]
         .as_str()
         .unwrap();
-    assert!(!prompt.contains("phone-a"));
+    assert!(!resource_context.contains("phone-a"));
+    assert!(!resource_context.contains("laptop-b"));
+    assert!(resource_context.contains("[]"));
     assert_eq!(first.working_dir, second.working_dir);
     let header = store.load_chat_header(&id).await.unwrap().unwrap();
     assert_eq!(

@@ -110,6 +110,7 @@ impl ToolExecutionContext {
             }),
             collaboration_runtime: None,
             chat_media_loader: None,
+            agents_instructions: None,
             device_read_access: None,
             device_read_confirmation_wait: None,
             sync_transfer_runtime: None,

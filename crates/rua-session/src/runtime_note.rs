@@ -16,12 +16,23 @@ pub struct RuntimeNote {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
 pub enum RuntimeNotePayload {
+    AgentsInstructions(AgentsInstructionsRuntimeNote),
     CapabilityState(CapabilityStateRuntimeNote),
     CollaborationResult(CollaborationResultRuntimeNote),
     ConversationRuntimeTerminal(ConversationRuntimeTerminalRuntimeNote),
     MemorySignal(MemorySignalRuntimeNote),
     TaskAttemptTerminal(TaskAttemptTerminalRuntimeNote),
     TaskWatchOutput(TaskWatchOutputRuntimeNote),
+}
+
+/// Captured directory instructions belong to one Turn, never to model-visible history.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentsInstructionsRuntimeNote {
+    pub turn_id: String,
+    pub request: rua_core::agents_instruction_discovery::AgentsInstructionDiscoveryRequest,
+    pub discovery: rua_core::agents_instruction_discovery::AgentsInstructionDiscovery,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -181,15 +192,17 @@ impl RuntimeNote {
     pub fn is_model_visible(&self) -> bool {
         !matches!(
             &self.payload,
-            RuntimeNotePayload::TaskWatchOutput(TaskWatchOutputRuntimeNote {
-                projection: TaskWatchOutputProjection::ActivityOnly,
-                ..
-            })
+            RuntimeNotePayload::AgentsInstructions(_)
+                | RuntimeNotePayload::TaskWatchOutput(TaskWatchOutputRuntimeNote {
+                    projection: TaskWatchOutputProjection::ActivityOnly,
+                    ..
+                })
         )
     }
 
     pub fn render_for_model(&self) -> String {
         match &self.payload {
+            RuntimeNotePayload::AgentsInstructions(_) => String::new(),
             RuntimeNotePayload::CapabilityState(state) => {
                 let changes = state
                     .changes

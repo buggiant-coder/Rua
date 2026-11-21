@@ -1017,6 +1017,12 @@ pub enum CollaborationDeviceResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentsInstructionCommand {
+    pub context: DeviceReadCheckRequest,
+    pub discovery: rua_core::agents_instruction_discovery::AgentsInstructionDiscoveryRequest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", content = "payload", rename_all = "snake_case")]
 pub(crate) enum DeviceCommandEnvelope {
     ConversationInput(Box<RemoteConversationInputRequest>),
@@ -1029,6 +1035,7 @@ pub(crate) enum DeviceCommandEnvelope {
     Terminal(TerminalDeviceCommand),
     SyncTransfer(SyncTransferDeviceCommand),
     ChatMediaPrepare(ChatMediaPrepareCommand),
+    AgentsInstructions(AgentsInstructionCommand),
     ReadCheck(DeviceReadCheckRequest),
     CancelFileOperation(DeviceReadCheckRequest),
     ReadAllowedFile {
@@ -1084,9 +1091,10 @@ impl DeviceCommandEnvelope {
                         .map_or("policy", |c| c.approval_id.as_str())
                 ));
             }
-            Self::ReadCheck(_) | Self::ReadAllowedFile { .. } | Self::CancelFileOperation(_) => {
-                return None
-            }
+            Self::ReadCheck(_)
+            | Self::ReadAllowedFile { .. }
+            | Self::CancelFileOperation(_)
+            | Self::AgentsInstructions(_) => return None,
             Self::Project(command) => ("project", command.command_id.as_str()),
             Self::Collaboration(command) => ("collaboration", command.command_id.as_str()),
         };
@@ -1127,6 +1135,9 @@ pub enum DeviceCommandResponse {
     },
     ChatMediaPrepared {
         response: ChatMediaPreparedResponse,
+    },
+    AgentsInstructions {
+        response: rua_core::agents_instruction_discovery::AgentsInstructionDiscovery,
     },
     FileRead {
         response: DeviceFileReadReply,
@@ -1575,6 +1586,20 @@ impl DeviceCommandHandler {
             }
         };
         let route = match &envelope {
+            DeviceCommandEnvelope::AgentsInstructions(command)
+                if validate_session_source(peer, &command.context.source_device_id).is_err()
+                    || command.context.source_device_id.trim().is_empty()
+                    || command.context.target_device_id != self.local_device_id
+                    || command.context.source_device_id == command.context.target_device_id
+                    || command.context.confirmation.is_some()
+                    || command.discovery.device_id != self.local_device_id =>
+            {
+                return DeviceCommandResponse::Rejected {
+                    reason: "invalid_agents_instructions_route".into(),
+                    detail: "AGENTS.md discovery does not match the authenticated Device route"
+                        .into(),
+                };
+            }
             DeviceCommandEnvelope::ReadCheck(request)
             | DeviceCommandEnvelope::CancelFileOperation(request)
             | DeviceCommandEnvelope::ReadAllowedFile { request, .. }
@@ -1682,6 +1707,28 @@ impl DeviceCommandHandler {
             }
             DeviceCommandEnvelope::ChatMediaPrepare(command) => {
                 self.handle_chat_media_prepare(command).await
+            }
+            DeviceCommandEnvelope::AgentsInstructions(command) => {
+                let Some(context) = &self.read_check_context else {
+                    return DeviceCommandResponse::Rejected {
+                        reason: "agents_instructions_unavailable".into(),
+                        detail: "AGENTS.md discovery is unavailable on this Device".into(),
+                    };
+                };
+                match context
+                    .discover_agents_instructions(
+                        &command.context.as_target_read(),
+                        &command.discovery,
+                        tokio_util::sync::CancellationToken::new(),
+                    )
+                    .await
+                {
+                    Ok(response) => DeviceCommandResponse::AgentsInstructions { response },
+                    Err(error) => DeviceCommandResponse::Rejected {
+                        reason: "agents_instructions_unavailable".into(),
+                        detail: error.to_string(),
+                    },
+                }
             }
             DeviceCommandEnvelope::CancelFileOperation(request) => {
                 let reply = if let Some(context) = &self.read_check_context {
@@ -5234,6 +5281,48 @@ pub async fn deliver_read_check_via_session(
     }
 }
 
+pub async fn deliver_agents_instructions_via_session(
+    session_manager: &rua_device_network::DeviceSessionManager,
+    command: &AgentsInstructionCommand,
+    timeout: Duration,
+) -> Result<
+    rua_core::agents_instruction_discovery::AgentsInstructionDiscovery,
+    DeviceCommandDeliveryError,
+> {
+    let response = deliver_envelope_via_session(
+        session_manager,
+        &command.context.target_device_id,
+        DeviceCommandEnvelope::AgentsInstructions(command.clone()),
+        timeout.min(Duration::from_secs(20)),
+    )
+    .await?;
+    match response {
+        DeviceCommandResponse::AgentsInstructions { response } => {
+            let mut remaining = command
+                .discovery
+                .max_bytes
+                .min(rua_core::agents_instruction_discovery::AGENTS_INSTRUCTIONS_MAX_BYTES);
+            for source in &response.sources {
+                if source.device_id != command.context.target_device_id
+                    || source.content.len() > remaining
+                    || !rua_core::execution_directory::is_device_absolute_path(&source.path)
+                    || !rua_core::execution_directory::is_device_absolute_path(
+                        &source.scope_directory,
+                    )
+                {
+                    return Err(DeviceCommandDeliveryError::Rejected {
+                        reason: "invalid_agents_instructions_result".into(),
+                        detail: "AGENTS.md discovery returned an invalid Device, path, or content budget".into(),
+                    });
+                }
+                remaining -= source.content.len();
+            }
+            Ok(response)
+        }
+        response => unexpected_response(response, "AGENTS.md discovery"),
+    }
+}
+
 pub async fn deliver_allowed_file_read_via_session(
     session_manager: &rua_device_network::DeviceSessionManager,
     request: &DeviceReadCheckRequest,
@@ -5580,6 +5669,7 @@ async fn deliver_envelope_via_session(
     // Neither half of a one-time approval check can be repeated after a lost reply.
     let response_bytes = match envelope {
         DeviceCommandEnvelope::ReadCheck(_)
+        | DeviceCommandEnvelope::AgentsInstructions(_)
         | DeviceCommandEnvelope::CancelFileOperation(_)
         | DeviceCommandEnvelope::ReadAllowedFile { .. }
         | DeviceCommandEnvelope::ConversationControl(ConversationControlDeviceCommand {
@@ -5636,6 +5726,7 @@ fn device_command_response_kind(response: &DeviceCommandResponse) -> &'static st
         DeviceCommandResponse::Terminal { .. } => "Terminal",
         DeviceCommandResponse::SyncTransfer { .. } => "Sync Transfer",
         DeviceCommandResponse::ChatMediaPrepared { .. } => "Chat Media Prepared",
+        DeviceCommandResponse::AgentsInstructions { .. } => "AGENTS.md discovery",
         DeviceCommandResponse::FileRead { .. } => "Previously allowed file read",
         DeviceCommandResponse::ReadCheck { .. } => "Read permission check",
         DeviceCommandResponse::Project { .. } => "Project",

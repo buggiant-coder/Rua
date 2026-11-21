@@ -1,3 +1,5 @@
+#[path = "contract_tools/agents_instructions.rs"]
+mod agents_instructions;
 #[path = "contract_tools/config_store_contract.rs"]
 mod config_store_contract;
 #[path = "contract_tools/file_io_contract.rs"]

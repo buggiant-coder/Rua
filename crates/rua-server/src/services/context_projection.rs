@@ -195,18 +195,19 @@ pub fn early_compaction_total_tokens(
                 .get(rua_agent::turn_persistence::RUA_TOKEN_USAGE_METADATA_KEY)
                 .and_then(|usage| usage.get("last_call_usage"))
                 .and_then(|usage| usage.get("prompt_tokens"))
-                .and_then(serde_json::Value::as_u64)?;
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(estimate.calibrated_estimate_tokens);
             Some((estimate, prompt_tokens))
         });
-    let Some((previous, previous_provider_prompt_tokens)) = previous else {
+    let Some((previous, previous_input_tokens)) = previous else {
         return estimated_total;
     };
     if estimated_projected_conversation_tokens >= previous.conversation_estimate_tokens {
-        previous_provider_prompt_tokens.saturating_add(
+        previous_input_tokens.saturating_add(
             estimated_projected_conversation_tokens - previous.conversation_estimate_tokens,
         )
     } else {
-        previous_provider_prompt_tokens.saturating_sub(
+        previous_input_tokens.saturating_sub(
             previous.conversation_estimate_tokens - estimated_projected_conversation_tokens,
         )
     }

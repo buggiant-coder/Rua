@@ -833,7 +833,15 @@ impl AppState {
                 Arc::clone(&device_network_availability),
             ),
         );
+        let instruction_reader = Arc::new(std::sync::OnceLock::new());
         let workspace_context = Arc::new(WorkspaceContext {
+            agents_instruction_loader: Some(Arc::new(
+                crate::services::project_instructions::RuntimeAgentsInstructionLoader {
+                    local: Arc::clone(&instruction_reader),
+                    authority: Arc::downgrade(&conversation_authority),
+                    network: Arc::downgrade(&device_network_cell),
+                },
+            )),
             device_read_access: Some(Arc::new(
                 crate::services::device_read_check::ForegroundReadAccess {
                     authority: Arc::downgrade(&conversation_authority),
@@ -1152,6 +1160,18 @@ impl AppState {
                 .with_agent_cells(Arc::clone(&agent_cells))
                 .with_agent_tools_cells(Arc::clone(&agent_tools_cells)),
         );
+        let target_file_context = Arc::new(
+            crate::services::chat_file_read_admission::TargetFileReadContext::new(
+                data_dir.clone(),
+                local_device_id.clone(),
+                Arc::clone(&project_catalog),
+                Arc::clone(&agent_service),
+                Arc::clone(&tool_catalog),
+                Arc::clone(&tool_config_store),
+                Arc::clone(&security_module),
+            ),
+        );
+        let _ = instruction_reader.set(Arc::clone(&target_file_context));
         conversation_authority.set_chat_completion_notifier(Arc::new(
             crate::services::chat_completion_notification::ChatCompletionNotifier::new(
                 local_device_id.clone(),
@@ -1274,17 +1294,7 @@ impl AppState {
                         data_dir.join("device_commands"),
                         local_device_id.clone(),
                     )
-                    .with_read_check_context(Arc::new(
-                        crate::services::chat_file_read_admission::TargetFileReadContext::new(
-                            data_dir.clone(),
-                            local_device_id,
-                            Arc::clone(&project_catalog),
-                            Arc::clone(&agent_service),
-                            Arc::clone(&tool_catalog),
-                            Arc::clone(&tool_config_store),
-                            Arc::clone(&security_module),
-                        ),
-                    ))
+                    .with_read_check_context(Arc::clone(&target_file_context))
                     .with_remote_history_sync(remote_history_sync_tx.clone())
                     .with_acp_chat_registry(
                         Arc::clone(&acp_chat_registry),

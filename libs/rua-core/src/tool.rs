@@ -209,6 +209,7 @@ pub struct ToolContext {
     pub collaboration_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
 
     pub chat_media_loader: Option<Arc<dyn crate::ChatMediaLoader>>,
+    pub agents_instructions: Option<Arc<dyn crate::agents_instructions::AgentsInstructions>>,
     pub device_read_access: Option<Arc<dyn DeviceReadAccess>>,
     pub device_read_confirmation_wait: Option<DeviceReadConfirmationWait>,
 
@@ -263,6 +264,7 @@ impl Default for ToolContext {
             task_session: None,
             collaboration_runtime: None,
             chat_media_loader: None,
+            agents_instructions: None,
             device_read_access: None,
             device_read_confirmation_wait: None,
             sync_transfer_runtime: None,

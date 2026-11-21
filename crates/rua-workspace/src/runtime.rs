@@ -1715,6 +1715,9 @@ impl WorkspaceRuntime {
             .with_sync_transfer_runtime(Arc::clone(&self.ctx.sync_transfer_runtime))
             .with_plugin_registry(Arc::clone(&self.ctx.plugin_registry))
             .with_active_plugin_registry(Arc::clone(&self.ctx.active_plugin_registry));
+        if let Some(loader) = self.ctx.agents_instruction_loader.clone() {
+            rt = rt.with_agents_instruction_loader(loader);
+        }
         if let Some(ref usage_recorder) = self.ctx.usage_recorder {
             rt = rt.with_usage_recorder(Arc::clone(usage_recorder));
         }

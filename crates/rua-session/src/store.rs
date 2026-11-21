@@ -4674,6 +4674,44 @@ impl WorkspaceSessionStore {
         Ok(record)
     }
 
+    /// Read a Turn's captured notes, including durable notes awaiting the next model boundary.
+    /// Reading does not flush notes into the Message Log or change assistant variants.
+    pub async fn read_runtime_notes_for_turn(
+        &self,
+        chat_id: &str,
+        turn_id: &str,
+    ) -> Result<Vec<crate::runtime_note::RuntimeNote>> {
+        let write_lock = self.chat_write_lock(chat_id);
+        let _guard = write_lock.lock().await;
+        let index = self.load_turn_index(chat_id).await?;
+        let mut notes = Vec::new();
+        if let Some(turn) = index.turns.iter().find(|turn| turn.turn_id == turn_id) {
+            let count = turn.last_sequence.saturating_sub(turn.first_sequence) + 1;
+            for entry in self
+                .read_message_range(chat_id, turn.first_sequence, count as usize)
+                .await?
+            {
+                if entry.turn_id == turn_id {
+                    if let Some(note) =
+                        crate::runtime_note::RuntimeNote::from_message_log_entry(&entry)
+                    {
+                        notes.push(note);
+                    }
+                }
+            }
+        }
+        for pending in self.load_pending_runtime_notes(chat_id).await?.notes {
+            if pending.turn_id == turn_id
+                && !notes
+                    .iter()
+                    .any(|note| note.runtime_note_id == pending.note.runtime_note_id)
+            {
+                notes.push(pending.note);
+            }
+        }
+        Ok(notes)
+    }
+
     pub async fn append_runtime_note(
         &self,
         chat_id: &str,

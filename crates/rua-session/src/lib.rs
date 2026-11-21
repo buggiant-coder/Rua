@@ -49,10 +49,11 @@ pub use projection::{
     ProjectionPlanningInput,
 };
 pub use runtime_note::{
-    CapabilityStateChange, CapabilityStateRuntimeNote, CollaborationResultRuntimeNote,
-    ConversationRuntimeTerminalRuntimeNote, MemorySignalRuntimeNote, RuntimeNote,
-    RuntimeNotePayload, TaskAttemptTerminalRuntimeNote, TaskWatchOutputProjection,
-    TaskWatchOutputRecord, TaskWatchOutputRuntimeNote, RUNTIME_NOTE_MESSAGE_TYPE,
+    AgentsInstructionsRuntimeNote, CapabilityStateChange, CapabilityStateRuntimeNote,
+    CollaborationResultRuntimeNote, ConversationRuntimeTerminalRuntimeNote,
+    MemorySignalRuntimeNote, RuntimeNote, RuntimeNotePayload, TaskAttemptTerminalRuntimeNote,
+    TaskWatchOutputProjection, TaskWatchOutputRecord, TaskWatchOutputRuntimeNote,
+    RUNTIME_NOTE_MESSAGE_TYPE,
 };
 pub use store::{
     turn_origin_is_acp, AssistantResponseVariantRecord, ChatContextSnapshot, ChatMetadata,

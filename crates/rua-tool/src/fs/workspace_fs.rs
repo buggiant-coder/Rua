@@ -73,7 +73,8 @@ impl WorkspaceFs {
         Ok(fs)
     }
 
-    pub(crate) fn public_path(&self, path: &Path) -> PathBuf {
+    /// Express a tool path in the execution device's public namespace without opening it.
+    pub fn public_path(&self, path: &Path) -> PathBuf {
         if let Some((layout, public_root)) = &self.execution {
             if let (Some(guest), Ok(suffix)) =
                 (layout.linux_compat.as_ref(), path.strip_prefix("~"))
@@ -83,6 +84,29 @@ impl WorkspaceFs {
             return public_root.join(path);
         }
         self.root.join(expand_tilde(path))
+    }
+
+    pub(crate) fn public_path_from_host(&self, path: &Path) -> Option<PathBuf> {
+        match &self.execution {
+            Some((layout, _)) => layout.linux_compat.as_ref()?.map_host_path(path),
+            None => {
+                #[cfg(windows)]
+                {
+                    let name = path.to_str()?;
+                    let path = Path::new(name.strip_prefix(r"\\?\").unwrap_or(name));
+                    match path.components().next()? {
+                        std::path::Component::Prefix(prefix)
+                            if matches!(prefix.kind(), std::path::Prefix::Disk(_)) =>
+                        {
+                            Some(path.to_owned())
+                        }
+                        _ => None,
+                    }
+                }
+                #[cfg(not(windows))]
+                Some(path.to_owned())
+            }
+        }
     }
 
     fn backing_path(&self, path: &Path) -> Result<PathBuf, ToolError> {

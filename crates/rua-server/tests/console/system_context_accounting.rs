@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use agent_types::ToolDefinition;
+use agent_types::{ChatRequest, ModelDialogueItem, Role, ToolDefinition};
 use react_agent::tool_disclosure::ToolDisclosureMode;
 use react_agent::toolkit::{
     AgentToolkit, DisclosureClass, MockToolExecutor, ToolDisclosureMeta, ToolSourceKind,
 };
 use react_agent::{
-    ModelInputTokenEstimate, ModelInputTokenEstimateMethod, MODEL_INPUT_TOKEN_ESTIMATE_METADATA_KEY,
+    replace_model_call_section, ModelCallSection, ModelCallSectionKind, ModelInputTokenEstimate,
+    ModelInputTokenEstimateMethod, MODEL_INPUT_TOKEN_ESTIMATE_METADATA_KEY,
 };
 use rua_session::{CheckpointModelIdentity, ContextProjection, MessageLogEntry};
 
@@ -141,6 +142,135 @@ fn early_compaction_applies_conversation_delta_to_the_last_provider_prompt_usage
             100,
         ),
         600
+    );
+}
+
+fn input_estimate_with_instructions(
+    instructions: &str,
+    previous: Option<&MessageLogEntry>,
+) -> ModelInputTokenEstimate {
+    let mut messages = vec![ModelDialogueItem::text(
+        Role::User,
+        "Review the photos in this library. ".repeat(20),
+    )];
+    if let Some(previous) = previous {
+        let mut assistant = ModelDialogueItem::text(Role::Assistant, "done");
+        assistant.metadata = previous.metadata.clone();
+        messages.push(assistant);
+    }
+    replace_model_call_section(
+        &mut messages,
+        Some(ModelCallSection::new(
+            ModelCallSectionKind::ProjectInstructions,
+            instructions,
+        )),
+        ModelCallSectionKind::ProjectInstructions,
+    );
+    let request = ChatRequest::streaming(messages);
+    rua_agent::projection_preparation::calibrated_model_input_token_estimate(
+        &request,
+        &request.messages,
+        &CheckpointModelIdentity {
+            provider: "test-provider".to_string(),
+            model: "test-model".to_string(),
+        },
+        4.0,
+    )
+}
+
+fn message_without_usage(estimate: &ModelInputTokenEstimate) -> MessageLogEntry {
+    let mut message = message_with_usage(
+        &CheckpointModelIdentity {
+            provider: "test-provider".to_string(),
+            model: "test-model".to_string(),
+        },
+        estimate.fast_estimate_tokens,
+        estimate.conversation_estimate_tokens,
+        0,
+    );
+    message
+        .metadata
+        .remove(rua_agent::turn_persistence::RUA_TOKEN_USAGE_METADATA_KEY);
+    message.metadata.insert(
+        MODEL_INPUT_TOKEN_ESTIMATE_METADATA_KEY.to_string(),
+        serde_json::to_value(estimate).expect("serialize estimate"),
+    );
+    message
+}
+
+#[test]
+fn early_compaction_counts_dynamic_agents_without_usage_and_adjusts_only_history() {
+    let resources = "Project resource directories: phone:/photos";
+    let base = input_estimate_with_instructions(resources, None);
+    let agents = input_estimate_with_instructions(
+        &format!(
+            "{resources}\nAGENTS.md:\n{}",
+            "Keep photo originals.\n".repeat(200)
+        ),
+        None,
+    );
+    assert_eq!(
+        agents.conversation_estimate_tokens,
+        base.conversation_estimate_tokens
+    );
+    let agents_tokens = agents.fast_estimate_tokens - base.fast_estimate_tokens;
+    assert!(agents_tokens > 0);
+    let static_tokens = base.fast_estimate_tokens - base.conversation_estimate_tokens;
+    for delta in [-20_i64, 50] {
+        let current_history = (agents.conversation_estimate_tokens as i64 + delta) as u64;
+        let total = |estimate: &ModelInputTokenEstimate| {
+            rua_server::services::context_projection::early_compaction_total_tokens(
+                &projection(vec![message_without_usage(estimate)]),
+                current_history,
+                static_tokens,
+            )
+        };
+        assert_eq!(
+            total(&agents),
+            (agents.calibrated_estimate_tokens as i64 + delta) as u64,
+            "dynamic AGENTS must remain counted when history grows or shrinks"
+        );
+        assert_eq!(total(&agents) - total(&base), agents_tokens);
+    }
+}
+
+#[test]
+fn early_compaction_uses_latest_agents_estimate_when_only_older_call_has_usage() {
+    let resources = "Project resource directories: phone:/photos";
+    let original = input_estimate_with_instructions(resources, None);
+    let previous = message_with_usage(
+        &CheckpointModelIdentity {
+            provider: "test-provider".to_string(),
+            model: "test-model".to_string(),
+        },
+        original.fast_estimate_tokens,
+        original.conversation_estimate_tokens,
+        original.fast_estimate_tokens + 17,
+    );
+    let base = input_estimate_with_instructions(resources, Some(&previous));
+    let agents = input_estimate_with_instructions(
+        &format!(
+            "{resources}\nAGENTS.md:\n{}",
+            "Keep photo originals.\n".repeat(200)
+        ),
+        Some(&previous),
+    );
+    assert_eq!(agents.method, ModelInputTokenEstimateMethod::ProviderDelta);
+    assert_eq!(
+        agents.conversation_estimate_tokens,
+        base.conversation_estimate_tokens
+    );
+    let mut latest = message_without_usage(&agents);
+    latest.sequence = 2;
+    latest.message_id = "latest-with-agents".to_string();
+    assert_eq!(
+        rua_server::services::context_projection::early_compaction_total_tokens(
+            &projection(vec![previous, latest]),
+            agents.conversation_estimate_tokens + 50,
+            base.calibrated_estimate_tokens - base.conversation_estimate_tokens,
+        ),
+        agents.calibrated_estimate_tokens + 50,
+        "older usage must not hide the newly loaded AGENTS section"
     );
 }
 

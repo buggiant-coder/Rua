@@ -1,3 +1,5 @@
+#[path = "unit_hooks/agents_instructions.rs"]
+mod agents_instructions;
 #[path = "unit_hooks/bootstrap.rs"]
 mod bootstrap;
 #[path = "unit_hooks/model_call_context.rs"]

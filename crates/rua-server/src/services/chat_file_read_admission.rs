@@ -80,6 +80,66 @@ impl TargetFileReadContext {
         }
     }
 
+    pub async fn discover_agents_instructions(
+        &self,
+        context: &TargetChatRead<'_>,
+        discovery: &rua_core::agents_instruction_discovery::AgentsInstructionDiscoveryRequest,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> rua_core::Result<rua_core::agents_instruction_discovery::AgentsInstructionDiscovery> {
+        if discovery.device_id != self.local_device_id {
+            return Err(rua_core::RuaError::Validation {
+                message: "AGENTS.md discovery was addressed to another Device".into(),
+            });
+        }
+        let cancel = cancel.child_token();
+        let _cancel_on_drop = cancel.clone().drop_guard();
+        let discover = async {
+            self.checked_chat_configuration(context)
+                .await
+                .map_err(|error| rua_core::RuaError::Runtime {
+                    message: error.to_string(),
+                })?;
+            let fs = rua_tool::WorkspaceFs::for_execution(
+                &self.rua_root,
+                rua_core::runtime_layout::RuntimeLayout::from_current_process(None),
+            )?;
+            rua_tool::agents_instructions::discover_agents_instructions(
+                &fs,
+                discovery,
+                &cancel,
+                |requested, resolved| async move {
+                    let (Some(requested), Some(resolved)) = (requested.to_str(), resolved.to_str())
+                    else {
+                        return false;
+                    };
+                    let args =
+                        serde_json::json!({"device_id":self.local_device_id,"file_path":requested});
+                    let read = TargetChatRead {
+                        address: context.address,
+                        agent_id: context.agent_id,
+                        authority_device_id: context.authority_device_id,
+                        authority_epoch: context.authority_epoch,
+                        configuration_epoch: context.configuration_epoch,
+                        turn_id: context.turn_id,
+                        tool_call_id: context.tool_call_id,
+                        tool_name: "read",
+                        args: &args,
+                    };
+                    // Discovery only uses existing permission; it never opens an approval.
+                    self.inspect_policy(&read, &[requested, resolved], false)
+                        .await
+                        .is_ok_and(|admission| admission == FileReadAdmission::Allowed)
+                },
+            )
+            .await
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(20), discover)
+            .await
+            .map_err(|_| rua_core::RuaError::Timeout {
+                operation: "AGENTS.md discovery".into(),
+            })?
+    }
+
     /// Verify the local replica's authority and captured configuration before contacting the
     /// origin. A stale or unknown authority cannot consume a one-time decision at the origin.
     pub async fn check_authority(

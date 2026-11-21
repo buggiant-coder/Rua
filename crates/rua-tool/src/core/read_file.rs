@@ -14,7 +14,7 @@ use crate::context::{ToolExecutionContext, DEFAULT_READ_LINES};
 use crate::error::ToolError;
 use crate::schema::ToolSpec;
 
-mod opened;
+pub(crate) mod opened;
 pub use opened::OpenedRegularFile;
 
 pub(crate) enum ReadSource {

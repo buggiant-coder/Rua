@@ -137,6 +137,7 @@ export type ConversationProjectionOptions = {
 const ROLE_USER = "user";
 const TYPE_PLUGIN_CALL_OUTPUT = "plugin_call_output";
 const HIDDEN_RUNTIME_NOTE_KINDS = new Set([
+  "agents_instructions",
   "memory_signal",
   "collaboration_result",
 ]);
