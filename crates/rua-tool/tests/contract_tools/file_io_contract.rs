@@ -119,6 +119,155 @@ async fn opened_regular_read_keeps_byte_truncation_and_checks_the_file_and_devic
 
 #[cfg(unix)]
 #[tokio::test]
+async fn approved_file_page_uses_normal_windows_and_only_exports_text_and_numeric_cursors() {
+    use rua_core::tool::{ReadPageByteRange, ReadPageContinuation};
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().canonicalize().unwrap();
+    let path = cwd.join("notes.txt");
+    let open = || ReadFileTool.open_regular_file(&path, &cwd);
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("phone".into());
+    let args = json!({"device_id":"phone","file_path":path,"start_line":2,"limit":1});
+    std::fs::write(&path, "first\r\n来自手机\nlast\n").unwrap();
+    let file = open().await.unwrap();
+    assert!(file.matches_approved_path(&path).await.unwrap());
+    let page = ReadFileTool
+        .read_opened_page(file, args, ctx.clone())
+        .await
+        .unwrap();
+    assert_eq!(page.text, "     2 | 来自手机\n");
+    assert_eq!(
+        page.continuation,
+        Some(ReadPageContinuation::Lines {
+            start_line: 3,
+            limit: 1
+        })
+    );
+    assert_eq!(page.byte_range, None);
+    assert!(!serde_json::to_string(&page)
+        .unwrap()
+        .contains(path.to_str().unwrap()));
+
+    let args = json!({"device_id":"phone","file_path":path});
+    ctx.raw_capture_max_bytes = 20;
+    std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+    let page = ReadFileTool
+        .read_opened_page(open().await.unwrap(), args.clone(), ctx.clone())
+        .await
+        .unwrap();
+    assert_eq!(page.text, "     1 | one\n");
+    assert!(matches!(
+        page.continuation,
+        Some(ReadPageContinuation::Lines { start_line: 2, .. })
+    ));
+
+    ctx.raw_capture_max_bytes = 4;
+    std::fs::write(&path, "风🌅尾").unwrap();
+    let page = ReadFileTool
+        .read_opened_page(open().await.unwrap(), args.clone(), ctx.clone())
+        .await
+        .unwrap();
+    assert_eq!(page.text, "风");
+    assert_eq!(
+        page.byte_range,
+        Some(ReadPageByteRange {
+            start: 0,
+            end_exclusive: 3,
+            total_bytes: 10
+        })
+    );
+    assert_eq!(
+        page.continuation,
+        Some(ReadPageContinuation::Bytes { byte_offset: 3 })
+    );
+    let next = json!({"device_id":"phone","file_path":path,"byte_offset":3});
+    let page = ReadFileTool
+        .read_opened_page(open().await.unwrap(), next, ctx.clone())
+        .await
+        .unwrap();
+    assert_eq!(page.text, "🌅");
+    assert_eq!(
+        page.continuation,
+        Some(ReadPageContinuation::Bytes { byte_offset: 7 })
+    );
+    let partial_scalar = json!({"device_id":"phone","file_path":path,"byte_offset":1});
+    assert!(ReadFileTool
+        .read_opened_page(open().await.unwrap(), partial_scalar, ctx.clone())
+        .await
+        .is_err());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn approved_file_page_bounds_input_and_output_and_rejects_nontext() {
+    use rua_core::tool::MAX_SHARED_READ_TEXT_BYTES;
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().canonicalize().unwrap();
+    let path = cwd.join("notes.txt");
+    let open = || ReadFileTool.open_regular_file(&path, &cwd);
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("phone".into());
+    ctx.raw_capture_max_bytes = usize::MAX;
+    let args = json!({"device_id":"phone","file_path":path});
+    let exact = "a".repeat(MAX_SHARED_READ_TEXT_BYTES);
+    std::fs::write(&path, &exact).unwrap();
+    let page = ReadFileTool
+        .read_opened_page(open().await.unwrap(), args.clone(), ctx.clone())
+        .await
+        .unwrap();
+    assert_eq!(page.text, exact);
+    assert!(page.continuation.is_none());
+
+    for data in [
+        vec![b'a'; MAX_SHARED_READ_TEXT_BYTES + 1],
+        vec![0],
+        vec![0xff],
+    ] {
+        std::fs::write(&path, data).unwrap();
+        assert!(ReadFileTool
+            .read_opened_page(open().await.unwrap(), args.clone(), ctx.clone())
+            .await
+            .is_err());
+    }
+    std::fs::write(&path, vec![b'\n'; MAX_SHARED_READ_TEXT_BYTES + 1]).unwrap();
+    let distant = json!({"device_id":"phone","file_path":path,"start_line":u64::MAX});
+    assert!(ReadFileTool
+        .read_opened_page(open().await.unwrap(), distant, ctx.clone())
+        .await
+        .is_err());
+    std::fs::write(&path, []).unwrap();
+    let page = ReadFileTool
+        .read_opened_page(open().await.unwrap(), args, ctx)
+        .await
+        .unwrap();
+    assert!(page.text.is_empty() && page.continuation.is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn approved_file_path_requires_one_link_and_the_exact_open_name() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().canonicalize().unwrap();
+    let path = cwd.join("notes.txt");
+    let other = cwd.join("other.txt");
+    std::fs::write(&path, "test content").unwrap();
+    let file = ReadFileTool.open_regular_file(&path, &cwd).await.unwrap();
+    assert!(!file.matches_approved_path(&other).await.unwrap());
+    std::fs::hard_link(&path, &other).unwrap();
+    assert!(!file.matches_approved_path(&path).await.unwrap());
+    std::fs::remove_file(&other).unwrap();
+    symlink(&path, &other).unwrap();
+    let linked = ReadFileTool.open_regular_file(&other, &cwd).await.unwrap();
+    assert!(!linked.matches_approved_path(&other).await.unwrap());
+    assert!(!linked.matches_approved_path(&path).await.unwrap());
+    std::fs::rename(&path, cwd.join("moved.txt")).unwrap();
+    std::fs::write(&path, "replacement").unwrap();
+    assert!(!file.matches_approved_path(&path).await.unwrap());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn opened_regular_read_accepts_file_aliases_and_rejects_special_files_and_protected_names() {
     use std::os::unix::fs::symlink;
     use std::path::Path;
@@ -987,6 +1136,128 @@ async fn checked_remote_read_reports_target_policy_without_reading_its_local_nam
 }
 
 #[tokio::test]
+async fn remote_file_page_unavailable_preserves_the_call_and_never_uses_the_local_file() {
+    use rua_core::tool::{DeviceReadAccess, DeviceReadCheck};
+
+    struct Unreadable;
+    #[async_trait::async_trait]
+    impl DeviceReadAccess for Unreadable {
+        async fn check(
+            &self,
+            _: &ToolContext,
+            _: &serde_json::Value,
+        ) -> rua_core::Result<DeviceReadCheck> {
+            Ok(DeviceReadCheck::FileUnavailable)
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("document.txt");
+    std::fs::write(&path, "local-only text").unwrap();
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("desktop".into());
+    ctx.metadata
+        .insert("tool_call_id".into(), json!("unreadable-4"));
+    ctx.device_read_access = Some(std::sync::Arc::new(Unreadable));
+    let result = ReadFileTool
+        .call(json!({"file_path":path,"device_id":"phone"}), ctx)
+        .await
+        .unwrap();
+    assert!(result.is_error && result.text_content().contains("returned no readable text"));
+    assert!(!result.text_content().contains("local-only text"));
+    assert_eq!(result.call_id, "unreadable-4");
+    assert_eq!(
+        result.metadata["file_location"],
+        json!({
+            "device_id":"phone","execution_device_id":"desktop","path":path,
+            "paths":[path],"dispatched":true,"coverage":"unavailable"
+        })
+    );
+}
+
+#[tokio::test]
+async fn remote_file_page_uses_the_original_location_and_validates_the_returned_window() {
+    use rua_core::tool::{
+        DeviceReadAccess, DeviceReadCheck, ReadPageByteRange, ReadPageContinuation, SharedReadPage,
+    };
+    struct Reply(SharedReadPage);
+    #[async_trait::async_trait]
+    impl DeviceReadAccess for Reply {
+        async fn check(
+            &self,
+            _: &ToolContext,
+            _: &serde_json::Value,
+        ) -> rua_core::Result<DeviceReadCheck> {
+            Ok(DeviceReadCheck::Shared(self.0.clone()))
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("example.txt");
+    std::fs::write(&path, "desktop-only content").unwrap();
+    let args = json!({"device_id":"phone","file_path":path,"start_line":2,"limit":1});
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("desktop".into());
+    ctx.metadata.insert("tool_call_id".into(), json!("read-7"));
+    let page = SharedReadPage {
+        text: "     2 | phone text\n".into(),
+        continuation: Some(ReadPageContinuation::Lines {
+            start_line: 3,
+            limit: 1,
+        }),
+        byte_range: None,
+    };
+    ctx.device_read_access = Some(std::sync::Arc::new(Reply(page.clone())));
+    let result = ReadFileTool.call(args.clone(), ctx.clone()).await.unwrap();
+    assert!(!result.is_error);
+    assert_eq!(result.call_id, "read-7");
+    assert_eq!(
+        result.metadata["continuation"],
+        json!({"device_id":"phone","file_path":path,"start_line":3,"limit":1})
+    );
+    assert_eq!(result.metadata["file_location"]["device_id"], "phone");
+    assert_eq!(
+        result.metadata["file_location"]["execution_device_id"],
+        "desktop"
+    );
+    assert_eq!(result.metadata["file_location"]["coverage"], "partial");
+    assert!(result.text_content().contains("phone text"));
+    assert!(!result.text_content().contains("desktop-only content"));
+
+    let byte_args = json!({"device_id":"phone","file_path":path,"byte_offset":0});
+    let invalid_range = SharedReadPage {
+        text: "phone text".into(),
+        byte_range: Some(ReadPageByteRange {
+            start: 1,
+            end_exclusive: 11,
+            total_bytes: 11,
+        }),
+        continuation: None,
+    };
+    let wrong_line = SharedReadPage {
+        continuation: Some(ReadPageContinuation::Lines {
+            start_line: 7,
+            limit: 1,
+        }),
+        ..page.clone()
+    };
+    let oversized = SharedReadPage {
+        text: "x".repeat(65_537),
+        ..page
+    };
+    for (args, sent) in [
+        (byte_args, invalid_range),
+        (args.clone(), wrong_line),
+        (args, oversized),
+    ] {
+        ctx.device_read_access = Some(std::sync::Arc::new(Reply(sent)));
+        let result = ReadFileTool.call(args, ctx.clone()).await.unwrap();
+        assert!(result.is_error);
+        assert_eq!(result.metadata["file_location"]["coverage"], "unavailable");
+        assert!(!result.text_content().contains("phone text"));
+        assert!(!result.text_content().contains("desktop-only content"));
+    }
+}
+
+#[tokio::test]
 async fn selected_other_device_never_opens_or_edits_a_local_namesake() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("photo.txt");
@@ -1256,6 +1527,54 @@ fn android_file_fixture(
 
 #[cfg(unix)]
 #[tokio::test]
+async fn approved_file_read_recognizes_the_android_registered_private_home_alias() {
+    use std::os::unix::fs::symlink;
+    let Some((root, _, cwd)) = android_file_fixture(
+        "RUA_TEST_APPROVED_PRIVATE_HOME",
+        "file_io_contract::approved_file_read_recognizes_the_android_registered_private_home_alias",
+    ) else {
+        return;
+    };
+    let home = root.join("home");
+    let alias = root.join("data/home");
+    symlink(&home, &alias).unwrap();
+    let target = cwd.join("marker.txt");
+    let public = alias.join("workspace/marker.txt");
+    std::fs::write(&target, "phone text").unwrap();
+    let opened = ReadFileTool.open_regular_file(&public, &cwd).await.unwrap();
+    assert_eq!(opened.backing_path(), target);
+    assert_eq!(opened.resolved_public_path(), target);
+    assert!(opened.matches_approved_path(&public).await.unwrap());
+    assert!(!opened.matches_approved_path(&target).await.unwrap());
+    let ctx = ToolContext {
+        local_device_id: Some("phone".into()),
+        working_dir: cwd.clone(),
+        tool_result_store_dir: Some(root.join("tool-results")),
+        ..Default::default()
+    };
+    let page = ReadFileTool
+        .read_opened_page(opened, json!({"file_path":public,"device_id":"phone"}), ctx)
+        .await
+        .unwrap();
+    assert_eq!(page.text, "     1 | phone text\n");
+    symlink("marker.txt", cwd.join("symlink.txt")).unwrap();
+    let link = alias.join("workspace/symlink.txt");
+    let opened = ReadFileTool.open_regular_file(&link, &cwd).await.unwrap();
+    assert!(!opened.matches_approved_path(&link).await.unwrap());
+    symlink("workspace", home.join("shortcut")).unwrap();
+    let other_spelling = alias.join("shortcut/marker.txt");
+    let opened = ReadFileTool
+        .open_regular_file(&other_spelling, &cwd)
+        .await
+        .unwrap();
+    assert!(!opened.matches_approved_path(&other_spelling).await.unwrap());
+    std::fs::hard_link(&target, cwd.join("hardlink.txt")).unwrap();
+    let opened = ReadFileTool.open_regular_file(&public, &cwd).await.unwrap();
+    assert!(!opened.matches_approved_path(&public).await.unwrap());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn opened_regular_read_uses_the_android_guest_to_resolve_file_aliases() {
     use std::path::Path;
     let Some((root, backing, cwd)) = android_file_fixture(
@@ -1273,6 +1592,13 @@ async fn opened_regular_read_uses_the_android_guest_to_resolve_file_aliases() {
         Path::new("/etc/release-marker")
     );
     assert_eq!(opened.backing_path(), backing.join("etc/release-marker"));
+    assert!(!opened.matches_approved_path(public).await.unwrap());
+    let real_public = Path::new("/etc/release-marker");
+    let real_file = ReadFileTool
+        .open_regular_file(real_public, &cwd)
+        .await
+        .unwrap();
+    assert!(real_file.matches_approved_path(real_public).await.unwrap());
     let ctx = ToolContext {
         working_dir: cwd,
         local_device_id: Some("phone".into()),

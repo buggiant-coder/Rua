@@ -10,6 +10,8 @@ use serde_json::Value;
 use super::ReadFileTool;
 use crate::fs::WorkspaceFs;
 
+mod page;
+
 /// A single local file. Policy can inspect its names before handing the same handle to the reader.
 #[derive(Debug)]
 pub struct OpenedRegularFile {
@@ -17,6 +19,7 @@ pub struct OpenedRegularFile {
     resolved_public_path: PathBuf,
     pub(super) backing_path: PathBuf,
     pub(super) file: tokio::fs::File,
+    pub(super) bounded_text: Option<Vec<u8>>,
 }
 
 impl OpenedRegularFile {
@@ -30,6 +33,22 @@ impl OpenedRegularFile {
 
     pub fn backing_path(&self) -> &Path {
         &self.backing_path
+    }
+
+    fn validate_read_call(&self, args: &Value, ctx: &ToolContext) -> rua_core::Result<()> {
+        let device = ctx
+            .local_device_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty());
+        if device.is_none()
+            || args["device_id"].as_str() != device
+            || args["file_path"].as_str() != self.public_path().to_str()
+        {
+            return Err(RuaError::Validation {
+                message: "Read arguments must identify the selected file and local device".into(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -101,6 +120,7 @@ impl ReadFileTool {
                 resolved_public_path,
                 backing_path,
                 file: tokio::fs::File::from_std(file),
+                bounded_text: None,
             })
         })
         .await
@@ -116,18 +136,7 @@ impl ReadFileTool {
         args: Value,
         ctx: ToolContext,
     ) -> rua_core::Result<ToolResult> {
-        let device = ctx
-            .local_device_id
-            .as_deref()
-            .filter(|id| !id.trim().is_empty());
-        if device.is_none()
-            || args["device_id"].as_str() != device
-            || args["file_path"].as_str() != file.public_path().to_str()
-        {
-            return Err(RuaError::Validation {
-                message: "Read arguments must identify the selected file and local device".into(),
-            });
-        }
+        file.validate_read_call(&args, &ctx)?;
         crate::device_file::read_opened_file(args, ctx, file).await
     }
 }

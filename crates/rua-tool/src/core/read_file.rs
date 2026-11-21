@@ -111,6 +111,8 @@ impl ReadFileTool {
                 message: "missing or invalid 'file_path' field".into(),
             })?;
         let already_open = matches!(source, ReadSource::Opened(_));
+        let bounded_page =
+            matches!(&source, ReadSource::Opened(file) if file.bounded_text.is_some());
         if ctx.is_cancelled() {
             return Ok(ToolResult::error(&ctx.trace_id, "Read cancelled"));
         }
@@ -219,8 +221,19 @@ impl ReadFileTool {
             .max(1);
         let tool_limited = limit.is_none() || limit.is_some_and(|n| n > ctx.limits.max_read_lines);
         let file = match source {
-            ReadSource::Opened(file) => file.file,
-            _ => fs::File::open(&resolved).await?,
+            ReadSource::Opened(file) => match file.bounded_text {
+                Some(bytes) if bytes.len() as u64 == metadata.len() => {
+                    tokio_util::either::Either::Left(std::io::Cursor::new(bytes))
+                }
+                Some(_) => {
+                    return Ok(ToolResult::error(
+                        &ctx.trace_id,
+                        "The file size changed during the read.",
+                    ))
+                }
+                None => tokio_util::either::Either::Right(file.file),
+            },
+            _ => tokio_util::either::Either::Right(fs::File::open(&resolved).await?),
         };
         let mut reader = tokio::io::BufReader::new(file);
         let budget = ctx.raw_capture_max_bytes.max(1);
@@ -342,7 +355,7 @@ impl ReadFileTool {
                 next["device_id"] = device_id.into();
                 next["file_path"] = serde_json::json!(public_path);
             }
-            if byte_limited || tool_limited {
+            if (byte_limited || tool_limited) && !bounded_page {
                 let hint = if device_location.is_some() {
                     format!("read({next})")
                 } else {
@@ -374,7 +387,7 @@ impl ReadFileTool {
 }
 
 async fn text_bytes(
-    reader: &mut tokio::io::BufReader<fs::File>,
+    reader: &mut (impl tokio::io::AsyncBufRead + tokio::io::AsyncSeek + Unpin),
     offset: u64,
     length: u64,
     line_bytes: Option<usize>,

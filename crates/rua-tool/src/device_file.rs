@@ -113,6 +113,17 @@ async fn call_local(
                 if let Some(access) = &ctx.device_read_access {
                     use rua_core::tool::DeviceReadCheck;
                     let (status, detail) = match access.check(&ctx, &args).await? {
+                        DeviceReadCheck::Shared(page) => {
+                            return Ok(shared_read_result(&call_id, &args, &ctx, location, page));
+                        }
+                        DeviceReadCheck::FileUnavailable => {
+                            location["dispatched"] = json!(true);
+                            let mut result = ToolResult::error(&call_id, format!(
+                                "The target device attempted this read but returned no readable text. Location {location}."
+                            ));
+                            result.metadata.insert("file_location".into(), location);
+                            return Ok(result);
+                        }
                         DeviceReadCheck::Denied(detail) => ("denied", detail),
                         DeviceReadCheck::Unavailable(detail) => ("unavailable", detail),
                         DeviceReadCheck::ConfirmationRequired => ("confirmation_required", "the target policy requires the user's confirmation for this read".into()),
@@ -273,4 +284,72 @@ async fn call_local(
     }
     result.metadata.insert("file_location".into(), location);
     Ok(result)
+}
+
+fn shared_read_result(
+    call_id: &str,
+    args: &Value,
+    ctx: &ToolContext,
+    mut location: Value,
+    page: rua_core::tool::SharedReadPage,
+) -> ToolResult {
+    use rua_core::tool::ReadPageContinuation;
+    location["dispatched"] = json!(true);
+    let start = args["start_line"].as_u64().unwrap_or(1);
+    let follows_window = match (
+        &page.byte_range,
+        &page.continuation,
+        args.get("byte_offset"),
+    ) {
+        (Some(range), _, Some(offset)) => offset.as_u64() == Some(range.start),
+        (None, _, Some(_)) => false,
+        (Some(range), _, None) if start == 1 => range.start == 0,
+        (_, Some(ReadPageContinuation::Lines { start_line, limit }), _) => {
+            let window = args["limit"]
+                .as_u64()
+                .unwrap_or(crate::context::DEFAULT_READ_LINES as u64)
+                .min(crate::context::DEFAULT_MAX_READ_LINES as u64);
+            *limit == window && *start_line > start && *start_line <= start.saturating_add(window)
+        }
+        _ => true,
+    };
+    let mut result = if !page.is_valid()
+        || !follows_window
+        || page.text.len() > ctx.raw_capture_max_bytes.max(1)
+    {
+        ToolResult::error(
+            call_id,
+            "The file page was invalid or exceeded the limit for this read.",
+        )
+    } else {
+        location["coverage"] = json!(if page.continuation.is_some() {
+            "partial"
+        } else {
+            "requested_scope"
+        });
+        let mut result = ToolResult::text(call_id, page.text);
+        if let Some(range) = page.byte_range {
+            result.metadata.insert("byte_range".into(), json!(range));
+        }
+        if let Some(next) = page.continuation {
+            let mut next = match next {
+                ReadPageContinuation::Lines { start_line, limit } => {
+                    json!({ "start_line":start_line,"limit":limit })
+                }
+                ReadPageContinuation::Bytes { byte_offset } => json!({"byte_offset":byte_offset}),
+            };
+            next["device_id"] = args["device_id"].clone();
+            next["file_path"] = args["file_path"].clone();
+            result.content.push(agent_types::ContentPart::Text {
+                text: format!("\nContinue with read({next})."),
+            });
+            result.metadata.insert("continuation".into(), next);
+        }
+        result
+    };
+    result.content.push(agent_types::ContentPart::Text {
+        text: format!("\nLocation {location}."),
+    });
+    result.metadata.insert("file_location".into(), location);
+    result
 }

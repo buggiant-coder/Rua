@@ -28,11 +28,72 @@ pub const DEFAULT_TOOL_OLD_MAX_BYTES: usize = 3_000;
 
 pub const DEFAULT_TOKEN_ESTIMATE_DIVISOR: f64 = 4.0;
 
+/// Maximum UTF-8 text payload returned to a single foreground file read.
+pub const MAX_SHARED_READ_TEXT_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReadPageContinuation {
+    Lines { start_line: u64, limit: u64 },
+    Bytes { byte_offset: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadPageByteRange {
+    pub start: u64,
+    pub end_exclusive: u64,
+    pub total_bytes: u64,
+}
+
+/// Locations and tool-call identity are supplied by the original invocation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedReadPage {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<ReadPageContinuation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_range: Option<ReadPageByteRange>,
+}
+
+impl SharedReadPage {
+    pub fn is_valid(&self) -> bool {
+        if self.text.len() > MAX_SHARED_READ_TEXT_BYTES || self.text.contains('\0') {
+            return false;
+        }
+        match (&self.byte_range, &self.continuation) {
+            (None, None) => true,
+            (None, Some(ReadPageContinuation::Lines { start_line, limit })) => {
+                !self.text.is_empty()
+                    && (2..=MAX_SHARED_READ_TEXT_BYTES as u64).contains(start_line)
+                    && *limit > 0
+            }
+            (Some(range), next)
+                if range.start <= range.end_exclusive
+                    && range.end_exclusive <= range.total_bytes
+                    && range.end_exclusive - range.start == self.text.len() as u64
+                    && (!self.text.is_empty() || range.total_bytes == 0)
+                    && range.total_bytes <= MAX_SHARED_READ_TEXT_BYTES as u64 =>
+            {
+                if range.end_exclusive == range.total_bytes {
+                    next.is_none()
+                } else {
+                    range.start < range.end_exclusive
+                        && matches!(next, Some(ReadPageContinuation::Bytes { byte_offset }) if *byte_offset == range.end_exclusive)
+                }
+            }
+            _ => false,
+        }
+    }
+}
+
 pub enum DeviceReadCheck {
     Unavailable(String),
     Denied(String),
     ConfirmationRequired,
     Checked,
+    /// The target attempted an authorized read and could not return a text page.
+    FileUnavailable,
+    Shared(SharedReadPage),
 }
 
 /// Per-call timer notifications for the period spent waiting on a visible target approval.
