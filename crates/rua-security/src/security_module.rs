@@ -568,10 +568,9 @@ impl SecurityModule {
                 .find_rule_in_snapshot(&ctx.agent_id, &ctx.approval_owner, effect, &call, &rules)
                 .await;
         }
-        let owner = (effect == crate::PermissionRuleEffect::Allow).then_some(&ctx.approval_owner);
         Ok(self
             .approval_authority
-            .find_permission_rule(&ctx.agent_id, owner, effect, &call)
+            .find_permission_rule(&ctx.agent_id, Some(&ctx.approval_owner), effect, &call)
             .await)
     }
 
@@ -799,7 +798,12 @@ impl ChatScopeRuleStore for FileBackedChatScopeRuleStore {
     }
 
     fn delete_chat_rules(&self, address: &ChatAddress) -> Result<(), String> {
-        remove_permission_rules_file(&self.permission_rules_path(address))
+        let path = self.permission_rules_path(address);
+        if path.exists() && path.with_file_name("session.json").is_file() {
+            // A live Chat must export its cleared state to devices that were offline.
+            return write_stored_permission_rules_to_path(&path, &[]);
+        }
+        remove_permission_rules_file(&path)
     }
 }
 

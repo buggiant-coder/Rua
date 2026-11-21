@@ -799,3 +799,36 @@ fn content_ready_reactivates_only_matching_dormant_blob() {
         0
     );
 }
+
+#[test]
+fn placement_only_wakes_that_chats_rules_waiting_for_its_header() {
+    use rua_sync::inbound_inbox::RetryExhaustion;
+    use rua_sync::SyncError;
+
+    let (_dir, inbox) = temp_inbox();
+    let writer = author(10);
+    let waiting = SyncError::PendingChatPermissionPlacement.to_string();
+    for (peer, key, reason) in [
+        (writer, b"chat-a/rules".as_slice(), waiting.as_str()),
+        (writer, b"chat-b/rules".as_slice(), waiting.as_str()),
+        (author(11), b"chat-a/rules".as_slice(), "blob missing"),
+    ] {
+        inbox
+            .record_remote_insert(peer, key, iroh_blobs::Hash::new(key))
+            .unwrap();
+        inbox
+            .mark_retryable_limited(peer, key, reason, 0, 1, RetryExhaustion::Dormant)
+            .unwrap();
+    }
+    assert_eq!(
+        inbox
+            .reactivate_chat_rules_for_placement(b"chat-a/rules")
+            .unwrap(),
+        1
+    );
+    let ready = inbox.pending_ready(u64::MAX).unwrap();
+    assert_eq!(ready.len(), 1);
+    assert_eq!(ready[0].key, b"chat-a/rules");
+    assert_eq!(ready[0].author, writer);
+    assert_eq!(inbox.count_by_state(InboxState::Dormant).unwrap(), 2);
+}

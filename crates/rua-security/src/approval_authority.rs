@@ -548,7 +548,7 @@ impl ApprovalAuthority {
         self.register_request(input, local_device_id).await.0
     }
 
-    /// The target needs a one-time decision only when this invocation has no earlier card.
+    /// Open the target's confirmation only when this invocation has no earlier card.
     pub async fn create_target_read_confirmation(
         &self,
         mut input: ApprovalRequestInput,
@@ -570,14 +570,21 @@ impl ApprovalAuthority {
         let call =
             PermissionToolCall::new(&input.tool_name, &input.tool_call.args, local_device_id);
         let target_confirmation = input.trigger.source == ApprovalTriggerSource::TargetDevice;
-        let reuse_options = if target_confirmation {
-            Vec::new()
-        } else {
+        let args = &input.tool_call.args;
+        let reuse_options = if !target_confirmation
+            || (input.owner.as_chat_address().is_some()
+                && is_file_read(&input.tool_name, args)
+                && args["device_id"]
+                    .as_str()
+                    .is_some_and(|device| local_chat_read::single_local_read(args, device)))
+        {
             reuse_options_for(
                 &input.owner,
                 &input.tool_name,
-                call.bound_read.as_deref().unwrap_or(&input.tool_call.args),
+                call.bound_read.as_deref().unwrap_or(args),
             )
+        } else {
+            Vec::new()
         };
         let request = ApprovalRequest {
             id: Uuid::new_v4().to_string(),
@@ -838,6 +845,12 @@ impl ApprovalAuthority {
         decision: ApprovalDecision,
         authenticated_user_id: Option<&str>,
     ) -> Result<ApprovalRequest, ApprovalAuthorityError> {
+        // Persistent decisions commit the rule and resolve the card together. Use the
+        // same lock order as readers that inspect both a rule and its source request.
+        let mut rule_cache = match &decision {
+            ApprovalDecision::RunOnce { .. } | ApprovalDecision::Reject { .. } => None,
+            _ => Some(self.reuse_rules.write().await),
+        };
         let mut requests = self.requests.write().await;
         let request = requests
             .get_mut(id)
@@ -863,7 +876,7 @@ impl ApprovalAuthority {
 
         let mut rule_to_insert: Option<ApprovalReuseRule> = None;
         if request.trigger.source == ApprovalTriggerSource::TargetDevice
-            && matches!(decision, ApprovalDecision::RunOnce { .. })
+            && !matches!(decision, ApprovalDecision::Reject { .. })
             && authenticated_user_id.is_none()
         {
             return Err(ApprovalAuthorityError::InvalidState {
@@ -1020,20 +1033,7 @@ impl ApprovalAuthority {
             ),
         };
 
-        request.status = status;
-        request.decided_at = Some(Utc::now());
-        request.decided_by = Some(decided_by);
-        request.authenticated_user_decision =
-            authenticated_user_id.map(|user_id| AuthenticatedUserDecision {
-                user_id: user_id.to_owned(),
-                decision: kind,
-                extra: BTreeMap::new(),
-            });
-        let updated = request.clone();
-
-        if let Some(rule) = rule_to_insert {
-            drop(requests);
-            let mut rules = self.reuse_rules.write().await;
+        if let Some((rule, rules)) = rule_to_insert.zip(rule_cache.as_deref_mut()) {
             match rule.scope {
                 ApprovalReuseScope::Agent => {
                     if let Some(store) = &self.agent_rule_store {
@@ -1060,10 +1060,20 @@ impl ApprovalAuthority {
                     AuthenticatedApprovalDecision::AllowChat
                         | AuthenticatedApprovalDecision::AllowAgent
                 )
-                && updated.tool_name == "read";
-            cache_rule(&mut rules, rule, locally_decided_read);
+                && request.tool_name == "read";
+            cache_rule(rules, rule, locally_decided_read);
         }
 
+        request.status = status;
+        request.decided_at = Some(Utc::now());
+        request.decided_by = Some(decided_by);
+        request.authenticated_user_decision =
+            authenticated_user_id.map(|user_id| AuthenticatedUserDecision {
+                user_id: user_id.to_owned(),
+                decision: kind,
+                extra: BTreeMap::new(),
+            });
+        let updated = request.clone();
         let _ = self.tx.send(ApprovalEvent {
             event: "approval.updated".into(),
             request: updated.clone(),
@@ -1279,37 +1289,8 @@ impl ApprovalAuthority {
         snapshot_rules: &[StoredApprovalReuseRule],
     ) -> Result<Option<ApprovalReuseRule>, String> {
         let mut rules = self.reuse_rules.write().await;
-        let stored_chat_rules = match (owner.as_chat_address(), self.chat_rule_store.as_ref()) {
-            (Some(address), Some(store)) => store.list_chat_rules(address)?,
-            _ => Vec::new(),
-        };
-        if let Some(rule) = rules
-            .values_mut()
-            .map(|entry| &mut entry.rule)
-            .find(|rule| {
-                matches!(
-                    rule.scope,
-                    ApprovalReuseScope::Chat | ApprovalReuseScope::RuntimeSession
-                ) && rule.owner.as_ref() == Some(owner)
-                    && rule.effect == effect
-                    && rule.enabled
-                    && rule.pattern().matches(call)
-            })
-        {
-            rule.hit_count += 1;
-            return Ok(Some(rule.clone()));
-        }
-        if let Some(address) = owner.as_chat_address() {
-            if let Some(store) = &self.chat_rule_store {
-                if let Some(mut rule) = stored_chat_rules.into_iter().find(|rule| {
-                    rule.enabled && rule.effect == effect && rule.pattern().matches(call)
-                }) {
-                    rule.hit_count += 1;
-                    let _ = store.upsert_chat_rule(address, &rule);
-                    cache_rule(&mut rules, rule.clone(), false);
-                    return Ok(Some(rule));
-                }
-            }
+        if let Some(rule) = self.match_owner_rule(owner, effect, call, &mut rules)? {
+            return Ok(Some(rule));
         }
         Ok(snapshot_rules
             .iter()
@@ -1343,19 +1324,13 @@ impl ApprovalAuthority {
         let mut rules = self.reuse_rules.write().await;
         let inspect_stored_read =
             self.agent_rule_store.is_some() && is_file_read(call.tool_name, call.args);
-        if let Some(rule) = rules
-            .values_mut()
-            .map(|entry| &mut entry.rule)
-            .find(|rule| {
-                owner.is_some_and(|owner| rule.scope == owner.reuse_scope())
-                    && rule.owner.as_ref() == owner
-                    && rule.effect == effect
-                    && rule.enabled
-                    && rule.pattern().matches(call)
-            })
-        {
-            rule.hit_count += 1;
-            return Some(rule.clone());
+        if let Some(owner) = owner {
+            if let Some(rule) = self
+                .match_owner_rule(owner, effect, call, &mut rules)
+                .ok()?
+            {
+                return Some(rule);
+            }
         }
 
         if let Some(rule) = rules
@@ -1375,27 +1350,6 @@ impl ApprovalAuthority {
                 let _ = store.upsert_agent_rule(agent_id, rule);
             }
             return Some(rule.clone());
-        }
-
-        if let (Some(store), Some(ApprovalOwner::Chat { address })) = (&self.chat_rule_store, owner)
-        {
-            if let Some(mut rule) = store
-                .list_chat_rules(address)
-                .ok()?
-                .into_iter()
-                .find(|rule| {
-                    rule.scope == ApprovalReuseScope::Chat
-                        && rule.owner.as_ref() == owner
-                        && rule.effect == effect
-                        && rule.enabled
-                        && rule.pattern().matches(call)
-                })
-            {
-                rule.hit_count += 1;
-                let _ = store.upsert_chat_rule(address, &rule);
-                cache_rule(&mut rules, rule.clone(), false);
-                return Some(rule);
-            }
         }
 
         let store = self.agent_rule_store.as_ref()?;
@@ -1468,30 +1422,72 @@ impl ApprovalAuthority {
         rules
     }
 
-    pub async fn list_chat_rules(&self, address: &ChatAddress) -> Vec<ApprovalReuseRule> {
-        let mut rules = self
-            .reuse_rules
-            .read()
-            .await
-            .values()
-            .map(|entry| &entry.rule)
-            .filter(|rule| {
-                rule.scope == ApprovalReuseScope::Chat
-                    && rule.owner.as_ref() == Some(&ApprovalOwner::chat(address.clone()))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-
-        if let Some(store) = &self.chat_rule_store {
-            if let Ok(stored) = store.list_chat_rules(address) {
-                for rule in stored {
-                    if !rules.iter().any(|existing| existing.id == rule.id) {
-                        rules.push(rule);
+    fn current_owner_rules(
+        &self,
+        owner: &ApprovalOwner,
+        cache: &HashMap<String, CachedRule>,
+    ) -> Result<Vec<ApprovalReuseRule>, String> {
+        let scoped = |rule: &ApprovalReuseRule| {
+            rule.owner.as_ref() == Some(owner) && rule.scope == owner.reuse_scope()
+        };
+        if let (Some(store), Some(address)) = (&self.chat_rule_store, owner.as_chat_address()) {
+            let mut rules = store.list_chat_rules(address)?;
+            rules.retain(&scoped);
+            for rule in &mut rules {
+                if let Some(entry) = cache.get(&rule.id).filter(|entry| scoped(&entry.rule)) {
+                    let stored_agent = rule.agent_id.clone();
+                    if rule.agent_id.is_empty() {
+                        rule.agent_id.clone_from(&entry.rule.agent_id);
+                    }
+                    if entry.rule.same_permission(rule) {
+                        rule.hit_count = rule.hit_count.max(entry.rule.hit_count);
+                    } else {
+                        rule.agent_id = stored_agent;
                     }
                 }
             }
+            return Ok(rules);
         }
+        Ok(cache
+            .values()
+            .map(|entry| &entry.rule)
+            .filter(|rule| scoped(rule))
+            .cloned()
+            .collect())
+    }
 
+    fn match_owner_rule(
+        &self,
+        owner: &ApprovalOwner,
+        effect: PermissionRuleEffect,
+        call: &PermissionToolCall<'_>,
+        cache: &mut HashMap<String, CachedRule>,
+    ) -> Result<Option<ApprovalReuseRule>, String> {
+        let Some(mut rule) = self
+            .current_owner_rules(owner, cache)?
+            .into_iter()
+            .find(|rule| rule.enabled && rule.effect == effect && rule.pattern().matches(call))
+        else {
+            return Ok(None);
+        };
+        rule.hit_count += 1;
+        // A lookup must not write an older permission back over a synchronized edit.
+        let entry = cache.entry(rule.id.clone()).or_insert_with(|| CachedRule {
+            rule: rule.clone(),
+            locally_decided_read: false,
+        });
+        if entry.rule.owner.as_ref() == Some(owner) {
+            entry.locally_decided_read &= entry.rule.same_permission(&rule);
+            entry.rule = rule.clone();
+        }
+        Ok(Some(rule))
+    }
+
+    pub async fn list_chat_rules(&self, address: &ChatAddress) -> Vec<ApprovalReuseRule> {
+        let cache = self.reuse_rules.read().await;
+        let mut rules = self
+            .current_owner_rules(&ApprovalOwner::chat(address.clone()), &cache)
+            .unwrap_or_default();
         rules.sort_by_key(|rule| rule.created_at);
         rules
     }

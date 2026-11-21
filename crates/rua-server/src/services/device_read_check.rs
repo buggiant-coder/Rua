@@ -188,23 +188,29 @@ impl DeviceReadAccess for ForegroundReadAccess {
         };
         let mut response = request.send(&transport, ctx).await?;
         drop(permit);
+        let mut permission_saved = false;
         if response.as_ref().is_ok_and(|reply| {
             *reply == DeviceFileReadReply::Policy(DeviceReadCheckReply::ConfirmationRequired)
         }) && record.is_none()
         {
-            let approval_id = match request
+            let one_time_id = match request
                 .wait_for_confirmation(ctx, &approvals, &authority)
                 .await?
             {
-                Ok(id) => id,
+                Ok(decision) => decision,
                 Err(status) => return Ok(status),
             };
-            let permit = authority.begin_read_dispatch(&approval_id, device);
-            request.confirmation = Some(DeviceReadConfirmation {
-                approval_id,
-                dispatch_token: permit.token(),
+            permission_saved = one_time_id.is_none();
+            let permit = one_time_id.map(|id| {
+                let permit = authority.begin_read_dispatch(&id, device);
+                request.confirmation = Some(DeviceReadConfirmation {
+                    approval_id: id,
+                    dispatch_token: permit.token(),
+                });
+                permit
             });
             response = request.send(&transport, ctx).await?;
+            drop(permit);
         }
         Ok(match response {
             Ok(DeviceFileReadReply::FileNotAuthorized) => DeviceReadCheck::FileNotAuthorized,
@@ -237,7 +243,7 @@ impl DeviceReadAccess for ForegroundReadAccess {
                 DeviceReadCheck::Checked
             }
             Ok(DeviceFileReadReply::Policy(DeviceReadCheckReply::ConfirmationRequired)) => {
-                DeviceReadCheck::ConfirmationRequired
+                DeviceReadCheck::ConfirmationRequired { permission_saved }
             }
             Ok(DeviceFileReadReply::Policy(DeviceReadCheckReply::Denied)) => {
                 DeviceReadCheck::Denied(
@@ -352,7 +358,7 @@ impl DeviceReadCheckRequest {
         ctx: &ToolContext,
         approvals: &Arc<rua_security::ApprovalAuthority>,
         authority: &Arc<ConversationAuthority>,
-    ) -> rua_core::Result<Result<String, DeviceReadCheck>> {
+    ) -> rua_core::Result<Result<Option<String>, DeviceReadCheck>> {
         use rua_security::{
             ApprovalOwner, ApprovalRequestInput, ApprovalTrigger, ToolCallSnapshot,
         };
@@ -377,7 +383,9 @@ impl DeviceReadCheckRequest {
             })
             .await
         else {
-            return Ok(Err(DeviceReadCheck::ConfirmationRequired));
+            return Ok(Err(DeviceReadCheck::ConfirmationRequired {
+                permission_saved: false,
+            }));
         };
 
         // The ReAct executor can drop this future on Stop or interjection. Close only its card.
@@ -455,12 +463,18 @@ impl DeviceReadCheckRequest {
                     "the user declined confirmation of this read".into(),
                 ));
             }
-            if decision.status == ApprovalStatus::Approved
-                && decision
+            if decision.status == ApprovalStatus::Approved {
+                match decision
                     .authenticated_user_decision
-                    .is_some_and(|user| user.decision == AuthenticatedApprovalDecision::RunOnce)
-            {
-                return Ok(request.id);
+                    .map(|user| user.decision)
+                {
+                    Some(AuthenticatedApprovalDecision::RunOnce) => return Ok(Some(request.id)),
+                    Some(
+                        AuthenticatedApprovalDecision::AllowChat
+                        | AuthenticatedApprovalDecision::AllowAgent,
+                    ) => return Ok(None),
+                    _ => {}
+                }
             }
             Err(DeviceReadCheck::Unavailable(
                 "the active read did not receive a one-time user confirmation".into(),

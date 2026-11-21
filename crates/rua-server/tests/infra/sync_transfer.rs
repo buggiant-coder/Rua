@@ -320,6 +320,8 @@ fn chat_gap_manifest_skips_identical_files_and_keeps_changed_or_missing_files() 
     std::fs::write(target_chat.join("session.json"), b"same").expect("target session");
     std::fs::write(source_chat.join("turn_index.json"), b"new!").expect("source turn index");
     std::fs::write(target_chat.join("turn_index.json"), b"old!").expect("target turn index");
+    std::fs::write(source_chat.join("permission_rules.json"), b"[{}]").expect("source rule");
+    std::fs::write(target_chat.join("permission_rules.json"), b"[]").expect("cleared rule");
     std::fs::write(source_chat.join("messages/000000000000.jsonl"), b"missing")
         .expect("source message chunk");
 

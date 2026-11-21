@@ -26,6 +26,114 @@ fn evergreen_snapshot_key_joins_chat_id_and_record_name() {
 }
 
 #[tokio::test]
+async fn chat_rule_snapshots_recover_grants_and_clears_from_the_authority() {
+    use rua_sync::evergreen_chat_adapter::validate_permission_rule_author;
+    use rua_sync::identity::DeviceIdentity;
+    use serde_json::json;
+
+    let source = tempfile::tempdir().unwrap();
+    let replica = tempfile::tempdir().unwrap();
+    let a = DeviceIdentity::generate();
+    let b = DeviceIdentity::generate();
+    let a_id = hex::encode(a.device_id_short());
+    let address = ChatAddress::new("rules-chat");
+    let chat_dir = |root: &std::path::Path| {
+        rua_core::ChatStore::resolve(root, address.clone())
+            .root()
+            .join("sessions/rules-chat")
+    };
+    let dir = chat_dir(source.path());
+    std::fs::create_dir_all(&dir).unwrap();
+    let header = json!({"chat_id":"rules-chat","agent_id":"one","title":"Rules",
+        "authority_placement":{"device_id":a_id, "authority_epoch":hlc(100).to_sortable_string(),
+            "base_manifest_hash":format!("sha256:{}", "0".repeat(64))}});
+    std::fs::write(dir.join("session.json"), header.to_string()).unwrap();
+    let rule = json!({"id":"rule-1","label":"Calendar","matcher":{"type":"tool_call","tool_name":"calendar"},
+        "source_approval_id":"decision-1","created_at":"2026-08-20T00:00:00Z","hit_count":0});
+    let path = dir.join("permission_rules.json");
+    std::fs::write(&path, json!([rule]).to_string()).unwrap();
+    let source_adapter = EvergreenChatSyncAdapter::new(source.path().into(), &a_id);
+    let rules_key = file_record_id(&address, "permission_rules");
+    let snapshot = |changes: Vec<rua_sync::opaque_replica_log::SyncChange>| {
+        changes
+            .into_iter()
+            .find(|c| c.record_id == rules_key)
+            .unwrap()
+    };
+    let initial = source_adapter.export_records().await.unwrap();
+    let header_snapshot = initial
+        .iter()
+        .find(|c| c.record_id == file_record_id(&address, "session"))
+        .unwrap()
+        .clone();
+    let grant = snapshot(initial);
+    validate_permission_rule_author(&grant, a.to_iroh_author().id()).unwrap();
+    assert!(validate_permission_rule_author(&grant, b.to_iroh_author().id()).is_err());
+
+    let replica_dir = chat_dir(replica.path());
+    std::fs::create_dir_all(&replica_dir).unwrap();
+    let receiver = Arc::new(EvergreenChatSyncAdapter::new(
+        replica.path().into(),
+        hex::encode(b.device_id_short()),
+    ));
+    let merge = MergeStore::open(&replica.path().join("merge")).unwrap();
+    let mut registry = SyncRegistry::new();
+    registry.register(receiver.clone()).unwrap();
+    assert!(matches!(
+        registry.apply_change(&grant, &merge).await,
+        Err(rua_sync::SyncError::PendingChatPermissionPlacement)
+    ));
+    assert!(!replica_dir.join("permission_rules.json").exists());
+    registry
+        .apply_change(&header_snapshot, &merge)
+        .await
+        .unwrap();
+    let mut later_epoch = grant.clone();
+    later_epoch.payload["authority_epoch"] = json!(hlc(101).to_sortable_string());
+    assert!(matches!(
+        registry.apply_change(&later_epoch, &merge).await,
+        Err(rua_sync::SyncError::PendingChatPermissionPlacement)
+    ));
+    let mut wrong_source = grant.clone();
+    wrong_source.device_id = hex::encode(b.device_id_short());
+    assert!(registry.apply_change(&wrong_source, &merge).await.is_err());
+    let mut wrong_chat = grant.clone();
+    wrong_chat.payload["chat_id"] = json!("unrelated");
+    assert!(registry.apply_change(&wrong_chat, &merge).await.is_err());
+    assert!(!replica_dir.join("permission_rules.json").exists());
+    registry.apply_change(&grant, &merge).await.unwrap();
+    let read_rules = || {
+        serde_json::from_slice::<serde_json::Value>(
+            &std::fs::read(replica_dir.join("permission_rules.json")).unwrap(),
+        )
+        .unwrap()
+    };
+    assert_eq!(read_rules(), json!([rule]));
+    assert!(!receiver
+        .export_records()
+        .await
+        .unwrap()
+        .iter()
+        .any(|c| c.record_id == rules_key));
+
+    let store = rua_security::SecurityConfigStore::new(source.path().to_path_buf());
+    let security = rua_security::SecurityModule::new(Arc::new(store), None);
+    security
+        .approval_authority()
+        .delete_chat_rules(&address)
+        .await
+        .unwrap();
+    let cleared = snapshot(source_adapter.export_records().await.unwrap());
+    assert_eq!(cleared.payload["rules"], json!([]));
+    registry.apply_change(&cleared, &merge).await.unwrap();
+    assert_eq!(read_rules(), json!([]));
+    let mut old_snapshot = grant;
+    old_snapshot.op_id = EvergreenChatSyncAdapter::new_op_id();
+    registry.apply_change(&old_snapshot, &merge).await.unwrap();
+    assert_eq!(read_rules(), json!([]));
+}
+
+#[tokio::test]
 async fn scoped_round_trip_preserves_unified_chat_fields_and_compact_assignment() {
     let source = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir().unwrap();

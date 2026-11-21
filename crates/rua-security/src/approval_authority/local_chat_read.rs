@@ -107,7 +107,7 @@ impl ApprovalAuthority {
     }
 }
 
-fn single_local_read(args: &Value, local_device_id: &str) -> bool {
+pub(super) fn single_local_read(args: &Value, local_device_id: &str) -> bool {
     let Some(fields) = args.as_object() else {
         return false;
     };

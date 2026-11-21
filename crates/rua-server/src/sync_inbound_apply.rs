@@ -705,6 +705,7 @@ struct ReadableInboundChange {
 }
 
 struct InboundApplyContext<'a> {
+    log: &'a rua_sync::opaque_replica_log::OpaqueReplicaLog,
     resource_application: &'a Option<ResourceApplicationContext>,
     device_key: &'a [u8; 32],
     inbox: &'a rua_sync::inbound_inbox::InboundInbox,
@@ -783,6 +784,7 @@ async fn drain_inbound_batch(args: InboundBatchContext<'_>) -> InboundBatchResul
     tokio::pin!(read_results);
 
     let apply_context = InboundApplyContext {
+        log,
         resource_application: &resource_application,
         device_key,
         inbox,
@@ -929,11 +931,19 @@ async fn apply_readable_inbound_change(
             None
         };
         let domain_apply_started = Instant::now();
-        match context
-            .v4_registry
-            .prepare_change(&change, context.merge_store)
-            .await
-        {
+        let prepared = match rua_sync::evergreen_chat_adapter::validate_permission_rule_author(
+            &change,
+            entry.author,
+        ) {
+            Ok(()) => {
+                context
+                    .v4_registry
+                    .prepare_change(&change, context.merge_store)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        match prepared {
             Ok(prepared) => {
                 let domain_apply_ms =
                     rua_sync::stage_diagnostics::millis(domain_apply_started.elapsed());
@@ -1088,12 +1098,7 @@ async fn apply_readable_inbound_change(
                     &apply_result,
                 )
                 .await;
-                publish_chat_placement_sync_wake(
-                    context.chat_activity_wake_hub,
-                    &change,
-                    &apply_result,
-                )
-                .await;
+                publish_chat_placement_sync_wake(context, &change, &apply_result).await;
                 let cache_refresh_ms =
                     rua_sync::stage_diagnostics::millis(cache_refresh_started.elapsed());
                 let cache_refresh_completed_at_ms = rua_sync::stage_diagnostics::wall_now_ms();
@@ -1159,14 +1164,19 @@ async fn apply_readable_inbound_change(
                     }
                     return;
                 }
-                record_limited_retry(
-                    result,
-                    mark_inbound_retryable(
-                        context.inbox,
-                        &entry,
+                let (reason, exhaustion) = match e {
+                    rua_sync::SyncError::PendingChatPermissionPlacement => (
+                        e.to_string(),
+                        rua_sync::inbound_inbox::RetryExhaustion::Dormant,
+                    ),
+                    _ => (
                         format!("v4 apply failed: {e}"),
                         rua_sync::inbound_inbox::RetryExhaustion::Failed,
                     ),
+                };
+                record_limited_retry(
+                    result,
+                    mark_inbound_retryable(context.inbox, &entry, reason, exhaustion),
                 );
                 return;
             }
@@ -1283,7 +1293,7 @@ async fn cleanup_project_after_inbound_delete(
 }
 
 async fn publish_chat_placement_sync_wake(
-    hub: &Option<Arc<crate::services::chat_activity_wake::ChatActivityWakeHub>>,
+    context: &InboundApplyContext<'_>,
     change: &rua_sync::opaque_replica_log::SyncChange,
     apply_result: &rua_sync::sync_registry::RegistryApplyResult,
 ) {
@@ -1300,9 +1310,6 @@ async fn publish_chat_placement_sync_wake(
     {
         return;
     }
-    let Some(hub) = hub else {
-        return;
-    };
     let Ok((address, relative)) =
         rua_sync::evergreen_chat_adapter::parse_file_record_id(&apply_result.record_id)
     else {
@@ -1316,6 +1323,19 @@ async fn publish_chat_placement_sync_wake(
             &change.payload,
         )
     else {
+        return;
+    };
+    let rules_key = context.log.record_entry_key(
+        &apply_result.domain,
+        &rua_sync::evergreen_chat_adapter::file_record_id(&address, "permission_rules"),
+    );
+    if let Err(error) = context
+        .inbox
+        .reactivate_chat_rules_for_placement(&rules_key)
+    {
+        tracing::warn!(%error, "could not wake Chat permission rules after placement");
+    }
+    let Some(hub) = context.chat_activity_wake_hub else {
         return;
     };
     hub.publish(

@@ -9,7 +9,7 @@ use rua_sync::{
 };
 use serde_json::{json, Value};
 
-async fn request(
+pub(super) async fn request(
     state: &AppState,
     method: Method,
     path: &str,
@@ -48,7 +48,7 @@ async fn request(
     serde_json::from_slice(&bytes).unwrap()
 }
 
-async fn logged_in(state: &AppState, user: &str) -> String {
+pub(super) async fn logged_in(state: &AppState, user: &str) -> String {
     state
         .auth
         .register_user(user, "fixture-password", None)

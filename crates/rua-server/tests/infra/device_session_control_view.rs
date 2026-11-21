@@ -10999,7 +10999,31 @@ impl DeviceSessionCommandHandler for InputConfirmationHandler {
     }
 }
 
+struct FileReadRecorder {
+    inner: Arc<DeviceCommandHandler>,
+    requests: Mutex<Vec<rua_server::services::device_read_check::DeviceReadCheckRequest>>,
+}
+
+#[async_trait]
+impl DeviceSessionCommandHandler for FileReadRecorder {
+    async fn handle_command(&self, payload: &[u8]) -> Result<Vec<u8>, String> {
+        self.inner.handle_command(payload).await
+    }
+
+    async fn handle_command_from(&self, peer: &str, payload: &[u8]) -> Result<Vec<u8>, String> {
+        let envelope: serde_json::Value =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        if envelope["command"] == "read_allowed_file" {
+            let request = serde_json::from_value(envelope["payload"]["request"].clone())
+                .map_err(|error| error.to_string())?;
+            self.requests.lock().unwrap().push(request);
+        }
+        self.inner.handle_command_from(peer, payload).await
+    }
+}
+
 struct RemoteInputConfirmationFixture {
+    file_reads: Arc<FileReadRecorder>,
     _source_dir: TempDir,
     _target_dir: TempDir,
     source_state: AppState,
@@ -11044,11 +11068,15 @@ impl RemoteInputConfirmationFixture {
             release_reply: Notify::new(),
             requests: Mutex::new(Vec::new()),
         });
+        let file_reads = Arc::new(FileReadRecorder {
+            inner: source_state.device_command_handler().unwrap(),
+            requests: Mutex::default(),
+        });
         let source = build_runtime(
             171,
             [173; 32],
             vec![peer_entry(172)],
-            Some(source_state.device_command_handler().unwrap()),
+            Some(file_reads.clone()),
             Vec::new(),
             test_config(),
         )
@@ -11066,6 +11094,7 @@ impl RemoteInputConfirmationFixture {
         *source_state.device_network.lock().await = Some(source.runtime.clone());
         *target_state.device_network.lock().await = Some(target.runtime.clone());
         Self {
+            file_reads,
             _source_dir: source_dir,
             _target_dir: target_dir,
             source_state,
@@ -11356,12 +11385,25 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
     // This fixture has no file-delivery authorization for note.txt on the phone.
     let args = serde_json::json!({"device_id": fixture.source.device_id, "file_path": "/fixture/note.txt"});
     let mut calls = [
-        "no-card", "decline", "allow", "cancel", "first", "second", "third", "fourth",
+        "no-card",
+        "decline",
+        "allow",
+        "cancel",
+        "remember-chat",
+        "remember-agent",
+        "first",
+        "second",
+        "third",
+        "fourth",
     ]
     .map(|id| ToolCall::new(id, "read", args.clone()));
-    calls[5].arguments["file_path"] = "/fixture/second-note.txt".into();
-    calls[7].arguments["file_path"] = "/fixture/fourth-note.txt".into();
+    calls[7].arguments["file_path"] = "/fixture/second-note.txt".into();
+    calls[9].arguments["file_path"] = "/fixture/fourth-note.txt".into();
     let (address, turn, epoch, _) = prepare_running_file_calls(&fixture, &calls, &release).await;
+    let ordinary = phone.security.config_store().load("default").unwrap();
+    let mut ask = ordinary.clone();
+    ask.tool_guard.approval_mode = "ask_first".into();
+    let token = approved_phone_file::logged_in(owner, "fixture-user").await;
     let approvals = owner.security.approval_authority();
     let (event_tx, mut events) = tokio::sync::mpsc::channel(32);
     let (cards_tx, mut cards) = tokio::sync::mpsc::unbounded_channel();
@@ -11409,7 +11451,7 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
         ..Default::default()
     };
 
-    for call in &calls[..4] {
+    for call in &calls[..6] {
         let id = call.id.as_str();
         owner
             .conversation_authority
@@ -11439,12 +11481,7 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
             );
             let original = approvals.snapshot_at(&address).await;
             assert!(original.pending.is_empty() && original.resolved.is_empty());
-            let mut policy = phone.security.config_store().load("default").unwrap();
-            policy.tool_guard.approval_mode = "ask_first".into();
-            phone
-                .security
-                .save_and_invalidate("default", &policy)
-                .unwrap();
+            phone.security.save_and_invalidate("default", &ask).unwrap();
             continue;
         }
         let request_id = tokio::select! {
@@ -11463,7 +11500,7 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
         assert_eq!(pending.turn_id, turn.turn_id);
         assert_eq!(pending.tool_call_id, id);
         assert_eq!(pending.tool_call.args, args);
-        assert!(pending.reuse_options.is_empty());
+        assert_eq!(pending.reuse_options.len(), 2);
         assert_eq!(approvals.snapshot_at(&address).await.pending.len(), 1);
         if id == "cancel" {
             stop.send(true).unwrap();
@@ -11472,30 +11509,71 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
                 Err(rua_core::RuaError::Cancelled)
             ));
         } else {
-            let decision = if id == "allow" {
-                ApprovalDecision::RunOnce {
-                    decided_by: "webui".into(),
-                }
+            if matches!(id, "remember-chat" | "remember-agent") {
+                let decision = if id == "remember-agent" {
+                    // Current target policy permits the metadata check on the second attempt.
+                    phone
+                        .security
+                        .save_and_invalidate("default", &ordinary)
+                        .unwrap();
+                    "allow_agent"
+                } else {
+                    "allow_chat"
+                };
+                let option = pending
+                    .reuse_options
+                    .iter()
+                    .find(|option| {
+                        matches!(
+                            (decision, &option.scope),
+                            ("allow_chat", rua_security::ApprovalReuseScope::Chat)
+                                | ("allow_agent", rua_security::ApprovalReuseScope::Agent)
+                        )
+                    })
+                    .unwrap();
+                let reply = approved_phone_file::request(
+                    owner, Method::POST,
+                    &format!("/api/chats/{}/approvals/{request_id}/decide", fixture.chat_id),
+                    serde_json::json!({"decision": decision, "decided_by": "webui", "matcher": option.matcher}),
+                    Some(&token),
+                ).await;
+                assert_eq!(reply["authenticated_user_decision"]["decision"], decision);
             } else {
-                ApprovalDecision::Reject {
-                    decided_by: "webui".into(),
-                }
-            };
-            approvals
-                .decide_for_authenticated_user("default", &pending.id, decision, "fixture-user")
-                .await
-                .unwrap();
+                let decision = if id == "allow" {
+                    ApprovalDecision::RunOnce {
+                        decided_by: "webui".into(),
+                    }
+                } else {
+                    ApprovalDecision::Reject {
+                        decided_by: "webui".into(),
+                    }
+                };
+                approvals
+                    .decide_for_authenticated_user("default", &pending.id, decision, "fixture-user")
+                    .await
+                    .unwrap();
+            }
             let result = tokio::time::timeout(Duration::from_secs(8), &mut operation)
                 .await
                 .unwrap()
                 .unwrap();
             assert_eq!(result.metadata["file_location"]["dispatched"], false);
-            let expected = if id == "allow" { "checked" } else { "denied" };
+            let expected = match id {
+                "allow" | "remember-agent" => "checked",
+                "remember-chat" => {
+                    assert!(result.is_error);
+                    assert!(result
+                        .text_content()
+                        .contains("your read permission was saved"));
+                    "confirmation_required"
+                }
+                _ => "denied",
+            };
             assert_eq!(
                 result.metadata["file_location"]["target_permission_check"],
                 expected
             );
-            if id == "allow" {
+            if matches!(id, "allow" | "remember-agent") {
                 assert!(result.is_error);
                 assert_eq!(
                     result.metadata["file_location"]["file_delivery"],
@@ -11513,6 +11591,22 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
                     .is_none());
             }
         }
+        {
+            let requests = fixture.file_reads.requests.lock().unwrap();
+            let sent: Vec<_> = requests.iter().filter(|r| r.tool_call_id == id).collect();
+            let rechecked = matches!(id, "allow" | "remember-chat" | "remember-agent");
+            assert_eq!(sent.len(), if rechecked { 2 } else { 1 }, "{id}");
+            assert!(sent
+                .iter()
+                .all(|r| r.arguments == args && r.target_device_id == fixture.source.device_id));
+            assert!(sent[0].confirmation.is_none());
+            if rechecked {
+                assert_eq!(sent[1].confirmation.is_some(), id == "allow");
+            }
+        }
+        if id == "remember-agent" {
+            phone.security.save_and_invalidate("default", &ask).unwrap();
+        }
         let snapshot = approvals.snapshot_at(&address).await;
         assert!(snapshot.pending.is_empty());
         let resolved = snapshot
@@ -11523,6 +11617,9 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
         assert_eq!(resolved.len(), 1);
         match id {
             "allow" => assert_eq!(resolved[0].status, AuthorityStatus::Consumed),
+            "remember-chat" | "remember-agent" => {
+                assert_eq!(resolved[0].status, AuthorityStatus::Approved)
+            }
             "decline" => assert_eq!(resolved[0].status, AuthorityStatus::Rejected),
             _ => assert!(matches!(
                 resolved[0].status,
@@ -11530,7 +11627,7 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
             )),
         }
     }
-    for (pair, second_allowed) in calls[4..].chunks_exact(2).zip([false, true]) {
+    for (pair, second_allowed) in calls[6..].chunks_exact(2).zip([false, true]) {
         for call in pair {
             owner
                 .conversation_authority

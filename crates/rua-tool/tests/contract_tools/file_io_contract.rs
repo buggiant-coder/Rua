@@ -1121,7 +1121,9 @@ async fn checked_remote_read_reports_target_policy_without_reading_its_local_nam
     for (reply, status, delivery) in [
         (check(|| DeviceReadCheck::Checked), "checked", None),
         (
-            check(|| DeviceReadCheck::ConfirmationRequired),
+            check(|| DeviceReadCheck::ConfirmationRequired {
+                permission_saved: false,
+            }),
             "confirmation_required",
             None,
         ),

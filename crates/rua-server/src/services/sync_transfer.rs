@@ -703,6 +703,9 @@ pub fn build_gap_transfer_manifest(
         })
         .collect::<Result<HashMap<_, _>, SyncTransferPlanError>>()?;
     manifest.entries.retain(|entry| {
+        if is_chat_permission_file(&entry.relative_path) {
+            return false;
+        }
         let Some((target_size, target_sha256)) = target.get(&entry.relative_path) else {
             return true;
         };
@@ -715,6 +718,12 @@ pub fn build_gap_transfer_manifest(
     });
     manifest.total_bytes = manifest.entries.iter().map(|entry| entry.size).sum();
     Ok(manifest)
+}
+
+// Chat rules have their own versioned Sync record. Copying a Session directory
+// during history repair must not replace a newer rule or undo its revocation.
+fn is_chat_permission_file(relative: &Path) -> bool {
+    relative.components().count() == 2 && relative.ends_with("permission_rules.json")
 }
 
 pub fn plan_receive(
@@ -1188,6 +1197,16 @@ impl SyncTransferBulkHandler {
         }
 
         let manifest = header.to_receive_manifest()?;
+        if header.operation_id.starts_with("conversation-history-gap-")
+            && manifest
+                .entries
+                .iter()
+                .any(|entry| is_chat_permission_file(&entry.relative_path))
+        {
+            return Err(SyncTransferPlanError::Remote(
+                "Chat permission rules must use settings sync".into(),
+            ));
+        }
         let plan = plan_receive(&header.target_dir, &manifest, header.conflict_policy.into())?;
         for entry in &plan.entries {
             if let Some(parent) = entry.temp_path.parent() {

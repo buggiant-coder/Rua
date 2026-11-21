@@ -185,13 +185,24 @@ Cross-device enforcement, capability availability, and resource revocation durin
 active operations still require explicit design. This decision does not equate
 Tool Guard with an OS sandbox or make directory association unrestricted access.
 
-When existing policy requests a user's approval for a file on another Device,
-the user decides in the Chat where they requested the work. For example, the
-computer shows the phone, the file path, and the requested operation. A single
-approval there applies to that call. The phone verifies the decision, its local
-tool policy, and filesystem access before acting. The one decision covers the
-user interaction on both devices. A target denial or an unavailable device is
-reported in the originating Chat.
+Clarified by the user on 2026-11-21. The user grants permission for an operation
+on a real path on a specific target Device. When Rua asks, the signed-in user
+can decide in the originating Chat on any of their bound Devices. For example,
+the computer displays the phone, the full file path, and the requested read.
+The phone verifies that decision. Rua may retain where the approval came from,
+including the Device on which the user clicked, for audit only.
+
+**Run once** applies to the exact Chat, Turn, Tool Call, target Device, and
+arguments. The call consumes the decision once. **Allow in this Chat** and
+**Allow for this Agent** save the selected rule in the user's configuration.
+These rules and their revocations synchronize across the user's bound Devices
+like other settings. Each Device matches the rule by its chosen scope, target
+Device, operation, and arguments, including the real path.
+
+The target enforces its Tool Guard, explicit denials, and operating system
+file access before performing the operation. When those checks pass, one
+decision in the originating Chat suffices. The Chat reports a target denial
+or an unavailable Device to the user.
 
 ### D7 - Agent switches replace the Agent contribution and retain Chat choices
 

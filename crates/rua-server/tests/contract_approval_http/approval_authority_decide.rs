@@ -459,7 +459,7 @@ async fn authority_decide_run_once_does_not_schedule_backend_continuation() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn authority_decide_allow_chat_persists_backend_matcher_rule() {
-    let app = build_app();
+    let app = build_sync_enabled_app();
     let request_id = create_authority_request_for_command(&app, "git status --short").await;
 
     let resp = request(
@@ -501,6 +501,16 @@ async fn authority_decide_allow_chat_persists_backend_matcher_rule() {
         .expect("chat-scope rule");
     assert_eq!(rule.label, "Allow bash(git status *) in this chat");
     assert_eq!(rule.source_approval_id, request_id);
+    let changes = collect_v4_changes(&app.state).await;
+    let change = changes
+        .iter()
+        .find(|change| {
+            change.domain == "evergreen_chat"
+                && change.record_id == format!("chats/{CHAT_ID}/permission_rules")
+        })
+        .expect("the Chat decision published its rules");
+    assert_eq!(change.payload["chat_id"], CHAT_ID);
+    assert_eq!(change.payload["rules"][0]["source_approval_id"], request_id);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

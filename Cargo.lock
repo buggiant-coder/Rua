@@ -9003,6 +9003,7 @@ dependencies = [
  "rua-project",
  "rua-prompts",
  "rua-provider",
+ "rua-security",
  "rua-session",
  "rusqlite",
  "serde",

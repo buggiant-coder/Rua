@@ -63,6 +63,9 @@ pub enum SyncError {
     #[error("invalid sync payload: {0}")]
     InvalidPayload(String),
 
+    #[error("Chat permission rules are waiting for their authority placement")]
+    PendingChatPermissionPlacement,
+
     #[error("pairing: {0}")]
     Pairing(String),
 

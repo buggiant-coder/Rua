@@ -104,6 +104,135 @@ fn open_file_rule_module(root: &std::path::Path) -> rua_security::SecurityModule
 }
 
 #[tokio::test]
+async fn remember_file_permission_confirms_only_after_the_shared_setting_is_saved() {
+    let root = tempfile::tempdir().unwrap();
+    let module = open_file_rule_module(root.path());
+    let authority = module.approval_authority();
+    let args = json!({"device_id": "phone", "file_path": "/photos/example.jpg"});
+    let (input, _) = chat_file_read(args.clone());
+    let request = authority
+        .create_request_for_device(input, Some("desktop"))
+        .await;
+    let option = request
+        .reuse_options
+        .iter()
+        .find(|option| option.scope == ApprovalReuseScope::Agent)
+        .unwrap();
+    let decision = || ApprovalDecision::AllowAgent {
+        decided_by: "webui".into(),
+        matcher: option.matcher.clone(),
+    };
+    let workspaces = root.path().join("workspaces");
+    std::fs::write(&workspaces, "fixture preventing a settings write").unwrap();
+    assert!(matches!(
+        authority
+            .decide_for_authenticated_user("agent-1", &request.id, decision(), "user")
+            .await,
+        Err(ApprovalAuthorityError::Store(_))
+    ));
+    let pending = authority.request(&request.id).await.unwrap();
+    assert_eq!(pending.status, ApprovalStatus::Pending);
+    assert!(pending.authenticated_user_decision.is_none());
+    std::fs::remove_file(workspaces).unwrap();
+    authority
+        .decide_for_authenticated_user("agent-1", &request.id, decision(), "user")
+        .await
+        .unwrap();
+    let reopened = open_file_rule_module(root.path());
+    let address = ChatAddress::new("other-chat");
+    assert!(reopened
+        .approval_authority()
+        .find_reuse_rule_at("agent-1", &address, "read", &args)
+        .await
+        .is_some());
+    let other_device = json!({"device_id": "desktop", "file_path": "/photos/example.jpg"});
+    assert!(reopened
+        .approval_authority()
+        .find_reuse_rule_at("agent-1", &address, "read", &other_device)
+        .await
+        .is_none());
+}
+
+#[tokio::test]
+async fn target_read_card_can_remember_the_exact_rule_in_either_scope() {
+    let args = json!({"device_id": "phone", "file_path": "/fixture/report-*.txt", "limit": 4});
+    for scope in [ApprovalReuseScope::Chat, ApprovalReuseScope::Agent] {
+        let tmp = tempfile::tempdir().unwrap();
+        let module = open_file_rule_module(tmp.path());
+        let authority = module.approval_authority();
+        let (input, ctx) = chat_file_read(args.clone());
+        let card = authority
+            .create_target_read_confirmation(input)
+            .await
+            .unwrap();
+        assert_eq!(card.reuse_options.len(), 2);
+        let matcher = ApprovalReuseMatcher::ToolCall {
+            tool_name: "read".into(),
+            input_params: Some(args.to_string()),
+        };
+        assert!(card
+            .reuse_options
+            .iter()
+            .any(|option| option.scope == scope && option.matcher == matcher));
+        let decision = |matcher| match scope {
+            ApprovalReuseScope::Chat => ApprovalDecision::AllowChat {
+                decided_by: "webui".into(),
+                matcher,
+            },
+            ApprovalReuseScope::Agent => ApprovalDecision::AllowAgent {
+                decided_by: "webui".into(),
+                matcher,
+            },
+            _ => unreachable!(),
+        };
+        assert!(authority
+            .decide(&card.id, decision(matcher.clone()))
+            .await
+            .is_err());
+        let wider = ApprovalReuseMatcher::ToolCall {
+            tool_name: "read".into(),
+            input_params: None,
+        };
+        assert!(authority
+            .decide_for_authenticated_user(&ctx.agent_id, &card.id, decision(wider), "user")
+            .await
+            .is_err());
+        authority
+            .decide_for_authenticated_user(&ctx.agent_id, &card.id, decision(matcher), "user")
+            .await
+            .unwrap();
+        assert!(authority
+            .consume_authenticated_read_once(&ctx, "phone", "/fixture/report-*.txt")
+            .await
+            .is_none());
+        let reloaded = open_file_rule_module(tmp.path());
+        let rules = reloaded.approval_authority();
+        let find = |chat: &str, params: serde_json::Value| {
+            let address = ChatAddress::new(chat);
+            async move {
+                rules
+                    .find_reuse_rule_at("agent-1", &address, "read", &params)
+                    .await
+            }
+        };
+        assert!(find("chat-1", args.clone()).await.is_some());
+        assert_eq!(
+            find("other", args.clone()).await.is_some(),
+            scope == ApprovalReuseScope::Agent
+        );
+        for (key, value) in [
+            ("device_id", json!("desktop")),
+            ("file_path", json!("/fixture/report-1.txt")),
+            ("limit", json!(5)),
+        ] {
+            let mut other = args.clone();
+            other[key] = value;
+            assert!(find("chat-1", other).await.is_none());
+        }
+    }
+}
+
+#[tokio::test]
 async fn file_read_reuse_from_the_approval_card_keeps_the_selected_name_literal() {
     use rua_security::security_module::FileReadAdmission::{Allowed, RequiresUserConfirmation};
     let selected = json!({"device_id": "phone", "file_path": "/fixture/card-*.txt"});

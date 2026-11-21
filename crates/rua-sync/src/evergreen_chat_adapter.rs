@@ -13,6 +13,9 @@ use crate::sidecar::{LwwDecision, RecordState};
 use crate::sync_registry::{sync_cursor_record_id, ApplyOutcome, DomainSyncAdapter};
 use crate::{SyncError, SyncResult};
 
+mod chat_permissions;
+pub use chat_permissions::validate_permission_rule_author;
+
 pub const EVERGREEN_CHAT_DOMAIN: &str = "evergreen_chat";
 pub const EVERGREEN_CHAT_KIND_FILE_UPSERT: &str = "file_upsert";
 pub const EVERGREEN_CHAT_KIND_FILE_DELETE: &str = "file_delete";
@@ -89,6 +92,7 @@ impl EvergreenChatSyncAdapter {
         fallback_hlc: HlcTimestamp,
     ) -> SyncResult<Vec<SyncChange>> {
         let device_id = device_id.into();
+        let permissions = chat_permissions::snapshot(scope_root, address, &device_id)?;
         collect_evergreen_chat_file_snapshots(scope_root, address.chat_id().as_str(), &device_id)
             .into_iter()
             .filter_map(|item| {
@@ -155,6 +159,7 @@ impl EvergreenChatSyncAdapter {
                     },
                 )))
             })
+            .chain(permissions.map(Ok))
             .collect()
     }
 
@@ -249,7 +254,11 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
                 zero_hlc(),
             )?);
         }
-        changes.sort_by(|a, b| a.record_id.cmp(&b.record_id));
+        changes.sort_by(|a, b| {
+            chat_permissions::is_rule_record(a)
+                .cmp(&chat_permissions::is_rule_record(b))
+                .then_with(|| a.record_id.cmp(&b.record_id))
+        });
         Ok(changes)
     }
 
@@ -337,6 +346,12 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
             }
         }
 
+        if relative == chat_permissions::RECORD {
+            if self.project_is_deleted(&address, None) {
+                return Ok(ApplyOutcome::Skipped);
+            }
+            return chat_permissions::apply(&self.scope_root(&address), &address, change);
+        }
         let path = self.path_for_record(&address, relative)?;
         if !is_delete
             && matches!(relative, "session" | "session.json")

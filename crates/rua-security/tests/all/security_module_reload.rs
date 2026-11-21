@@ -491,6 +491,80 @@ async fn corrupted_chat_rules_fail_closed_before_approval_reuse() {
 }
 
 #[tokio::test]
+async fn chat_rule_replacement_and_clear_take_effect_for_an_already_running_module() {
+    use rua_core::ChatAddress;
+    use rua_security::{ApprovalDecision, ApprovalReuseScope, PermissionRuleEffect};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let module = make_module(tmp.path());
+    let mut config = SecurityConfig::default();
+    config.tool_guard.approval_mode = "ask_first".into();
+    module.save_and_invalidate("agent", &config).unwrap();
+    let address = ChatAddress::new("chat");
+    let ctx = ToolCallContext::new("agent", "chat", "calendar_list", serde_json::json!({}))
+        .with_chat_address(address.clone());
+    let captured = ctx.clone().with_security_snapshot(Arc::new(config));
+    let SecurityVerdict::RequiresApproval { request_id, .. } = module.enforce(&ctx, &[]).await
+    else {
+        panic!("expected an approval card");
+    };
+    let authority = module.approval_authority();
+    let card = authority.request(&request_id).await.unwrap();
+    let matcher = card
+        .reuse_options
+        .iter()
+        .find(|option| option.scope == ApprovalReuseScope::Chat)
+        .unwrap()
+        .matcher
+        .clone();
+    authority
+        .decide_for_authenticated_user(
+            "agent",
+            &request_id,
+            ApprovalDecision::AllowChat {
+                decided_by: "webui".into(),
+                matcher,
+            },
+            "user",
+        )
+        .await
+        .unwrap();
+    for call in [&ctx, &captured] {
+        assert!(module.enforce(call, &[]).await.is_allow());
+    }
+
+    let path = tmp.path().join("chats/sessions/chat/permission_rules.json");
+    let mut stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    stored[0]["effect"] = serde_json::json!("deny");
+    rua_config::atomic_write_json(&path, &stored).unwrap();
+    assert_eq!(
+        authority.list_chat_rules(&address).await[0].effect,
+        PermissionRuleEffect::Deny
+    );
+    for call in [&ctx, &captured] {
+        assert!(matches!(
+            module.enforce(call, &[]).await,
+            SecurityVerdict::Deny { .. }
+        ));
+    }
+    // A lookup must never write a cached row or a hit count back over replicated policy.
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path).unwrap()).unwrap(),
+        stored
+    );
+
+    rua_config::atomic_write_json(&path, &serde_json::json!([])).unwrap();
+    assert!(authority.list_chat_rules(&address).await.is_empty());
+    for call in [&ctx, &captured] {
+        assert!(matches!(
+            module.enforce(call, &[]).await,
+            SecurityVerdict::RequiresApproval { .. }
+        ));
+    }
+}
+
+#[tokio::test]
 async fn snapshot_permission_rules_do_not_follow_agent_rule_updates() {
     let tmp = tempfile::tempdir().unwrap();
     let module = make_module(tmp.path());

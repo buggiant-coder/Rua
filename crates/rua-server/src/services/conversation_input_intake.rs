@@ -2172,6 +2172,8 @@ impl ConversationInputIntake {
                 }
                 let should_publish_agent =
                     matches!(decision, ConversationApprovalDecision::AllowAgent { .. });
+                let should_publish_chat =
+                    matches!(decision, ConversationApprovalDecision::AllowChat { .. });
                 let decision = match decision {
                     ConversationApprovalDecision::RunOnce { decided_by } => {
                         rua_security::approval_authority::ApprovalDecision::RunOnce { decided_by }
@@ -2254,6 +2256,11 @@ impl ConversationInputIntake {
                     };
                     reject(reason, error.to_string())
                 })?;
+                if should_publish_chat {
+                    self.session_sync
+                        .emit_evergreen_chat_snapshot(&target.scope_root, &target.address)
+                        .await;
+                }
                 if should_publish_agent {
                     if let Some(security) = self.security.as_ref() {
                         match security.config_store().load(&request.agent_id) {

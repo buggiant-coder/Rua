@@ -333,6 +333,22 @@ impl InboundInbox {
         Ok(())
     }
 
+    /// A Chat header can arrive after all automatic retries of its policy record.
+    pub fn reactivate_chat_rules_for_placement(&self, key: &[u8]) -> Result<usize, SyncError> {
+        self.connection()?
+            .execute(
+                "UPDATE inbound_inbox SET state = 'pending', attempts = 0, updated_at_ms = ?1,
+                retry_after_ms = NULL, last_error = NULL
+             WHERE entry_key = ?2 AND state IN ('retryable', 'dormant') AND last_error = ?3",
+                params![
+                    db_i64(now_ms()),
+                    key,
+                    SyncError::PendingChatPermissionPlacement.to_string()
+                ],
+            )
+            .map_err(|error| sql_error("reactivate Chat rules after placement", error))
+    }
+
     pub fn reactivate_dormant_content(
         &self,
         content_hash: iroh_blobs::Hash,

@@ -89,7 +89,9 @@ impl SharedReadPage {
 pub enum DeviceReadCheck {
     Unavailable(String),
     Denied(String),
-    ConfirmationRequired,
+    ConfirmationRequired {
+        permission_saved: bool,
+    },
     Checked,
     /// The target checked the request and lacked authorization to deliver this file.
     FileNotAuthorized,
