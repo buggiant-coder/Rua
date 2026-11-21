@@ -324,6 +324,7 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             local_device_id: Some(directory.device_id),
             chat_media_loader: runtime.chat_media_loader(),
             device_read_access: None,
+            device_read_confirmation_wait: None,
             agent_id: execution_agent_id,
             session_id: chat_id,
             working_dir,

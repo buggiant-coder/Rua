@@ -11279,35 +11279,24 @@ async fn conversation_control_requires_authenticated_source_and_local_target_for
     fixture.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn read_approval_claim_is_bound_to_the_running_turn_requesting_device_and_one_decision() {
-    use rua_server::services::{
-        conversation_authority::ConversationActiveTurnPhase,
-        device_command_bus::deliver_read_check_via_session,
-        device_read_check::{DeviceReadCheckReply, DeviceReadCheckRequest, DeviceReadConfirmation},
-    };
-    let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
+async fn prepare_running_file_calls(
+    fixture: &RemoteInputConfirmationFixture,
+    calls: &[ToolCall],
+    release: &Arc<Notify>,
+) -> (
+    ChatAddress,
+    rua_server::services::conversation_authority::ConversationActiveTurn,
+    String,
+) {
+    use rua_server::services::conversation_authority::ConversationActiveTurnPhase;
     let owner = &fixture.target_state;
-    let release = Arc::new(Notify::new());
-    let arguments = serde_json::json!({
-        "device_id": fixture.source.device_id, "file_path": "/selected/note.txt", "limit": 3,
-    });
-    let mut other_device = arguments.clone();
-    other_device["device_id"] = serde_json::json!("another-file-device");
-    let calls = [
-        ToolCall::new("read-once", "read", arguments.clone()),
-        ToolCall::new("ordinary", "read", arguments.clone()),
-        ToolCall::new("wrong-device", "read", other_device),
-        ToolCall::new("ended", "read", arguments.clone()),
-        ToolCall::new("policy-check", "read", arguments.clone()),
-    ];
     owner
         .registry
         .get_or_create("default")
         .await
         .unwrap()
         .set_react_runtime(Arc::new(CapturingAgentRuntime {
-            held_tool_calls: Some((calls.to_vec(), Arc::clone(&release))),
+            held_tool_calls: Some((calls.to_vec(), Arc::clone(release))),
             ..Default::default()
         }))
         .await;
@@ -11339,16 +11328,319 @@ async fn read_approval_claim_is_bound_to_the_running_turn_requesting_device_and_
     install_connectable_peer(&fixture.target, &fixture.source);
     *replica.sync_transfer_session_manager.write().unwrap() =
         Some(fixture.source.runtime.session_manager().clone());
+    (
+        address,
+        turn,
+        header.extra["hook_configuration"]["epoch"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn target_only_file_confirmation_waits_in_the_original_chat() {
+    use rua_contract::Tool;
+    use rua_core::tool::ToolContext;
+    use rua_security::{ApprovalDecision, AuthorityStatus};
+    use rua_server::services::device_read_check::ForegroundReadAccess;
+
+    let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
+    let owner = &fixture.target_state;
+    let phone = &fixture.source_state;
+    let release = Arc::new(Notify::new());
+    let args = serde_json::json!({"device_id": fixture.source.device_id, "file_path": "/fixture/note.txt"});
+    let mut calls = [
+        "no-card", "decline", "allow", "cancel", "first", "second", "third", "fourth",
+    ]
+    .map(|id| ToolCall::new(id, "read", args.clone()));
+    calls[5].arguments["file_path"] = "/fixture/second-note.txt".into();
+    calls[7].arguments["file_path"] = "/fixture/fourth-note.txt".into();
+    let (address, turn, epoch) = prepare_running_file_calls(&fixture, &calls, &release).await;
+    let approvals = owner.security.approval_authority();
+    let (event_tx, mut events) = tokio::sync::mpsc::channel(32);
+    let (cards_tx, mut cards) = tokio::sync::mpsc::unbounded_channel();
+    let forward_events = tokio::spawn({
+        let authority = owner.conversation_authority.clone();
+        let address = address.clone();
+        let turn_id = turn.turn_id.clone();
+        let session_id = rua_core::id::SessionId::from(fixture.chat_id.clone());
+        async move {
+            while let Some(event) = events.recv().await {
+                for event in react_agent::agent_event_to_runtime_events(event, &session_id) {
+                    authority
+                        .observe_runtime_event(&address, Some(&turn_id), &event)
+                        .await;
+                    if let RuntimeEvent::ToolApprovalPending {
+                        request_id: Some(id),
+                        ..
+                    } = event
+                    {
+                        cards_tx.send(id).unwrap();
+                    }
+                }
+            }
+        }
+    });
+    let base = ToolContext {
+        agent_id: "default".into(),
+        session_id: fixture.chat_id.clone(),
+        local_device_id: Some(fixture.target.device_id.clone()),
+        device_read_access: Some(Arc::new(ForegroundReadAccess {
+            authority: Arc::downgrade(&owner.conversation_authority),
+            approvals: Arc::downgrade(approvals),
+            network: Arc::downgrade(&owner.device_network),
+        })),
+        event_tx: Some(event_tx),
+        metadata: [
+            (
+                rua_agent::hooks::SECURITY_CHAT_ADDRESS_METADATA_KEY.into(),
+                serde_json::json!(address),
+            ),
+            ("turn_id".into(), serde_json::json!(turn.turn_id)),
+            ("chat_configuration_epoch".into(), serde_json::json!(epoch)),
+        ]
+        .into(),
+        ..Default::default()
+    };
+
+    for call in &calls[..4] {
+        let id = call.id.as_str();
+        owner
+            .conversation_authority
+            .observe_runtime_event(
+                &address,
+                Some(&turn.turn_id),
+                &RuntimeEvent::ToolCall { call: call.clone() },
+            )
+            .await;
+        let (stop, cancel) = tokio::sync::watch::channel(false);
+        let mut ctx = base.clone();
+        ctx.cancel = Some(cancel);
+        ctx.metadata
+            .insert("tool_call_id".into(), serde_json::json!(id));
+        let operation = rua_tool::ReadFileTool.call(args.clone(), ctx);
+        tokio::pin!(operation);
+        if id == "no-card" {
+            let result = operation.await.unwrap();
+            assert_eq!(
+                result.metadata["file_location"]["target_permission_check"],
+                "checked"
+            );
+            assert_eq!(result.metadata["file_location"]["dispatched"], false);
+            let original = approvals.snapshot_at(&address).await;
+            assert!(original.pending.is_empty() && original.resolved.is_empty());
+            let mut policy = phone.security.config_store().load("default").unwrap();
+            policy.tool_guard.approval_mode = "ask_first".into();
+            phone
+                .security
+                .save_and_invalidate("default", &policy)
+                .unwrap();
+            continue;
+        }
+        let request_id = tokio::select! {
+            result = &mut operation => panic!("read finished before the user could decide: {result:?}"),
+            id = tokio::time::timeout(Duration::from_secs(8), cards.recv()) => id.unwrap().unwrap(),
+        };
+        let state = owner
+            .conversation_authority
+            .active_turn(&address)
+            .await
+            .unwrap();
+        assert_eq!(state.phase, rua_server::services::conversation_authority::ConversationActiveTurnPhase::WaitingApproval);
+        let pending = approvals.request(&request_id).await.unwrap();
+        assert_eq!(pending.status, AuthorityStatus::Pending);
+        assert_eq!(pending.owner.as_chat_address(), Some(&address));
+        assert_eq!(pending.turn_id, turn.turn_id);
+        assert_eq!(pending.tool_call_id, id);
+        assert_eq!(pending.tool_call.args, args);
+        assert!(pending.reuse_options.is_empty());
+        assert_eq!(approvals.snapshot_at(&address).await.pending.len(), 1);
+        if id == "cancel" {
+            stop.send(true).unwrap();
+            assert!(matches!(
+                operation.await,
+                Err(rua_core::RuaError::Cancelled)
+            ));
+        } else {
+            let decision = if id == "allow" {
+                ApprovalDecision::RunOnce {
+                    decided_by: "webui".into(),
+                }
+            } else {
+                ApprovalDecision::Reject {
+                    decided_by: "webui".into(),
+                }
+            };
+            approvals
+                .decide_for_authenticated_user("default", &pending.id, decision, "fixture-user")
+                .await
+                .unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(8), &mut operation)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.metadata["file_location"]["dispatched"], false);
+            let expected = if id == "allow" { "checked" } else { "denied" };
+            assert_eq!(
+                result.metadata["file_location"]["target_permission_check"],
+                expected
+            );
+        }
+        let snapshot = approvals.snapshot_at(&address).await;
+        assert!(snapshot.pending.is_empty());
+        let resolved = snapshot
+            .resolved
+            .iter()
+            .filter(|r| r.tool_call_id == id)
+            .collect::<Vec<_>>();
+        assert_eq!(resolved.len(), 1);
+        match id {
+            "allow" => assert_eq!(resolved[0].status, AuthorityStatus::Consumed),
+            "decline" => assert_eq!(resolved[0].status, AuthorityStatus::Rejected),
+            _ => assert!(matches!(
+                resolved[0].status,
+                AuthorityStatus::Superseded | AuthorityStatus::Expired
+            )),
+        }
+    }
+    for (pair, second_allowed) in calls[4..].chunks_exact(2).zip([false, true]) {
+        for call in pair {
+            owner
+                .conversation_authority
+                .observe_runtime_event(
+                    &address,
+                    Some(&turn.turn_id),
+                    &RuntimeEvent::ToolCall { call: call.clone() },
+                )
+                .await;
+        }
+        let start = |call: &ToolCall| {
+            let mut ctx = base.clone();
+            let args = call.arguments.clone();
+            ctx.metadata
+                .insert("tool_call_id".into(), serde_json::json!(call.id));
+            tokio::spawn(async move { rua_tool::ReadFileTool.call(args, ctx).await.unwrap() })
+        };
+        let first = start(&pair[0]);
+        let first_card = tokio::time::timeout(Duration::from_secs(8), cards.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let second = start(&pair[1]);
+        let second_card = tokio::time::timeout(Duration::from_secs(8), cards.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let snapshot = approvals.snapshot_at(&address).await;
+        assert_eq!(snapshot.pending.len(), 2);
+        for (card, call) in [(&first_card, &pair[0]), (&second_card, &pair[1])] {
+            assert!(snapshot.pending.iter().any(|r| &r.id == card
+                && r.tool_call_id == call.id
+                && r.tool_call.args == call.arguments));
+        }
+        approvals
+            .decide_for_authenticated_user(
+                "default",
+                &first_card,
+                ApprovalDecision::RunOnce {
+                    decided_by: "webui".into(),
+                },
+                "fixture-user",
+            )
+            .await
+            .unwrap();
+        let first_result = tokio::time::timeout(Duration::from_secs(8), first)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            first_result.metadata["file_location"]["target_permission_check"],
+            "checked"
+        );
+        owner
+            .conversation_authority
+            .observe_runtime_event(
+                &address,
+                Some(&turn.turn_id),
+                &RuntimeEvent::ToolResult {
+                    result: first_result,
+                },
+            )
+            .await;
+        let pending = approvals.snapshot_at(&address).await.pending;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, second_card);
+        assert!(!second.is_finished());
+        approvals
+            .decide_for_authenticated_user(
+                "default",
+                &second_card,
+                if second_allowed {
+                    ApprovalDecision::RunOnce {
+                        decided_by: "webui".into(),
+                    }
+                } else {
+                    ApprovalDecision::Reject {
+                        decided_by: "webui".into(),
+                    }
+                },
+                "fixture-user",
+            )
+            .await
+            .unwrap();
+        let second_result = tokio::time::timeout(Duration::from_secs(8), second)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            second_result.metadata["file_location"]["target_permission_check"],
+            if second_allowed { "checked" } else { "denied" }
+        );
+        assert!(approvals.snapshot_at(&address).await.pending.is_empty());
+    }
+    let phone_snapshot = phone
+        .security
+        .approval_authority()
+        .snapshot_at(&address)
+        .await;
+    assert!(phone_snapshot.pending.is_empty() && phone_snapshot.resolved.is_empty());
+    drop(base);
+    forward_events.await.unwrap();
+    release.notify_one();
+    fixture.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_approval_claim_is_bound_to_the_running_turn_requesting_device_and_one_decision() {
+    use rua_server::services::{
+        device_command_bus::deliver_read_check_via_session,
+        device_read_check::{DeviceReadCheckReply, DeviceReadCheckRequest, DeviceReadConfirmation},
+    };
+    let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
+    let owner = &fixture.target_state;
+    let release = Arc::new(Notify::new());
+    let arguments = serde_json::json!({
+        "device_id": fixture.source.device_id, "file_path": "/selected/note.txt", "limit": 3,
+    });
+    let mut other_device = arguments.clone();
+    other_device["device_id"] = serde_json::json!("another-file-device");
+    let calls = [
+        ToolCall::new("read-once", "read", arguments.clone()),
+        ToolCall::new("ordinary", "read", arguments.clone()),
+        ToolCall::new("wrong-device", "read", other_device),
+        ToolCall::new("ended", "read", arguments.clone()),
+        ToolCall::new("policy-check", "read", arguments.clone()),
+    ];
+    let (address, turn, epoch) = prepare_running_file_calls(&fixture, &calls, &release).await;
+    let replica = &fixture.source_state;
     let mut check = DeviceReadCheckRequest {
         source_device_id: fixture.target.device_id.clone(),
         target_device_id: fixture.source.device_id.clone(),
         address: address.clone(),
         agent_id: "default".into(),
         authority_epoch: turn.authority_epoch,
-        configuration_epoch: header.extra["hook_configuration"]["epoch"]
-            .as_str()
-            .unwrap()
-            .to_owned(),
+        configuration_epoch: epoch,
         turn_id: turn.turn_id.clone(),
         tool_call_id: "policy-check".into(),
         arguments: arguments.clone(),

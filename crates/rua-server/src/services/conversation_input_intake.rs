@@ -2056,7 +2056,6 @@ impl ConversationInputIntake {
                     || active.authority_device_id != command.target_device_id
                     || active.authority_epoch != command.authority_epoch
                     || active.driver != ConversationDriverKind::Rua
-                    || active.phase != crate::services::conversation_authority::ConversationActiveTurnPhase::RunningTool
                     || command.source_device_id == command.target_device_id
                     || target.execution_agent_id != command.agent_id
                 {
@@ -2075,6 +2074,31 @@ impl ConversationInputIntake {
                     || request.tool_call.args != arguments
                 {
                     return Err(unavailable());
+                }
+                use crate::services::conversation_authority::ConversationActiveTurnPhase::{
+                    RunningTool, Streaming, WaitingApproval,
+                };
+                let target_card =
+                    request.trigger.source == rua_security::ApprovalTriggerSource::TargetDevice;
+                // A sibling's ToolResult can move the Turn to Streaming while this target
+                // check still owns the exact, single-use dispatch permit verified below.
+                if active.phase != RunningTool && !(target_card && active.phase == Streaming) {
+                    if active.phase != WaitingApproval {
+                        return Err(unavailable());
+                    }
+                    let pending = approvals.list_pending_for_address(&target.address).await;
+                    // The turn phase is shared by parallel calls. The last card can also be
+                    // decided just before its waiter restores RunningTool.
+                    let other_waiting = super::device_read_check::other_pending_target_read(
+                        &pending,
+                        &target.execution_agent_id,
+                        &turn_id,
+                        &tool_call_id,
+                    );
+                    let last_target_card = pending.is_empty() && target_card;
+                    if !(other_waiting || last_target_card) {
+                        return Err(unavailable());
+                    }
                 }
                 let path = arguments
                     .get("file_path")
@@ -2170,13 +2194,17 @@ impl ConversationInputIntake {
                         rua_security::approval_authority::ApprovalDecision::Reject { decided_by }
                     }
                 };
-                let _ = authority
-                    .transition_active_turn_phase(
+                // The target-only waiter owns this card's phase, including cancellation and
+                // concurrent cards. A duplicate or rejected decision must not resume the Turn.
+                let managed_phase =
+                    request.trigger.source == rua_security::ApprovalTriggerSource::TargetDevice;
+                if !managed_phase {
+                    let _ = authority.transition_active_turn_phase(
                         &target.address,
                         Some(&request.turn_id),
                         crate::services::conversation_authority::ConversationActiveTurnPhase::RunningTool,
-                    )
-                    .await;
+                    ).await;
+                }
                 let outcome = match login_user {
                     Some(user) => {
                         approval_authority
@@ -2194,7 +2222,8 @@ impl ConversationInputIntake {
                             .await
                     }
                 };
-                if outcome.is_err()
+                if !managed_phase
+                    && outcome.is_err()
                     && approval_authority
                         .request(&approval_id)
                         .await
@@ -6909,6 +6938,7 @@ impl ConversationInputIntake {
         let session_sync = self.session_sync.clone();
         let conversation_authority = self.conversation_authority.clone();
         let panic_conversation_authority = self.conversation_authority.clone();
+        let approval_authority = self.approval_authority.clone();
         let active_stream_broadcast_hub = self.active_stream_broadcast_hub.clone();
         let session_sync_for_producer = Some(self.session_sync.clone());
         let remote_input_delivery = Some(self.remote_input_delivery.clone());
@@ -6934,6 +6964,7 @@ impl ConversationInputIntake {
                 execution,
                 active_stream_broadcast_hub,
                 conversation_authority,
+                approval_authority,
                 candidate_completion_runtime,
                 session_sync_for_producer,
                 remote_input_delivery,

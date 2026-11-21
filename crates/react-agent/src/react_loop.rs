@@ -144,10 +144,7 @@ Do not claim the goal is complete or promise to execute another action in this t
 type RunningToolFuture = std::pin::Pin<
     Box<
         dyn std::future::Future<
-                Output = std::result::Result<
-                    std::result::Result<ToolResult, AgentError>,
-                    tokio::time::error::Elapsed,
-                >,
+                Output = std::result::Result<std::result::Result<ToolResult, AgentError>, ()>,
             > + Send,
     >,
 >;
@@ -2149,22 +2146,35 @@ async fn execute_approved_tool(
     }
     let executor_for_exec = executor.clone();
     let call_for_exec = call.clone();
-    let enriched_ctx_for_exec = enriched_ctx.clone();
-    let mut tool_future: RunningToolFuture = if transfer_eligible || timeout.is_zero() {
-        Box::pin(async move {
-            Ok(executor_for_exec
-                .execute(&call_for_exec, &enriched_ctx_for_exec)
-                .await)
-        })
-    } else {
-        Box::pin(async move {
-            tokio::time::timeout(
-                timeout,
-                executor_for_exec.execute(&call_for_exec, &enriched_ctx_for_exec),
-            )
-            .await
-        })
-    };
+    let manages_wait = !already_task_owned
+        && !transfer_eligible
+        && call.name == "read"
+        && enriched_ctx
+            .device_read_access
+            .as_ref()
+            .is_some_and(|access| access.manages_confirmation_wait(&enriched_ctx, &call.arguments));
+    let mut tool_future: RunningToolFuture = Box::pin(async move {
+        if transfer_eligible || timeout.is_zero() {
+            return Ok(executor_for_exec
+                .execute(&call_for_exec, &enriched_ctx)
+                .await);
+        }
+        if manages_wait {
+            let (wait, timer) = rua_core::tool::DeviceReadConfirmationWait::timer(timeout);
+            enriched_ctx.device_read_confirmation_wait = Some(wait);
+            return tokio::select! {
+                biased;
+                _ = timer => Err(()),
+                result = executor_for_exec.execute(&call_for_exec, &enriched_ctx) => Ok(result),
+            };
+        }
+        tokio::time::timeout(
+            timeout,
+            executor_for_exec.execute(&call_for_exec, &enriched_ctx),
+        )
+        .await
+        .map_err(|_| ())
+    });
     let foreground_wait = async move {
         match foreground_wait {
             Some(duration) => tokio::time::sleep(duration).await,

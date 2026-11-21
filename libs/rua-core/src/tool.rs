@@ -35,8 +35,63 @@ pub enum DeviceReadCheck {
     Checked,
 }
 
+/// Per-call timer notifications for the period spent waiting on a visible target approval.
+#[derive(Clone)]
+pub struct DeviceReadConfirmationWait(
+    tokio::sync::mpsc::UnboundedSender<(bool, tokio::time::Instant)>,
+);
+
+#[must_use]
+pub struct DeviceReadConfirmationWaitGuard(
+    tokio::sync::mpsc::UnboundedSender<(bool, tokio::time::Instant)>,
+);
+
+impl DeviceReadConfirmationWait {
+    pub fn timer(timeout: std::time::Duration) -> (Self, impl std::future::Future<Output = ()>) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut deadline = tokio::time::Instant::now() + timeout;
+        (Self(tx), async move {
+            let mut started = None;
+            loop {
+                tokio::select! {
+                    biased;
+                    event = rx.recv() => match event {
+                        Some((true, at)) if at >= deadline && started.is_none() => return,
+                        Some((true, at)) => { started.get_or_insert(at); }
+                        Some((false, at)) => {
+                            if let Some(start) = started.take() { deadline += at - start; }
+                        }
+                        None => { tokio::time::sleep_until(deadline).await; return; }
+                    },
+                    _ = tokio::time::sleep_until(deadline), if started.is_none() => return,
+                }
+            }
+        })
+    }
+
+    pub fn begin(&self) -> DeviceReadConfirmationWaitGuard {
+        let _ = self.0.send((true, tokio::time::Instant::now()));
+        DeviceReadConfirmationWaitGuard(self.0.clone())
+    }
+}
+
+impl Drop for DeviceReadConfirmationWaitGuard {
+    fn drop(&mut self) {
+        let _ = self.0.send((false, tokio::time::Instant::now()));
+    }
+}
+
 #[async_trait::async_trait]
 pub trait DeviceReadAccess: Send + Sync {
+    /// The foreground metadata check bounds its network requests and can wait for a user decision.
+    fn manages_confirmation_wait(
+        &self,
+        _ctx: &ToolContext,
+        _arguments: &serde_json::Value,
+    ) -> bool {
+        false
+    }
+
     /// Ask the file's Device to check this foreground Chat's requested read.
     async fn check(
         &self,
@@ -67,6 +122,7 @@ pub struct ToolContext {
 
     pub chat_media_loader: Option<Arc<dyn crate::ChatMediaLoader>>,
     pub device_read_access: Option<Arc<dyn DeviceReadAccess>>,
+    pub device_read_confirmation_wait: Option<DeviceReadConfirmationWait>,
 
     pub sync_transfer_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
 
@@ -120,6 +176,7 @@ impl Default for ToolContext {
             collaboration_runtime: None,
             chat_media_loader: None,
             device_read_access: None,
+            device_read_confirmation_wait: None,
             sync_transfer_runtime: None,
             event_tx: None,
             execution_output_max_tokens: DEFAULT_TOOL_EXECUTION_OUTPUT_MAX_TOKENS,

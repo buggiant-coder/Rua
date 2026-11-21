@@ -643,11 +643,24 @@ impl ConversationAuthority {
         expected_turn_id: Option<&str>,
         phase: ConversationActiveTurnPhase,
     ) -> Option<ConversationActiveTurn> {
+        self.transition_active_turn_phase_if(address, expected_turn_id, phase, |_| true)
+            .await
+    }
+
+    pub(super) async fn transition_active_turn_phase_if(
+        &self,
+        address: &ChatAddress,
+        expected_turn_id: Option<&str>,
+        phase: ConversationActiveTurnPhase,
+        allowed: impl FnOnce(&ConversationActiveTurn) -> bool,
+    ) -> Option<ConversationActiveTurn> {
         let gate = self.transition_gate_at(address);
         let _transition = gate.lock().await;
         let mut active_turns = self.active_turns.write().await;
         let active_turn = active_turns.get_mut(address)?;
-        if expected_turn_id.is_some_and(|turn_id| active_turn.turn_id != turn_id) {
+        if expected_turn_id.is_some_and(|turn_id| active_turn.turn_id != turn_id)
+            || !allowed(active_turn)
+        {
             return None;
         }
         if active_turn.phase == ConversationActiveTurnPhase::Stopping {

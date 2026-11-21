@@ -474,6 +474,91 @@ async fn foreground_only_timeout_signals_tool_context_cancellation() {
         .expect("foreground-only timeout must reach ToolContext cancellation");
 }
 
+#[tokio::test(start_paused = true)]
+async fn device_read_deadline_counts_network_time_on_both_sides_of_user_confirmation() {
+    use rua_core::tool::{DeviceReadAccess, DeviceReadCheck, ToolContext};
+    use serde_json::Value;
+
+    struct TimedRead {
+        before: Duration,
+        human_wait: Duration,
+        after: Duration,
+    }
+
+    #[async_trait]
+    impl DeviceReadAccess for TimedRead {
+        fn manages_confirmation_wait(&self, _ctx: &ToolContext, _args: &Value) -> bool {
+            true
+        }
+
+        async fn check(
+            &self,
+            ctx: &ToolContext,
+            _args: &Value,
+        ) -> rua_core::Result<DeviceReadCheck> {
+            tokio::time::sleep(self.before).await;
+            if !self.human_wait.is_zero() {
+                let _waiting = ctx.device_read_confirmation_wait.as_ref().unwrap().begin();
+                tokio::time::sleep(self.human_wait).await;
+            }
+            tokio::time::sleep(self.after).await;
+            Ok(DeviceReadCheck::Checked)
+        }
+    }
+
+    let mut toolkit = AgentToolkit::new();
+    toolkit.register_contract_tool(
+        rua_tool::ReadFileTool::spec().to_tool_definition(),
+        Arc::new(rua_tool::ReadFileTool),
+    );
+    let call = ToolCall::new(
+        "read-phone",
+        "read",
+        serde_json::json!({
+            "device_id": "phone", "file_path": "/photos/note.txt"
+        }),
+    );
+    let hook: Arc<dyn react_agent::AgentHook> = Arc::new(NoopHook);
+    let (events, _stream) = tokio::sync::mpsc::channel(32);
+    for (before, human_wait, after, timeout_expected) in
+        [(1, 20, 1, false), (6, 0, 0, true), (3, 20, 3, true)]
+    {
+        let ctx = ToolContext {
+            local_device_id: Some("desktop".into()),
+            device_read_access: Some(Arc::new(TimedRead {
+                before: Duration::from_secs(before),
+                human_wait: Duration::from_secs(human_wait),
+                after: Duration::from_secs(after),
+            })),
+            ..Default::default()
+        };
+        let result = execute_single_tool(
+            &call,
+            &toolkit,
+            &hook,
+            &ctx,
+            &Default::default(),
+            0,
+            &CancellationToken::new(),
+            Duration::from_secs(5),
+            &events,
+        )
+        .await
+        .unwrap();
+        if timeout_expected {
+            assert!(
+                result.text_content().contains("timed out after 5s"),
+                "{result:?}"
+            );
+        } else {
+            assert_eq!(
+                result.metadata["file_location"]["target_permission_check"],
+                "checked"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn fatal_parallel_tool_cancels_and_drains_sibling_tasks() {
     let slow_completed = Arc::new(AtomicUsize::new(0));

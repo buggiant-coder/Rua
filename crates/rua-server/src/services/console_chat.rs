@@ -5584,6 +5584,7 @@ pub(crate) async fn drive_conversation_producer(
         Arc<crate::services::active_stream_broadcast::ActiveStreamBroadcastHub>,
     >,
     conversation_authority: Option<Arc<ConversationAuthority>>,
+    approval_authority: Option<Arc<rua_security::ApprovalAuthority>>,
     candidate_completion_runtime: Option<
         Arc<crate::services::candidate_completion::CandidateCompletionRuntime>,
     >,
@@ -5970,7 +5971,15 @@ pub(crate) async fn drive_conversation_producer(
                         if external_runtime_events && !matches!(rt_event, RuntimeEvent::End { .. }) {
                             publish_external_event(live_turn_id.as_deref(), &rt_event).await;
                         }
-                        if let Some(authority) = conversation_authority.as_ref() {
+                        // Target checks transition when the card opens and closes. Its delayed
+                        // display event must not undo a user's decision to resume the tool.
+                        let managed_approval = match (&rt_event, &approval_authority) {
+                            (RuntimeEvent::ToolApprovalPending {request_id: Some(id), ..}, Some(approvals)) =>
+                                approvals.request(id).await.is_some_and(|request| request.trigger.source
+                                    == rua_security::ApprovalTriggerSource::TargetDevice),
+                            _ => false,
+                        };
+                        if let Some(authority) = conversation_authority.as_ref().filter(|_| !managed_approval) {
                             let _ = authority
                                 .observe_runtime_event(
                                     &address,

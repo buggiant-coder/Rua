@@ -111,6 +111,7 @@ impl ToolExecutionContext {
             collaboration_runtime: None,
             chat_media_loader: None,
             device_read_access: None,
+            device_read_confirmation_wait: None,
             sync_transfer_runtime: None,
             event_tx: None,
             execution_output_max_tokens: self.execution_output_max_tokens,

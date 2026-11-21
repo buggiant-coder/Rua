@@ -2812,6 +2812,7 @@ impl AgentRuntime for ReactAgentRuntime {
                 collaboration_runtime: self.collaboration_runtime.clone(),
                 chat_media_loader: self.chat_media_loader.clone(),
                 device_read_access: self.device_read_access.clone(),
+                device_read_confirmation_wait: None,
                 sync_transfer_runtime: self.sync_transfer_runtime.clone(),
                 event_tx: None,
                 execution_output_max_tokens,

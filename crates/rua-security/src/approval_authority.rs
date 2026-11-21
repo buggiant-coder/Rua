@@ -57,6 +57,7 @@ pub enum ApprovalTriggerSource {
     ApprovalMode,
     ToolGuard,
     FileGuard,
+    TargetDevice,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -520,17 +521,40 @@ impl ApprovalAuthority {
         input: ApprovalRequestInput,
         local_device_id: Option<&str>,
     ) -> ApprovalRequest {
+        self.register_request(input, local_device_id).await.0
+    }
+
+    /// The target needs a one-time decision only when this invocation has no earlier card.
+    pub async fn create_target_read_confirmation(
+        &self,
+        mut input: ApprovalRequestInput,
+    ) -> Option<ApprovalRequest> {
+        input.trigger.source = ApprovalTriggerSource::TargetDevice;
+        let (request, created) = self.register_request(input, None).await;
+        created.then_some(request)
+    }
+
+    async fn register_request(
+        &self,
+        input: ApprovalRequestInput,
+        local_device_id: Option<&str>,
+    ) -> (ApprovalRequest, bool) {
         let _registration = match input.owner.as_chat_address() {
             Some(address) => Some(self.hold_chat_registrations(address).await),
             None => None,
         };
         let call =
             PermissionToolCall::new(&input.tool_name, &input.tool_call.args, local_device_id);
-        let reuse_options = reuse_options_for(
-            &input.owner,
-            &input.tool_name,
-            call.bound_read.as_deref().unwrap_or(&input.tool_call.args),
-        );
+        let target_confirmation = input.trigger.source == ApprovalTriggerSource::TargetDevice;
+        let reuse_options = if target_confirmation {
+            Vec::new()
+        } else {
+            reuse_options_for(
+                &input.owner,
+                &input.tool_name,
+                call.bound_read.as_deref().unwrap_or(&input.tool_call.args),
+            )
+        };
         let request = ApprovalRequest {
             id: Uuid::new_v4().to_string(),
             agent_id: input.agent_id,
@@ -548,15 +572,23 @@ impl ApprovalAuthority {
             reuse_options,
         };
 
-        self.requests
-            .write()
-            .await
-            .insert(request.id.clone(), request.clone());
+        let mut requests = self.requests.write().await;
+        if target_confirmation {
+            if let Some(existing) = requests.values().find(|prior| {
+                prior.owner == request.owner
+                    && prior.turn_id == request.turn_id
+                    && prior.tool_call_id == request.tool_call_id
+            }) {
+                return (existing.clone(), false);
+            }
+        }
+        requests.insert(request.id.clone(), request.clone());
+        drop(requests);
         let _ = self.tx.send(ApprovalEvent {
             event: "approval.created".into(),
             request: request.clone(),
         });
-        request
+        (request, true)
     }
 
     pub async fn create_denied_request(&self, input: ApprovalRequestInput) -> ApprovalRequest {
@@ -678,11 +710,20 @@ impl ApprovalAuthority {
     }
 
     async fn clear_by_owner(&self, owner: &ApprovalOwner) -> usize {
+        self.supersede_pending(|request| &request.owner == owner)
+            .await
+    }
+
+    pub async fn supersede_request(&self, id: &str) {
+        self.supersede_pending(|request| request.id == id).await;
+    }
+
+    async fn supersede_pending(&self, selected: impl Fn(&ApprovalRequest) -> bool) -> usize {
         let mut requests = self.requests.write().await;
         let now = Utc::now();
         let ids = requests
             .values()
-            .filter(|request| request.owner == *owner && request.status == ApprovalStatus::Pending)
+            .filter(|request| selected(request) && request.status == ApprovalStatus::Pending)
             .map(|request| request.id.clone())
             .collect::<Vec<_>>();
         let mut cleared = Vec::new();
@@ -797,6 +838,16 @@ impl ApprovalAuthority {
         }
 
         let mut rule_to_insert: Option<ApprovalReuseRule> = None;
+        if request.trigger.source == ApprovalTriggerSource::TargetDevice
+            && matches!(decision, ApprovalDecision::RunOnce { .. })
+            && authenticated_user_id.is_none()
+        {
+            return Err(ApprovalAuthorityError::InvalidState {
+                id: id.into(),
+                current: request.status,
+                attempted: "confirm a target Device check without an authenticated user",
+            });
+        }
         let (status, decided_by, kind) = match decision {
             ApprovalDecision::RunOnce { decided_by } => (
                 ApprovalStatus::Approved,
@@ -1071,6 +1122,7 @@ impl ApprovalAuthority {
                 && request.tool_call_id == tool_call_id
                 && request.tool_name == tool_name
                 && &request.tool_call.args == arguments
+                && request.trigger.source != ApprovalTriggerSource::TargetDevice
                 && request.status == ApprovalStatus::Approved
         })
     }
