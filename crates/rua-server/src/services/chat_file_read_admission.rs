@@ -33,6 +33,7 @@ pub struct TargetChatRead<'a> {
 pub enum TargetReadRejection {
     Denied,
     Unavailable,
+    FileUnavailable,
 }
 
 impl From<FileReadPolicyError> for TargetReadRejection {
@@ -129,6 +130,87 @@ impl TargetFileReadContext {
         self.inspect_policy(request, &local_names)
             .await
             .map_err(|e| e.to_string())
+    }
+
+    /// Read the exact file previously approved by a signed-in user on this Device.
+    /// A missing or unrelated rule leaves the policy-only result intact.
+    pub(super) async fn read_previously_allowed(
+        &self,
+        request: &TargetChatRead<'_>,
+        max_text_bytes: usize,
+    ) -> Result<Option<rua_core::tool::SharedReadPage>, TargetReadRejection> {
+        let ctx = self.tool_call_context(request);
+        let local_approval = || {
+            self.security
+                .approval_authority()
+                .locally_approved_chat_read(&ctx, &self.local_device_id)
+        };
+        let Some(path) = local_approval()
+            .await
+            .map_err(|_| TargetReadRejection::Unavailable)?
+        else {
+            return Ok(None);
+        };
+        if self.requested_path(request).ok() != Some(path.as_str())
+            || self.check_metadata(request).await? != FileReadAdmission::Allowed
+        {
+            return Err(TargetReadRejection::Denied);
+        }
+        let approved = Path::new(&path);
+        let tool = rua_tool::ReadFileTool;
+        let file = tool
+            .open_regular_file(approved, &self.rua_root)
+            .await
+            .map_err(|error| match error {
+                rua_core::RuaError::Security { .. } => TargetReadRejection::Denied,
+                _ => TargetReadRejection::FileUnavailable,
+            })?;
+        if !file
+            .matches_approved_path(approved)
+            .await
+            .map_err(|_| TargetReadRejection::Unavailable)?
+        {
+            return Err(TargetReadRejection::Denied);
+        }
+        let resolved = file.resolved_public_path().to_owned();
+        let backing = file.backing_path().to_owned();
+        let mut names = vec![path.as_str()];
+        for p in [&resolved, &backing] {
+            let name = p.to_str().ok_or(TargetReadRejection::Unavailable)?;
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        let permitted = || self.inspect_policy(request, &names);
+        if permitted().await? != FileReadAdmission::Allowed {
+            return Err(TargetReadRejection::Denied);
+        }
+        let store = rua_core::ChatStore::resolve(&self.rua_root, request.address.clone());
+        let local = rua_core::tool::ToolContext {
+            agent_id: request.agent_id.to_owned(),
+            session_id: request.address.chat_id().to_string(),
+            local_device_id: Some(self.local_device_id.clone()),
+            working_dir: self.rua_root.clone(),
+            conversation_store_dir: Some(store.root().to_owned()),
+            tool_result_store_dir: Some(store.root().join("tool_call_logs")),
+            raw_capture_max_bytes: max_text_bytes,
+            metadata: ctx.metadata.clone(),
+            ..Default::default()
+        };
+        let page = tool
+            .read_opened_page(file, request.args.clone(), local)
+            .await
+            .map_err(|_| TargetReadRejection::FileUnavailable)?;
+        if local_approval()
+            .await
+            .map_err(|_| TargetReadRejection::Unavailable)?
+            .as_ref()
+            != Some(&path)
+            || permitted().await? != FileReadAdmission::Allowed
+        {
+            return Err(TargetReadRejection::Denied);
+        }
+        Ok(Some(page))
     }
 
     fn requested_path<'a>(&self, request: &TargetChatRead<'a>) -> Result<&'a str, String> {
@@ -269,6 +351,16 @@ impl TargetFileReadContext {
                 "The read tool is disabled for this Chat or target Agent".into(),
             ));
         }
+        self.security
+            .inspect_chat_file_read(
+                &self.tool_call_context(request),
+                &captured.security_config,
+                local_names,
+            )
+            .await
+    }
+
+    fn tool_call_context(&self, request: &TargetChatRead<'_>) -> ToolCallContext {
         let mut ctx = ToolCallContext::new(
             request.agent_id,
             request.address.chat_id().as_str(),
@@ -281,8 +373,6 @@ impl TargetFileReadContext {
             .insert("turn_id".into(), request.turn_id.into());
         ctx.metadata
             .insert("tool_call_id".into(), request.tool_call_id.into());
-        self.security
-            .inspect_chat_file_read(&ctx, &captured.security_config, local_names)
-            .await
+        ctx
     }
 }

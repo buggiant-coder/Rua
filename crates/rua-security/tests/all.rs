@@ -12,6 +12,8 @@ mod config_store;
 mod config_store_per_agent;
 #[path = "all/engine_decision.rs"]
 mod engine_decision;
+#[path = "all/local_chat_read.rs"]
+mod local_chat_read;
 #[path = "all/models.rs"]
 mod models;
 #[path = "all/project_resource_policy.rs"]

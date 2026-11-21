@@ -1,7 +1,7 @@
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use rua_core::tool::{DeviceReadAccess, DeviceReadCheck, ToolContext};
+use rua_core::tool::{DeviceReadAccess, DeviceReadCheck, SharedReadPage, ToolContext};
 use rua_core::ChatAddress;
 use rua_security::approval_authority::{ApprovalStatus, AuthenticatedApprovalDecision};
 use serde::{Deserialize, Serialize};
@@ -13,7 +13,7 @@ use super::conversation_authority::{
 };
 use super::conversation_authority_placement::ConversationAuthorityEpoch;
 use super::device_command_bus::{
-    deliver_conversation_control_via_session, deliver_read_check_via_session,
+    deliver_allowed_file_read_via_session, deliver_conversation_control_via_session,
     ConversationControlDeviceAction, ConversationControlDeviceCommand,
     ConversationControlDeviceResponse,
 };
@@ -47,6 +47,14 @@ pub enum DeviceReadCheckReply {
     Denied,
     ConfirmationRequired,
     Checked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum DeviceFileReadReply {
+    Policy(DeviceReadCheckReply),
+    FileUnavailable,
+    Page(SharedReadPage),
 }
 
 pub struct ForegroundReadAccess {
@@ -179,10 +187,9 @@ impl DeviceReadAccess for ForegroundReadAccess {
         };
         let mut response = request.send(&transport, ctx).await?;
         drop(permit);
-        if response
-            .as_ref()
-            .is_ok_and(|reply| *reply == DeviceReadCheckReply::ConfirmationRequired)
-            && record.is_none()
+        if response.as_ref().is_ok_and(|reply| {
+            *reply == DeviceFileReadReply::Policy(DeviceReadCheckReply::ConfirmationRequired)
+        }) && record.is_none()
         {
             let approval_id = match request
                 .wait_for_confirmation(ctx, &approvals, &authority)
@@ -199,12 +206,43 @@ impl DeviceReadAccess for ForegroundReadAccess {
             response = request.send(&transport, ctx).await?;
         }
         Ok(match response {
-            Ok(DeviceReadCheckReply::Checked) => DeviceReadCheck::Checked,
-            Ok(DeviceReadCheckReply::ConfirmationRequired) => DeviceReadCheck::ConfirmationRequired,
-            Ok(DeviceReadCheckReply::Denied) => DeviceReadCheck::Denied(
-                "the target device denied this read under its current policy".into(),
-            ),
-            Ok(DeviceReadCheckReply::Unavailable) => {
+            Ok(DeviceFileReadReply::FileUnavailable) => DeviceReadCheck::FileUnavailable,
+            Ok(DeviceFileReadReply::Page(page)) => {
+                if !page.is_valid() {
+                    return Ok(unavailable("the target returned an invalid file page"));
+                }
+                if !authority
+                    .active_turn(&request.address)
+                    .await
+                    .is_some_and(|current| {
+                        current.authority_device_id == local
+                            && current.authority_epoch == request.authority_epoch
+                            && current.turn_id == turn
+                            && current.driver == ConversationDriverKind::Rua
+                            && matches!(
+                                current.phase,
+                                ConversationActiveTurnPhase::Streaming
+                                    | ConversationActiveTurnPhase::RunningTool
+                                    | ConversationActiveTurnPhase::WaitingApproval
+                            )
+                    })
+                {
+                    return Ok(unavailable("the original read is no longer active"));
+                }
+                DeviceReadCheck::Shared(page)
+            }
+            Ok(DeviceFileReadReply::Policy(DeviceReadCheckReply::Checked)) => {
+                DeviceReadCheck::Checked
+            }
+            Ok(DeviceFileReadReply::Policy(DeviceReadCheckReply::ConfirmationRequired)) => {
+                DeviceReadCheck::ConfirmationRequired
+            }
+            Ok(DeviceFileReadReply::Policy(DeviceReadCheckReply::Denied)) => {
+                DeviceReadCheck::Denied(
+                    "the target device denied this read under its current policy".into(),
+                )
+            }
+            Ok(DeviceFileReadReply::Policy(DeviceReadCheckReply::Unavailable)) => {
                 unavailable("the target could not verify this Chat's read request")
             }
             Err(error) => error.into(),
@@ -275,17 +313,35 @@ async fn read_cancelled(ctx: &ToolContext) {
 }
 
 impl DeviceReadCheckRequest {
+    pub(super) fn as_target_read(&self) -> super::chat_file_read_admission::TargetChatRead<'_> {
+        super::chat_file_read_admission::TargetChatRead {
+            address: &self.address,
+            agent_id: &self.agent_id,
+            authority_device_id: &self.source_device_id,
+            authority_epoch: self.authority_epoch,
+            configuration_epoch: &self.configuration_epoch,
+            turn_id: &self.turn_id,
+            tool_call_id: &self.tool_call_id,
+            tool_name: "read",
+            args: &self.arguments,
+        }
+    }
+
     async fn send(
         &self,
         manager: &rua_device_network::DeviceSessionManager,
         ctx: &ToolContext,
     ) -> rua_core::Result<
-        Result<DeviceReadCheckReply, super::device_command_bus::DeviceCommandDeliveryError>,
+        Result<DeviceFileReadReply, super::device_command_bus::DeviceCommandDeliveryError>,
     > {
         tokio::select! {
             biased;
             _ = read_cancelled(ctx) => Err(rua_core::RuaError::Cancelled),
-            reply = deliver_read_check_via_session(manager, self, Duration::from_secs(20)) => Ok(reply),
+            reply = deliver_allowed_file_read_via_session(
+                manager, self,
+                ctx.raw_capture_max_bytes.clamp(1, rua_core::tool::MAX_SHARED_READ_TEXT_BYTES),
+                Duration::from_secs(20),
+            ) => Ok(reply),
         }
     }
 

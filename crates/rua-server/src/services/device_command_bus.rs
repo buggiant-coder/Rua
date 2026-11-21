@@ -14,7 +14,7 @@ use rua_core::{ChatAddress, ChatStore};
 use rua_security::approval_authority::ApprovalReuseMatcher;
 
 use crate::services::chat_file_read_admission::{
-    FileReadAdmission, TargetChatRead, TargetFileReadContext, TargetReadRejection,
+    FileReadAdmission, TargetFileReadContext, TargetReadRejection,
 };
 use crate::services::chat_metadata_store::{AcpBindingMetadata, ChatMetadataRecord};
 use crate::services::console_chat::CONSOLE_CHANNEL_ID;
@@ -31,7 +31,9 @@ use crate::services::conversation_history_readiness::{
 };
 use crate::services::conversation_input_intake::ConversationInputIntake;
 use crate::services::conversation_manifest::{load_conversation_manifest, ConversationManifest};
-use crate::services::device_read_check::{DeviceReadCheckReply, DeviceReadCheckRequest};
+use crate::services::device_read_check::{
+    DeviceFileReadReply, DeviceReadCheckReply, DeviceReadCheckRequest,
+};
 use crate::services::terminal::{
     OpenTerminalSessionRequest, TerminalActivityFrame, TerminalError, TerminalProfileList,
     TerminalPtyGeometry, TerminalSessionAttachment, TerminalSessionAuthority,
@@ -1026,6 +1028,10 @@ pub(crate) enum DeviceCommandEnvelope {
     SyncTransfer(SyncTransferDeviceCommand),
     ChatMediaPrepare(ChatMediaPrepareCommand),
     ReadCheck(DeviceReadCheckRequest),
+    ReadAllowedFile {
+        request: DeviceReadCheckRequest,
+        max_text_bytes: usize,
+    },
     Project(ProjectDeviceCommand),
     Collaboration(CollaborationDeviceCommand),
 }
@@ -1065,7 +1071,7 @@ impl DeviceCommandEnvelope {
             Self::Terminal(command) => ("terminal", command.command_id.as_str()),
             Self::SyncTransfer(command) => ("sync_transfer", command.command_id.as_str()),
             Self::ChatMediaPrepare(command) => ("chat_media_prepare", command.command_id.as_str()),
-            Self::ReadCheck(_) => return None,
+            Self::ReadCheck(_) | Self::ReadAllowedFile { .. } => return None,
             Self::Project(command) => ("project", command.command_id.as_str()),
             Self::Collaboration(command) => ("collaboration", command.command_id.as_str()),
         };
@@ -1106,6 +1112,9 @@ pub enum DeviceCommandResponse {
     },
     ChatMediaPrepared {
         response: ChatMediaPreparedResponse,
+    },
+    FileRead {
+        response: DeviceFileReadReply,
     },
     ReadCheck {
         response: DeviceReadCheckReply,
@@ -1550,6 +1559,7 @@ impl DeviceCommandHandler {
         };
         let route = match &envelope {
             DeviceCommandEnvelope::ReadCheck(request)
+            | DeviceCommandEnvelope::ReadAllowedFile { request, .. }
                 if validate_session_source(peer, &request.source_device_id).is_err()
                     || request.source_device_id.trim().is_empty()
                     || request.target_device_id != self.local_device_id
@@ -1560,8 +1570,15 @@ impl DeviceCommandHandler {
                         .and_then(serde_json::Value::as_str)
                         != Some(request.target_device_id.as_str()) =>
             {
-                return DeviceCommandResponse::ReadCheck {
-                    response: DeviceReadCheckReply::Denied,
+                return match envelope {
+                    DeviceCommandEnvelope::ReadAllowedFile { .. } => {
+                        DeviceCommandResponse::FileRead {
+                            response: DeviceFileReadReply::Policy(DeviceReadCheckReply::Denied),
+                        }
+                    }
+                    _ => DeviceCommandResponse::ReadCheck {
+                        response: DeviceReadCheckReply::Denied,
+                    },
                 };
             }
             DeviceCommandEnvelope::Project(command) => command
@@ -1648,6 +1665,12 @@ impl DeviceCommandHandler {
             DeviceCommandEnvelope::ChatMediaPrepare(command) => {
                 self.handle_chat_media_prepare(command).await
             }
+            DeviceCommandEnvelope::ReadAllowedFile {
+                request,
+                max_text_bytes,
+            } => DeviceCommandResponse::FileRead {
+                response: self.read_authorized_file(&request, max_text_bytes).await,
+            },
             DeviceCommandEnvelope::ReadCheck(request) => DeviceCommandResponse::ReadCheck {
                 response: self.check_read_metadata(&request).await,
             },
@@ -1658,21 +1681,37 @@ impl DeviceCommandHandler {
         }
     }
 
+    async fn read_authorized_file(
+        &self,
+        request: &DeviceReadCheckRequest,
+        max_text_bytes: usize,
+    ) -> DeviceFileReadReply {
+        if !(1..=rua_core::tool::MAX_SHARED_READ_TEXT_BYTES).contains(&max_text_bytes) {
+            return DeviceFileReadReply::Policy(DeviceReadCheckReply::Denied);
+        }
+        let policy = self.check_read_metadata(request).await;
+        if policy != DeviceReadCheckReply::Checked {
+            return DeviceFileReadReply::Policy(policy);
+        }
+        let Some(context) = &self.read_check_context else {
+            return DeviceFileReadReply::Policy(DeviceReadCheckReply::Unavailable);
+        };
+        match context
+            .read_previously_allowed(&request.as_target_read(), max_text_bytes)
+            .await
+        {
+            Ok(Some(page)) => DeviceFileReadReply::Page(page),
+            Ok(None) => DeviceFileReadReply::Policy(policy),
+            Err(TargetReadRejection::FileUnavailable) => DeviceFileReadReply::FileUnavailable,
+            Err(rejection) => DeviceFileReadReply::Policy(rejection.into()),
+        }
+    }
+
     async fn check_read_metadata(&self, request: &DeviceReadCheckRequest) -> DeviceReadCheckReply {
         let Some(context) = &self.read_check_context else {
             return DeviceReadCheckReply::Unavailable;
         };
-        let read = TargetChatRead {
-            address: &request.address,
-            agent_id: &request.agent_id,
-            authority_device_id: &request.source_device_id,
-            authority_epoch: request.authority_epoch,
-            configuration_epoch: &request.configuration_epoch,
-            turn_id: &request.turn_id,
-            tool_call_id: &request.tool_call_id,
-            tool_name: "read",
-            args: &request.arguments,
-        };
+        let read = request.as_target_read();
         if let Err(rejection) = context.check_authority(&read).await {
             return rejection.into();
         }
@@ -4831,7 +4870,9 @@ impl From<TargetReadRejection> for DeviceReadCheckReply {
     fn from(rejection: TargetReadRejection) -> Self {
         match rejection {
             TargetReadRejection::Denied => Self::Denied,
-            TargetReadRejection::Unavailable => Self::Unavailable,
+            TargetReadRejection::Unavailable | TargetReadRejection::FileUnavailable => {
+                Self::Unavailable
+            }
         }
     }
 }
@@ -5096,6 +5137,28 @@ pub async fn deliver_read_check_via_session(
     {
         DeviceCommandResponse::ReadCheck { response } => Ok(response),
         response => unexpected_response(response, "Read permission check"),
+    }
+}
+
+pub async fn deliver_allowed_file_read_via_session(
+    session_manager: &rua_device_network::DeviceSessionManager,
+    request: &DeviceReadCheckRequest,
+    max_text_bytes: usize,
+    timeout: Duration,
+) -> Result<DeviceFileReadReply, DeviceCommandDeliveryError> {
+    match deliver_envelope_via_session(
+        session_manager,
+        &request.target_device_id,
+        DeviceCommandEnvelope::ReadAllowedFile {
+            request: request.clone(),
+            max_text_bytes,
+        },
+        timeout,
+    )
+    .await?
+    {
+        DeviceCommandResponse::FileRead { response } => Ok(response),
+        response => unexpected_response(response, "Previously allowed file read"),
     }
 }
 
@@ -5384,6 +5447,7 @@ async fn deliver_envelope_via_session(
     // Neither half of a one-time approval check can be repeated after a lost reply.
     let response_bytes = match envelope {
         DeviceCommandEnvelope::ReadCheck(_)
+        | DeviceCommandEnvelope::ReadAllowedFile { .. }
         | DeviceCommandEnvelope::ConversationControl(ConversationControlDeviceCommand {
             action: ConversationControlDeviceAction::ClaimReadApproval { .. },
             ..
@@ -5438,6 +5502,7 @@ fn device_command_response_kind(response: &DeviceCommandResponse) -> &'static st
         DeviceCommandResponse::Terminal { .. } => "Terminal",
         DeviceCommandResponse::SyncTransfer { .. } => "Sync Transfer",
         DeviceCommandResponse::ChatMediaPrepared { .. } => "Chat Media Prepared",
+        DeviceCommandResponse::FileRead { .. } => "Previously allowed file read",
         DeviceCommandResponse::ReadCheck { .. } => "Read permission check",
         DeviceCommandResponse::Project { .. } => "Project",
         DeviceCommandResponse::Collaboration { .. } => "Collaboration",

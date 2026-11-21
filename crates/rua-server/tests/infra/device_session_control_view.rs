@@ -95,6 +95,9 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
+#[path = "device_session_control_view/approved_phone_file.rs"]
+mod approved_phone_file;
+
 fn epoch(wall_ms: u64) -> ConversationAuthorityEpoch {
     ConversationAuthorityEpoch::from_parts(wall_ms, 0, [0; 8])
 }
@@ -11033,11 +11036,8 @@ impl RemoteInputConfirmationFixture {
                 .unwrap()
                 .unwrap();
         }
-        let target_id = hex::encode(
-            DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[172; 32])).local_device_id(),
-        );
         let handler = Arc::new(InputConfirmationHandler {
-            inner: full_command_handler(&target_state, &target_id),
+            inner: target_state.device_command_handler().unwrap(),
             before_acceptance,
             hold_reply,
             accepted: Notify::new(),
@@ -11287,18 +11287,20 @@ async fn prepare_running_file_calls(
     ChatAddress,
     rua_server::services::conversation_authority::ConversationActiveTurn,
     String,
+    AgentRequest,
 ) {
     use rua_server::services::conversation_authority::ConversationActiveTurnPhase;
     let owner = &fixture.target_state;
+    let captured = Arc::new(CapturingAgentRuntime {
+        held_tool_calls: Some((calls.to_vec(), Arc::clone(release))),
+        ..Default::default()
+    });
     owner
         .registry
         .get_or_create("default")
         .await
         .unwrap()
-        .set_react_runtime(Arc::new(CapturingAgentRuntime {
-            held_tool_calls: Some((calls.to_vec(), Arc::clone(release))),
-            ..Default::default()
-        }))
+        .set_react_runtime(captured.clone())
         .await;
     assert_eq!(fixture.submit().await["accepted"], true);
     let address = ChatAddress::new(fixture.chat_id.clone());
@@ -11328,6 +11330,7 @@ async fn prepare_running_file_calls(
     install_connectable_peer(&fixture.target, &fixture.source);
     *replica.sync_transfer_session_manager.write().unwrap() =
         Some(fixture.source.runtime.session_manager().clone());
+    let request = captured.requests.lock().await[0].clone();
     (
         address,
         turn,
@@ -11335,6 +11338,7 @@ async fn prepare_running_file_calls(
             .as_str()
             .unwrap()
             .to_owned(),
+        request,
     )
 }
 
@@ -11356,7 +11360,7 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
     .map(|id| ToolCall::new(id, "read", args.clone()));
     calls[5].arguments["file_path"] = "/fixture/second-note.txt".into();
     calls[7].arguments["file_path"] = "/fixture/fourth-note.txt".into();
-    let (address, turn, epoch) = prepare_running_file_calls(&fixture, &calls, &release).await;
+    let (address, turn, epoch, _) = prepare_running_file_calls(&fixture, &calls, &release).await;
     let approvals = owner.security.approval_authority();
     let (event_tx, mut events) = tokio::sync::mpsc::channel(32);
     let (cards_tx, mut cards) = tokio::sync::mpsc::unbounded_channel();
@@ -11632,7 +11636,7 @@ async fn read_approval_claim_is_bound_to_the_running_turn_requesting_device_and_
         ToolCall::new("ended", "read", arguments.clone()),
         ToolCall::new("policy-check", "read", arguments.clone()),
     ];
-    let (address, turn, epoch) = prepare_running_file_calls(&fixture, &calls, &release).await;
+    let (address, turn, epoch, _) = prepare_running_file_calls(&fixture, &calls, &release).await;
     let replica = &fixture.source_state;
     let mut check = DeviceReadCheckRequest {
         source_device_id: fixture.target.device_id.clone(),

@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, Mutex as AsyncMutex, OwnedMutexGuard, RwLock};
 use uuid::Uuid;
 
+mod local_chat_read;
+
 const BROADCAST_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,6 +211,19 @@ pub struct StoredApprovalReuseRule {
 }
 
 impl ApprovalReuseRule {
+    fn same_permission(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.agent_id == other.agent_id
+            && self.owner == other.owner
+            && self.scope == other.scope
+            && self.matcher == other.matcher
+            && self.source_approval_id == other.source_approval_id
+            && self.source == other.source
+            && self.exact_read_args == other.exact_read_args
+            && self.enabled == other.enabled
+            && self.effect == other.effect
+    }
+
     pub(crate) fn pattern(&self) -> PermissionRulePattern<'_> {
         self.matcher.pattern(
             self.exact_read_args,
@@ -417,10 +432,19 @@ impl std::fmt::Display for ApprovalAuthorityError {
 impl std::error::Error for ApprovalAuthorityError {}
 
 #[derive(Debug)]
+struct CachedRule {
+    rule: ApprovalReuseRule,
+    // Only a successful local authenticated persistent read decision can set this bit.
+    locally_decided_read: bool,
+}
+
+#[derive(Debug)]
 pub struct ApprovalAuthority {
     chat_registrations: Mutex<HashMap<ChatAddress, Weak<AsyncMutex<()>>>>,
     requests: RwLock<HashMap<String, ApprovalRequest>>,
-    reuse_rules: RwLock<HashMap<String, ApprovalReuseRule>>,
+    // Publishing, loading or revoking a Chat rule holds this lock across its store operation.
+    // A cold lookup cannot overwrite a concurrent local decision or restore a revoked row.
+    reuse_rules: RwLock<HashMap<String, CachedRule>>,
     agent_rule_store: Option<Arc<dyn AgentScopeRuleStore>>,
     chat_rule_store: Option<Arc<dyn ChatScopeRuleStore>>,
     tx: broadcast::Sender<ApprovalEvent>,
@@ -1009,6 +1033,7 @@ impl ApprovalAuthority {
 
         if let Some(rule) = rule_to_insert {
             drop(requests);
+            let mut rules = self.reuse_rules.write().await;
             match rule.scope {
                 ApprovalReuseScope::Agent => {
                     if let Some(store) = &self.agent_rule_store {
@@ -1029,7 +1054,14 @@ impl ApprovalAuthority {
                 }
                 ApprovalReuseScope::RuntimeSession => {}
             }
-            self.upsert_runtime_rule(rule).await;
+            let locally_decided_read = authenticated_user_id.is_some()
+                && matches!(
+                    kind,
+                    AuthenticatedApprovalDecision::AllowChat
+                        | AuthenticatedApprovalDecision::AllowAgent
+                )
+                && updated.tool_name == "read";
+            cache_rule(&mut rules, rule, locally_decided_read);
         }
 
         let _ = self.tx.send(ApprovalEvent {
@@ -1246,13 +1278,15 @@ impl ApprovalAuthority {
         call: &PermissionToolCall<'_>,
         snapshot_rules: &[StoredApprovalReuseRule],
     ) -> Result<Option<ApprovalReuseRule>, String> {
+        let mut rules = self.reuse_rules.write().await;
         let stored_chat_rules = match (owner.as_chat_address(), self.chat_rule_store.as_ref()) {
             (Some(address), Some(store)) => store.list_chat_rules(address)?,
             _ => Vec::new(),
         };
-        {
-            let mut rules = self.reuse_rules.write().await;
-            if let Some(rule) = rules.values_mut().find(|rule| {
+        if let Some(rule) = rules
+            .values_mut()
+            .map(|entry| &mut entry.rule)
+            .find(|rule| {
                 matches!(
                     rule.scope,
                     ApprovalReuseScope::Chat | ApprovalReuseScope::RuntimeSession
@@ -1260,10 +1294,10 @@ impl ApprovalAuthority {
                     && rule.effect == effect
                     && rule.enabled
                     && rule.pattern().matches(call)
-            }) {
-                rule.hit_count += 1;
-                return Ok(Some(rule.clone()));
-            }
+            })
+        {
+            rule.hit_count += 1;
+            return Ok(Some(rule.clone()));
         }
         if let Some(address) = owner.as_chat_address() {
             if let Some(store) = &self.chat_rule_store {
@@ -1272,7 +1306,7 @@ impl ApprovalAuthority {
                 }) {
                     rule.hit_count += 1;
                     let _ = store.upsert_chat_rule(address, &rule);
-                    self.upsert_runtime_rule(rule.clone()).await;
+                    cache_rule(&mut rules, rule.clone(), false);
                     return Ok(Some(rule));
                 }
             }
@@ -1306,32 +1340,41 @@ impl ApprovalAuthority {
         effect: PermissionRuleEffect,
         call: &PermissionToolCall<'_>,
     ) -> Option<ApprovalReuseRule> {
-        {
-            let mut rules = self.reuse_rules.write().await;
-            if let Some(rule) = rules.values_mut().find(|rule| {
+        let mut rules = self.reuse_rules.write().await;
+        let inspect_stored_read =
+            self.agent_rule_store.is_some() && is_file_read(call.tool_name, call.args);
+        if let Some(rule) = rules
+            .values_mut()
+            .map(|entry| &mut entry.rule)
+            .find(|rule| {
                 owner.is_some_and(|owner| rule.scope == owner.reuse_scope())
                     && rule.owner.as_ref() == owner
                     && rule.effect == effect
                     && rule.enabled
                     && rule.pattern().matches(call)
-            }) {
-                rule.hit_count += 1;
-                return Some(rule.clone());
-            }
+            })
+        {
+            rule.hit_count += 1;
+            return Some(rule.clone());
+        }
 
-            if let Some(rule) = rules.values_mut().find(|rule| {
+        if let Some(rule) = rules
+            .values_mut()
+            .map(|entry| &mut entry.rule)
+            .find(|rule| {
                 rule.agent_id == agent_id
                     && rule.scope == ApprovalReuseScope::Agent
+                    && !inspect_stored_read
                     && rule.effect == effect
                     && rule.enabled
                     && rule.pattern().matches(call)
-            }) {
-                rule.hit_count += 1;
-                if let Some(store) = &self.agent_rule_store {
-                    let _ = store.upsert_agent_rule(agent_id, rule);
-                }
-                return Some(rule.clone());
+            })
+        {
+            rule.hit_count += 1;
+            if let Some(store) = &self.agent_rule_store {
+                let _ = store.upsert_agent_rule(agent_id, rule);
             }
+            return Some(rule.clone());
         }
 
         if let (Some(store), Some(ApprovalOwner::Chat { address })) = (&self.chat_rule_store, owner)
@@ -1350,14 +1393,14 @@ impl ApprovalAuthority {
             {
                 rule.hit_count += 1;
                 let _ = store.upsert_chat_rule(address, &rule);
-                self.upsert_runtime_rule(rule.clone()).await;
+                cache_rule(&mut rules, rule.clone(), false);
                 return Some(rule);
             }
         }
 
         let store = self.agent_rule_store.as_ref()?;
-        let mut rule = store
-            .list_agent_rules(agent_id)
+        let mut rule = self
+            .current_agent_rules(agent_id, &mut rules)
             .ok()?
             .into_iter()
             .find(|rule| {
@@ -1368,31 +1411,59 @@ impl ApprovalAuthority {
                     && rule.pattern().matches(call)
             })?;
         rule.hit_count += 1;
-        let _ = store.upsert_agent_rule(agent_id, &rule);
-        self.upsert_runtime_rule(rule.clone()).await;
+        // Counting an exact file read must not write an old permission back into synchronized policy.
+        let local = rules
+            .get(&rule.id)
+            .is_some_and(|entry| entry.locally_decided_read && entry.rule.same_permission(&rule));
+        if !inspect_stored_read {
+            let _ = store.upsert_agent_rule(agent_id, &rule);
+        }
+        cache_rule(&mut rules, rule.clone(), local);
         Some(rule)
     }
 
-    pub async fn list_agent_rules(&self, agent_id: &str) -> Vec<ApprovalReuseRule> {
-        let mut rules = self
-            .reuse_rules
-            .read()
-            .await
-            .values()
-            .filter(|rule| rule.agent_id == agent_id && rule.scope == ApprovalReuseScope::Agent)
-            .cloned()
-            .collect::<Vec<_>>();
-
-        if let Some(store) = &self.agent_rule_store {
-            if let Ok(stored) = store.list_agent_rules(agent_id) {
-                for rule in stored {
-                    if !rules.iter().any(|existing| existing.id == rule.id) {
-                        rules.push(rule);
-                    }
-                }
+    /// Reconcile locally signed Agent reads with current settings before using either copy.
+    fn current_agent_rules(
+        &self,
+        agent_id: &str,
+        cache: &mut HashMap<String, CachedRule>,
+    ) -> Result<Vec<ApprovalReuseRule>, String> {
+        let scoped = |rule: &ApprovalReuseRule| {
+            rule.scope == ApprovalReuseScope::Agent && rule.agent_id == agent_id
+        };
+        let Some(store) = &self.agent_rule_store else {
+            return Ok(cache
+                .values()
+                .map(|entry| &entry.rule)
+                .filter(|rule| scoped(rule))
+                .cloned()
+                .collect());
+        };
+        let mut current = store.list_agent_rules(agent_id)?;
+        current.retain(|rule| scoped(rule) && rule.owner.is_none());
+        for entry in cache
+            .values_mut()
+            .filter(|entry| entry.locally_decided_read && scoped(&entry.rule))
+        {
+            entry.locally_decided_read =
+                current.iter().any(|rule| entry.rule.same_permission(rule));
+        }
+        for rule in &mut current {
+            if let Some(entry) = cache
+                .get(&rule.id)
+                .filter(|entry| entry.rule.same_permission(rule))
+            {
+                rule.hit_count = rule.hit_count.max(entry.rule.hit_count);
             }
         }
+        Ok(current)
+    }
 
+    pub async fn list_agent_rules(&self, agent_id: &str) -> Vec<ApprovalReuseRule> {
+        let mut cache = self.reuse_rules.write().await;
+        let mut rules = self
+            .current_agent_rules(agent_id, &mut cache)
+            .unwrap_or_default();
         rules.sort_by_key(|rule| rule.created_at);
         rules
     }
@@ -1403,6 +1474,7 @@ impl ApprovalAuthority {
             .read()
             .await
             .values()
+            .map(|entry| &entry.rule)
             .filter(|rule| {
                 rule.scope == ApprovalReuseScope::Chat
                     && rule.owner.as_ref() == Some(&ApprovalOwner::chat(address.clone()))
@@ -1435,10 +1507,12 @@ impl ApprovalAuthority {
     }
 
     pub async fn delete_chat_rules(&self, address: &ChatAddress) -> Result<(), String> {
+        let mut rules = self.reuse_rules.write().await;
         if let Some(store) = &self.chat_rule_store {
             store.delete_chat_rules(address)?;
         }
-        self.reuse_rules.write().await.retain(|_, rule| {
+        rules.retain(|_, entry| {
+            let rule = &entry.rule;
             rule.scope != ApprovalReuseScope::Chat
                 || rule.owner.as_ref() != Some(&ApprovalOwner::chat(address.clone()))
         });
@@ -1467,10 +1541,11 @@ impl ApprovalAuthority {
             source: PermissionRuleSource::Manual,
             hit_count: 0,
         };
+        let mut cache = self.reuse_rules.write().await;
         if let Some(store) = &self.agent_rule_store {
             store.upsert_agent_rule(agent_id, &rule)?;
         }
-        self.upsert_runtime_rule(rule.clone()).await;
+        cache_rule(&mut cache, rule.clone(), false);
         Ok(rule)
     }
 
@@ -1480,7 +1555,8 @@ impl ApprovalAuthority {
         rule_id: &str,
         input: PermissionRuleInput,
     ) -> Result<Option<ApprovalReuseRule>, String> {
-        let mut rules = self.list_agent_rules(agent_id).await;
+        let mut cache = self.reuse_rules.write().await;
+        let mut rules = self.current_agent_rules(agent_id, &mut cache)?;
         let Some(existing) = rules.iter_mut().find(|rule| rule.id == rule_id) else {
             return Ok(None);
         };
@@ -1501,35 +1577,49 @@ impl ApprovalAuthority {
         if let Some(store) = &self.agent_rule_store {
             store.upsert_agent_rule(agent_id, &updated)?;
         }
-        self.upsert_runtime_rule(updated.clone()).await;
+        let local = cache.get(rule_id).is_some_and(|entry| {
+            entry.locally_decided_read && entry.rule.same_permission(&updated)
+        });
+        cache_rule(&mut cache, updated.clone(), local);
         Ok(Some(updated))
     }
 
     pub async fn delete_agent_rule(&self, agent_id: &str, rule_id: &str) -> Result<bool, String> {
-        let removed_memory = self.reuse_rules.write().await.remove(rule_id).is_some();
+        let mut cache = self.reuse_rules.write().await;
         let removed_store = if let Some(store) = &self.agent_rule_store {
             store.delete_agent_rule(agent_id, rule_id)?
         } else {
             false
         };
-        Ok(removed_memory || removed_store)
+        let owned = cache.get(rule_id).is_some_and(|entry| {
+            entry.rule.agent_id == agent_id && entry.rule.scope == ApprovalReuseScope::Agent
+        });
+        if owned {
+            cache.remove(rule_id);
+        }
+        Ok(owned || removed_store)
     }
+}
 
-    async fn upsert_runtime_rule(&self, rule: ApprovalReuseRule) {
-        let mut rules = self.reuse_rules.write().await;
-        upsert_runtime_rule(&mut rules, rule);
-    }
+fn cache_rule(
+    rules: &mut HashMap<String, CachedRule>,
+    rule: ApprovalReuseRule,
+    locally_decided_read: bool,
+) {
+    rules.retain(|_, entry| !same_permission_rule_key(&entry.rule, &rule));
+    rules.insert(
+        rule.id.clone(),
+        CachedRule {
+            rule,
+            locally_decided_read,
+        },
+    );
 }
 
 impl Default for ApprovalAuthority {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn upsert_runtime_rule(rules: &mut HashMap<String, ApprovalReuseRule>, rule: ApprovalReuseRule) {
-    rules.retain(|_, existing| !same_permission_rule_key(existing, &rule));
-    rules.insert(rule.id.clone(), rule);
 }
 
 fn same_permission_rule_key(left: &ApprovalReuseRule, right: &ApprovalReuseRule) -> bool {
