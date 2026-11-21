@@ -1093,7 +1093,7 @@ async fn checked_remote_read_reports_target_policy_without_reading_its_local_nam
 
     struct PolicyCheck {
         expected_args: serde_json::Value,
-        needs_confirmation: bool,
+        reply: fn() -> DeviceReadCheck,
     }
     #[async_trait::async_trait]
     impl DeviceReadAccess for PolicyCheck {
@@ -1104,11 +1104,7 @@ async fn checked_remote_read_reports_target_policy_without_reading_its_local_nam
         ) -> rua_core::Result<DeviceReadCheck> {
             assert_eq!(args, &self.expected_args);
             assert_eq!(ctx.local_device_id.as_deref(), Some("desktop"));
-            if self.needs_confirmation {
-                Ok(DeviceReadCheck::ConfirmationRequired)
-            } else {
-                Ok(DeviceReadCheck::Checked)
-            }
+            Ok((self.reply)())
         }
     }
 
@@ -1118,11 +1114,24 @@ async fn checked_remote_read_reports_target_policy_without_reading_its_local_nam
     let args = json!({"file_path":path,"device_id":"phone","limit":4});
     let mut ctx = make_ctx(&root);
     ctx.local_device_id = Some("desktop".into());
-    for (needs_confirmation, status) in [(false, "checked"), (true, "confirmation_required")] {
-        ctx.device_read_access = Some(std::sync::Arc::new(PolicyCheck {
-            expected_args: args.clone(),
-            needs_confirmation,
-        }));
+    let check = |reply| PolicyCheck {
+        expected_args: args.clone(),
+        reply,
+    };
+    for (reply, status, delivery) in [
+        (check(|| DeviceReadCheck::Checked), "checked", None),
+        (
+            check(|| DeviceReadCheck::ConfirmationRequired),
+            "confirmation_required",
+            None,
+        ),
+        (
+            check(|| DeviceReadCheck::FileNotAuthorized),
+            "checked",
+            Some("not_authorized"),
+        ),
+    ] {
+        ctx.device_read_access = Some(std::sync::Arc::new(reply));
         let result = ReadFileTool.call(args.clone(), ctx.clone()).await.unwrap();
         assert!(result.is_error);
         assert_eq!(
@@ -1130,6 +1139,16 @@ async fn checked_remote_read_reports_target_policy_without_reading_its_local_nam
             status
         );
         assert_eq!(result.metadata["file_location"]["dispatched"], false);
+        assert_eq!(
+            result.metadata["file_location"]["file_delivery"].as_str(),
+            delivery
+        );
+        if delivery.is_some() {
+            assert!(result
+                .text_content()
+                .contains("no matching authorization to return this file"));
+            assert!(result.text_content().contains("the file was not opened"));
+        }
         assert!(result.text_content().contains(status));
         assert!(!result.text_content().contains("desktop-only marker"));
     }

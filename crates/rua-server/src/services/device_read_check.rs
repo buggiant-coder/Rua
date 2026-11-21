@@ -53,6 +53,7 @@ pub enum DeviceReadCheckReply {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum DeviceFileReadReply {
     Policy(DeviceReadCheckReply),
+    FileNotAuthorized,
     FileUnavailable,
     Page(SharedReadPage),
 }
@@ -206,6 +207,7 @@ impl DeviceReadAccess for ForegroundReadAccess {
             response = request.send(&transport, ctx).await?;
         }
         Ok(match response {
+            Ok(DeviceFileReadReply::FileNotAuthorized) => DeviceReadCheck::FileNotAuthorized,
             Ok(DeviceFileReadReply::FileUnavailable) => DeviceReadCheck::FileUnavailable,
             Ok(DeviceFileReadReply::Page(page)) => {
                 if !page.is_valid() {

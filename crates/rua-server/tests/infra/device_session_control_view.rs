@@ -11353,6 +11353,7 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
     let owner = &fixture.target_state;
     let phone = &fixture.source_state;
     let release = Arc::new(Notify::new());
+    // This fixture has no file-delivery authorization for note.txt on the phone.
     let args = serde_json::json!({"device_id": fixture.source.device_id, "file_path": "/fixture/note.txt"});
     let mut calls = [
         "no-card", "decline", "allow", "cancel", "first", "second", "third", "fourth",
@@ -11432,6 +11433,10 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
                 "checked"
             );
             assert_eq!(result.metadata["file_location"]["dispatched"], false);
+            assert_eq!(
+                result.metadata["file_location"]["file_delivery"],
+                "not_authorized"
+            );
             let original = approvals.snapshot_at(&address).await;
             assert!(original.pending.is_empty() && original.resolved.is_empty());
             let mut policy = phone.security.config_store().load("default").unwrap();
@@ -11490,6 +11495,23 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
                 result.metadata["file_location"]["target_permission_check"],
                 expected
             );
+            if id == "allow" {
+                assert!(result.is_error);
+                assert_eq!(
+                    result.metadata["file_location"]["file_delivery"],
+                    "not_authorized"
+                );
+                let detail = result.text_content();
+                assert!(
+                    detail.contains("no matching authorization to return this file"),
+                    "{detail}"
+                );
+                assert!(detail.contains("the file was not opened"), "{detail}");
+            } else {
+                assert!(result.metadata["file_location"]
+                    .get("file_delivery")
+                    .is_none());
+            }
         }
         let snapshot = approvals.snapshot_at(&address).await;
         assert!(snapshot.pending.is_empty());

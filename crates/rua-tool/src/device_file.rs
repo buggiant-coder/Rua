@@ -116,6 +116,10 @@ async fn call_local(
                         DeviceReadCheck::Shared(page) => {
                             return Ok(shared_read_result(&call_id, &args, &ctx, location, page));
                         }
+                        DeviceReadCheck::FileNotAuthorized => {
+                            location["file_delivery"] = json!("not_authorized");
+                            ("checked", "the target device checked this request. It has no matching authorization to return this file to the chat, so the file was not opened".into())
+                        }
                         DeviceReadCheck::FileUnavailable => {
                             location["dispatched"] = json!(true);
                             let mut result = ToolResult::error(&call_id, format!(

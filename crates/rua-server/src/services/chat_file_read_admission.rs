@@ -133,7 +133,7 @@ impl TargetFileReadContext {
     }
 
     /// Read the exact file previously approved by a signed-in user on this Device.
-    /// A missing or unrelated rule leaves the policy-only result intact.
+    /// Return None when no local authorization covers the requested file.
     pub(super) async fn read_previously_allowed(
         &self,
         request: &TargetChatRead<'_>,

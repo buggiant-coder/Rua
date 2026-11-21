@@ -91,6 +91,8 @@ pub enum DeviceReadCheck {
     Denied(String),
     ConfirmationRequired,
     Checked,
+    /// The target checked the request and lacked authorization to deliver this file.
+    FileNotAuthorized,
     /// The target attempted an authorized read and could not return a text page.
     FileUnavailable,
     Shared(SharedReadPage),

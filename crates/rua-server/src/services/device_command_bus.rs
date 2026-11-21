@@ -1709,7 +1709,7 @@ impl DeviceCommandHandler {
             .await
         {
             Ok(Some(page)) => DeviceFileReadReply::Page(page),
-            Ok(None) => DeviceFileReadReply::Policy(DeviceReadCheckReply::Checked),
+            Ok(None) => DeviceFileReadReply::FileNotAuthorized,
             Err(TargetReadRejection::FileUnavailable) => DeviceFileReadReply::FileUnavailable,
             Err(rejection) => DeviceFileReadReply::Policy(rejection.into()),
         }
