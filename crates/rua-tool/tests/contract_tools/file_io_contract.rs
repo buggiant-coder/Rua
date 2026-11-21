@@ -1034,6 +1034,141 @@ async fn explicit_device_requires_a_valid_target_and_a_known_execution_device() 
 }
 
 #[tokio::test]
+async fn bounded_read_respects_a_small_byte_budget_without_splitting_a_scalar() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("unicode"), "ab🌄").unwrap();
+    let mut ctx = make_ctx(&root);
+    ctx.raw_capture_max_bytes = 2;
+    let first = ReadFileTool
+        .call(json!({"file_path":"unicode","byte_offset":0}), ctx.clone())
+        .await
+        .unwrap();
+    assert_eq!(first.metadata["byte_range"]["end_exclusive"], 2);
+    let next = ReadFileTool
+        .call(first.metadata["continuation"].clone(), ctx)
+        .await
+        .unwrap();
+    assert!(next.is_error, "a four-byte character cannot fit this page");
+    assert!(!next.text_content().contains('🌄'));
+    assert!(next.metadata.get("continuation").is_none());
+}
+
+#[tokio::test]
+async fn bounded_read_returns_empty_first_pages_for_an_empty_text_file() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("empty"), "").unwrap();
+    let ctx = make_ctx(&root);
+    for args in [
+        json!({"file_path":"empty"}),
+        json!({"file_path":"empty","start_line":1,"limit":1}),
+        json!({"file_path":"empty","byte_offset":0}),
+    ] {
+        let page = ReadFileTool.call(args.clone(), ctx.clone()).await.unwrap();
+        assert!(!page.is_error, "{args}: {}", page.text_content());
+        assert!(page.text_content().is_empty());
+        assert!(page.metadata.get("continuation").is_none());
+        if args.get("byte_offset").is_some() {
+            assert_eq!(
+                page.metadata["byte_range"],
+                json!({"start":0,"end_exclusive":0,"total_bytes":0})
+            );
+        }
+    }
+    for args in [
+        json!({"file_path":"empty","start_line":2}),
+        json!({"file_path":"empty","byte_offset":1}),
+    ] {
+        assert!(ReadFileTool.call(args, ctx.clone()).await.unwrap().is_error);
+    }
+}
+
+#[tokio::test]
+async fn bounded_read_keeps_one_long_carriage_return_line_intact_across_pages() {
+    let root = tempfile::tempdir().unwrap();
+    let data = format!("{}\r\nlast\n", "\r".repeat(139));
+    std::fs::write(root.path().join("long-cr"), &data).unwrap();
+    let mut ctx = make_ctx(&root);
+    ctx.raw_capture_max_bytes = 32;
+    let mut args = json!({"file_path":"long-cr"});
+    let mut collected = String::new();
+    while collected.len() < data.len() {
+        let page = ReadFileTool.call(args, ctx.clone()).await.unwrap();
+        let agent_types::ContentPart::Text { text } = &page.content[0] else {
+            panic!("expected a byte page");
+        };
+        assert_eq!(page.metadata["byte_range"]["start"], collected.len());
+        assert!(!text.is_empty() && text.len() <= 32);
+        collected.push_str(text);
+        assert_eq!(
+            page.metadata["byte_range"]["end_exclusive"],
+            collected.len()
+        );
+        args = page
+            .metadata
+            .get("continuation")
+            .cloned()
+            .unwrap_or_default();
+    }
+    assert_eq!(collected, data);
+    assert!(args.is_null());
+}
+
+#[tokio::test]
+async fn bounded_read_line_prefix_does_not_push_the_next_line_into_a_byte_preview() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("lines"), "before\nshort\nafter\n").unwrap();
+    let mut ctx = make_ctx(&root);
+    ctx.raw_capture_max_bytes = 12;
+    let page = ReadFileTool
+        .call(json!({"file_path":"lines","start_line":2,"limit":1}), ctx)
+        .await
+        .unwrap();
+    let agent_types::ContentPart::Text { text } = &page.content[0] else {
+        panic!("expected a byte preview of the requested line");
+    };
+    assert_eq!(text, "short\n");
+    assert_eq!(
+        page.metadata["byte_range"],
+        json!({"start":7,"end_exclusive":13,"total_bytes":19})
+    );
+}
+
+#[tokio::test]
+async fn bounded_read_returns_only_the_requested_line_after_a_large_prefix() {
+    let root = tempfile::tempdir().unwrap();
+    let blank_lines = 1_100_000;
+    let mut input = b"unrequested prefix\n".to_vec();
+    input.extend(std::iter::repeat_n(b'\n', blank_lines));
+    input.extend_from_slice(b"requested\nunrequested suffix\n");
+    std::fs::write(root.path().join("many"), input).unwrap();
+    let mut ctx = make_ctx(&root);
+    ctx.raw_capture_max_bytes = 32;
+    let line = blank_lines + 2;
+    let page = ReadFileTool
+        .call(json!({"file_path":"many","start_line":line,"limit":1}), ctx)
+        .await
+        .unwrap();
+    assert_eq!(page.text_content(), format!("{line} | requested\n"));
+    assert_eq!(page.metadata["continuation"]["start_line"], line + 1);
+    assert!(page.metadata["continuation"].get("byte_offset").is_none());
+}
+
+#[tokio::test]
+async fn bounded_read_rejects_binary_bytes_encountered_while_skipping_lines() {
+    let root = tempfile::tempdir().unwrap();
+    let input = [vec![b'x'; 32_768], b"\0\nlast\n".to_vec()].concat();
+    std::fs::write(root.path().join("mixed"), input).unwrap();
+    let result = ReadFileTool
+        .call(json!({"file_path":"mixed","start_line":2}), make_ctx(&root))
+        .await;
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .to_lowercase()
+        .contains("binary"));
+}
+
+#[tokio::test]
 async fn huge_text_and_binary_inputs_are_bounded_before_formatting() {
     let root = tempfile::tempdir().unwrap();
     let file = std::fs::File::create(root.path().join("sparse.bin")).unwrap();
@@ -1223,7 +1358,11 @@ async fn file_error_display_keeps_the_location_and_original_error_kind() {
     let mut ctx = make_ctx(&root);
     ctx.local_device_id = Some("desktop".into());
 
-    for (name, protected) in [("binary.bin", false), (".secret/private", true)] {
+    for (name, protected) in [
+        ("binary.bin", false),
+        (".secret/private", true),
+        (".secret/missing", true),
+    ] {
         let error = ReadFileTool
             .call(json!({"file_path":name}), ctx.clone())
             .await
@@ -1241,11 +1380,21 @@ async fn file_error_display_keeps_the_location_and_original_error_kind() {
         );
     }
 
+    let missing = ReadFileTool
+        .call(json!({"file_path":"missing"}), ctx.clone())
+        .await
+        .unwrap();
+    assert!(missing.is_error);
+    assert_eq!(missing.metadata["file_location"]["coverage"], "unavailable");
     let bad_page = ReadFileTool
         .call(json!({"file_path":directory,"limit":0}), ctx)
         .await
         .unwrap();
     assert!(bad_page.is_error && bad_page.text_content().contains("limit"));
+    assert_eq!(
+        bad_page.metadata["file_location"]["coverage"],
+        "unavailable"
+    );
     assert!(!bad_page.metadata.contains_key("continuation"));
 }
 

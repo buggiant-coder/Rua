@@ -56,17 +56,16 @@ impl ReadFileTool {
             name: "read".to_string(),
             description: format!(
                 "Read a line window from a text file or list one directory page sorted by filename. Each call returns at most `limit` lines \
-                 (default {DEFAULT_READ_LINES}) with line numbers formatted as `line | text`; it \
-                 does not read past that window. Explicit `limit` windows are returned as complete \
-                 results. If the tool applies its default or runtime safety limit, the \
-                 output starts with a continuation warning containing the exact read(..., \
-                 start_line=..., limit=...) call to continue."
+                 (default {DEFAULT_READ_LINES}) with line numbers formatted as `line | text`. Explicit \
+                 `start_line` and `limit` windows return the requested lines. If the tool applies its \
+                 default or runtime safety limit, follow the returned continuation to read the next \
+                 line window or byte window of a very long line."
             ),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "device_id": crate::device_file::device_id_parameter(),
-                    "byte_offset": {"type":"integer","minimum":0,"description":"Continue a bounded text preview of a very long line at the returned byte offset."},
+                    "byte_offset": {"type":"integer","minimum":0,"description":"Continue a bounded text preview at the returned byte offset."},
                     "after": {"type":"string","description":"For a directory, resume after the exact name from the previous page."},
                     "file_path": {
                         "type": "string",
@@ -244,6 +243,7 @@ impl ReadFileTool {
                 &mut reader,
                 offset,
                 metadata.len(),
+                None,
                 file_path,
                 ctx,
                 device_location.is_none(),
@@ -264,6 +264,11 @@ impl ReadFileTool {
             let mut count = 0;
             for &byte in chunk {
                 count += 1;
+                if byte == 0 {
+                    return Err(ToolError::BinaryFile {
+                        path: file_path.into(),
+                    });
+                }
                 if byte == b'\n' {
                     line_no += 1;
                     if line_no == start {
@@ -274,7 +279,7 @@ impl ReadFileTool {
             reader.consume(count);
             byte_position += count as u64;
         }
-        if reader.fill_buf().await?.is_empty() {
+        if reader.fill_buf().await?.is_empty() && (start != 1 || metadata.len() != 0) {
             return Ok(ToolResult::error(
                 &ctx.trace_id,
                 format!("Error: start_line {start} exceeds file length."),
@@ -290,8 +295,9 @@ impl ReadFileTool {
                 return Ok(ToolResult::error(&ctx.trace_id, "Read cancelled"));
             }
             row.clear();
+            let remaining = budget - output.len();
             let n = (&mut reader)
-                .take(budget as u64 + 1)
+                .take((remaining as u64).saturating_add(1))
                 .read_until(b'\n', &mut row)
                 .await?;
             if n == 0 {
@@ -302,14 +308,17 @@ impl ReadFileTool {
                     path: file_path.into(),
                 });
             }
-            let text = String::from_utf8_lossy(&row);
-            let line = format!("{line_no:>6} | {}\n", text.trim_end_matches(['\r', '\n']));
-            if output.len() + line.len() > budget {
+            let content = row.strip_suffix(b"\n").map_or(row.as_slice(), |line| {
+                line.strip_suffix(b"\r").unwrap_or(line)
+            });
+            let line = format!("{line_no:>6} | {}\n", String::from_utf8_lossy(content));
+            if n > remaining || line.len() > remaining {
                 if count == 0 {
                     return text_bytes(
                         &mut reader,
                         byte_position,
                         metadata.len(),
+                        row.ends_with(b"\n").then_some(n),
                         file_path,
                         ctx,
                         device_location.is_none(),
@@ -368,28 +377,36 @@ async fn text_bytes(
     reader: &mut tokio::io::BufReader<fs::File>,
     offset: u64,
     length: u64,
+    line_bytes: Option<usize>,
     path: &str,
     ctx: &ToolExecutionContext,
     emit_hint: bool,
 ) -> std::result::Result<ToolResult, ToolError> {
-    if offset >= length {
+    if offset > length || (offset == length && length > 0) {
         return Ok(ToolResult::error(
             &ctx.trace_id,
             format!("Byte offset {offset} exceeds the text file range of {length} bytes."),
         ));
     }
     reader.seek(std::io::SeekFrom::Start(offset)).await?;
+    if length == 0 && !reader.fill_buf().await?.is_empty() {
+        return Ok(ToolResult::error(
+            &ctx.trace_id,
+            "The file reports zero bytes but contains data; its byte range is unavailable.",
+        ));
+    }
     let mut bytes = Vec::new();
-    let budget = ctx.raw_capture_max_bytes.max(4);
+    let budget = ctx.raw_capture_max_bytes.max(1);
     // Three bytes of lookahead distinguish a split scalar from invalid input.
+    let available = (length - offset).min(line_bytes.map_or(u64::MAX, |n| n as u64));
     reader
-        .take((budget as u64).saturating_add(3).min(length - offset))
+        .take((budget as u64).saturating_add(3).min(available))
         .read_to_end(&mut bytes)
         .await?;
     if bytes.contains(&0) {
         return Err(ToolError::BinaryFile { path: path.into() });
     }
-    if bytes.is_empty() {
+    if bytes.is_empty() && length != 0 {
         return Ok(ToolResult::error(
             &ctx.trace_id,
             "The text file changed while reading this range.",
@@ -415,6 +432,12 @@ async fn text_bytes(
             shown.push(char::REPLACEMENT_CHARACTER);
             consumed += chunk.invalid().len();
         }
+    }
+    if consumed == 0 && !bytes.is_empty() {
+        return Ok(ToolResult::error(
+            &ctx.trace_id,
+            "The configured read byte budget is too small for the next UTF-8 character.",
+        ));
     }
     let end = offset + consumed as u64;
     let mut result = ToolResult::text(&ctx.trace_id, shown);

@@ -227,12 +227,18 @@ async fn call_local(
         ))),
     }
     .map_err(|error| resolved_error(error.into()))?;
-    let partial = result.is_error
-        || result.truncation.is_some()
+    let partial = result.truncation.is_some()
         || result.metadata.contains_key("omitted_entries")
         || result.metadata.contains_key("continuation")
         || result.metadata.get("more_results") == Some(&Value::Bool(true));
-    let location = json!({"device_id":ctx.local_device_id,"path":paths.first(),"paths":paths,"coverage":if partial {"partial"}else{"requested_scope"}});
+    let coverage = match (tool, result.is_error, partial) {
+        (_, _, true) => "partial",
+        ("read", true, false) => "unavailable",
+        // Searches can return matches and edits can commit files before an error.
+        (_, true, false) => "partial",
+        (_, false, false) => "requested_scope",
+    };
+    let location = json!({"device_id":ctx.local_device_id,"path":paths.first(),"paths":paths,"coverage":coverage});
     if let (Some(mut query), Some(offset)) =
         (search_args, result.metadata.get("next_offset").cloned())
     {

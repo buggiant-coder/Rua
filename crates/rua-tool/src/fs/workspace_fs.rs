@@ -87,6 +87,9 @@ impl WorkspaceFs {
 
     fn backing_path(&self, path: &Path) -> Result<PathBuf, ToolError> {
         let public = self.public_path(path);
+        if self.deny_secret_dirs {
+            Self::check_secret_dir(&public)?;
+        }
         match &self.execution {
             Some((layout, _)) => {
                 layout
