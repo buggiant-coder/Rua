@@ -374,6 +374,7 @@
       "context": "コンテキスト",
       "copyPath": "パスをコピー",
       "omittedEntries": "{{path}} で {{count}} 件の項目を表示できませんでした。",
+      "incompleteListing": "{{path}} の項目をすべて表示できませんでした。{{detail}}",
       "refreshFiles": "ファイルを更新",
       "refreshGit": "Git 状態を更新",
       "loadingFiles": "ファイルを読み込み中",

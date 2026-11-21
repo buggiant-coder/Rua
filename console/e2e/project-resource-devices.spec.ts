@@ -393,10 +393,37 @@ test("resource browsing, Git, and folder creation follow the selected Device and
     await page.getByRole("option").filter({ hasText: device }).click();
   };
   await select("phone");
+  await expect(dialog.getByRole("button", { name: "nested" })).toBeVisible();
+  const pageError = dialog
+    .getByRole("alert")
+    .filter({ hasText: "Phone offline" });
+  const moreFiles = dialog.getByRole("button", { name: "Load more" });
+  const refreshFiles = dialog.getByRole("button", { name: "Refresh files" });
+  online = false;
+  await refreshFiles.click();
+  await expect(pageError).toContainText(root);
+  await expect(dialog.getByRole("button", { name: "nested" })).toBeVisible();
+  await expect(moreFiles).toHaveCount(0);
+  online = true;
+  await refreshFiles.click();
+  await expect(pageError).toHaveCount(0);
+  online = false;
+  await moreFiles.click();
+  await expect(pageError).toContainText(
+    "Could not list all entries in " + root,
+  );
+  await expect(dialog.getByRole("combobox")).toContainText("phone");
+  online = true;
   await dialog.getByText("nested", { exact: true }).click();
   await expect(dialog.getByText("child-phone.txt")).toBeVisible();
-  await dialog.getByRole("button", { name: "Load more" }).click();
+  await expect(pageError).toContainText(root);
+  await moreFiles.click();
   await expect(dialog.getByText("phone.txt", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("Phone offline")).toHaveCount(0);
+  await expect(dialog.getByText("child-phone.txt")).toBeVisible();
+  expect(
+    workspace.filter((v) => v === "phone files /shared/repo 1"),
+  ).toHaveLength(2);
   await dialog.getByRole("tab", { name: "Git", exact: true }).click();
   await expect(dialog.getByText("phone commit 1")).toBeVisible();
   await dialog.getByRole("button", { name: "Load more" }).click();

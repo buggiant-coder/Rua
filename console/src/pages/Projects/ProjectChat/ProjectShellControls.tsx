@@ -55,6 +55,11 @@ type ProjectShellDrawerProps = {
   onClose: () => void;
 };
 
+type DirectoryView = {
+  listing?: ProjectDirectoryListing;
+  error?: { message: string; offset: number };
+};
+
 function resourceProfileTranslationKey(
   profile: NonNullable<ProjectResourcePolicyView["policy"]>["profile"],
 ): string {
@@ -203,11 +208,11 @@ function ProjectShellDrawerContent({
     device?.connectivity_state,
   );
   const [listings, setListings] = useState(
-    () => new Map<string, ProjectDirectoryListing>(),
+    () => new Map<string, DirectoryView>(),
   );
   const [expanded, setExpanded] = useState(() => new Set<string>());
   const [filesLoading, setFilesLoading] = useState(false);
-  const [filesError, setFilesError] = useState<string | null>(null);
+  const [openError, setOpenError] = useState<string | null>(null);
   const [gitStatus, setGitStatus] = useState<ProjectGitStatus | null>(null);
   const [gitHistory, setGitHistory] = useState<ProjectGitCommit[]>([]);
   const [nextGitOffset, setNextGitOffset] = useState<number | null>(null);
@@ -223,11 +228,11 @@ function ProjectShellDrawerContent({
         for (const request of requests.values()) request.abort();
         requests.clear();
         setFilesLoading(true);
+        setOpenError(null);
       } else if (requests.has(path) || requests.has(target.resource_root))
         return;
       const request = new AbortController();
       requests.set(path, request);
-      setFilesError(null);
       try {
         const listing = await projectsApi.browseResource(
           project.project_id,
@@ -239,9 +244,9 @@ function ProjectShellDrawerContent({
         if (request.signal.aborted) return;
         setListings((current) => {
           const next = refresh
-            ? new Map<string, ProjectDirectoryListing>()
+            ? new Map<string, DirectoryView>()
             : new Map(current);
-          const previous = offset ? current.get(path) : undefined;
+          const previous = offset ? current.get(path)?.listing : undefined;
           const merged = previous
             ? {
                 ...listing,
@@ -255,14 +260,22 @@ function ProjectShellDrawerContent({
                 ),
               }
             : listing;
-          next.set(path, merged);
-          next.set(listing.path, merged);
+          const view = { listing: merged };
+          next.set(path, view);
+          next.set(listing.path, view);
           return next;
         });
         if (refresh) setExpanded(new Set([listing.path]));
       } catch (error) {
-        if (!request.signal.aborted)
-          setFilesError(extractFriendlyMessage(error));
+        if (!request.signal.aborted) {
+          const message = extractFriendlyMessage(error);
+          setListings((current) =>
+            new Map(current).set(path, {
+              ...current.get(path),
+              error: { message, offset },
+            }),
+          );
+        }
       } finally {
         if (requests.get(path) === request) requests.delete(path);
         if (refresh && !request.signal.aborted) setFilesLoading(false);
@@ -361,7 +374,7 @@ function ProjectShellDrawerContent({
         return;
       }
       setExpanded((current) => new Set(current).add(path));
-      if (!listings.has(path)) void loadDirectory(path);
+      if (!listings.get(path)?.listing) void loadDirectory(path);
     },
     [expanded, listings, loadDirectory],
   );
@@ -381,8 +394,8 @@ function ProjectShellDrawerContent({
           />
         </Tooltip>
       </div>
-      {filesError && (
-        <WorkspaceState icon={<TriangleAlert size={15} />} text={filesError} />
+      {openError && (
+        <WorkspaceState icon={<TriangleAlert size={15} />} text={openError} />
       )}
       {filesLoading && listings.size === 0 ? (
         <WorkspaceState
@@ -583,6 +596,7 @@ function ProjectShellDrawerContent({
         <Btn
           variant="ghost"
           onClick={async () => {
+            setOpenError(null);
             try {
               const listing = await projectsApi.browseResource(
                 project.project_id,
@@ -591,7 +605,7 @@ function ProjectShellDrawerContent({
               );
               await openProjectDirectory(listing.path);
             } catch (error) {
-              setFilesError(
+              setOpenError(
                 error instanceof Error ? error.message : String(error),
               );
             }
@@ -675,7 +689,7 @@ function DirectoryRows({
 }: {
   path: string;
   depth: number;
-  listings: Map<string, ProjectDirectoryListing>;
+  listings: Map<string, DirectoryView>;
   expanded: Set<string>;
   onToggle: (path: string) => void;
   onCopy: (path: string) => void;
@@ -684,12 +698,25 @@ function DirectoryRows({
   moreLabel: string;
 }) {
   const { t } = useTranslation();
-  const listing = listings.get(path);
-  if (!listing) return null;
-  const nextOffset = listing.next_offset;
+  const view = listings.get(path);
+  if (!view) return null;
+  const { listing, error } = view;
+  const nextOffset = error?.offset === 0 ? null : listing?.next_offset;
   return (
     <>
-      {listing.entries
+      {error && (
+        <div
+          className={styles.workspaceEmpty}
+          style={{ paddingLeft: `${8 + depth * 14}px` }}
+          role="alert"
+        >
+          {t("projects.workspace.incompleteListing", {
+            path,
+            detail: error.message,
+          })}
+        </div>
+      )}
+      {listing?.entries
         .filter((entry) => entry.name !== ".git")
         .map((entry) => {
           const directory = entry.kind === "directory";
@@ -748,7 +775,7 @@ function DirectoryRows({
             </div>
           );
         })}
-      {!!listing.omitted_entries && (
+      {!!listing?.omitted_entries && (
         <div
           className={styles.workspaceEmpty}
           style={{ paddingLeft: `${8 + depth * 14}px` }}

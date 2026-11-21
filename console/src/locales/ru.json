@@ -374,6 +374,7 @@
       "context": "Контекст",
       "copyPath": "Копировать путь",
       "omittedEntries": "Не удалось показать все элементы в {{path}} (пропущено {{count}}).",
+      "incompleteListing": "Не удалось показать все элементы в {{path}}. {{detail}}",
       "refreshFiles": "Обновить файлы",
       "refreshGit": "Обновить статус Git",
       "loadingFiles": "Загрузка файлов",
