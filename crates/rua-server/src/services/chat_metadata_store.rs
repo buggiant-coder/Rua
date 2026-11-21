@@ -534,21 +534,14 @@ async fn write_authority_placement(
             "Chat must be materialized before its authority can change".into(),
         ));
     }
-    rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope_root))
+    let service = rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope_root));
+    service
         .update_setting(
             address,
             rua_chat::ChatSetting::AuthorityPlacement(placement),
         )
         .await?;
-    if chat
-        .meta
-        .get(rua_session::collaboration::COLLABORATION_META_KEY)
-        .is_some_and(serde_json::Value::is_object)
-    {
-        rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope_root))
-            .repair_projection(address)
-            .await?;
-    }
+    service.repair_projection(address).await?;
     if let Some(state) = state {
         let _ = publish_sync_fact(
             state,
