@@ -2177,6 +2177,11 @@
       "queueResolvedTitle": "Обработано",
       "queueDeniedTitle": "Заблокировано"
     },
+    "readOutcome": {
+      "running": "Чтение…",
+      "succeeded": "Чтение выполнено",
+      "failed": "Ошибка чтения"
+    },
     "toolGroup": {
       "thinkingCount": "{{count}} рассуждение",
       "toolCallCount": "{{count}} вызов инструмента",

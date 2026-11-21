@@ -2172,6 +2172,11 @@
       "queueResolvedTitle": "処理済み",
       "queueDeniedTitle": "ブロック済み"
     },
+    "readOutcome": {
+      "running": "読み取り中",
+      "succeeded": "読み取り成功",
+      "failed": "読み取り失敗"
+    },
     "toolGroup": {
       "thinkingCount": "{{count}} 件の思考",
       "toolCallCount": "{{count}} 件のツール呼び出し",

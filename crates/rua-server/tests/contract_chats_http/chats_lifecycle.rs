@@ -3307,6 +3307,11 @@ async fn chat_history_keeps_single_react_run_segments_in_one_response_variant() 
         variant_carriers, 0,
         "single-variant responses should not duplicate their selected output into assistant_response_variants: {history:?}"
     );
+    let tool_result = messages
+        .iter()
+        .find(|message| message["type"] == "plugin_call_output")
+        .unwrap();
+    assert_eq!(tool_result["content"][0]["data"]["is_error"], false);
     assert!(history.to_string().contains("thinking step"));
     assert!(history.to_string().contains("final answer"));
 
@@ -3321,6 +3326,8 @@ async fn chat_history_preserves_fine_grained_message_ids() {
 
     let created = seed_materialized_chat(&app, agent_id, "Evergreen split metadata chat").await;
     let chat_id = created["id"].as_str().expect("chat id").to_string();
+    let mut failed_read = rua_core::tool::ToolResult::error("call-1", "1 | alpha\n2 | beta\n");
+    failed_read.name = Some("read".into());
     let workspace = app
         .state
         .registry
@@ -3356,7 +3363,7 @@ async fn chat_history_preserves_fine_grained_message_ids() {
                         role: "assistant".to_string(),
                         created_at: "2026-06-19T00:00:01Z".to_string(),
                         status: "completed".to_string(),
-                        content: json!([{"type": "tool_use", "id": "call-1", "name": "Shell", "input": {"cmd": "pwd"}}]),
+                        content: json!([{"type": "tool_use", "id": "call-1", "name": "read", "input": {"file_path": "/document"}}]),
                         provider: None,
                         tool: None,
                         metadata: serde_json::Map::new(),
@@ -3366,7 +3373,7 @@ async fn chat_history_preserves_fine_grained_message_ids() {
                         role: "system".to_string(),
                         created_at: "2026-06-19T00:00:02Z".to_string(),
                         status: "completed".to_string(),
-                        content: json!([{"type": "tool_result", "id": "call-1", "name": "Shell", "output": [{"type": "text", "text": "1 | alpha\n2 | beta\n"}]}]),
+                        content: json!([rua_core::ContentPart::ToolResult { result: failed_read }]),
                         provider: None,
                         tool: None,
                         metadata: serde_json::Map::new(),
@@ -3419,6 +3426,7 @@ async fn chat_history_preserves_fine_grained_message_ids() {
         .iter()
         .find(|output| output["type"] == "plugin_call_output")
         .expect("tool output");
+    assert_eq!(tool_output["content"][0]["data"]["is_error"], true);
     assert_eq!(
         tool_output["content"][0]["data"]["output"], "1 | alpha\n2 | beta\n",
         "text-only tool_result output should project as text, not JSON with escaped newlines"

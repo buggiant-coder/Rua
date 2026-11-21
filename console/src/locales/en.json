@@ -2615,6 +2615,11 @@
       "queueResolvedTitle": "Resolved",
       "queueDeniedTitle": "Denied"
     },
+    "readOutcome": {
+      "running": "Reading",
+      "succeeded": "Read succeeded",
+      "failed": "Read failed"
+    },
     "toolGroup": {
       "thinkingCount": "{{count}} thinking",
       "toolCallCount": "{{count}} tool call",

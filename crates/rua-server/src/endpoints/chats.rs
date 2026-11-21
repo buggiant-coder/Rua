@@ -2585,6 +2585,7 @@ fn convert_agentscope_msg(msg: &serde_json::Value, results: &mut Vec<serde_json:
                         "call_id": block.get("id").and_then(|v| v.as_str()).unwrap_or(""),
                         "name": block.get("name").and_then(|v| v.as_str()).unwrap_or(""),
                         "output": output,
+                        "is_error": block.get("is_error").map_or(Some(false), serde_json::Value::as_bool),
                     }
                 })
             }

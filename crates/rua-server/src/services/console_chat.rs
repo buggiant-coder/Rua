@@ -1476,6 +1476,7 @@ pub fn map_runtime_event_to_chat_events(
                 id: result.call_id.as_str().to_string(),
                 name: result.name.clone(),
                 content: content_parts_to_json(&result.content),
+                is_error: result.is_error,
             }];
 
             let file_content_parts = extract_file_content_parts(&result.content);
@@ -4531,10 +4532,12 @@ pub fn chat_event_to_runtime_event(event: dto::ChatEvent) -> RuntimeEvent {
             id,
             name,
             content,
+            is_error,
         } => {
             let text = extract_text_from_content_json(&content);
             let mut result = rua_core::tool::ToolResult::text(id, text);
             result.name = name;
+            result.is_error = is_error;
             result.metadata.insert(
                 agent_types::conversation_message_identity::CANONICAL_MESSAGE_ID_METADATA_KEY
                     .to_string(),

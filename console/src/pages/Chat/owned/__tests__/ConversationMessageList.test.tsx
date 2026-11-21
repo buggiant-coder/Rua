@@ -3828,6 +3828,99 @@ describe("ConversationMessageList", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows an approved read's execution outcome on the folded tool and group", () => {
+    const call = {
+      id: "msg-tc-read",
+      role: "assistant",
+      type: "plugin_call",
+      content: [
+        {
+          type: "data",
+          data: { call_id: "read-1", name: "read", arguments: "{}" },
+        },
+      ],
+    };
+    const approvalSnapshot = {
+      pending: [],
+      resolved: [
+        {
+          id: "approval",
+          agent_id: "agent",
+          turn_id: "turn",
+          tool_call_id: "read-1",
+          tool_name: "read",
+          status: "approved" as const,
+          tool_call: { display: "read", args: {} },
+          created_at: "2026-06-21T00:00:00Z",
+          reuse_options: [],
+        },
+      ],
+    };
+    const view = (result?: Record<string, unknown>, group = false) => {
+      const messages = [
+        ...(group
+          ? [
+              {
+                id: "thinking",
+                role: "assistant",
+                type: "reasoning",
+                content: "Thinking",
+              },
+            ]
+          : []),
+        call,
+        ...(result
+          ? [
+              {
+                id: "msg-tr-read",
+                role: "tool",
+                type: "plugin_call_output",
+                content: [
+                  {
+                    type: "data",
+                    data: { call_id: "read-1", name: "read", ...result },
+                  },
+                ],
+              },
+            ]
+          : []),
+      ];
+      const projection = projectConversation("read-chat", { messages });
+      return (
+        <ConversationMessageList
+          projection={result ? projection : withActiveTurn(projection)}
+          approvalSnapshot={approvalSnapshot}
+          blockPreferences={{
+            aggregateExpanded: false,
+            thinkingExpanded: false,
+            toolExpanded: false,
+          }}
+        />
+      );
+    };
+    const { container, rerender } = render(view());
+    const summary = () => container.querySelector(".rua-local-tool > summary");
+    expect(summary()).toHaveTextContent("Approved");
+    expect(summary()).toHaveTextContent("Reading");
+    // Both outcomes deliberately carry the same text.
+    rerender(view({ output: "error", is_error: false }));
+    expect(summary()).toHaveTextContent("Read succeeded");
+    rerender(view({ output: "error", is_error: true }));
+    expect(summary()).toHaveTextContent("Approved");
+    expect(summary()).toHaveTextContent("Read failed");
+    expect(container.querySelector(".rua-local-tool")).not.toHaveAttribute(
+      "open",
+    );
+    rerender(view({ output: "error" }));
+    expect(summary()).not.toHaveTextContent(
+      /Read failed|Read succeeded|Reading/,
+    );
+    rerender(view({ output: "error", is_error: true }, true));
+    const group = screen.getByRole("button", { name: /1 approved/ });
+    expect(group).toHaveTextContent("Read failed");
+    expect(group).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("uses block preferences instead of forcing approval tool groups open", () => {
     const { container } = render(
       <ConversationMessageList

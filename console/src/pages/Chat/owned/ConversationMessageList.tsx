@@ -1361,6 +1361,41 @@ function isRunningTool(msg: ConversationOutputMessage): boolean {
   );
 }
 
+function readExecutionLabel(
+  t: Translate,
+  msg: ConversationOutputMessage,
+  generating?: boolean,
+): string | undefined {
+  if (
+    (msg.type !== "plugin_call" && msg.type !== "plugin_call_output") ||
+    getToolTitle(msg) !== "read"
+  )
+    return;
+  const index = msg.type === "plugin_call_output" ? 0 : 1;
+  const result = dataAt(msg, index);
+  if (result && typeof result === "object" && "is_error" in result) {
+    if (result.is_error === true)
+      return t("chat.readOutcome.failed", { defaultValue: "Read failed" });
+    if (result.is_error === false)
+      return t("chat.readOutcome.succeeded", {
+        defaultValue: "Read succeeded",
+      });
+  }
+  const streaming =
+    msg.content[index]?.status === "in_progress" ||
+    (result &&
+      typeof result === "object" &&
+      "status" in result &&
+      result.status === "in_progress");
+  const approval = approvalStatus(msg);
+  if (
+    generating &&
+    (!approval || approval === "approved" || approval === "consumed") &&
+    (!result || streaming)
+  )
+    return t("chat.readOutcome.running", { defaultValue: "Reading" });
+}
+
 function dataForPartType(
   msg: ConversationOutputMessage,
   type: string,
@@ -1735,6 +1770,7 @@ function LocalTool({
       ? approval.id
       : "";
   const approvalReason = approvalPrompt(approval);
+  const readOutcome = readExecutionLabel(t, normalized, generating);
   const approvalTrigger = approvalTriggerSource(approval);
   const approvalWaiting =
     approvalStatus === "waiting" || approvalStatus === "pending";
@@ -1781,6 +1817,7 @@ function LocalTool({
               {approvalStatusLabel(t, approvalStatus)}
             </span>
           )}
+          {readOutcome && <span>{readOutcome}</span>}
         </>
       }
     >
@@ -2261,7 +2298,14 @@ function CollapsibleToolGroup({
     (item) => approvalStatus(item) === "approved",
   ).length;
   const rejectedApprovalCount = items.filter(hasRejectedApproval).length;
-  const runningToolCount = items.filter(isRunningTool).length;
+  const readOutcomes = new Map<string, number>();
+  let runningToolCount = 0;
+  for (const item of items) {
+    const outcome = readExecutionLabel(t, item, generating);
+    if (outcome)
+      readOutcomes.set(outcome, (readOutcomes.get(outcome) ?? 0) + 1);
+    else if (isRunningTool(item)) runningToolCount++;
+  }
   const summaryParts: string[] = [];
   if (thinkingCount)
     summaryParts.push(
@@ -2319,6 +2363,9 @@ function CollapsibleToolGroup({
       ),
     );
   const expanded = open;
+  for (const [label, count] of readOutcomes) {
+    summaryParts.push(count === 1 ? label : `${count} × ${label}`);
+  }
   const showSpinner = Boolean(generating);
 
   return (

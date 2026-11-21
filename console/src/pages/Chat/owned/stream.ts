@@ -76,6 +76,7 @@ export type ConversationStreamEvent =
       id: string;
       name?: string;
       content: unknown;
+      isError?: boolean;
       raw: Record<string, unknown>;
     }
   | {
@@ -810,6 +811,7 @@ function upsertToolResult(
     name?: string;
     outputDelta?: string;
     content?: unknown;
+    isError?: boolean;
   },
 ): ConversationOutputMessage[] {
   const index = output.findIndex(
@@ -846,6 +848,7 @@ function upsertToolResult(
       params.name ||
       (typeof existingData.name === "string" ? existingData.name : undefined),
     output: finalOutput,
+    ...(params.isError !== undefined && { is_error: params.isError }),
     status: params.content === undefined ? "in_progress" : "completed",
   };
   const msg: ConversationOutputMessage = {
@@ -1160,6 +1163,8 @@ export function parseConversationStreamChunk(
       id,
       name: stringField(payload, "name"),
       content: payload.content,
+      isError:
+        typeof payload.is_error === "boolean" ? payload.is_error : undefined,
       raw: payload,
     };
   }
@@ -1450,6 +1455,7 @@ export function foldConversationStreamEvent(
           callId: event.id,
           name: event.name,
           content: event.content,
+          isError: event.isError,
         }),
       };
     case "runtime_note":

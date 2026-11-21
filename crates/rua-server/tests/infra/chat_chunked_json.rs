@@ -38,6 +38,7 @@ fn mock_chat_events() -> Vec<Result<ChatEvent, String>> {
             id: "tc-1".into(),
             name: Some("search".into()),
             content: serde_json::json!({"text": "result"}),
+            is_error: false,
         }),
         Ok(ChatEvent::Done {
             finish_reason: Some("stop".into()),

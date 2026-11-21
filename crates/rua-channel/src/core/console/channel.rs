@@ -835,7 +835,7 @@ impl WebUiSseAdapter {
                     "index": 0,
                     "delta": false,
                     "msg_id": &msg_id,
-                    "data": { "call_id": &id, "name": &tool_name, "output": &content }
+                    "data": { "call_id": &id, "name": &tool_name, "output": &content, "is_error": result.is_error }
                 })));
                 let seq = self.next_seq();
                 let msg_completed = serde_json::json!({
@@ -851,7 +851,7 @@ impl WebUiSseAdapter {
                         "status": "completed", "error": null,
                         "type": "data", "index": 0, "delta": null,
                         "msg_id": &msg_id,
-                        "data": { "call_id": &id, "name": &tool_name, "output": &content }
+                        "data": { "call_id": &id, "name": &tool_name, "output": &content, "is_error": result.is_error }
                     }],
                     "code": null, "message": null, "usage": null, "metadata": null
                 });

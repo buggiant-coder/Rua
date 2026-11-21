@@ -2533,6 +2533,11 @@
       "queueResolvedTitle": "已处理",
       "queueDeniedTitle": "已拦截"
     },
+    "readOutcome": {
+      "running": "正在读取",
+      "succeeded": "读取成功",
+      "failed": "读取失败"
+    },
     "toolGroup": {
       "thinkingCount": "{{count}} 个思考",
       "toolCallCount": "{{count}} 个工具调用",

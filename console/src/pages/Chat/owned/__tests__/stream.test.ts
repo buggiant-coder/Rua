@@ -30,6 +30,26 @@ function foldRaw(chunks: string[]) {
 }
 
 describe("owned conversation stream adapter", () => {
+  it.each([true, false])(
+    "retains the finished read error flag %s",
+    (isError) => {
+      const state = foldRaw([
+        JSON.stringify({
+          type: "tool_result",
+          message_id: "msg-tr-read",
+          id: "read",
+          name: "read",
+          content: [{ type: "text", text: "same output" }],
+          is_error: isError,
+        }),
+      ]);
+      expect(state.output[0].content[0].data).toMatchObject({
+        output: "same output",
+        is_error: isError,
+      });
+    },
+  );
+
   it("projects a single typed text tool result to its payload", () => {
     const state = foldRaw([
       JSON.stringify({
@@ -54,6 +74,28 @@ describe("owned conversation stream adapter", () => {
         ],
       }),
     ]);
+  });
+
+  it("keeps the read outcome unknown when an older replay lacks an error flag", () => {
+    const state = foldRaw([
+      JSON.stringify({
+        type: "stream_replay",
+        complete: true,
+        events: [
+          {
+            type: "tool_result",
+            message_id: "msg-tr-read",
+            id: "read",
+            name: "read",
+            content: [{ type: "text", text: "older output" }],
+          },
+        ],
+      }),
+    ]);
+    expect(state.output[0].content[0].data).toMatchObject({
+      output: "older output",
+    });
+    expect(state.output[0].content[0].data).not.toHaveProperty("is_error");
   });
 
   it("projects ordered typed text parts without parsing their payloads", () => {

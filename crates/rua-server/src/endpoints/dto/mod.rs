@@ -565,6 +565,8 @@ pub enum ChatEvent {
         name: Option<String>,
         #[serde(default)]
         content: serde_json::Value,
+        #[serde(default)]
+        is_error: bool,
     },
 
     ToolResultDelta {
