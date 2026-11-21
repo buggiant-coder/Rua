@@ -145,17 +145,23 @@ impl SecurityModule {
             .await
             .map_err(Unavailable)?;
         let mut admission = FileReadAdmission::Allowed;
-        let call = PermissionToolCall::new("read", &ctx.tool_input, ctx.local_device_id.as_deref());
         for config in std::iter::once(captured).chain((captured != &current).then_some(&current)) {
             let mut rules = snapshot_permission_rules(config).map_err(Unavailable)?;
             rules.extend(chat_rules.iter().map(ApprovalReuseRule::to_stored));
-            let allowed = rules.iter().any(|rule| {
-                rule.enabled
-                    && rule.effect == crate::PermissionRuleEffect::Allow
-                    && rule.pattern().matches(&call)
-            });
+            let allows = |args: &serde_json::Value| {
+                let call = PermissionToolCall::new("read", args, ctx.local_device_id.as_deref());
+                rules.iter().any(|rule| {
+                    rule.enabled
+                        && rule.effect == crate::PermissionRuleEffect::Allow
+                        && rule.pattern().matches(&call)
+                })
+            };
+            let requested_allowed = allows(&ctx.tool_input);
             let engine = ToolGuardEngine::new(config, self.paths.as_deref());
             let mode = canonical_approval_mode_preset(&config.tool_guard.approval_mode);
+            if !requested_allowed && mode.requires_approval_for_tool(&ctx.tool_name) {
+                admission = FileReadAdmission::RequiresUserConfirmation;
+            }
             for path in local_names {
                 let mut operation = ctx.clone();
                 operation.tool_input["file_path"] = serde_json::json!(path);
@@ -172,9 +178,9 @@ impl SecurityModule {
                             .join(", ")
                     )));
                 }
-                if !allowed
-                    && (mode.requires_approval_for_tool(&operation.tool_name)
-                        || guard.decision == GuardDecision::RequiresApproval)
+                // A guard on a resolved or backing name requires an allow that covers that name too.
+                if guard.decision == GuardDecision::RequiresApproval
+                    && (!requested_allowed || !allows(&operation.tool_input))
                 {
                     admission = FileReadAdmission::RequiresUserConfirmation;
                 }

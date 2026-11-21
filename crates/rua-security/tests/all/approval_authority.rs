@@ -138,6 +138,73 @@ async fn file_read_reuse_from_the_approval_card_keeps_the_selected_name_literal(
 }
 
 #[tokio::test]
+async fn file_read_checks_protected_resolved_and_backing_names_with_an_existing_allow() {
+    use rua_security::security_module::{
+        FileReadAdmission::{Allowed, RequiresUserConfirmation},
+        FileReadPolicyError,
+    };
+
+    let tmp = tempfile::tempdir().unwrap();
+    let module = open_file_rule_module(tmp.path());
+    let requested = "/fixture/work/notes.txt";
+    let resolved = "/fixture/shared/notes.txt";
+    let backing = "/fixture/mobile/volume/notes.txt";
+    let names = [requested, resolved, backing];
+    let args = json!({"device_id": "phone", "file_path": requested});
+    let (_, mut ctx) = chat_file_read(args.clone());
+    ctx.local_device_id = Some("phone".into());
+    let captured = module.config_store().load("agent-1").unwrap();
+    let inspect = || module.inspect_chat_file_read(&ctx, &captured, &names);
+    assert_eq!(inspect().await.unwrap(), Allowed);
+    let mut config = captured.clone();
+    config.tool_guard.approval_mode = "ask_first".into();
+    module.save_and_invalidate("agent-1", &config).unwrap();
+    assert_eq!(inspect().await.unwrap(), RequiresUserConfirmation);
+    allow_read_from_card(module.approval_authority(), args, ApprovalReuseScope::Chat).await;
+    assert_eq!(inspect().await.unwrap(), Allowed);
+
+    for (protected_name, expected) in [
+        (requested, Allowed),
+        (resolved, RequiresUserConfirmation),
+        (backing, RequiresUserConfirmation),
+    ] {
+        let mut protected = config.clone();
+        protected
+            .file_guard
+            .sensitive_files
+            .push(protected_name.into());
+        module.save_and_invalidate("agent-1", &protected).unwrap();
+        assert_eq!(inspect().await.unwrap(), expected, "{protected_name}");
+    }
+    let backing_args = json!({"device_id": "phone", "file_path": backing});
+    let authority = module.approval_authority();
+    authority
+        .create_agent_rule(
+            "agent-1",
+            manual_read_rule(PermissionRuleEffect::Allow, &backing_args),
+        )
+        .await
+        .unwrap();
+    assert_eq!(inspect().await.unwrap(), Allowed);
+    authority
+        .create_agent_rule(
+            "agent-1",
+            manual_read_rule(PermissionRuleEffect::Deny, &backing_args),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        inspect().await,
+        Err(FileReadPolicyError::Denied(_))
+    ));
+    assert!(authority
+        .snapshot_at(&ChatAddress::new("chat-1"))
+        .await
+        .pending
+        .is_empty());
+}
+
+#[tokio::test]
 async fn file_read_reuse_from_a_manual_pattern_matches_the_named_device_and_file_pattern() {
     let authority = ApprovalAuthority::new();
     let address = ChatAddress::new("chat-1");
