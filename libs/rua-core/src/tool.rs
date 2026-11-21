@@ -215,6 +215,8 @@ pub struct ToolContext {
 
     pub sync_transfer_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
 
+    pub remote_command_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
+
     pub event_tx: Option<tokio::sync::mpsc::Sender<agent_types::AgentEvent>>,
 
     pub execution_output_max_tokens: usize,
@@ -268,6 +270,7 @@ impl Default for ToolContext {
             device_read_access: None,
             device_read_confirmation_wait: None,
             sync_transfer_runtime: None,
+            remote_command_runtime: None,
             event_tx: None,
             execution_output_max_tokens: DEFAULT_TOOL_EXECUTION_OUTPUT_MAX_TOKENS,
             raw_capture_max_bytes: DEFAULT_TOOL_RAW_CAPTURE_MAX_BYTES,

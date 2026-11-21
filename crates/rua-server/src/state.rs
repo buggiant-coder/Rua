@@ -233,6 +233,7 @@ pub struct AppState {
     pub chat_media_transfers: Arc<crate::services::chat_media_transfer::ChatMediaTransferRegistry>,
     pub sync_transfer_bulk_handler: Arc<crate::services::sync_transfer::SyncTransferBulkHandler>,
     pub chat_transfer: Arc<crate::services::chat_transfer::ChatTransferService>,
+    pub chat_command: Arc<crate::services::chat_command::ChatCommandService>,
 
     pub sync_trigger: Arc<tokio::sync::RwLock<Option<rua_sync::trigger::SyncTriggerHandle>>>,
 
@@ -812,6 +813,7 @@ impl AppState {
 
         let collaboration_binding = Arc::new(std::sync::OnceLock::new());
         let sync_transfer_binding = Arc::new(std::sync::OnceLock::new());
+        let remote_command_binding = Arc::new(std::sync::OnceLock::new());
         let collaboration_runtime: Arc<dyn std::any::Any + Send + Sync> = Arc::new(
             rua_tool::extended::collaboration::CollaborationRuntimeHandle::new(Arc::new(
                 crate::services::collaboration_runtime::CollaborationRuntimeAdapter::new(
@@ -836,6 +838,13 @@ impl AppState {
             ),
         );
         let instruction_reader = Arc::new(std::sync::OnceLock::new());
+        let remote_command_runtime: Arc<dyn std::any::Any + Send + Sync> = Arc::new(
+            rua_tool::core::shell::RemoteCommandRuntimeHandle::new(Arc::new(
+                crate::services::chat_command_tools::RemoteCommandRuntimeAdapter::new(Arc::clone(
+                    &remote_command_binding,
+                )),
+            )),
+        );
         let workspace_context = Arc::new(WorkspaceContext {
             agents_instruction_loader: Some(Arc::new(
                 crate::services::project_instructions::RuntimeAgentsInstructionLoader {
@@ -867,6 +876,7 @@ impl AppState {
             task_runtime: Arc::clone(&task_runtime),
             collaboration_runtime: Arc::clone(&collaboration_runtime),
             sync_transfer_runtime,
+            remote_command_runtime: Some(remote_command_runtime),
             tool_config_store: Arc::clone(&tool_config_store),
             tool_before_boundary: Some(tool_before_boundary),
             tool_observer_boundary: Some(tool_observer_boundary),
@@ -1191,6 +1201,12 @@ impl AppState {
             Arc::new(crate::services::sync_transfer::SourceTransferOperationStore::with_foreground_operations(Arc::clone(&foreground_operations))),
             Arc::clone(&sync_transfer_session_manager_cell), Arc::clone(&conversation_authority), Arc::clone(security_module.approval_authority()),
         ));
+        let chat_command = Arc::new(crate::services::chat_command::ChatCommandService::new(
+            data_dir.clone(),
+            local_device_id.clone(),
+            Arc::clone(&target_file_context),
+            Arc::clone(&sync_transfer_session_manager_cell),
+        ));
         conversation_authority.set_chat_completion_notifier(Arc::new(
             crate::services::chat_completion_notification::ChatCompletionNotifier::new(
                 local_device_id.clone(),
@@ -1315,6 +1331,7 @@ impl AppState {
                     )
                     .with_read_check_context(Arc::clone(&target_file_context))
                     .with_chat_transfer(Arc::clone(&chat_transfer))
+                    .with_chat_command(Arc::clone(&chat_command))
                     .with_remote_history_sync(remote_history_sync_tx.clone())
                     .with_acp_chat_registry(
                         Arc::clone(&acp_chat_registry),
@@ -1668,6 +1685,15 @@ impl AppState {
             ),
         );
         let _ = sync_transfer_binding.set(sync_transfer_tool_service);
+        let _ = remote_command_binding.set(Arc::new(
+            crate::services::chat_command_tools::ChatCommandToolService::new(
+                Arc::clone(&sync_enabled),
+                Arc::clone(&sync_device_cell),
+                Arc::clone(&device_network_cell),
+                Arc::clone(&conversation_authority),
+                Arc::clone(security_module.approval_authority()),
+            ),
+        ));
 
         let collaboration = Arc::new(
             crate::services::collaboration::CollaborationService::new(
@@ -1804,6 +1830,7 @@ impl AppState {
             chat_media_transfers,
             sync_transfer_bulk_handler,
             chat_transfer,
+            chat_command,
             sync_trigger,
             sync_runtime,
             sync_enabled,
@@ -2201,6 +2228,7 @@ impl AppState {
             ))
             .with_chat_media_transfers(Arc::clone(&self.chat_media_transfers))
             .with_chat_transfer(Arc::clone(&self.chat_transfer))
+            .with_chat_command(Arc::clone(&self.chat_command))
             .with_project_runtime(Arc::clone(&self.project_catalog))
             .with_task_runtime(Arc::clone(&self.task_runtime))
             .with_user_notifications(Arc::clone(&self.user_notifications))

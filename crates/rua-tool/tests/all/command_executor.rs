@@ -602,3 +602,74 @@ async fn runtime_executor_cancel_marks_output_and_stops_child() {
     assert!(!output.stdout.contains("done"));
     assert!(!output.success());
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_executor_cancel_stops_descendants_during_capture_after_shell_exit() {
+    inherited_output_termination(Duration::ZERO).await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_executor_timeout_stops_descendants_during_capture_after_shell_exit() {
+    inherited_output_termination(Duration::from_millis(500)).await;
+}
+
+#[cfg(unix)]
+async fn inherited_output_termination(deadline: Duration) {
+    let tmp = TempDir::new().unwrap();
+    let mut req = request(
+        "printf '%s' $$ > leader; printf prefix; (sleep 5; printf late > late) & printf '%s' $! > descendant",
+        tmp.path(),
+    );
+    req.timeout = deadline;
+    let (stop, cancel) = cancel_pair();
+    let mut execution =
+        tokio::spawn(async move { RuntimeCommandExecutor::new().execute(req, cancel).await });
+    let (leader, descendant): (libc::pid_t, libc::pid_t) =
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let (Ok(leader), Ok(descendant)) = (
+                    std::fs::read_to_string(tmp.path().join("leader")),
+                    std::fs::read_to_string(tmp.path().join("descendant")),
+                ) {
+                    if let (Ok(leader), Ok(descendant)) = (leader.parse(), descendant.parse()) {
+                        if unsafe { libc::kill(leader, 0) } == -1 {
+                            break (leader, descendant);
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("shell was reaped while its descendant retains the output pipe");
+    assert!(!execution.is_finished());
+    if deadline.is_zero() {
+        stop.send(true).unwrap();
+    }
+    let result = tokio::time::timeout(Duration::from_secs(1), &mut execution).await;
+    if result.is_err() {
+        // Clean up even when this regression reproduces against the old executor.
+        unsafe {
+            libc::kill(-leader, libc::SIGKILL);
+        }
+        let _ = execution.await;
+    }
+    let output = result
+        .expect("stop must interrupt output drain after shell exit")
+        .unwrap()
+        .unwrap();
+    assert_eq!(output.cancelled, deadline.is_zero());
+    assert_eq!(output.timed_out, !deadline.is_zero());
+    assert_eq!(output.exit_code, None);
+    assert_eq!(output.stdout, "prefix");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while unsafe { libc::kill(descendant, 0) } == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the descendant was terminated");
+    assert!(!tmp.path().join("late").exists());
+}

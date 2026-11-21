@@ -304,42 +304,80 @@ impl CommandExecutor for RuntimeCommandExecutor {
             ))
         });
 
-        let (timed_out, cancelled) = tokio::select! {
-            _ = child.wait() => (false, false),
-            _ = &mut timeout => (true, false),
-            _ = wait_for_cancel(&mut cancel) => (false, true),
+        let (mut timed_out, mut cancelled, mut status) = tokio::select! {
+            biased;
+            result = child.wait() => (false, false, Some(result)),
+            _ = &mut timeout => (true, false, None),
+            _ = wait_for_cancel(&mut cancel) => (false, true, None),
         };
 
         if timed_out || cancelled {
+            match child.try_wait() {
+                Ok(Some(completed)) => {
+                    // Completion may precede our observation of the cancellation request.
+                    timed_out = false;
+                    cancelled = false;
+                    status = Some(Ok(completed));
+                }
+                Ok(None) => {
+                    process_tree::kill_child_process_tree(&mut child).await;
+                    // Cancellation is confirmed by wait, never by sending a signal alone.
+                    status = Some(child.wait().await);
+                }
+                Err(error) => status = Some(Err(error)),
+            }
+        }
+        if status.as_ref().is_some_and(Result::is_err) {
             process_tree::kill_child_process_tree(&mut child).await;
         }
         if let Some(session) = task_session.as_ref() {
             session.close_input().await;
         }
 
+        let captures = async {
+            let stdout = match stdout_handle {
+                Some(handle) => handle.await.map_err(std::io::Error::other)?,
+                None => CapturedRawStream::default(),
+            };
+            let stderr = match stderr_handle {
+                Some(handle) => handle.await.map_err(std::io::Error::other)?,
+                None => CapturedRawStream::default(),
+            };
+            Ok::<_, CommandError>((stdout, stderr))
+        };
+        tokio::pin!(captures);
+        // A shell can exit before a descendant closes its inherited output pipes.
+        // Keep the same deadline and cancellation active until capture completes.
+        let (stdout_capture, stderr_capture) =
+            if timed_out || cancelled || status.as_ref().is_some_and(Result::is_err) {
+                captures.await
+            } else {
+                tokio::select! {
+                    biased;
+                    result = &mut captures => result,
+                    _ = &mut timeout => {
+                        timed_out = true;
+                        process_tree::kill_child_process_tree(&mut child).await;
+                        captures.await
+                    },
+                    _ = wait_for_cancel(&mut cancel) => {
+                        cancelled = true;
+                        process_tree::kill_child_process_tree(&mut child).await;
+                        captures.await
+                    },
+                }
+            }?;
         let duration_ms = start.elapsed().as_millis() as u64;
-
-        let stdout_capture = match stdout_handle {
-            Some(handle) => handle.await.unwrap_or_default(),
-            None => CapturedRawStream::default(),
-        };
-        let stderr_capture = match stderr_handle {
-            Some(handle) => handle.await.unwrap_or_default(),
-            None => CapturedRawStream::default(),
-        };
         let live_output_owned = task_session.is_some();
         if let Some(session) = task_session {
             session.seal_live_output().await;
         }
 
+        let completed = status.expect("process wait or cancellation records a wait result")?;
         let exit_code = if timed_out || cancelled {
             None
         } else {
-            child
-                .try_wait()
-                .ok()
-                .flatten()
-                .map(|s| s.code().unwrap_or(-1))
+            Some(completed.code().unwrap_or(-1))
         };
 
         Ok(CommandOutput {

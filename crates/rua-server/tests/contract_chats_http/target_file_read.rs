@@ -29,6 +29,9 @@ mod transfer_origin;
 #[path = "target_file_read/transfer_participant.rs"]
 mod transfer_participant;
 
+#[path = "target_file_read/command_admission.rs"]
+mod command_admission;
+
 const AGENT: &str = "target-reader";
 const AUTHORITY: &str = "0123456789abcdef";
 

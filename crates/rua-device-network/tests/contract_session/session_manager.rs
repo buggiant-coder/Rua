@@ -15,6 +15,9 @@ use rua_device_network::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Barrier, Notify};
 
+#[path = "command_channel.rs"]
+mod command_channel;
+
 #[cfg(feature = "test-util")]
 #[path = "delayed_transport.rs"]
 mod delayed_transport;
@@ -27,10 +30,26 @@ struct EchoHandler {
     hang_next: AtomicBool,
     hang_release: Notify,
     reject_next: AtomicBool,
+    command_contexts: std::sync::Mutex<Vec<rua_device_network::DeviceSessionCommandContext>>,
 }
 
 #[async_trait]
 impl DeviceSessionCommandHandler for EchoHandler {
+    async fn handle_command_in_session(
+        &self,
+        peer_device_id: &str,
+        context: rua_device_network::DeviceSessionCommandContext,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        if context.peer_device_id() != peer_device_id {
+            return Err("authenticated command peer mismatch".into());
+        }
+        if payload == b"retain-command-connection" {
+            self.command_contexts.lock().unwrap().push(context);
+        }
+        self.handle_command_from(peer_device_id, payload).await
+    }
+
     async fn handle_command(&self, payload: &[u8]) -> Result<Vec<u8>, String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.hang_next.swap(false, Ordering::SeqCst) {

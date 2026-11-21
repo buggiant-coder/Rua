@@ -264,6 +264,7 @@ pub struct ReactAgentRuntime {
     agents_instruction_loader:
         Option<Arc<dyn rua_core::agents_instruction_discovery::AgentsInstructionLoader>>,
     sync_transfer_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    remote_command_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
     approval_channel: Option<Arc<dyn ApprovalChannel>>,
     approval_timeout: std::time::Duration,
     security: Option<Arc<rua_security::SecurityModule>>,
@@ -697,6 +698,7 @@ impl ReactAgentRuntime {
             device_read_access: None,
             agents_instruction_loader: None,
             sync_transfer_runtime: None,
+            remote_command_runtime: None,
             approval_channel: None,
             approval_timeout: std::time::Duration::from_secs(300),
             security: None,
@@ -1894,6 +1896,14 @@ impl ReactAgentRuntime {
         self
     }
 
+    pub fn with_remote_command_runtime(
+        mut self,
+        runtime: Arc<dyn std::any::Any + Send + Sync>,
+    ) -> Self {
+        self.remote_command_runtime = Some(runtime);
+        self
+    }
+
     pub fn with_mcp_manager(self, manager: Arc<dyn McpManager>) -> Self {
         *self.mcp_manager.write().unwrap() = Some(manager);
         self
@@ -2827,6 +2837,7 @@ impl AgentRuntime for ReactAgentRuntime {
                 agents_instructions: None,
                 device_read_confirmation_wait: None,
                 sync_transfer_runtime: self.sync_transfer_runtime.clone(),
+                remote_command_runtime: self.remote_command_runtime.clone(),
                 event_tx: None,
                 execution_output_max_tokens,
                 raw_capture_max_bytes,

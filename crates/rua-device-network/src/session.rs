@@ -64,6 +64,15 @@ pub trait DeviceSessionCommandHandler: Send + Sync + 'static {
     ) -> Result<Vec<u8>, String> {
         self.handle_command(payload).await
     }
+
+    async fn handle_command_in_session(
+        &self,
+        peer_device_id: &str,
+        _context: DeviceSessionCommandContext,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        self.handle_command_from(peer_device_id, payload).await
+    }
 }
 
 pub type DeviceSessionFrameStream = Pin<Box<dyn Stream<Item = Vec<u8>> + Send + 'static>>;
@@ -228,6 +237,101 @@ pub struct DeviceSessionManagerDiagnostics {
 pub struct DeviceSessionNetworkChangeReport {
     pub probed_sessions: usize,
     pub invalidated_sessions: usize,
+}
+
+/// The authenticated physical connection owning a command, retained independently
+/// of its request stream. A cloned context keeps idle retention from closing it.
+#[derive(Clone)]
+pub struct DeviceSessionCommandContext {
+    session: Arc<DeviceSessionConnection>,
+    peer_device_id: String,
+    _lease: Arc<ActiveStreamGuard>,
+}
+
+impl std::fmt::Debug for DeviceSessionCommandContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceSessionCommandContext")
+            .field("peer_device_id", &self.peer_device_id)
+            .field("generation", &self.generation())
+            .field("closed", &self.is_closed())
+            .finish()
+    }
+}
+
+impl DeviceSessionCommandContext {
+    pub fn peer_device_id(&self) -> &str {
+        &self.peer_device_id
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.session.generation
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.session.connection.close_reason().is_some()
+    }
+
+    pub async fn closed(&self) {
+        let _ = self.session.connection.closed().await;
+    }
+}
+
+/// Commands on this channel never move to a replacement connection or replay a
+/// sent request. A caller can open another channel to query an existing operation.
+#[derive(Clone, Debug)]
+pub struct DeviceSessionCommandChannel {
+    manager: DeviceSessionManager,
+    context: DeviceSessionCommandContext,
+}
+
+impl DeviceSessionCommandChannel {
+    pub fn peer_device_id(&self) -> &str {
+        self.context.peer_device_id()
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.context.generation()
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.context.is_closed()
+    }
+
+    pub async fn closed(&self) {
+        self.context.closed().await;
+    }
+
+    pub async fn command(
+        &self,
+        payload: &[u8],
+        timeout: Duration,
+    ) -> Result<Vec<u8>, DeviceSessionError> {
+        let session = &self.context.session;
+        match timeout_at(
+            Instant::now() + timeout,
+            "command channel exchange",
+            self.manager.execute_command(session, payload),
+        )
+        .await
+        {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(error)) => {
+                if session.connection.close_reason().is_some() {
+                    self.manager.invalidate_if_generation(
+                        session.peer_device_id,
+                        session.generation,
+                        &error,
+                    );
+                }
+                Err(error)
+            }
+            Err(error) => {
+                self.manager
+                    .schedule_health_probe_after_timeout(session.clone());
+                Err(error)
+            }
+        }
+    }
 }
 
 pub struct DeviceSessionLiveStream {
@@ -849,6 +953,32 @@ impl DeviceSessionManager {
         let timeout = deadline.saturating_duration_since(Instant::now());
         self.command(peer_device_id, peer_addr, payload, timeout)
             .await
+    }
+
+    pub async fn open_command_channel(
+        &self,
+        peer_device_id: &str,
+        timeout: Duration,
+    ) -> Result<DeviceSessionCommandChannel, DeviceSessionError> {
+        let peer = parse_device_id(peer_device_id)?;
+        let deadline = Instant::now() + timeout;
+        let address = timeout_at(deadline, "peer resolution", self.peer_addr(peer)).await??;
+        loop {
+            let session = self.get_or_connect(peer, address.clone(), deadline).await?;
+            let lease = match session.begin_stream() {
+                Ok(lease) => lease,
+                Err(DeviceSessionError::Replaced) => continue,
+                Err(error) => return Err(error),
+            };
+            return Ok(DeviceSessionCommandChannel {
+                manager: self.clone(),
+                context: DeviceSessionCommandContext {
+                    session,
+                    peer_device_id: hex::encode(peer),
+                    _lease: Arc::new(lease),
+                },
+            });
+        }
     }
 
     /// `timeout` bounds admission and the logical operation together.
@@ -1859,7 +1989,12 @@ impl DeviceSessionManager {
             COMMAND_STREAM_KIND => {
                 send.set_priority(COMMAND_STREAM_PRIORITY)
                     .map_err(|error| DeviceSessionError::Closed(error.to_string()))?;
-                self.handle_command_stream(session.peer_device_id, &mut send, &mut recv)
+                let context = DeviceSessionCommandContext {
+                    peer_device_id: hex::encode(session.peer_device_id),
+                    session,
+                    _lease: Arc::new(_stream_guard),
+                };
+                self.handle_command_stream(context, &mut send, &mut recv)
                     .await
             }
             LIVE_ACTIVITY_STREAM_KIND => {
@@ -1882,7 +2017,7 @@ impl DeviceSessionManager {
 
     async fn handle_command_stream(
         &self,
-        peer_device_id: DeviceId,
+        context: DeviceSessionCommandContext,
         send: &mut iroh::endpoint::SendStream,
         recv: &mut iroh::endpoint::RecvStream,
     ) -> Result<(), DeviceSessionError> {
@@ -1891,8 +2026,9 @@ impl DeviceSessionManager {
             write_command_error(send, "Command handler unavailable").await?;
             return Ok(());
         };
+        let peer_device_id = context.peer_device_id().to_owned();
         match handler
-            .handle_command_from(&hex::encode(peer_device_id), &payload)
+            .handle_command_in_session(&peer_device_id, context, &payload)
             .await
         {
             Ok(response) => {

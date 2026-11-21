@@ -412,13 +412,10 @@ fn explicit_targets(call: &ToolCall, ctx: &ToolContext) -> Vec<AgentsInstruction
         return transfer_targets(args);
     }
     let local_device = ctx.local_device_id.as_deref();
-    let device = if call.name == "bash" {
-        local_device
-    } else {
-        args.get("device_id")
-            .and_then(serde_json::Value::as_str)
-            .or(local_device)
-    };
+    let device = args
+        .get("device_id")
+        .and_then(serde_json::Value::as_str)
+        .or(local_device);
     let Some(device) = device.filter(|device| !device.is_empty()) else {
         return Vec::new();
     };

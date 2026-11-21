@@ -235,6 +235,43 @@ impl SecurityModule {
         .await
     }
 
+    /// Inspect a command on its owning Device without opening a second approval.
+    /// The resolved cwd participates in the same existing guard and deny rules.
+    pub async fn inspect_chat_command(
+        &self,
+        original: &ToolCallContext,
+        captured: &SecurityConfig,
+        resolved: &ToolCallContext,
+        confirmed_invocation: bool,
+    ) -> Result<FileReadAdmission, FileReadPolicyError> {
+        let mut expected = original.tool_input.clone();
+        expected["cwd"] = resolved.tool_input["cwd"].clone();
+        if original.tool_name != "bash"
+            || original.local_device_id.as_deref() != original.tool_input["device_id"].as_str()
+            || original.local_device_id.is_none()
+            || resolved.tool_input != expected
+            || resolved.tool_name != original.tool_name
+            || resolved.agent_id != original.agent_id
+            || resolved.approval_owner != original.approval_owner
+            || resolved.local_device_id != original.local_device_id
+            || resolved.metadata != original.metadata
+            || !resolved.tool_input["cwd"]
+                .as_str()
+                .is_some_and(rua_core::execution_directory::is_device_absolute_path)
+        {
+            return Err(FileReadPolicyError::Denied(
+                "Resolved command does not match the original Device invocation".into(),
+            ));
+        }
+        self.inspect_file_operation_policy(
+            original,
+            captured,
+            std::slice::from_ref(resolved),
+            confirmed_invocation,
+        )
+        .await
+    }
+
     async fn inspect_file_operation_policy(
         &self,
         ctx: &ToolCallContext,

@@ -16,6 +16,8 @@ mod qwenpaw_parity_contract;
 mod read_cancellation;
 #[path = "contract_tools/registry_contract.rs"]
 mod registry_contract;
+#[path = "contract_tools/remote_shell_contract.rs"]
+mod remote_shell_contract;
 #[path = "contract_tools/repair_validate_contract.rs"]
 mod repair_validate_contract;
 #[path = "contract_tools/runtime_environment_contract.rs"]

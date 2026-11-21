@@ -1688,7 +1688,7 @@ fn reuse_options_for(
 
     if let Some(command) = input_params
         .as_deref()
-        .filter(|_| is_bash_tool_name(tool_name))
+        .filter(|_| is_bash_tool_name(tool_name) && args.get("device_id").is_none())
     {
         if let Some(prefix) = bash_command_reuse_prefix(command) {
             let pattern = format!("{prefix} *");
@@ -1737,6 +1737,14 @@ pub(crate) struct PermissionToolCall<'a> {
 }
 
 fn is_file_operation(tool_name: &str, args: &serde_json::Value) -> bool {
+    if tool_name == "bash" {
+        return args["device_id"]
+            .as_str()
+            .is_some_and(|device| !device.is_empty() && device.trim() == device)
+            && args["command"]
+                .as_str()
+                .is_some_and(|command| !command.is_empty());
+    }
     if tool_name == "sync_send" {
         return transfer_devices(args).is_some();
     }
@@ -1928,7 +1936,9 @@ impl ApprovalReuseMatcher {
 
     fn file_args_with_asterisk(&self) -> bool {
         matches!(self, Self::ToolCall { tool_name, input_params: Some(params) }
-            if matches!(tool_name.as_str(), "read" | "grep" | "glob" | "edit" | "sync_send") && params.contains('*'))
+            if (matches!(tool_name.as_str(), "read" | "grep" | "glob" | "edit" | "sync_send")
+                || tool_name == "bash" && self.file_operation_args().is_some())
+                && params.contains('*'))
     }
 
     fn pattern(
@@ -1989,7 +1999,7 @@ fn is_bash_tool_name(tool_name: &str) -> bool {
 }
 
 fn input_params_for_tool_call(tool_name: &str, args: &serde_json::Value) -> Option<String> {
-    if is_bash_tool_name(tool_name) {
+    if is_bash_tool_name(tool_name) && args.get("device_id").is_none() {
         return normalized_bash_command(args);
     }
     if args.is_null() {
@@ -2033,6 +2043,15 @@ fn device_file_operation(tool: &str, args: &serde_json::Value, target: &str) -> 
         return false;
     };
     match tool {
+        "bash" => fields.iter().all(|(key, value)| match key.as_str() {
+            "device_id" => true,
+            "command" => value
+                .as_str()
+                .is_some_and(|command| !command.is_empty() && !command.contains('\0')),
+            "cwd" => value.is_null() || value.as_str().is_some_and(absolute_file_path),
+            "yield_seconds" => value.is_null() || value.as_u64().is_some(),
+            _ => false,
+        }),
         "read" => {
             !(fields.contains_key("byte_offset")
                 && (fields.contains_key("start_line") || fields.contains_key("limit")))

@@ -107,6 +107,12 @@ mod agents_instructions;
 #[path = "device_session_control_view/transfer_confirmation.rs"]
 mod transfer_confirmation;
 
+#[path = "device_session_control_view/remote_command_origin.rs"]
+mod remote_command_origin;
+
+#[path = "device_session_control_view/remote_commands.rs"]
+mod remote_commands;
+
 fn epoch(wall_ms: u64) -> ConversationAuthorityEpoch {
     ConversationAuthorityEpoch::from_parts(wall_ms, 0, [0; 8])
 }
@@ -11022,6 +11028,8 @@ impl DeviceSessionCommandHandler for InputConfirmationHandler {
 
 struct FileReadRecorder {
     inner: Arc<DeviceCommandHandler>,
+    command_requests: Mutex<Vec<rua_server::services::chat_command::ChatCommandCommand>>,
+    drop_next_command_start_reply: std::sync::atomic::AtomicBool,
     requests: Mutex<Vec<rua_server::services::device_read_check::DeviceReadCheckRequest>>,
     drop_next_edit_reply: std::sync::atomic::AtomicBool,
     hold_next_edit_reply: std::sync::atomic::AtomicBool,
@@ -11037,6 +11045,37 @@ struct FileReadRecorder {
 
 #[async_trait]
 impl DeviceSessionCommandHandler for FileReadRecorder {
+    async fn handle_command_in_session(
+        &self,
+        peer: &str,
+        context: rua_device_network::DeviceSessionCommandContext,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        let envelope: serde_json::Value =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        if envelope["command"] != "chat_command" {
+            return self.handle_command_from(peer, payload).await;
+        }
+        let command: rua_server::services::chat_command::ChatCommandCommand =
+            serde_json::from_value(envelope["payload"].clone())
+                .map_err(|error| error.to_string())?;
+        let is_start =
+            command.action == rua_server::services::chat_command::ChatCommandAction::Start;
+        self.command_requests.lock().unwrap().push(command);
+        let response = self
+            .inner
+            .handle_command_in_session(peer, context, payload)
+            .await?;
+        if is_start
+            && self
+                .drop_next_command_start_reply
+                .swap(false, Ordering::SeqCst)
+        {
+            return Err("fixture lost the Start receipt after target dispatch".into());
+        }
+        Ok(response)
+    }
+
     async fn handle_command(&self, payload: &[u8]) -> Result<Vec<u8>, String> {
         self.inner.handle_command(payload).await
     }
@@ -11132,8 +11171,35 @@ impl RemoteInputConfirmationFixture {
             release_reply: Notify::new(),
             requests: Mutex::new(Vec::new()),
         });
+        let source_device_id =
+            rua_server::services::device_context::current_sync_device_id(&source_state.sync_device)
+                .unwrap();
+        let command_admission = Arc::new(
+            rua_server::services::chat_file_read_admission::TargetFileReadContext::new(
+                source_state.rua_root.clone(),
+                source_device_id.clone(),
+                source_state.project_catalog.clone(),
+                source_state.agent_service.clone(),
+                source_state.tool_catalog.clone(),
+                source_state.tool_config_store.clone(),
+                source_state.security.clone(),
+            ),
+        );
+        let command_service =
+            Arc::new(rua_server::services::chat_command::ChatCommandService::new(
+                source_state.rua_root.clone(),
+                source_device_id,
+                command_admission,
+                source_state.sync_transfer_session_manager.clone(),
+            ));
+        let source_handler = Arc::try_unwrap(source_state.device_command_handler().unwrap())
+            .ok()
+            .unwrap()
+            .with_chat_command(command_service);
         let file_reads = Arc::new(FileReadRecorder {
-            inner: source_state.device_command_handler().unwrap(),
+            inner: Arc::new(source_handler),
+            command_requests: Mutex::default(),
+            drop_next_command_start_reply: std::sync::atomic::AtomicBool::new(false),
             requests: Mutex::default(),
             drop_next_edit_reply: std::sync::atomic::AtomicBool::new(false),
             hold_next_edit_reply: std::sync::atomic::AtomicBool::new(false),
@@ -11167,6 +11233,10 @@ impl RemoteInputConfirmationFixture {
         install_connectable_peer(&source, &target);
         *source_state.device_network.lock().await = Some(source.runtime.clone());
         *target_state.device_network.lock().await = Some(target.runtime.clone());
+        *source_state.sync_transfer_session_manager.write().unwrap() =
+            Some(source.runtime.session_manager().clone());
+        *target_state.sync_transfer_session_manager.write().unwrap() =
+            Some(target.runtime.session_manager().clone());
         Self {
             file_reads,
             _source_dir: source_dir,

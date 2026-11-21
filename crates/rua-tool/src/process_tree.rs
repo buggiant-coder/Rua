@@ -2,36 +2,50 @@ use tokio::process::Child;
 
 /// Owns the whole process group even when the caller's future is dropped.
 /// The command must create its own process group before spawn.
-pub(crate) struct ChildProcessTree(Child);
+pub(crate) struct ChildProcessTree {
+    child: Child,
+    group_id: Option<u32>,
+}
 
 impl ChildProcessTree {
     pub(crate) fn new(child: Child) -> Self {
-        Self(child)
+        let group_id = child.id();
+        Self { child, group_id }
+    }
+
+    fn termination_id(&self) -> Option<u32> {
+        if cfg!(unix) {
+            // Tokio clears Child::id after wait, but descendants can still own
+            // this process group and the command's output pipes.
+            self.group_id
+        } else {
+            self.child.id()
+        }
     }
 }
 
 impl std::ops::Deref for ChildProcessTree {
     type Target = Child;
     fn deref(&self) -> &Child {
-        &self.0
+        &self.child
     }
 }
 
 impl std::ops::DerefMut for ChildProcessTree {
     fn deref_mut(&mut self) -> &mut Child {
-        &mut self.0
+        &mut self.child
     }
 }
 
 impl Drop for ChildProcessTree {
     fn drop(&mut self) {
-        kill_process_tree(self.0.id());
+        kill_process_tree(self.termination_id());
         // kill_on_drop on Child reaps the direct child after group termination.
     }
 }
 
-pub(crate) async fn kill_child_process_tree(child: &mut Child) {
-    kill_process_tree(child.id());
+pub(crate) async fn kill_child_process_tree(child: &mut ChildProcessTree) {
+    kill_process_tree(child.termination_id());
     let _ = child.kill().await;
     let _ = child.wait().await;
 }

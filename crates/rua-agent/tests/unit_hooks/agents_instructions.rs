@@ -158,6 +158,67 @@ fn reconsider(decision: AgentsInstructionDecision) {
 }
 
 #[tokio::test]
+async fn remote_bash_cwd_is_discovered_on_its_named_device() {
+    let f = Fixture::new();
+    let cwd = f.child("same-path");
+    f.loader.set("phone", &cwd, "PHONE_COMMAND_GUIDANCE");
+    f.loader
+        .set("desktop", &cwd, "WRONG_LOCAL_COMMAND_GUIDANCE");
+    let c = f.prepare().await;
+    c.snapshot_for_model();
+    let call = ToolCall::new(
+        "shell",
+        "bash",
+        json!({"device_id":"phone","cwd":cwd,"command":"pwd"}),
+    );
+    reconsider(f.before(&c, &call).await);
+    let snapshot = c.snapshot_for_model().unwrap();
+    assert!(snapshot.contains("PHONE_COMMAND_GUIDANCE"));
+    assert!(!snapshot.contains("WRONG_LOCAL_COMMAND_GUIDANCE"));
+    assert_eq!(
+        f.before(&c, &call).await,
+        AgentsInstructionDecision::Continue
+    );
+}
+
+#[tokio::test]
+async fn omitted_remote_bash_cwd_waits_for_target_home_resolution() {
+    let f = Fixture::new();
+    f.loader
+        .set("phone", Path::new("/root"), "PHONE_HOME_GUIDANCE");
+    let c = f.prepare().await;
+    c.snapshot_for_model();
+    let initial = f.loader.requests.lock().unwrap().len();
+    let call = ToolCall::new(
+        "shell",
+        "bash",
+        json!({"device_id":"phone","command":"pwd"}),
+    );
+    assert_eq!(
+        f.before(&c, &call).await,
+        AgentsInstructionDecision::Continue
+    );
+    assert_eq!(f.loader.requests.lock().unwrap().len(), initial);
+    reconsider(
+        c.before_targets(
+            &[AgentsInstructionTarget {
+                device_id: "phone".into(),
+                path: "/root".into(),
+                kind: AgentsInstructionTargetKind::Directory,
+            }],
+            &f.ctx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap(),
+    );
+    assert!(c
+        .snapshot_for_model()
+        .unwrap()
+        .contains("PHONE_HOME_GUIDANCE"));
+}
+
+#[tokio::test]
 async fn transfer_discovers_each_source_and_destination_only_on_its_own_device() {
     let f = Fixture::new();
     let source_file = f.child("source/a.jpg");

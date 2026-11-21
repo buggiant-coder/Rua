@@ -2162,7 +2162,10 @@ async fn execute_approved_tool(
         .map(rua_tool::tool_transfer_contract)
         .unwrap_or_default();
     let already_task_owned = tool_ctx.metadata.contains_key("task_id");
+    let remote_foreground_command =
+        call.name == "bash" && rua_tool::core::shell::is_remote_command(&call.arguments, tool_ctx);
     let transfer_eligible = !already_task_owned
+        && !remote_foreground_command
         && transfer_contract.policy == rua_tool::ToolTransferPolicy::Transferable;
     if !transfer_eligible {
         enriched_ctx.event_tx = Some(event_tx.clone());
@@ -2232,7 +2235,7 @@ async fn execute_approved_tool(
                 )
             });
     let mut tool_future: RunningToolFuture = Box::pin(async move {
-        if transfer_eligible || timeout.is_zero() {
+        if transfer_eligible || remote_foreground_command || timeout.is_zero() {
             return Ok(executor_for_exec
                 .execute(&call_for_exec, &enriched_ctx)
                 .await);

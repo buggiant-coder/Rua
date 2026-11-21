@@ -13,11 +13,12 @@ pub use runtime::{
 };
 pub use session::{
     DeviceConnectivityProjection, DeviceConnectivityState, DeviceSessionBulkStream,
-    DeviceSessionBulkTransferHandler, DeviceSessionCommandHandler, DeviceSessionConfig,
-    DeviceSessionDiagnostics, DeviceSessionError, DeviceSessionFrameStream, DeviceSessionInterest,
-    DeviceSessionLiveActivityHandler, DeviceSessionLiveStream, DeviceSessionManager,
-    DeviceSessionManagerDiagnostics, DeviceSessionNetworkChangeReport, DeviceSessionOrigin,
-    DeviceSessionState, DEVICE_SESSION_ALPN, DEVICE_SESSION_PROTOCOL_VERSION,
+    DeviceSessionBulkTransferHandler, DeviceSessionCommandChannel, DeviceSessionCommandContext,
+    DeviceSessionCommandHandler, DeviceSessionConfig, DeviceSessionDiagnostics, DeviceSessionError,
+    DeviceSessionFrameStream, DeviceSessionInterest, DeviceSessionLiveActivityHandler,
+    DeviceSessionLiveStream, DeviceSessionManager, DeviceSessionManagerDiagnostics,
+    DeviceSessionNetworkChangeReport, DeviceSessionOrigin, DeviceSessionState, DEVICE_SESSION_ALPN,
+    DEVICE_SESSION_PROTOCOL_VERSION,
 };
 
 #[doc(hidden)]

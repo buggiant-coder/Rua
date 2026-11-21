@@ -12,6 +12,33 @@ use crate::schema::ToolSpec;
 
 use std::sync::Arc;
 
+#[async_trait]
+pub trait RemoteCommandRuntime: Send + Sync {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        context: &ToolContext,
+    ) -> std::result::Result<ToolResult, String>;
+}
+
+pub struct RemoteCommandRuntimeHandle(pub Arc<dyn RemoteCommandRuntime>);
+
+impl RemoteCommandRuntimeHandle {
+    pub fn new(runtime: Arc<dyn RemoteCommandRuntime>) -> Self {
+        Self(runtime)
+    }
+}
+
+/// Only an explicit different Device selects remote execution. Invalid parameters
+/// are rejected by the Tool before either runtime is invoked.
+pub fn is_remote_command(arguments: &serde_json::Value, context: &ToolContext) -> bool {
+    arguments["device_id"].as_str().is_some_and(|device| {
+        !device.is_empty()
+            && device.trim() == device
+            && context.local_device_id.as_deref() != Some(device)
+    })
+}
+
 pub struct ShellTool {
     executor: Arc<dyn CommandExecutor>,
 }
@@ -24,10 +51,14 @@ impl ShellTool {
     pub fn spec() -> ToolSpec {
         ToolSpec {
             name: "bash".to_string(),
-            description: "Execute a shell command and return its output. Use the ACP runner integration, not this shell, to delegate work to external coding agents such as Codex, Claude Code, OpenCode, or Qwen Code.".to_string(),
+            description: "Execute a shell command on the selected Device and return its output and actual working directory. Omit device_id to use the Chat execution Device. Use the ACP runner integration, not this shell, to delegate work to external coding agents such as Codex, Claude Code, OpenCode, or Qwen Code.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "device_id": {
+                        "type": "string",
+                        "description": "Device that executes this command; omit to use the Chat execution Device"
+                    },
                     "command": {
                         "type": "string",
                         "description": "The shell command to execute"
@@ -39,7 +70,7 @@ impl ShellTool {
                     },
                     "cwd": {
                         "type": "string",
-                        "description": "Working directory for the command"
+                        "description": "Working directory on the execution Device. Omit to use the Chat directory on its Device, or the target environment's home on another Device. Each command resolves its own directory."
                     }
                 },
                 "required": ["command"]
@@ -67,8 +98,17 @@ impl ShellTool {
         let working_dir = if let Some(cwd) = args["cwd"].as_str() {
             ctx.workspace_fs.resolve(cwd)?
         } else {
-            ctx.working_dir.clone()
+            ctx.workspace_fs.resolve(".")?
         };
+        if !working_dir.is_dir() {
+            return Err(crate::error::ToolError::CommandFailed {
+                message: format!(
+                    "Working directory is not a directory: {}",
+                    working_dir.display()
+                ),
+            });
+        }
+        let public_cwd = ctx.workspace_fs.public_path_from_host(&working_dir);
 
         let req = CommandRequest {
             command: command.clone(),
@@ -94,6 +134,7 @@ impl ShellTool {
                 let formatted = format_shell_output(&command, &output);
 
                 let mut metadata = serde_json::Map::new();
+                metadata.insert("cwd".into(), serde_json::json!(public_cwd));
                 if let Some(code) = output.exit_code {
                     metadata.insert("exit_code".into(), serde_json::Value::from(code));
                 }
@@ -153,6 +194,7 @@ impl ShellTool {
                 let mut metadata = serde_json::Map::new();
                 metadata.insert("exit_code".into(), serde_json::Value::from(-1));
                 metadata.insert("timed_out".into(), serde_json::Value::Bool(true));
+                metadata.insert("cwd".into(), serde_json::json!(public_cwd));
                 result.metadata = metadata;
                 Ok(result)
             }
@@ -179,6 +221,44 @@ impl Tool for ShellTool {
     }
 
     async fn call(&self, args: serde_json::Value, ctx: ToolContext) -> Result<ToolResult> {
+        validate_yield_seconds(&args).map_err(rua_core::RuaError::from)?;
+        if !args["command"].is_string()
+            || args.get("device_id").is_some_and(|value| {
+                !value
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty() && id.trim() == id)
+            })
+            || args.get("cwd").is_some_and(|value| {
+                !value
+                    .as_str()
+                    .is_some_and(|cwd| !cwd.is_empty() && !cwd.contains('\0'))
+            })
+        {
+            return Err(rua_core::RuaError::Tool {
+                tool: "bash".into(),
+                message: "Expected a command string, optional nonempty device_id and cwd".into(),
+            });
+        }
+        if ctx.cancel.as_ref().is_some_and(|cancel| *cancel.borrow()) {
+            return Err(rua_core::RuaError::Cancelled);
+        }
+        if is_remote_command(&args, &ctx) {
+            let runtime = ctx
+                .remote_command_runtime
+                .as_ref()
+                .and_then(|handle| handle.downcast_ref::<RemoteCommandRuntimeHandle>())
+                .ok_or_else(|| rua_core::RuaError::Tool {
+                    tool: "bash".into(),
+                    message: "Remote command execution is unavailable".into(),
+                })?;
+            return runtime.0.execute(args, &ctx).await.map_err(|message| {
+                rua_core::RuaError::Tool {
+                    tool: "bash".into(),
+                    message,
+                }
+            });
+        }
+        let local_device = ctx.local_device_id.clone();
         let tool_result_store_dir = crate::result_store::archive_dir_for_context(&ctx)?;
         let task_session = crate::extended::task_tools::get_task_runner_session(&ctx);
         let cancel = ctx.cancel.unwrap_or_else(|| {
@@ -186,13 +266,16 @@ impl Tool for ShellTool {
             rx
         });
 
-        let workspace_fs =
-            Arc::new(crate::fs::WorkspaceFs::new(&ctx.working_dir).map_err(|e| {
-                rua_core::RuaError::Tool {
-                    tool: "bash".into(),
-                    message: e.to_string(),
-                }
-            })?);
+        let workspace_fs = Arc::new(
+            crate::fs::WorkspaceFs::for_execution(
+                &ctx.working_dir,
+                rua_core::runtime_layout::RuntimeLayout::from_current_process(None),
+            )
+            .map_err(|e| rua_core::RuaError::Tool {
+                tool: "bash".into(),
+                message: e.to_string(),
+            })?,
+        );
 
         let trace_id = ctx
             .metadata
@@ -222,9 +305,31 @@ impl Tool for ShellTool {
             token_estimate_divisor: ctx.token_estimate_divisor,
         };
 
-        self.execute_with_context(args, &exec_ctx)
+        let mut result = self
+            .execute_with_context(args, &exec_ctx)
             .await
-            .map_err(rua_core::RuaError::from)
+            .map_err(rua_core::RuaError::from)?;
+        if let Some(device) = local_device {
+            if let Some(cwd) = result
+                .metadata
+                .get("cwd")
+                .and_then(serde_json::Value::as_str)
+            {
+                result.content.insert(
+                    0,
+                    agent_types::ContentPart::Text {
+                        text: format!("Device: {device}\nWorking directory: {cwd}\n"),
+                    },
+                );
+            }
+            result.metadata.insert(
+                "execution_location".into(),
+                serde_json::json!({
+                    "device_id": device, "cwd": result.metadata.get("cwd")
+                }),
+            );
+        }
+        Ok(result)
     }
 }
 

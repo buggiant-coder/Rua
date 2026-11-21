@@ -1035,6 +1035,7 @@ pub(crate) enum DeviceCommandEnvelope {
     Terminal(TerminalDeviceCommand),
     SyncTransfer(SyncTransferDeviceCommand),
     ChatTransfer(Box<super::chat_transfer::ChatTransferCommand>),
+    ChatCommand(Box<super::chat_command::ChatCommandCommand>),
     ChatMediaPrepare(ChatMediaPrepareCommand),
     AgentsInstructions(AgentsInstructionCommand),
     ReadCheck(DeviceReadCheckRequest),
@@ -1093,6 +1094,7 @@ impl DeviceCommandEnvelope {
                 ));
             }
             Self::ChatTransfer(_)
+            | Self::ChatCommand(_)
             | Self::ReadCheck(_)
             | Self::ReadAllowedFile { .. }
             | Self::CancelFileOperation(_)
@@ -1137,6 +1139,9 @@ pub enum DeviceCommandResponse {
     },
     ChatTransfer {
         response: super::chat_transfer::ChatTransferResponse,
+    },
+    ChatCommand {
+        response: super::chat_command::ChatCommandResponse,
     },
     ChatMediaPrepared {
         response: ChatMediaPreparedResponse,
@@ -1345,6 +1350,7 @@ pub struct DeviceCommandHandler {
         Option<Arc<crate::services::chat_media_transfer::ChatMediaTransferRegistry>>,
     read_check_context: Option<Arc<TargetFileReadContext>>,
     chat_transfer: Option<Arc<super::chat_transfer::ChatTransferService>>,
+    chat_command: Option<Arc<super::chat_command::ChatCommandService>>,
     file_operations: Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
     sync_transfer_operations: Arc<crate::services::sync_transfer::SourceTransferOperationStore>,
     project_catalog: Option<Arc<rua_project::ProjectCatalog>>,
@@ -1428,6 +1434,7 @@ impl DeviceCommandHandler {
             chat_media_transfers: None,
             read_check_context: None,
             chat_transfer: None,
+            chat_command: None,
             file_operations: Arc::default(),
             sync_transfer_operations: Arc::new(
                 crate::services::sync_transfer::SourceTransferOperationStore::new(),
@@ -1514,6 +1521,14 @@ impl DeviceCommandHandler {
         self
     }
 
+    pub fn with_chat_command(
+        mut self,
+        service: Arc<super::chat_command::ChatCommandService>,
+    ) -> Self {
+        self.chat_command = Some(service);
+        self
+    }
+
     pub fn with_chat_media_transfers(
         mut self,
         chat_media_transfers: Arc<crate::services::chat_media_transfer::ChatMediaTransferRegistry>,
@@ -1558,7 +1573,7 @@ impl DeviceCommandHandler {
 #[async_trait::async_trait]
 impl rua_device_network::DeviceSessionCommandHandler for DeviceCommandHandler {
     async fn handle_command(&self, payload: &[u8]) -> Result<Vec<u8>, String> {
-        self.handle_command_payload(None, payload).await
+        self.handle_command_payload(None, None, payload).await
     }
 
     async fn handle_command_from(
@@ -1566,7 +1581,17 @@ impl rua_device_network::DeviceSessionCommandHandler for DeviceCommandHandler {
         peer_device_id: &str,
         payload: &[u8],
     ) -> Result<Vec<u8>, String> {
-        self.handle_command_payload(Some(peer_device_id), payload)
+        self.handle_command_payload(Some(peer_device_id), None, payload)
+            .await
+    }
+
+    async fn handle_command_in_session(
+        &self,
+        peer_device_id: &str,
+        context: rua_device_network::DeviceSessionCommandContext,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        self.handle_command_payload(Some(peer_device_id), Some(context), payload)
             .await
     }
 }
@@ -1575,6 +1600,7 @@ impl DeviceCommandHandler {
     async fn handle_command_payload(
         &self,
         peer: Option<&str>,
+        session: Option<rua_device_network::DeviceSessionCommandContext>,
         payload: &[u8],
     ) -> Result<Vec<u8>, String> {
         if let Ok(envelope) = serde_json::from_slice::<UserNotificationWireEnvelope>(payload) {
@@ -1586,11 +1612,16 @@ impl DeviceCommandHandler {
             }
             return Ok(Vec::new());
         }
-        serde_json::to_vec(&self.handle_frame(peer, payload).await)
+        serde_json::to_vec(&self.handle_frame(peer, session, payload).await)
             .map_err(|error| error.to_string())
     }
 
-    async fn handle_frame(&self, peer: Option<&str>, bytes: &[u8]) -> DeviceCommandResponse {
+    async fn handle_frame(
+        &self,
+        peer: Option<&str>,
+        session: Option<rua_device_network::DeviceSessionCommandContext>,
+        bytes: &[u8],
+    ) -> DeviceCommandResponse {
         let envelope = match serde_json::from_slice::<DeviceCommandEnvelope>(bytes) {
             Ok(envelope) => envelope,
             Err(error) => {
@@ -1651,6 +1682,20 @@ impl DeviceCommandHandler {
                         .into(),
                 };
             }
+            DeviceCommandEnvelope::ChatCommand(command)
+                if validate_session_source(peer, &command.context.call.source_device_id)
+                    .is_err()
+                    || command.context.call.target_device_id != self.local_device_id
+                    || command.context.call.source_device_id == self.local_device_id
+                    || session.as_ref().is_none_or(|session| {
+                        session.peer_device_id() != command.context.call.source_device_id
+                    }) =>
+            {
+                return DeviceCommandResponse::Rejected {
+                    reason: "invalid_chat_command_route".into(),
+                    detail: "Command requires its authenticated execution connection".into(),
+                };
+            }
             DeviceCommandEnvelope::Project(command) => command
                 .validate_session_route(peer, &self.local_device_id)
                 .map_err(|error| ("invalid_project_route", error)),
@@ -1668,7 +1713,7 @@ impl DeviceCommandHandler {
             };
         }
         let Some(key) = envelope.idempotency_key() else {
-            return self.dispatch_envelope(envelope).await;
+            return self.dispatch_envelope(envelope, session).await;
         };
         let command_lock = {
             let mut locks = self.command_locks.lock().await;
@@ -1695,7 +1740,7 @@ impl DeviceCommandHandler {
                 };
             }
         }
-        let dispatch = self.dispatch_envelope(envelope);
+        let dispatch = self.dispatch_envelope(envelope, session);
         let response = dispatch.await;
         self.command_results
             .lock()
@@ -1706,7 +1751,11 @@ impl DeviceCommandHandler {
         response
     }
 
-    async fn dispatch_envelope(&self, envelope: DeviceCommandEnvelope) -> DeviceCommandResponse {
+    async fn dispatch_envelope(
+        &self,
+        envelope: DeviceCommandEnvelope,
+        session: Option<rua_device_network::DeviceSessionCommandContext>,
+    ) -> DeviceCommandResponse {
         match envelope {
             DeviceCommandEnvelope::ConversationInput(request) => {
                 self.handle_remote_conversation_input(*request).await
@@ -1743,6 +1792,21 @@ impl DeviceCommandHandler {
                     Ok(response) => DeviceCommandResponse::ChatTransfer { response },
                     Err(detail) => DeviceCommandResponse::Rejected {
                         reason: "chat_transfer_rejected".into(),
+                        detail,
+                    },
+                }
+            }
+            DeviceCommandEnvelope::ChatCommand(command) => {
+                let (Some(service), Some(session)) = (&self.chat_command, session) else {
+                    return DeviceCommandResponse::Rejected {
+                        reason: "chat_command_unavailable".into(),
+                        detail: "Chat command execution is unavailable on this Device".into(),
+                    };
+                };
+                match service.handle(*command, session).await {
+                    Ok(response) => DeviceCommandResponse::ChatCommand { response },
+                    Err(detail) => DeviceCommandResponse::Rejected {
+                        reason: "chat_command_rejected".into(),
                         detail,
                     },
                 }
@@ -5590,6 +5654,62 @@ pub async fn deliver_sync_transfer_device_command_via_session(
     }
 }
 
+pub async fn deliver_chat_command_via_channel(
+    channel: &rua_device_network::DeviceSessionCommandChannel,
+    command: &super::chat_command::ChatCommandCommand,
+    timeout: Duration,
+) -> Result<super::chat_command::ChatCommandResponse, String> {
+    if channel.peer_device_id() != command.context.call.target_device_id {
+        return Err("Command channel belongs to another Device".into());
+    }
+    let payload = serde_json::to_vec(&DeviceCommandEnvelope::ChatCommand(Box::new(
+        command.clone(),
+    )))
+    .map_err(|error| error.to_string())?;
+    let bytes = channel
+        .command(&payload, timeout)
+        .await
+        .map_err(|error| error.to_string())?;
+    let response = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    chat_command_response(response)
+}
+
+pub async fn deliver_chat_command_via_session(
+    manager: &rua_device_network::DeviceSessionManager,
+    command: &super::chat_command::ChatCommandCommand,
+    timeout: Duration,
+) -> Result<super::chat_command::ChatCommandResponse, String> {
+    if !matches!(
+        command.action,
+        super::chat_command::ChatCommandAction::Status
+            | super::chat_command::ChatCommandAction::Cancel
+    ) {
+        return Err("Only an existing execution can be reconciled on another connection".into());
+    }
+    let response = deliver_envelope_via_session(
+        manager,
+        &command.context.call.target_device_id,
+        DeviceCommandEnvelope::ChatCommand(Box::new(command.clone())),
+        timeout,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    chat_command_response(response)
+}
+
+fn chat_command_response(
+    response: DeviceCommandResponse,
+) -> Result<super::chat_command::ChatCommandResponse, String> {
+    match response {
+        DeviceCommandResponse::ChatCommand { response } => Ok(response),
+        DeviceCommandResponse::Rejected { reason, detail } => Err(format!("{reason}: {detail}")),
+        response => Err(format!(
+            "Expected Chat command result, received {}",
+            device_command_response_kind(&response)
+        )),
+    }
+}
+
 pub async fn deliver_chat_transfer_via_session(
     session_manager: &rua_device_network::DeviceSessionManager,
     command: &super::chat_transfer::ChatTransferCommand,
@@ -5790,6 +5910,7 @@ fn device_command_response_kind(response: &DeviceCommandResponse) -> &'static st
         DeviceCommandResponse::Terminal { .. } => "Terminal",
         DeviceCommandResponse::SyncTransfer { .. } => "Sync Transfer",
         DeviceCommandResponse::ChatTransfer { .. } => "Chat file transfer",
+        DeviceCommandResponse::ChatCommand { .. } => "Chat foreground command",
         DeviceCommandResponse::ChatMediaPrepared { .. } => "Chat Media Prepared",
         DeviceCommandResponse::AgentsInstructions { .. } => "AGENTS.md discovery",
         DeviceCommandResponse::FileRead { .. } => "Previously allowed file read",

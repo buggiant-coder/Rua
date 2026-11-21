@@ -3,6 +3,8 @@ pub mod agent_manager;
 pub mod agent_prompt_files;
 pub mod candidate_completion;
 pub mod chat_activity_wake;
+pub mod chat_command;
+pub mod chat_command_tools;
 pub mod chat_completion_notification;
 pub(crate) mod chat_configuration_capture;
 pub mod chat_context;

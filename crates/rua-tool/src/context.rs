@@ -114,6 +114,7 @@ impl ToolExecutionContext {
             device_read_access: None,
             device_read_confirmation_wait: None,
             sync_transfer_runtime: None,
+            remote_command_runtime: None,
             event_tx: None,
             execution_output_max_tokens: self.execution_output_max_tokens,
             raw_capture_max_bytes: self.raw_capture_max_bytes,

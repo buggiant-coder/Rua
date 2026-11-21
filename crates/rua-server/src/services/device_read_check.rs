@@ -372,7 +372,7 @@ pub(super) fn other_pending_target_read(
             && request.tool_call_id != call
             && matches!(
                 request.tool_name.as_str(),
-                "read" | "edit" | "grep" | "glob" | "sync_send"
+                "read" | "edit" | "grep" | "glob" | "sync_send" | "bash"
             )
             && request.trigger.source == rua_security::ApprovalTriggerSource::TargetDevice
             && request.status == ApprovalStatus::Pending
@@ -461,14 +461,25 @@ impl DeviceReadCheckRequest {
         approvals: &Arc<rua_security::ApprovalAuthority>,
         authority: &Arc<ConversationAuthority>,
     ) -> rua_core::Result<Result<(String, bool), DeviceReadCheck>> {
-        use rua_security::{
-            ApprovalOwner, ApprovalRequestInput, ApprovalTrigger, ToolCallSnapshot,
-        };
-        use ConversationActiveTurnPhase::{RunningTool, Streaming, WaitingApproval};
         let prompt = format!(
             "Confirm {} on Device {} with arguments {}.",
             self.tool_name, self.target_device_id, self.arguments
         );
+        self.wait_for_confirmation_with_prompt(ctx, approvals, authority, prompt)
+            .await
+    }
+
+    pub(super) async fn wait_for_confirmation_with_prompt(
+        &self,
+        ctx: &ToolContext,
+        approvals: &Arc<rua_security::ApprovalAuthority>,
+        authority: &Arc<ConversationAuthority>,
+        prompt: String,
+    ) -> rua_core::Result<Result<(String, bool), DeviceReadCheck>> {
+        use rua_security::{
+            ApprovalOwner, ApprovalRequestInput, ApprovalTrigger, ToolCallSnapshot,
+        };
+        use ConversationActiveTurnPhase::{RunningTool, Streaming, WaitingApproval};
         let Some(request) = approvals
             .create_target_file_confirmation(ApprovalRequestInput {
                 agent_id: self.agent_id.clone(),

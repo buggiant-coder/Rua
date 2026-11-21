@@ -159,6 +159,89 @@ impl TargetFileReadContext {
             .map_err(Into::into)
     }
 
+    pub async fn check_command_authority(
+        &self,
+        request: &TargetChatRead<'_>,
+    ) -> Result<(), TargetReadRejection> {
+        if request.tool_name != "bash"
+            || request.args["device_id"].as_str() != Some(self.local_device_id.as_str())
+            || request.turn_id.trim().is_empty()
+            || request.tool_call_id.trim().is_empty()
+            || !request.args["command"]
+                .as_str()
+                .is_some_and(|command| !command.is_empty() && !command.contains('\0'))
+            || !request.args.get("cwd").is_none_or(|cwd| {
+                cwd.is_null()
+                    || cwd
+                        .as_str()
+                        .is_some_and(rua_core::execution_directory::is_device_absolute_path)
+            })
+            || !request
+                .args
+                .get("yield_seconds")
+                .is_none_or(|value| value.is_null() || value.as_u64().is_some())
+            || !request.args.as_object().is_some_and(|fields| {
+                fields.keys().all(|key| {
+                    matches!(
+                        key.as_str(),
+                        "device_id" | "command" | "cwd" | "yield_seconds"
+                    )
+                })
+            })
+        {
+            return Err(TargetReadRejection::Denied);
+        }
+        self.checked_tool_configuration(request)
+            .await
+            .map(|_| ())
+            .map_err(Into::into)
+    }
+
+    pub async fn inspect_command(
+        &self,
+        request: &TargetChatRead<'_>,
+        public_cwd: &str,
+        confirmed_invocation: bool,
+    ) -> Result<FileReadAdmission, TargetReadRejection> {
+        self.check_command_authority(request).await?;
+        if !rua_core::execution_directory::is_device_absolute_path(public_cwd) {
+            return Err(TargetReadRejection::Denied);
+        }
+        let captured = self.checked_tool_configuration(request).await?;
+        let fs = rua_tool::WorkspaceFs::for_execution(
+            &self.rua_root,
+            rua_core::runtime_layout::RuntimeLayout::from_current_process(None),
+        )
+        .map_err(|_| TargetReadRejection::Unavailable)?;
+        let actual = fs
+            .resolve(public_cwd)
+            .map_err(|_| TargetReadRejection::FileUnavailable)?;
+        if !actual.is_dir() {
+            return Err(TargetReadRejection::FileUnavailable);
+        }
+        if let Some(requested) = request.args["cwd"].as_str() {
+            let requested = fs
+                .resolve(requested)
+                .map_err(|_| TargetReadRejection::FileUnavailable)?;
+            if requested != actual {
+                return Err(TargetReadRejection::Denied);
+            }
+        }
+        let mut original = self.tool_call_context(request);
+        original.working_dir = public_cwd.into();
+        let mut resolved = original.clone();
+        resolved.tool_input["cwd"] = public_cwd.into();
+        self.security
+            .inspect_chat_command(
+                &original,
+                &captured.security_config,
+                &resolved,
+                confirmed_invocation,
+            )
+            .await
+            .map_err(Into::into)
+    }
+
     pub async fn inspect_transfer_source(
         &self,
         request: &TargetChatRead<'_>,

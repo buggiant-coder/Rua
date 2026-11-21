@@ -38,3 +38,6 @@ mod file_operations;
 
 #[path = "all/transfer_permissions.rs"]
 mod transfer_permissions;
+
+#[path = "all/command_permissions.rs"]
+mod command_permissions;

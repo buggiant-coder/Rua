@@ -348,6 +348,100 @@ async fn foreground_wait_expiry_adopts_running_tool_without_redispatch() {
     assert_eq!(redispatches.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
+struct WaitingRemoteCommand {
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl rua_tool::core::shell::RemoteCommandRuntime for WaitingRemoteCommand {
+    async fn execute(
+        &self,
+        _: serde_json::Value,
+        ctx: &rua_core::tool::ToolContext,
+    ) -> Result<ToolResult, String> {
+        assert!(
+            ctx.task_session.is_none(),
+            "remote execution must not allocate an origin Task session"
+        );
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(ToolResult::text("remote", "completed on target"))
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn remote_shell_wait_does_not_adopt_locally_or_apply_ordinary_tool_timeout() {
+    let dir = tempfile::tempdir().unwrap();
+    let redispatches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let runtime = runtime_with_probe(dir.path(), redispatches.clone());
+    let remote = Arc::new(WaitingRemoteCommand {
+        started: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let local = Arc::new(rua_tool::MockCommandExecutor::new());
+    let mut toolkit = AgentToolkit::new();
+    let definition = rua_tool::ShellTool::spec().to_tool_definition();
+    let schema = definition.parameters.clone();
+    toolkit.register(
+        definition,
+        Arc::new(
+            ContractToolExecutor::new(Arc::new(rua_tool::ShellTool::new(local.clone())))
+                .with_schema(schema),
+        ),
+    );
+    let ctx = rua_core::tool::ToolContext {
+        local_device_id: Some("desktop".into()),
+        session_id: "remote-command-chat".into(),
+        working_dir: dir.path().into(),
+        tool_result_store_dir: Some(dir.path().join("logs")),
+        task_runtime: Some(Arc::new(TaskRuntimeHandle::new(runtime.clone()))),
+        remote_command_runtime: Some(Arc::new(
+            rua_tool::core::shell::RemoteCommandRuntimeHandle::new(remote.clone()),
+        )),
+        ..Default::default()
+    };
+    let (event_tx, _event_rx) = tokio::sync::mpsc::channel(16);
+    let foreground = tokio::spawn(async move {
+        let hook: Arc<dyn react_agent::AgentHook> = Arc::new(NoopHook);
+        execute_single_tool(
+            &ToolCall::new(
+                "remote",
+                "bash",
+                serde_json::json!({
+                    "device_id":"phone", "command":"wait for release", "yield_seconds":1,
+                }),
+            ),
+            &toolkit,
+            &hook,
+            &ctx,
+            &react_agent::ToolDisclosureConfig::default(),
+            0,
+            &CancellationToken::new(),
+            Duration::from_secs(2),
+            &event_tx,
+        )
+        .await
+    });
+    remote.started.notified().await;
+    tokio::time::advance(Duration::from_secs(12)).await;
+    tokio::task::yield_now().await;
+    assert!(
+        !foreground.is_finished(),
+        "neither wait window nor Tool deadline may end remote foreground work"
+    );
+    assert_eq!(remote.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(redispatches.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(local.history().is_empty());
+    remote.release.notify_one();
+    let result = foreground.await.unwrap().unwrap();
+    assert!(result.text_content().contains("completed on target"));
+    assert!(!result.metadata.contains_key("background_task_id"));
+}
+
 #[tokio::test]
 async fn task_owned_tool_ignores_foreground_transfer_wait() {
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();

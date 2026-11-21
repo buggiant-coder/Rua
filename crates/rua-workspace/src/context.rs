@@ -23,6 +23,7 @@ pub struct WorkspaceContext {
     pub agents_instruction_loader:
         Option<Arc<dyn rua_core::agents_instruction_discovery::AgentsInstructionLoader>>,
     pub sync_transfer_runtime: Arc<dyn std::any::Any + Send + Sync>,
+    pub remote_command_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
     pub tool_config_store: Arc<rua_tool::ToolConfigStore>,
     pub tool_before_boundary: Option<Arc<dyn react_agent::ToolBeforeBoundary>>,
     pub tool_observer_boundary: Option<Arc<dyn react_agent::ToolObserverBoundary>>,
