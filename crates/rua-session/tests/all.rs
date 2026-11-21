@@ -34,5 +34,7 @@ mod skills_handler;
 mod subagent_approval_isolation;
 #[path = "all/summary_checkpoint_store.rs"]
 mod summary_checkpoint_store;
+#[path = "all/task_refs.rs"]
+mod task_refs;
 #[path = "all/turn_lifecycle_status.rs"]
 mod turn_lifecycle_status;

@@ -67,6 +67,7 @@ fn task_record_for_turn(
             attempt_no,
             state,
             authorization_agent_id: "agent-1".to_string(),
+            authorization_origin: Default::default(),
             device: TaskDeviceContext::default(),
             created_at: now,
             updated_at: now,
@@ -411,4 +412,59 @@ async fn terminal_note_survives_an_in_flight_turn_header_commit() {
     };
     assert_eq!(note.output, "fast task completed");
     assert_eq!(header.message_log.latest_sequence, 513);
+}
+
+#[tokio::test]
+async fn task_terminal_note_uses_current_attempt_actual_location_not_retry_chat_configuration() {
+    let root = tempfile::tempdir().unwrap();
+    let store = WorkspaceSessionStore::new(root.path());
+    let mut record = task_record("chat-location", 2, TaskState::Completed, "done on phone");
+    let current = &mut record.attempts[0];
+    current.configuration_epoch = Some("retry-config".into());
+    current.device.device_id = Some("phone".into());
+    current.device.public_cwd = Some("/root/original-photos".into());
+    let mut previous = current.clone();
+    previous.attempt_no = 1;
+    previous.device.public_cwd = Some("/not-the-current-attempt".into());
+    record.attempts.insert(0, previous);
+    let path = store
+        .configuration_snapshot_path("chat-location", "retry-config")
+        .unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    rua_config::atomic_write(&path, &serde_json::to_vec(&serde_json::json!({
+        "capability_configuration":{"execution_directory":{"device_id":"desktop","path":"/new/chat/location","managed":true}}
+    })).unwrap()).unwrap();
+    let note = rua_agent::task_runtime_notes::task_terminal_note(&record, &store)
+        .await
+        .unwrap();
+    let RuntimeNotePayload::TaskAttemptTerminal(note) = note.payload else {
+        panic!("Task terminal note")
+    };
+    let directory = note.execution_directory.unwrap();
+    assert_eq!(directory.device_id, "phone");
+    assert_eq!(
+        directory.path,
+        std::path::Path::new("/root/original-photos")
+    );
+    assert!(!directory.managed);
+}
+
+#[tokio::test]
+async fn task_terminal_note_does_not_invent_missing_actual_location_from_configuration() {
+    let root = tempfile::tempdir().unwrap();
+    let store = WorkspaceSessionStore::new(root.path());
+    let mut record = task_record("chat-location", 1, TaskState::Completed, "done");
+    record.attempts[0].configuration_epoch = Some("unreadable-config".into());
+    let path = store
+        .configuration_snapshot_path("chat-location", "unreadable-config")
+        .unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    rua_config::atomic_write(&path, b"invalid configuration must not be consulted").unwrap();
+    let note = rua_agent::task_runtime_notes::task_terminal_note(&record, &store)
+        .await
+        .unwrap();
+    let RuntimeNotePayload::TaskAttemptTerminal(note) = note.payload else {
+        panic!("Task terminal note")
+    };
+    assert!(note.execution_directory.is_none());
 }

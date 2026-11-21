@@ -17,6 +17,7 @@ pub struct WorkspaceContext {
     pub active_plugin_registry: Arc<ActivePluginRegistry>,
     pub security: Arc<SecurityModule>,
     pub task_runtime: Arc<rua_task::TaskRuntime>,
+    pub task_tool_router: Option<Arc<dyn rua_tool::extended::task_tools::TaskToolRouter>>,
     pub collaboration_runtime: Arc<dyn std::any::Any + Send + Sync>,
     pub chat_media_loader: Option<Arc<dyn rua_core::ChatMediaLoader>>,
     pub device_read_access: Option<Arc<dyn rua_core::tool::DeviceReadAccess>>,

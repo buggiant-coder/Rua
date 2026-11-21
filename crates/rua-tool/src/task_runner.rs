@@ -18,6 +18,8 @@ pub struct ToolTaskExecutionRequest {
     pub attempt_no: u32,
     pub owner: TaskOwner,
     pub authorization_agent_id: String,
+    pub authorization_origin: TaskOrigin,
+    pub device: rua_task::TaskDeviceContext,
     pub configuration_epoch: Option<String>,
     pub origin_turn_id: Option<String>,
     pub tool_name: String,
@@ -71,7 +73,7 @@ pub async fn adopt_running_tool(
         cancel,
         session,
     } = request;
-    let source_device_id = runtime.device_context().device_id.clone();
+    let source_device_id = runtime.local_device_id().await?;
     let result_task_id = task_id.clone();
     let result_tool_name = tool_name.clone();
     let mut adopted = TaskAdoptedExecution::new(
@@ -92,6 +94,10 @@ pub async fn adopt_running_tool(
     let mut authorization = rua_task::TaskAttemptAuthorization::new(authorization_agent_id)
         .map_err(TaskError::Invalid)?;
     authorization.configuration_epoch = configuration_epoch;
+    authorization.origin = TaskOrigin {
+        turn_id: origin_turn_id.clone(),
+        tool_call_id: Some(origin_tool_call_id.clone()),
+    };
     runtime
         .adopt_running(
             task_id,
@@ -158,6 +164,8 @@ impl TaskRunner for ToolTaskRunner {
                 attempt_no: request.attempt_no,
                 owner: request.spec.owner.clone(),
                 authorization_agent_id: request.authorization_agent_id,
+                authorization_origin: request.authorization_origin,
+                device: request.device.clone(),
                 configuration_epoch: request.configuration_epoch,
                 origin_turn_id: request.spec.origin.turn_id.clone(),
                 tool_name: tool_name.clone(),
@@ -189,7 +197,14 @@ pub fn adapt_tool_task_result(
     let raw_output = serde_json::to_vec(&result).ok();
     let text = result.text_content();
     let (preview, bounded) = bounded_preview(&text, RESULT_PREVIEW_CHARS);
-    let outcome = if result.is_error {
+    let outcome = if result
+        .metadata
+        .get("cancelled")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        TaskRunOutcome::Cancelled
+    } else if result.is_error {
         TaskRunOutcome::Failed
     } else {
         TaskRunOutcome::Completed

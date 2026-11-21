@@ -65,6 +65,10 @@ pub struct TargetFileReadContext {
 }
 
 impl TargetFileReadContext {
+    pub(super) fn security(&self) -> &Arc<rua_security::SecurityModule> {
+        &self.security
+    }
+
     pub fn new(
         rua_root: PathBuf,
         local_device_id: String,
@@ -858,7 +862,7 @@ impl TargetFileReadContext {
             .await
     }
 
-    async fn checked_tool_configuration(
+    pub(super) async fn checked_tool_configuration(
         &self,
         request: &TargetChatRead<'_>,
     ) -> Result<ChatHookConfiguration, FileReadPolicyError> {

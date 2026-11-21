@@ -2078,6 +2078,7 @@ async fn task_watch_output_continues_active_turn_at_boundary_without_user_interj
     let delivery = tokio::spawn(async move {
         intake
             .deliver_task_watch_output(rua_task::TaskWatchOutputNotification {
+                extra: Default::default(),
                 notification_id: "task-watch-active-1".to_string(),
                 owner: rua_task::TaskOwner::new(CHAT_ID),
                 task_id: "task-active".to_string(),
@@ -2153,6 +2154,7 @@ async fn task_watch_delivery_waits_for_notification_turn_completion() {
     let delivery = tokio::spawn(async move {
         intake
             .deliver_task_watch_output(rua_task::TaskWatchOutputNotification {
+                extra: Default::default(),
                 notification_id: "task-watch-receipt-1".to_string(),
                 owner: rua_task::TaskOwner::new(CHAT_ID),
                 task_id: "task-receipt".to_string(),
@@ -2204,6 +2206,7 @@ async fn delegated_task_watch_output_does_not_interrupt_the_parent_turn() {
     state
         .conversation_input_intake
         .deliver_task_watch_output(rua_task::TaskWatchOutputNotification {
+            extra: Default::default(),
             notification_id: "task-watch-delegated-1".to_string(),
             owner: rua_task::TaskOwner::new(CHAT_ID),
             task_id: "task-agent".to_string(),
@@ -2917,4 +2920,216 @@ async fn local_stop_preserves_user_queue_and_background_observations() {
     assert!(control.queue.paused);
     assert_eq!(control.queue.entries.len(), 1);
     assert!(!control.background_work.suppressed);
+}
+
+#[tokio::test]
+async fn remote_task_references_preserve_unknown_work_and_only_waiting_approval_blocks_switch() {
+    use rua_session::task_refs::ChatTaskRef;
+    let temp = TempDir::new().unwrap();
+    let state = AppState::from_tempdir(temp.path().into(), ServerProfile::Test);
+    seed_local_authority(&state, CHAT_ID, "Remote Task sources").await;
+    let store = WorkspaceSessionStore::new(state.chat_workspace().as_path());
+    let chat_dir = store.chat_dir(CHAT_ID);
+    for (id, status) in [
+        ("unconfirmed", None),
+        ("not-accepted", None),
+        ("running", Some(rua_task::TaskState::Running)),
+        ("approval", Some(rua_task::TaskState::WaitingApproval)),
+        ("complete", Some(rua_task::TaskState::Completed)),
+    ] {
+        let reference: ChatTaskRef = serde_json::from_value(serde_json::json!({
+            "task_id":id,"owner":{"chat_address":chat_address()},
+            "execution":{"device_id":"offline-phone","public_cwd":"/root/photos"},
+            "origin":{"agent_id":"original-agent","turn_id":"source-turn","tool_call_id":"source-call"},
+            "last_target_evidence":null,"not_accepted":id=="running"
+        })).unwrap();
+        reference.register(&chat_dir, CHAT_ID).unwrap();
+        if id == "not-accepted" {
+            ChatTaskRef::mark_not_accepted(&chat_dir, CHAT_ID, id).unwrap();
+        }
+        if let Some(status) = status {
+            let record = serde_json::from_value(serde_json::json!({
+                "task_id":id,"spec":{"owner":{"chat_address":chat_address()},"instruction":"photos",
+                    "runner":{"type":"tool","tool_name":"bash","arguments":{"command":"pwd"}},
+                    "origin":{"turn_id":"source-turn","tool_call_id":"source-call"}},
+                "state":status,"attempt_no":1,"created_at":"2026-11-21T00:00:00Z","updated_at":"2026-11-21T00:00:00Z",
+                "attempts":[{"attempt_no":1,"state":status,"authorization_agent_id":"original-agent",
+                    "device":{"device_id":"offline-phone","public_cwd":"/root/photos"},
+                    "created_at":"2026-11-21T00:00:00Z","updated_at":"2026-11-21T00:00:00Z"}]
+            })).unwrap();
+            ChatTaskRef::capture_target_evidence(&chat_dir, CHAT_ID, id, "offline-phone", record)
+                .unwrap();
+        }
+    }
+    let work = state
+        .conversation_authority
+        .background_work_view(&chat_address())
+        .await;
+    assert!(work.error.is_none(), "{:?}", work.error);
+    let items = work
+        .items
+        .iter()
+        .map(|item| (item.id.as_str(), item.status.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        items,
+        [
+            ("approval", "waiting_approval"),
+            ("running", "unknown"),
+            ("unconfirmed", "unknown")
+        ]
+        .into()
+    );
+    let selection = state
+        .conversation_input_intake
+        .chat_agent_state(&chat_address())
+        .await
+        .unwrap();
+    assert!(selection
+        .blockers
+        .contains(&rua_server::services::project_chat::ChatAgentSwitchBlocker::UnresolvedApproval));
+    let approval = ChatTaskRef::load(&chat_dir, CHAT_ID, "approval")
+        .unwrap()
+        .unwrap();
+    let mut record = approval.last_target_evidence.unwrap().record;
+    record.state = rua_task::TaskState::Completed;
+    record.attempts[0].state = record.state;
+    ChatTaskRef::capture_target_evidence(&chat_dir, CHAT_ID, "approval", "offline-phone", record)
+        .unwrap();
+    let selection = state
+        .conversation_input_intake
+        .chat_agent_state(&chat_address())
+        .await
+        .unwrap();
+    assert!(
+        selection.switchable,
+        "only running/unknown Task sources remain: {:?}",
+        selection.blockers
+    );
+    let mut header = store.load_chat_header(CHAT_ID).await.unwrap().unwrap();
+    header.metadata.agent_id = "another-agent".into();
+    store.save_chat_header(&header).await.unwrap();
+    let work = state
+        .conversation_authority
+        .background_work_view(&chat_address())
+        .await;
+    assert_eq!(
+        work.items.len(),
+        2,
+        "changing the Chat Agent must retain original Task sources"
+    );
+    assert!(work.items.iter().all(|item| item.status == "unknown"));
+}
+
+struct TaskReferenceCaptureRunner {
+    started: tokio::sync::Notify,
+    finish: tokio::sync::Notify,
+}
+#[async_trait::async_trait]
+impl rua_task::TaskRunner for TaskReferenceCaptureRunner {
+    fn kind(&self) -> rua_task::TaskRunnerKind {
+        rua_task::TaskRunnerKind::Tool
+    }
+    async fn run(
+        &self,
+        _request: rua_task::TaskRunRequest,
+    ) -> Result<rua_task::TaskRunOutput, rua_task::TaskRunnerError> {
+        self.started.notify_one();
+        self.finish.notified().await;
+        Ok(rua_task::TaskRunOutput::completed("target completed"))
+    }
+}
+
+#[tokio::test]
+async fn task_activity_captures_persistent_target_evidence_for_approval_and_terminal() {
+    use rua_session::task_refs::ChatTaskRef;
+    let temp = TempDir::new().unwrap();
+    let state = AppState::from_tempdir(temp.path().into(), ServerProfile::Test);
+    seed_local_authority(&state, CHAT_ID, "Task evidence").await;
+    let sink = Arc::new(
+        rua_server::services::task_notification::ServerTaskNotificationSink::new(
+            state.rua_root.clone(),
+        ),
+    );
+    sink.install_local_device_id(local_device_id(&state));
+    let execution_root = TempDir::new().unwrap();
+    let mut config = rua_task::TaskRuntimeConfig::new(execution_root.path());
+    config.device.device_id = Some(local_device_id(&state));
+    config.device.public_cwd = Some("/original-task-location".into());
+    let tasks = Arc::new(rua_task::TaskRuntime::open_with_sink(config, sink.clone()).unwrap());
+    sink.install_tasks(&tasks);
+    sink.install_watch_delivery(state.conversation_input_intake.clone());
+    let runner = Arc::new(TaskReferenceCaptureRunner {
+        started: Default::default(),
+        finish: Default::default(),
+    });
+    tasks.register_runner(runner.clone());
+    let owner = rua_task::TaskOwner::from_address(chat_address());
+    let id = tasks
+        .create(
+            rua_task::TaskSpec {
+                owner: owner.clone(),
+                instruction: "capture evidence".into(),
+                runner: rua_task::TaskRunnerSpec::Tool {
+                    tool_name: "fixture".into(),
+                    arguments: serde_json::json!({}),
+                },
+                context_refs: vec![],
+                depends_on: vec![],
+                origin: Default::default(),
+            },
+            rua_task::TaskAttemptAuthorization::new("original-agent").unwrap(),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), runner.started.notified())
+        .await
+        .unwrap();
+    let chat_dir = WorkspaceSessionStore::new(state.chat_workspace().as_path()).chat_dir(CHAT_ID);
+    async fn wait_evidence(
+        path: &std::path::Path,
+        id: &str,
+        expected: rua_task::TaskState,
+    ) -> ChatTaskRef {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(reference) = ChatTaskRef::load(path, CHAT_ID, id).unwrap() {
+                    if reference
+                        .last_target_evidence
+                        .as_ref()
+                        .is_some_and(|e| e.record.state == expected)
+                    {
+                        break reference;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "expected {expected:?} evidence: {error}; saved={:?}",
+                ChatTaskRef::load(path, CHAT_ID, id)
+            )
+        })
+    }
+    let running = wait_evidence(&chat_dir, &id, rua_task::TaskState::Running).await;
+    tasks
+        .set_waiting_approval(&owner, &id, 1, true)
+        .await
+        .unwrap();
+    let waiting = wait_evidence(&chat_dir, &id, rua_task::TaskState::WaitingApproval).await;
+    runner.finish.notify_one();
+    let terminal = wait_evidence(&chat_dir, &id, rua_task::TaskState::Completed).await;
+    assert_eq!(terminal.execution.public_cwd, "/original-task-location");
+    assert_eq!(terminal.origin.agent_id, "original-agent");
+    assert!(
+        running.last_target_evidence.unwrap().revision
+            < waiting.last_target_evidence.as_ref().unwrap().revision
+    );
+    assert!(
+        waiting.last_target_evidence.unwrap().revision
+            < terminal.last_target_evidence.unwrap().revision
+    );
+    tasks.shutdown().await.unwrap();
 }

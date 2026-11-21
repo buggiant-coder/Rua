@@ -12,6 +12,7 @@ pub mod model_switch;
 pub mod projection;
 pub mod runtime_note;
 pub mod store;
+pub mod task_refs;
 pub mod tool_loop;
 pub mod turn_writer;
 

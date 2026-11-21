@@ -158,6 +158,77 @@ fn reconsider(decision: AgentsInstructionDecision) {
 }
 
 #[tokio::test]
+async fn task_create_discovers_the_local_runner_directory_before_scheduling() {
+    let f = Fixture::new();
+    let directory = f.child("background-project");
+    f.loader
+        .set("desktop", &directory, "BACKGROUND_DIRECTORY_GUIDANCE");
+    let c = f.prepare().await;
+    c.snapshot_for_model();
+    let call = ToolCall::new(
+        "background",
+        "task_create",
+        json!({
+            "runner":{"type":"tool","tool_name":"bash","arguments":{"cwd":directory,"command":"pwd"}}
+        }),
+    );
+    reconsider(f.before(&c, &call).await);
+    assert!(c
+        .snapshot_for_model()
+        .unwrap()
+        .contains("BACKGROUND_DIRECTORY_GUIDANCE"));
+    assert_eq!(
+        f.before(&c, &call).await,
+        AgentsInstructionDecision::Continue
+    );
+}
+
+#[tokio::test]
+async fn remote_task_create_waits_for_the_targets_actual_directory() {
+    let f = Fixture::new();
+    f.loader.set(
+        "phone",
+        Path::new("/real/project"),
+        "REMOTE_BACKGROUND_GUIDANCE",
+    );
+    let c = f.prepare().await;
+    c.snapshot_for_model();
+    let initial = f.loader.requests.lock().unwrap().len();
+    for arguments in [
+        json!({"device_id":"phone","command":"pwd"}),
+        json!({"device_id":"phone","cwd":"/alias/project","command":"pwd"}),
+    ] {
+        let call = ToolCall::new(
+            "background",
+            "task_create",
+            json!({"runner":{"type":"tool","tool_name":"bash","arguments":arguments}}),
+        );
+        assert_eq!(
+            f.before(&c, &call).await,
+            AgentsInstructionDecision::Continue
+        );
+        assert_eq!(f.loader.requests.lock().unwrap().len(), initial);
+    }
+    reconsider(
+        c.before_targets(
+            &[AgentsInstructionTarget {
+                device_id: "phone".into(),
+                path: "/real/project".into(),
+                kind: AgentsInstructionTargetKind::Directory,
+            }],
+            &f.ctx,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap(),
+    );
+    assert!(c
+        .snapshot_for_model()
+        .unwrap()
+        .contains("REMOTE_BACKGROUND_GUIDANCE"));
+}
+
+#[tokio::test]
 async fn remote_bash_cwd_is_discovered_on_its_named_device() {
     let f = Fixture::new();
     let cwd = f.child("same-path");

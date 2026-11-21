@@ -37,6 +37,7 @@ fn workspace_context_has_all_fields() {
         agents_instruction_loader: None,
         sync_transfer_runtime: Arc::new(()),
         remote_command_runtime: None,
+        task_tool_router: None,
         tool_config_store: Arc::new(rua_tool::ToolConfigStore::new(Arc::new(
             rua_tool::AgentToolsCells::new(cell_store, dir.path().join("workspaces")),
         ))),

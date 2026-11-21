@@ -16,6 +16,12 @@ use rua_tool::core::shell::RemoteCommandRuntimeHandle;
 use serde_json::json;
 use std::sync::OnceLock;
 
+#[path = "remote_command_origin/dropped_adoption.rs"]
+mod dropped_adoption;
+
+#[path = "remote_command_origin/task_approval_permissions.rs"]
+mod task_approval_permissions;
+
 struct Origin {
     fixture: RemoteInputConfirmationFixture,
     ctx: ToolContext,
@@ -41,19 +47,52 @@ impl Origin {
                         effect: PermissionRuleEffect::Allow,
                         matcher: ApprovalReuseMatcher::ToolCall {
                             tool_name: "bash".into(),
-                            input_params: Some(call.arguments.to_string()),
+                            input_params: Some(if call.name == "task_create" {
+                                call.arguments["runner"]["arguments"].to_string()
+                            } else {
+                                call.arguments.to_string()
+                            }),
                         },
                     },
                 )
                 .await
                 .unwrap();
         }
+        let tasks = Arc::new(OnceLock::new());
+        assert!(tasks
+            .set(Arc::new(
+                rua_server::services::chat_task::ChatTaskService::new(
+                    owner.rua_root.clone(),
+                    fixture.target.device_id.clone(),
+                    owner.task_runtime.clone(),
+                    Arc::new(
+                        rua_server::services::task_authority::ServerTaskAuthorityResolver::new(
+                            owner.rua_root.clone(),
+                            "desktop",
+                            owner.sync_device.clone(),
+                        )
+                    ),
+                    Arc::new(TargetFileReadContext::new(
+                        owner.rua_root.clone(),
+                        fixture.target.device_id.clone(),
+                        owner.project_catalog.clone(),
+                        owner.agent_service.clone(),
+                        owner.tool_catalog.clone(),
+                        owner.tool_config_store.clone(),
+                        owner.security.clone(),
+                    )),
+                    owner.device_network.clone(),
+                    owner.conversation_authority.clone(),
+                )
+            ))
+            .is_ok());
         let service = Arc::new(ChatCommandToolService::new(
             owner.sync_enabled.clone(),
             owner.sync_device.clone(),
             owner.device_network.clone(),
             owner.conversation_authority.clone(),
             owner.security.approval_authority().clone(),
+            tasks.clone(),
         ));
         let binding = OnceLock::new();
         assert!(binding.set(service).is_ok());
@@ -63,6 +102,12 @@ impl Origin {
             local_device_id: Some(fixture.target.device_id.clone()),
             working_dir: owner.rua_root.canonicalize().unwrap(),
             tool_result_store_dir: Some(owner.rua_root.join("origin-tool-results")),
+            task_runtime: Some(Arc::new(
+                rua_tool::extended::task_tools::TaskRuntimeHandle::new(owner.task_runtime.clone())
+                    .with_router(Arc::new(
+                        rua_server::services::chat_task_tools::RuntimeTaskToolRouter::new(tasks),
+                    )),
+            )),
             remote_command_runtime: Some(Arc::new(RemoteCommandRuntimeHandle::new(Arc::new(
                 RemoteCommandRuntimeAdapter::new(Arc::new(binding)),
             )))),
@@ -288,6 +333,322 @@ async fn origin_target_instructions_cancel_preparation_before_spawn_then_allow_t
     assert_eq!(std::fs::read_to_string(cwd.join("starts")).unwrap(), "once");
     assert!(!second.metadata.contains_key("raw_capture"));
     assert!(!second.metadata.contains_key("live_output_path"));
+    f.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_remote_task_discovers_instructions_then_retries_on_its_original_device() {
+    use rua_tool::extended::task_tools::{
+        TaskCreateTool, TaskListTool, TaskReadTool, TaskRetryTool,
+    };
+    let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
+    let cwd = fixture
+        .source_state
+        .rua_root
+        .canonicalize()
+        .unwrap()
+        .join("explicit-background");
+    std::fs::create_dir(&cwd).unwrap();
+    std::fs::write(cwd.join("AGENTS.md"), "BACKGROUND_TARGET_RULE").unwrap();
+    let arguments = json!({"runner":{"type":"tool","tool_name":"bash","arguments":{
+        "device_id":fixture.source.device_id,"cwd":cwd,
+        "command":"printf x >> starts; if [ -f ran ]; then printf second-attempt; else touch ran; printf first-attempt; exit 3; fi"
+    }}});
+    let first = ToolCall::new("background-discovery", "task_create", arguments.clone());
+    let second = ToolCall::new("background-accepted", "task_create", arguments.clone());
+    let mut invalid_arguments = arguments.clone();
+    invalid_arguments["runner"]["arguments"]["cwd"] = json!(42);
+    let invalid = ToolCall::new("background-invalid-cwd", "task_create", invalid_arguments);
+    let retry = ToolCall::new(
+        "background-retry",
+        "task_retry",
+        json!({"task_id":"resolved-after-create"}),
+    );
+    let missing_cwd_retry = ToolCall::new(
+        "background-retry-missing-cwd",
+        "task_retry",
+        json!({"task_id":"resolved-after-create"}),
+    );
+    let f = Origin::new(
+        fixture,
+        &[
+            invalid.clone(),
+            first.clone(),
+            second.clone(),
+            missing_cwd_retry.clone(),
+            retry.clone(),
+        ],
+    )
+    .await;
+    let error = TaskCreateTool
+        .call(invalid.arguments.clone(), f.context(&invalid))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("cwd"), "{error}");
+    assert!(f
+        .fixture
+        .source_state
+        .task_runtime
+        .list(
+            &rua_task::TaskOwner::new(&f.fixture.chat_id),
+            Default::default()
+        )
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(!cwd.join("starts").exists());
+    let coordinator = f.instructions().await;
+    coordinator.snapshot_for_model();
+    let mut context = f.context(&first);
+    context.agents_instructions = Some(coordinator.clone());
+    let decision = TaskCreateTool
+        .call(arguments.clone(), context)
+        .await
+        .unwrap();
+    assert_eq!(decision.metadata["execution_status"], "not_executed");
+    assert!(!cwd.join("starts").exists());
+    assert!(coordinator
+        .snapshot_for_model()
+        .unwrap()
+        .contains("BACKGROUND_TARGET_RULE"));
+    let mut context = f.context(&second);
+    context.agents_instructions = Some(coordinator.clone());
+    let created = TaskCreateTool.call(arguments, context).await.unwrap();
+    let created: serde_json::Value = serde_json::from_str(&created.text_content()).unwrap();
+    let id = created["task_id"].as_str().unwrap();
+    let owner = rua_task::TaskOwner::new(&f.fixture.chat_id);
+    let failed = f
+        .fixture
+        .source_state
+        .task_runtime
+        .await_terminal(&owner, id, Duration::from_secs(8))
+        .await
+        .unwrap();
+    assert_eq!(failed.state, rua_task::TaskState::Failed);
+    assert_eq!(std::fs::read_to_string(cwd.join("starts")).unwrap(), "x");
+    let current_header =
+        WorkspaceSessionStore::new(f.fixture.target_state.chat_workspace().as_path())
+            .load_chat_header(&f.fixture.chat_id)
+            .await
+            .unwrap()
+            .unwrap();
+    let current_directory: rua_session::ChatExecutionDirectory = serde_json::from_value(
+        current_header.extra["hook_configuration"]["capability_configuration"]
+            ["execution_directory"]
+            .clone(),
+    )
+    .unwrap();
+    assert_eq!(current_directory.device_id, f.fixture.target.device_id);
+    assert!(current_directory.path.is_dir());
+    assert_ne!(current_directory.path, cwd);
+    let unavailable_cwd = cwd.with_file_name("explicit-background-moved");
+    std::fs::rename(&cwd, &unavailable_cwd).unwrap();
+    let fallback = f.context(&missing_cwd_retry);
+    assert!(fallback.working_dir.is_dir());
+    assert_ne!(fallback.working_dir, cwd);
+    assert!(!fallback.working_dir.join("starts").exists());
+    let rejected = TaskRetryTool.call(json!({"task_id":id}), fallback).await;
+    // Restore the fixture before asserting so a failing regression leaves no
+    // relocated execution directory behind.
+    std::fs::rename(&unavailable_cwd, &cwd).unwrap();
+    let error = rejected.expect_err("Retry must not replace its missing original cwd");
+    assert!(error.to_string().contains("task_unavailable"), "{error}");
+    assert!(error.to_string().contains(cwd.to_str().unwrap()), "{error}");
+    let unchanged = f
+        .fixture
+        .source_state
+        .task_runtime
+        .get(&owner, id)
+        .await
+        .unwrap();
+    assert_eq!(unchanged.attempt_no, 1);
+    assert_eq!(unchanged.attempts.len(), 1);
+    assert_eq!(unchanged.spec, failed.spec);
+    assert_eq!(unchanged.attempts[0].device, failed.attempts[0].device);
+    assert_eq!(std::fs::read_to_string(cwd.join("starts")).unwrap(), "x");
+    assert!(!f.ctx.working_dir.join("starts").exists());
+    assert!(f
+        .fixture
+        .target_state
+        .task_runtime
+        .list(&owner, Default::default())
+        .await
+        .unwrap()
+        .is_empty());
+    let mut context = f.context(&retry);
+    context.agents_instructions = Some(coordinator);
+    context.working_dir = f.fixture.target_state.rua_root.clone();
+    let retried = TaskRetryTool
+        .call(json!({"task_id":id}), context)
+        .await
+        .unwrap();
+    let retried: serde_json::Value = serde_json::from_str(&retried.text_content()).unwrap();
+    assert_eq!(retried["attempt_no"], 2);
+    let completed = f
+        .fixture
+        .source_state
+        .task_runtime
+        .await_terminal(&owner, id, Duration::from_secs(8))
+        .await
+        .unwrap();
+    assert_eq!(completed.state, rua_task::TaskState::Completed);
+    assert_eq!(
+        completed.spec.origin.tool_call_id.as_deref(),
+        Some(second.id.as_str())
+    );
+    assert_eq!(
+        completed.attempts[1]
+            .authorization_origin
+            .tool_call_id
+            .as_deref(),
+        Some(retry.id.as_str())
+    );
+    assert!(completed
+        .attempts
+        .iter()
+        .all(|attempt| attempt.device.device_id.as_deref()
+            == Some(f.fixture.source.device_id.as_str())
+            && attempt.device.public_cwd.as_deref() == cwd.to_str()));
+    assert_eq!(std::fs::read_to_string(cwd.join("starts")).unwrap(), "xx");
+    let listing = TaskListTool.call(json!({}), f.ctx.clone()).await.unwrap();
+    let listing: serde_json::Value = serde_json::from_str(&listing.text_content()).unwrap();
+    assert_eq!(listing["tasks"][0]["task_id"], id);
+    assert_eq!(
+        listing["tasks"][0]["execution"]["device_id"],
+        f.fixture.source.device_id
+    );
+    let read = TaskReadTool
+        .call(json!({"task_id":id,"max_bytes":32}), f.ctx.clone())
+        .await
+        .unwrap();
+    let read: serde_json::Value = serde_json::from_str(&read.text_content()).unwrap();
+    assert_eq!(read["task_id"], id);
+    assert!(read["cursor"].is_string());
+    assert!(f
+        .fixture
+        .target_state
+        .task_runtime
+        .list(&owner, Default::default())
+        .await
+        .unwrap()
+        .is_empty());
+    f.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn origin_recovers_lost_adopt_receipt_into_the_same_target_task() {
+    let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
+    let cwd = fixture
+        .source_state
+        .rua_root
+        .canonicalize()
+        .unwrap()
+        .join("adopt-output");
+    std::fs::create_dir(&cwd).unwrap();
+    let call = ToolCall::new(
+        "lost-adopt",
+        "bash",
+        json!({
+            "device_id":fixture.source.device_id,"cwd":cwd,"yield_seconds":1,
+            "command":"printf once >> starts; while [ ! -f release ]; do sleep 0.05; done; printf adopted-completed"
+        }),
+    );
+    let f = Origin::new(fixture, std::slice::from_ref(&call)).await;
+    f.fixture
+        .file_reads
+        .drop_next_command_adopt_reply
+        .store(true, Ordering::SeqCst);
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        rua_tool::ShellTool::new(Arc::new(rua_tool::RuntimeCommandExecutor::new()))
+            .call(call.arguments.clone(), f.context(&call)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let task_id = result.metadata["background_task_id"]
+        .as_str()
+        .expect("target accepted Task");
+    assert_eq!(result.metadata["execution_id"], task_id);
+    let owner = rua_task::TaskOwner::new(&f.fixture.chat_id);
+    assert!(f
+        .fixture
+        .target_state
+        .task_runtime
+        .list(&owner, Default::default())
+        .await
+        .unwrap()
+        .is_empty());
+    let record = f
+        .fixture
+        .source_state
+        .task_runtime
+        .get(&owner, task_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        record.attempts[0].device.device_id.as_deref(),
+        Some(f.fixture.source.device_id.as_str())
+    );
+    assert_eq!(
+        record.attempts[0].device.public_cwd.as_deref(),
+        cwd.to_str()
+    );
+    assert_eq!(std::fs::read_to_string(cwd.join("starts")).unwrap(), "once");
+    {
+        let requests = f.fixture.file_reads.command_requests.lock().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.action == ChatCommandAction::Start)
+                .count(),
+            1
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.action == ChatCommandAction::Adopt)
+                .count(),
+            1
+        );
+        assert!(requests
+            .iter()
+            .all(|request| request.context.execution_id == task_id));
+        assert!(requests
+            .iter()
+            .any(|request| request.action == ChatCommandAction::Status));
+    }
+    let scope =
+        rua_core::ChatStore::resolve(&f.fixture.target_state.rua_root, owner.chat_address.clone());
+    let reference = rua_session::task_refs::ChatTaskRef::load(
+        &scope.root().join("sessions").join(&f.fixture.chat_id),
+        &f.fixture.chat_id,
+        task_id,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(reference.last_target_evidence.is_some());
+    std::fs::write(cwd.join("release"), "continue").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let record = f
+                .fixture
+                .source_state
+                .task_runtime
+                .get(&owner, task_id)
+                .await
+                .unwrap();
+            if record.state.is_terminal() {
+                assert_eq!(record.state, rua_task::TaskState::Completed);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
     f.shutdown().await;
 }
 

@@ -2654,6 +2654,7 @@ export function useConversationViewRuntime({
     if (!conversationId || deferInitialAttach) return;
     let cancelled = false;
     let retryTimer: number | undefined;
+    let taskApprovalTimer: number | undefined;
     const current = () => !cancelled;
     retryInitialApprovalRead.current = () => {
       // Initial and Live reads share one retry while the configuration syncs.
@@ -2664,11 +2665,20 @@ export function useConversationViewRuntime({
         void refreshApprovalSnapshot(conversationId, current);
       }, APPROVAL_SNAPSHOT_RETRY_DELAY_MS);
     };
-    void refreshApprovalSnapshot(conversationId, current);
+    const refreshTaskApprovals = async () => {
+      await refreshApprovalSnapshot(conversationId, current);
+      if (!cancelled) {
+        taskApprovalTimer = window.setTimeout(refreshTaskApprovals, 3000);
+      }
+    };
+    // A background Task can request approval after its originating Turn has ended.
+    // Keep the existing tray current without tying it to a live foreground stream.
+    void refreshTaskApprovals();
     return () => {
       cancelled = true;
       retryInitialApprovalRead.current = null;
       window.clearTimeout(retryTimer);
+      window.clearTimeout(taskApprovalTimer);
     };
   }, [conversationId, reloadKey, deferInitialAttach, refreshApprovalSnapshot]);
 

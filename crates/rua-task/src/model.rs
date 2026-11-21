@@ -217,6 +217,8 @@ pub struct TaskDeviceContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_profile: Option<String>,
@@ -306,6 +308,8 @@ pub struct TaskAttempt {
 
     #[serde(default)]
     pub authorization_agent_id: String,
+    #[serde(default)]
+    pub authorization_origin: TaskOrigin,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub configuration_epoch: Option<String>,
     #[serde(default)]
@@ -323,6 +327,8 @@ pub struct TaskAttempt {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskAttemptAuthorization {
     pub agent_id: String,
+    #[serde(default)]
+    pub origin: TaskOrigin,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub configuration_epoch: Option<String>,
 }
@@ -335,12 +341,18 @@ impl TaskAttemptAuthorization {
         }
         Ok(Self {
             agent_id,
+            origin: TaskOrigin::default(),
             configuration_epoch: None,
         })
     }
 
     pub fn with_configuration_epoch(mut self, epoch: String) -> Self {
         self.configuration_epoch = Some(epoch);
+        self
+    }
+
+    pub fn with_origin(mut self, origin: TaskOrigin) -> Self {
+        self.origin = origin;
         self
     }
 }

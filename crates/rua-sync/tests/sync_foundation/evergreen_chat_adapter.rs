@@ -27,7 +27,7 @@ fn evergreen_snapshot_key_joins_chat_id_and_record_name() {
 
 #[tokio::test]
 async fn chat_rule_snapshots_recover_grants_and_clears_from_the_authority() {
-    use rua_sync::evergreen_chat_adapter::validate_permission_rule_author;
+    use rua_sync::evergreen_chat_adapter::validate_chat_record_author;
     use rua_sync::identity::DeviceIdentity;
     use serde_json::json;
 
@@ -67,8 +67,8 @@ async fn chat_rule_snapshots_recover_grants_and_clears_from_the_authority() {
         .unwrap()
         .clone();
     let grant = snapshot(initial);
-    validate_permission_rule_author(&grant, a.to_iroh_author().id()).unwrap();
-    assert!(validate_permission_rule_author(&grant, b.to_iroh_author().id()).is_err());
+    validate_chat_record_author(&grant, a.to_iroh_author().id()).unwrap();
+    assert!(validate_chat_record_author(&grant, b.to_iroh_author().id()).is_err());
 
     let replica_dir = chat_dir(replica.path());
     std::fs::create_dir_all(&replica_dir).unwrap();
@@ -81,7 +81,7 @@ async fn chat_rule_snapshots_recover_grants_and_clears_from_the_authority() {
     registry.register(receiver.clone()).unwrap();
     assert!(matches!(
         registry.apply_change(&grant, &merge).await,
-        Err(rua_sync::SyncError::PendingChatPermissionPlacement)
+        Err(rua_sync::SyncError::PendingChatPlacement { .. })
     ));
     assert!(!replica_dir.join("permission_rules.json").exists());
     registry
@@ -92,7 +92,7 @@ async fn chat_rule_snapshots_recover_grants_and_clears_from_the_authority() {
     later_epoch.payload["authority_epoch"] = json!(hlc(101).to_sortable_string());
     assert!(matches!(
         registry.apply_change(&later_epoch, &merge).await,
-        Err(rua_sync::SyncError::PendingChatPermissionPlacement)
+        Err(rua_sync::SyncError::PendingChatPlacement { .. })
     ));
     let mut wrong_source = grant.clone();
     wrong_source.device_id = hex::encode(b.device_id_short());
@@ -155,6 +155,9 @@ async fn scoped_round_trip_preserves_unified_chat_fields_and_compact_assignment(
             preview: None,
         });
         header.project_id = project_id.map(str::to_owned);
+        header
+            .extra
+            .insert("authority_placement".into(), placement("device-a"));
         header.extra.insert(
             "chat_policy".to_string(),
             serde_json::to_value(rua_chat::ChatPolicy::for_project(*project_id)).unwrap(),
@@ -310,6 +313,9 @@ async fn complete_chat_configuration_roundtrip_preserves_head_and_snapshot() {
     header
         .extra
         .insert("hook_configuration".into(), configuration.clone());
+    header
+        .extra
+        .insert("authority_placement".into(), placement("source"));
     store.save_chat_header(&header).await.unwrap();
     let changes = EvergreenChatSyncAdapter::new(source.path().to_path_buf(), "source")
         .export_records()
@@ -390,6 +396,7 @@ async fn receiving_an_agent_switch_before_its_snapshot_keeps_one_consistent_sele
     );
     store.save_chat_header(&header).await.unwrap();
     let mut registry = SyncRegistry::new();
+    seed_placement(scope.root(), id, "source");
     registry
         .register(Arc::new(EvergreenChatSyncAdapter::new(
             target.path().to_owned(),
@@ -399,6 +406,11 @@ async fn receiving_an_agent_switch_before_its_snapshot_keeps_one_consistent_sele
     let cursor = tempfile::tempdir().unwrap();
     let merge = MergeStore::open(cursor.path()).unwrap();
     let change = |id: &str, record: &str, value: serde_json::Value, time| {
+        let value = if record == "configuration_head" {
+            history_payload(value)
+        } else {
+            value
+        };
         EvergreenChatSyncAdapter::file_change(id, &address, record, value, "source", hlc(time))
     };
     let audit = serde_json::json!([{"previous_agent_id":"first","selected_agent_id":"second","revision":2}]);
@@ -448,6 +460,27 @@ fn workspace_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.join("chats")
 }
 
+fn placement(device: &str) -> serde_json::Value {
+    serde_json::json!({"device_id":device,"authority_epoch":hlc(1).to_sortable_string()})
+}
+
+fn seed_placement(workspace: &std::path::Path, chat_id: &str, device: &str) {
+    let path = workspace
+        .join("sessions")
+        .join(chat_id)
+        .join("session.json");
+    let mut header: serde_json::Value = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_else(|| serde_json::json!({"chat_id":chat_id}));
+    header["authority_placement"] = placement(device);
+    rua_config::atomic_write_json(&path, &header).unwrap();
+}
+
+fn history_payload(content: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"authority_epoch":hlc(1).to_sortable_string(),"content":content})
+}
+
 fn conversation_message(
     message_id: &str,
     role: &str,
@@ -494,6 +527,7 @@ async fn create_history_replacement_record_for_address(
         }))
         .await
         .unwrap();
+    seed_placement(workspace, chat_id, "device-a");
     store
         .append_conversation_turn(
             chat_id,
@@ -660,6 +694,7 @@ async fn export_reads_directory_backed_evergreen_chat_files() {
     )
     .unwrap();
 
+    seed_placement(&workspace, "chat-a", "device-a");
     let adapter = EvergreenChatSyncAdapter::new(data.path().to_path_buf(), "device-a");
     let records = adapter.export_records().await.unwrap();
     let ids: Vec<_> = records
@@ -855,7 +890,7 @@ async fn project_history_replacement_roundtrips_with_project_scope() {
         .find(|change| change.record_id == record_id)
         .expect("Project-scoped history replacement snapshot");
     assert_eq!(
-        change.payload["chat_address"],
+        change.payload["content"]["chat_address"],
         serde_json::to_value(&project_address).unwrap()
     );
     assert!(exported.iter().all(|change| !change
@@ -873,6 +908,11 @@ async fn project_history_replacement_roundtrips_with_project_scope() {
         )))
         .unwrap();
 
+    seed_placement(
+        &workspace_dir(target_data.path()),
+        "chat-project",
+        "device-a",
+    );
     let result = registry.apply_change(change, &merge_store).await.unwrap();
 
     assert_eq!(result.status, RegistryApplyStatus::Applied);
@@ -918,7 +958,7 @@ async fn inbound_rejects_tampered_or_noncanonical_history_replacement_records() 
                 )
         })
         .expect("history replacement snapshot");
-    change.payload["state"]["digest"] = serde_json::json!("tampered digest");
+    change.payload["content"]["state"]["digest"] = serde_json::json!("tampered digest");
 
     let target_data = tempfile::tempdir().unwrap();
     let merge_dir = tempfile::tempdir().unwrap();
@@ -930,6 +970,11 @@ async fn inbound_rejects_tampered_or_noncanonical_history_replacement_records() 
             "device-b",
         )))
         .unwrap();
+    seed_placement(
+        &workspace_dir(target_data.path()),
+        "chat-tampered",
+        "device-a",
+    );
     let error = registry
         .apply_change(&change, &merge_store)
         .await
@@ -949,7 +994,7 @@ async fn inbound_rejects_tampered_or_noncanonical_history_replacement_records() 
         "op-invalid-history-replacement-path",
         &ChatAddress::new("chat-tampered"),
         "history_replacements/not-a-record.json",
-        serde_json::to_value(&record).unwrap(),
+        history_payload(serde_json::to_value(&record).unwrap()),
         "device-a",
         hlc(200),
     );
@@ -976,7 +1021,7 @@ async fn inbound_consumes_superseded_history_replacement_format_without_material
         "op-legacy-history-replacement",
         &ChatAddress::new("chat-legacy"),
         format!("history_replacements/{}.json", record.record_id),
-        payload,
+        history_payload(payload),
         "device-a",
         hlc(250),
     );
@@ -992,6 +1037,11 @@ async fn inbound_consumes_superseded_history_replacement_format_without_material
         )))
         .unwrap();
 
+    seed_placement(
+        &workspace_dir(target_data.path()),
+        "chat-legacy",
+        "device-a",
+    );
     let first = registry.apply_change(&change, &merge_store).await.unwrap();
     assert_eq!(first.status, RegistryApplyStatus::Applied);
     let second = registry.apply_change(&change, &merge_store).await.unwrap();
@@ -1213,6 +1263,7 @@ async fn inbound_writes_prompt_state_as_evergreen_chat_file() {
 #[tokio::test]
 async fn inbound_message_log_unions_local_and_remote_entries() {
     let data = tempfile::tempdir().unwrap();
+    seed_placement(&workspace_dir(data.path()), "chat-a", "device-a");
     let merge_dir = tempfile::tempdir().unwrap();
     let merge_store = MergeStore::open(merge_dir.path()).unwrap();
     let message_path = workspace_dir(data.path())
@@ -1237,11 +1288,11 @@ async fn inbound_message_log_unions_local_and_remote_entries() {
         "op-evergreen-messages",
         &ChatAddress::new("chat-a"),
         "messages/000000000000.jsonl",
-        serde_json::Value::String(
+        history_payload(serde_json::Value::String(
             r#"{"message_id":"remote","sequence":2,"role":"assistant"}
 "#
             .to_string(),
-        ),
+        )),
         "device-a",
         hlc(200),
     );
@@ -1281,7 +1332,15 @@ async fn inbound_file_delete_removes_evergreen_file() {
         "device-a",
         hlc(200),
     );
-
+    assert!(matches!(
+        registry.apply_change(&change, &merge_store).await,
+        Err(rua_sync::SyncError::PendingChatPlacement { .. })
+    ));
+    assert!(header_path.exists());
+    assert!(!merge_store.has_applied_op(&change.op_id).unwrap());
+    rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(data.path())
+        .persist(&ChatAddress::new("chat-a"))
+        .unwrap();
     let result = registry.apply_change(&change, &merge_store).await.unwrap();
 
     assert_eq!(result.status, RegistryApplyStatus::Applied);
@@ -1317,12 +1376,10 @@ async fn stale_file_delete_does_not_remove_newer_evergreen_file() {
         "device-a",
         hlc(200),
     );
-    let result = registry
-        .apply_change(&stale_delete, &merge_store)
-        .await
-        .unwrap();
-
-    assert_eq!(result.status, RegistryApplyStatus::Skipped);
+    assert!(matches!(
+        registry.apply_change(&stale_delete, &merge_store).await,
+        Err(rua_sync::SyncError::PendingChatPlacement { .. })
+    ));
     let header_path = workspace_dir(data.path())
         .join("sessions")
         .join("chat-a")
@@ -1460,6 +1517,7 @@ async fn delayed_session_publication_preserves_confirmed_authority_epoch() {
 #[tokio::test]
 async fn older_message_log_still_unions_new_entries() {
     let data = tempfile::tempdir().unwrap();
+    seed_placement(&workspace_dir(data.path()), "chat-a", "device-a");
     let merge_dir = tempfile::tempdir().unwrap();
     let merge_store = MergeStore::open(merge_dir.path()).unwrap();
     let message_path = workspace_dir(data.path())
@@ -1478,11 +1536,11 @@ async fn older_message_log_still_unions_new_entries() {
         "op-evergreen-message-newer",
         &ChatAddress::new("chat-a"),
         "messages/000000000000.jsonl",
-        serde_json::Value::String(
+        history_payload(serde_json::Value::String(
             r#"{"message_id":"newer","sequence":2,"role":"assistant"}
 "#
             .to_string(),
-        ),
+        )),
         "device-a",
         hlc(200),
     );
@@ -1492,11 +1550,11 @@ async fn older_message_log_still_unions_new_entries() {
         "op-evergreen-message-older",
         &ChatAddress::new("chat-a"),
         "messages/000000000000.jsonl",
-        serde_json::Value::String(
+        history_payload(serde_json::Value::String(
             r#"{"message_id":"older","sequence":1,"role":"user"}
 "#
             .to_string(),
-        ),
+        )),
         "device-a",
         hlc(100),
     );

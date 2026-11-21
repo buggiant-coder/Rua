@@ -25,11 +25,13 @@ import { Btn, Drawer, Spinner, TextArea, Tooltip, toast } from "@/ui";
 import { taskApi } from "@/api/modules/task";
 import type {
   TaskAttempt,
+  TaskListItem,
   TaskRecord,
   TaskResourceRef,
   TaskSpec,
   TaskState,
 } from "@/api/types/task";
+import { isTaskRecord } from "@/api/types/task";
 import { useTaskActivity } from "./useTaskActivity";
 import type { ConversationBackgroundWorkView } from "@/api/types/chat";
 import { useCollaborationActivity } from "./useCollaborationActivity";
@@ -157,8 +159,33 @@ function isResourceAvailable(
   );
 }
 
-function StatusBadge({ state }: { state: TaskState }) {
+function StatusBadge({
+  state,
+  unknown = false,
+}: {
+  state?: TaskState;
+  unknown?: boolean;
+}) {
   const { t } = useTranslation();
+  if (unknown || state === undefined)
+    return (
+      <span
+        className="rua-task-status rua-task-status--interrupted"
+        data-task-state="unknown"
+      >
+        <TriangleAlert />
+        {t("chat.tasks.stateUnknown")}
+        {state && (
+          <span>
+            {" "}
+            ·{" "}
+            {t("chat.tasks.lastKnownState", {
+              state: t(`chat.tasks.status.${state}`),
+            })}
+          </span>
+        )}
+      </span>
+    );
   const status = statusMeta(state);
   return (
     <span
@@ -170,6 +197,37 @@ function StatusBadge({ state }: { state: TaskState }) {
       </span>
       {t(`chat.tasks.status.${state}`)}
     </span>
+  );
+}
+
+function taskEnded(task: TaskListItem): boolean {
+  return (
+    isTaskRecord(task) &&
+    task.availability !== "unknown" &&
+    TERMINAL_STATES.has(task.state)
+  );
+}
+
+function TaskLocation({ task }: { task: TaskListItem }) {
+  const { t } = useTranslation();
+  const location =
+    task.execution ??
+    (isTaskRecord(task)
+      ? task.attempts.find((attempt) => attempt.attempt_no === task.attempt_no)
+          ?.device
+      : undefined);
+  if (!location) return null;
+  return (
+    <section className="rua-task-detail-section">
+      <h4>{t("chat.tasks.device")}</h4>
+      <code>{location.device_id}</code>
+      {location.public_cwd && (
+        <div>
+          <span>{t("chat.tasks.workingDirectory")}: </span>
+          <code>{location.public_cwd}</code>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -262,10 +320,28 @@ function TaskListRow({
   active,
   onSelect,
 }: {
-  task: TaskRecord;
+  task: TaskListItem;
   active: boolean;
   onSelect: () => void;
 }) {
+  const { t } = useTranslation();
+  if (!isTaskRecord(task))
+    return (
+      <button
+        type="button"
+        className={`rua-task-list-row${active ? " is-active" : ""}`}
+        onClick={onSelect}
+        aria-current={active ? "true" : undefined}
+      >
+        <StatusBadge unknown />
+        <span className="rua-task-list-row-title">
+          {t("chat.tasks.acceptanceUnconfirmed")}
+        </span>
+        <code>{task.task_id}</code>
+        <span>{task.execution.device_id}</span>
+        <code>{task.execution.public_cwd}</code>
+      </button>
+    );
   const runner = runnerMeta(task.spec.runner);
   return (
     <button
@@ -275,7 +351,10 @@ function TaskListRow({
       aria-current={active ? "true" : undefined}
     >
       <span className="rua-task-list-row-head">
-        <StatusBadge state={task.state} />
+        <StatusBadge
+          state={task.state}
+          unknown={task.availability === "unknown"}
+        />
         <time>{formatTime(task.updated_at)}</time>
       </span>
       <span className="rua-task-list-row-title">{task.spec.instruction}</span>
@@ -302,7 +381,7 @@ function DependencyList({
 }: {
   title: string;
   taskIds: string[];
-  tasks: TaskRecord[];
+  tasks: TaskListItem[];
   onSelect: (taskId: string) => void;
 }) {
   if (taskIds.length === 0) return null;
@@ -322,7 +401,12 @@ function DependencyList({
               title={taskId}
             >
               <code>{shortId(taskId)}</code>
-              {task && <StatusBadge state={task.state} />}
+              {task && (
+                <StatusBadge
+                  state={isTaskRecord(task) ? task.state : undefined}
+                  unknown={task.availability === "unknown"}
+                />
+              )}
             </button>
           );
         })}
@@ -373,7 +457,10 @@ function AttemptDetail({
   return (
     <div className="rua-task-attempt-detail">
       <div className="rua-task-attempt-summary">
-        <StatusBadge state={attempt.state} />
+        <StatusBadge
+          state={attempt.state}
+          unknown={task.availability === "unknown" && isLatest}
+        />
         <span>
           {t("chat.tasks.attemptCreated", {
             time: formatTime(attempt.created_at),
@@ -543,7 +630,7 @@ export default function TaskActivityDrawer({
   const { t } = useTranslation();
   const {
     tasks,
-    selectedTask,
+    selectedTask: selectedItem,
     selectedTaskId,
     setSelectedTaskId,
     loading,
@@ -561,6 +648,7 @@ export default function TaskActivityDrawer({
     chatId,
     authorizationAgentId: agentId,
   });
+  const selectedTask = isTaskRecord(selectedItem) ? selectedItem : null;
   const [attemptSelection, setAttemptSelection] = useState<{
     taskId: string;
     attemptNo: number;
@@ -577,7 +665,7 @@ export default function TaskActivityDrawer({
   useEffect(() => setSelectedCollaborationKey(undefined), [chatId]);
   const selectedCollaboration =
     selectedCollaborationKey === undefined
-      ? !tasks.some((task) => !TERMINAL_STATES.has(task.state))
+      ? !tasks.some((task) => !taskEnded(task))
         ? collaborationActivity.collaborations.find((item) => item.pending) ??
           (tasks.length === 0
             ? collaborationActivity.collaborations[0]
@@ -613,8 +701,8 @@ export default function TaskActivityDrawer({
     );
   }, [selectedAttemptNo, selectedTask]);
   const runner = selectedTask ? runnerMeta(selectedTask.spec.runner) : null;
-  const activeTasks = tasks.filter((task) => !TERMINAL_STATES.has(task.state));
-  const endedTasks = tasks.filter((task) => TERMINAL_STATES.has(task.state));
+  const activeTasks = tasks.filter((task) => !taskEnded(task));
+  const endedTasks = tasks.filter(taskEnded);
   const activeCount = activeTasks.length + activeCollaborations.length;
   const requestCancel = (taskId: string) => {
     if (cancelConfirmTaskId !== taskId) {
@@ -641,10 +729,7 @@ export default function TaskActivityDrawer({
       }
     >
       <div className="rua-task-activity">
-        <aside
-          className="rua-task-list"
-          aria-label={t("chat.tasks.listLabel")}
-        >
+        <aside className="rua-task-list" aria-label={t("chat.tasks.listLabel")}>
           <div className="rua-task-list-toolbar">
             <span
               className={`rua-task-connection rua-task-connection--${connection}`}
@@ -672,9 +757,7 @@ export default function TaskActivityDrawer({
                 <Spinner size="sm" />
               </div>
             ) : activityCount === 0 ? (
-              <div className="rua-task-list-state">
-                {t("chat.tasks.empty")}
-              </div>
+              <div className="rua-task-list-state">{t("chat.tasks.empty")}</div>
             ) : (
               [
                 {
@@ -749,6 +832,17 @@ export default function TaskActivityDrawer({
               item={selectedCollaboration}
               onOpen={onClose}
             />
+          ) : selectedItem && !selectedTask ? (
+            <>
+              <header className="rua-task-detail-header">
+                <code>{selectedItem.task_id}</code>
+                <StatusBadge unknown />
+              </header>
+              <div className="rua-task-detail-scroll">
+                <p>{t("chat.tasks.acceptanceUnconfirmed")}</p>
+                <TaskLocation task={selectedItem} />
+              </div>
+            </>
           ) : !selectedTask || !runner ? (
             <div className="rua-task-detail-empty">
               <Workflow />
@@ -777,10 +871,14 @@ export default function TaskActivityDrawer({
                     </span>
                   </div>
                 </div>
-                <StatusBadge state={selectedTask.state} />
+                <StatusBadge
+                  state={selectedTask.state}
+                  unknown={selectedTask.availability === "unknown"}
+                />
               </header>
 
               <div className="rua-task-detail-scroll">
+                <TaskLocation task={selectedTask} />
                 <section className="rua-task-instruction">
                   {selectedTask.spec.instruction}
                 </section>
@@ -803,7 +901,8 @@ export default function TaskActivityDrawer({
                   onSelect={setSelectedTaskId}
                 />
 
-                {selectedTask.input_capability !== "none" &&
+                {selectedTask.availability !== "unknown" &&
+                  selectedTask.input_capability !== "none" &&
                   !TERMINAL_STATES.has(selectedTask.state) && (
                     <section className="rua-task-detail-section rua-task-input">
                       <h4>
@@ -893,7 +992,13 @@ export default function TaskActivityDrawer({
                         }
                       >
                         <span>#{attempt.attempt_no}</span>
-                        <StatusBadge state={attempt.state} />
+                        <StatusBadge
+                          state={attempt.state}
+                          unknown={
+                            selectedTask.availability === "unknown" &&
+                            attempt.attempt_no === selectedTask.attempt_no
+                          }
+                        />
                       </button>
                     ))}
                   </div>
@@ -908,7 +1013,8 @@ export default function TaskActivityDrawer({
               </div>
 
               <footer className="rua-task-detail-actions">
-                {!TERMINAL_STATES.has(selectedTask.state) &&
+                {selectedTask.availability !== "unknown" &&
+                  !TERMINAL_STATES.has(selectedTask.state) &&
                   (selectedTask.watch_active ? (
                     <Btn
                       variant="outline"
@@ -930,41 +1036,43 @@ export default function TaskActivityDrawer({
                       {t("chat.tasks.watch")}
                     </Btn>
                   ))}
-                {!TERMINAL_STATES.has(selectedTask.state) && (
-                  <div className="rua-task-cancel-controls">
-                    {cancelConfirmTaskId === selectedTask.task_id && (
+                {selectedTask.availability !== "unknown" &&
+                  !TERMINAL_STATES.has(selectedTask.state) && (
+                    <div className="rua-task-cancel-controls">
+                      {cancelConfirmTaskId === selectedTask.task_id && (
+                        <Btn
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setCancelConfirmTaskId(null)}
+                        >
+                          {t("chat.tasks.keepTask")}
+                        </Btn>
+                      )}
                       <Btn
-                        variant="outline"
+                        variant="danger"
                         size="sm"
-                        onClick={() => setCancelConfirmTaskId(null)}
+                        icon={<Ban />}
+                        loading={busyTaskId === selectedTask.task_id}
+                        onClick={() => requestCancel(selectedTask.task_id)}
                       >
-                        {t("chat.tasks.keepTask")}
+                        {cancelConfirmTaskId === selectedTask.task_id
+                          ? t("chat.tasks.confirmCancel")
+                          : t("chat.tasks.cancelTask")}
                       </Btn>
-                    )}
+                    </div>
+                  )}
+                {selectedTask.availability !== "unknown" &&
+                  RETRYABLE_STATES.has(selectedTask.state) && (
                     <Btn
-                      variant="danger"
+                      variant="outline"
                       size="sm"
-                      icon={<Ban />}
+                      icon={<RotateCcw />}
                       loading={busyTaskId === selectedTask.task_id}
-                      onClick={() => requestCancel(selectedTask.task_id)}
+                      onClick={() => void retryTask(selectedTask.task_id)}
                     >
-                      {cancelConfirmTaskId === selectedTask.task_id
-                        ? t("chat.tasks.confirmCancel")
-                        : t("chat.tasks.cancelTask")}
+                      {t("common.retry")}
                     </Btn>
-                  </div>
-                )}
-                {RETRYABLE_STATES.has(selectedTask.state) && (
-                  <Btn
-                    variant="outline"
-                    size="sm"
-                    icon={<RotateCcw />}
-                    loading={busyTaskId === selectedTask.task_id}
-                    onClick={() => void retryTask(selectedTask.task_id)}
-                  >
-                    {t("common.retry")}
-                  </Btn>
-                )}
+                  )}
               </footer>
             </>
           )}

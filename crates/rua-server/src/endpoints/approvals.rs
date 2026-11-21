@@ -3,6 +3,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use futures::StreamExt;
 use rua_security::approval_authority::{
     ApprovalAuthorityError, ApprovalDecision, ApprovalOwner, ApprovalRequest, ApprovalReuseMatcher,
     ApprovalReuseRule, ApprovalReuseScope, ApprovalSnapshot, PermissionRuleEffect,
@@ -167,6 +168,49 @@ async fn chat_control_approval(
     action: ConversationControlDeviceAction,
     login_user: Option<&crate::auth::VerifiedLoginUser>,
 ) -> Response {
+    if let ConversationControlDeviceAction::DecideApproval {
+        approval_id,
+        decision,
+    } = &action
+    {
+        // Task approvals belong to their execution Device even after their originating
+        // Turn ends or the Chat selects another Agent.
+        match task_approval_snapshots(state, chat_id, true).await {
+            Ok(snapshots) => {
+                for (task_id, attempt_no, snapshot) in snapshots {
+                    if snapshot
+                        .pending
+                        .iter()
+                        .chain(&snapshot.resolved)
+                        .any(|request| request.id == *approval_id)
+                    {
+                        let Some(user) = login_user else {
+                            return ApiError::Unauthorized(
+                                "A logged-in user must decide the Task approval".into(),
+                            )
+                            .into_response();
+                        };
+                        return match state
+                            .chat_task
+                            .decide_task_approval(
+                                &rua_task::TaskOwner::new(chat_id),
+                                &task_id,
+                                attempt_no,
+                                approval_id,
+                                decision.clone(),
+                                user.id(),
+                            )
+                            .await
+                        {
+                            Ok(request) => Json(request).into_response(),
+                            Err(error) => ApiError::Conflict(error).into_response(),
+                        };
+                    }
+                }
+            }
+            Err(error) => return ApiError::Unavailable(error).into_response(),
+        }
+    }
     let workspace = state.chat_workspace();
     match super::chats::dispatch_saved_chat_control(
         &state.conversation_input_intake,
@@ -180,6 +224,35 @@ async fn chat_control_approval(
     .await
     {
         Ok(ConversationControlDeviceResponse::ApprovalSnapshot { snapshot }) => {
+            let mut snapshot: ApprovalSnapshot = match serde_json::from_value(snapshot) {
+                Ok(snapshot) => snapshot,
+                Err(error) => return ApiError::Internal(error.to_string()).into_response(),
+            };
+            match task_approval_snapshots(state, chat_id, false).await {
+                Ok(remote) => {
+                    for (_, _, other) in remote {
+                        for request in other.pending {
+                            if !snapshot
+                                .pending
+                                .iter()
+                                .any(|existing| existing.id == request.id)
+                            {
+                                snapshot.pending.push(request);
+                            }
+                        }
+                        for request in other.resolved {
+                            if !snapshot
+                                .resolved
+                                .iter()
+                                .any(|existing| existing.id == request.id)
+                            {
+                                snapshot.resolved.push(request);
+                            }
+                        }
+                    }
+                }
+                Err(error) => return ApiError::Unavailable(error).into_response(),
+            }
             Json(snapshot).into_response()
         }
         Ok(ConversationControlDeviceResponse::ApprovalDecided { request }) => {
@@ -188,6 +261,48 @@ async fn chat_control_approval(
         Ok(_) => ApiError::Internal("unexpected Chat approval response".into()).into_response(),
         Err(error) => error.into_response(),
     }
+}
+
+async fn task_approval_snapshots(
+    state: &AppState,
+    chat_id: &str,
+    include_terminal: bool,
+) -> Result<Vec<(String, u32, ApprovalSnapshot)>, String> {
+    let owner = rua_task::TaskOwner::new(chat_id);
+    let scope = rua_core::ChatStore::resolve(&state.rua_root, owner.chat_address.clone());
+    let references = rua_session::task_refs::ChatTaskRef::list(
+        &scope.root().join("sessions").join(chat_id),
+        chat_id,
+    )
+    .map_err(|error| error.to_string())?;
+    let requests = references.into_iter().filter_map(|reference| {
+        let record = reference.last_target_evidence?.record;
+        // Terminal Tasks cannot open new cards. Their already decided requests need
+        // no cross-device poll, and offline history must not block foreground approvals.
+        if record.state.is_terminal() && !include_terminal {
+            return None;
+        }
+        Some((reference.task_id, record.attempt_no))
+    });
+    let outcomes = futures::stream::iter(requests.map(|(task_id, attempt_no)| {
+        let owner = owner.clone();
+        async move {
+            state
+                .chat_task
+                .approval_snapshot(&owner, &task_id, attempt_no)
+                .await
+                .map(|snapshot| (task_id, attempt_no, snapshot))
+        }
+    }))
+    .buffer_unordered(8)
+    .collect::<Vec<_>>()
+    .await;
+    // An unreachable execution Device has no new authoritative decision. Local
+    // Chat cards remain usable while the same references are retried next refresh.
+    Ok(outcomes
+        .into_iter()
+        .filter_map(|outcome| outcome.ok())
+        .collect())
 }
 
 async fn decide_runtime_session_approval(

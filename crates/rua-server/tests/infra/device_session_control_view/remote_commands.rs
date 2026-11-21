@@ -186,6 +186,28 @@ async fn closing_the_owning_connection_cancels_and_reaps_the_real_target_process
         .unwrap();
     let result = f.terminal(true).await;
     assert_eq!(result.state, ChatCommandState::Cancelled, "{result:?}");
+    let later_adoption = deliver_chat_command_via_session(
+        f.pair.target.runtime.session_manager(),
+        &f.command(ChatCommandAction::Adopt),
+        Duration::from_secs(3),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        later_adoption.contains("Only an existing execution can be reconciled"),
+        "{later_adoption}"
+    );
+    assert!(matches!(
+        f.pair
+            .source_state
+            .task_runtime
+            .get(
+                &rua_task::TaskOwner::from_address(f.context.call.address.clone()),
+                &f.context.execution_id,
+            )
+            .await,
+        Err(rua_task::TaskError::NotFound(_))
+    ));
     assert_eq!(result.result.unwrap().metadata["cancelled"], true);
     assert!(!f.cwd.join("survived").exists());
     // The terminal receipt requires a reaped process, not just a sent stop signal.
@@ -234,7 +256,259 @@ async fn completed_command_survives_late_cancel_and_duplicate_start_without_a_se
         completed
     );
     assert_eq!(operation(f.send(ChatCommandAction::Start).await), completed);
+    assert_eq!(operation(f.send(ChatCommandAction::Adopt).await), completed);
+    assert!(matches!(
+        f.pair
+            .source_state
+            .task_runtime
+            .get(
+                &rua_task::TaskOwner::from_address(f.context.call.address.clone()),
+                &f.context.execution_id,
+            )
+            .await,
+        Err(rua_task::TaskError::NotFound(_))
+    ));
     assert_eq!(std::fs::read_to_string(f.cwd.join("starts")).unwrap(), "x");
+    f.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn adopted_command_survives_lost_receipt_foreground_cancel_and_connection_close() {
+    let f = CommandFixture::new("printf x >> starts; printf '%s' $$ > pid; while [ ! -e release ]; do sleep 0.05; done; printf original-complete").await;
+    f.prepare().await;
+    f.send(ChatCommandAction::Start).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !f.cwd.join("pid").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    f.pair
+        .file_reads
+        .drop_next_command_adopt_reply
+        .store(true, Ordering::SeqCst);
+    assert!(deliver_chat_command_via_channel(
+        &f.channel,
+        &f.command(ChatCommandAction::Adopt),
+        Duration::from_secs(5)
+    )
+    .await
+    .is_err());
+    let ChatCommandResponse::Task { task, reference } = f.send(ChatCommandAction::Status).await
+    else {
+        panic!("lost acceptance must be recoverable by the same execution identity")
+    };
+    assert_eq!(task.task_id, f.context.execution_id);
+    assert_eq!(task.state, rua_task::TaskState::Running);
+    assert!(reference.is_some());
+    assert_eq!(
+        task.attempts[0].device.device_id.as_deref(),
+        Some(f.pair.source.device_id.as_str())
+    );
+    assert_eq!(
+        task.attempts[0].device.public_cwd.as_deref(),
+        f.cwd.to_str()
+    );
+    assert!(matches!(
+        f.send(ChatCommandAction::Cancel).await,
+        ChatCommandResponse::Task { .. }
+    ));
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while f
+            .pair
+            .source
+            .runtime
+            .session_manager()
+            .diagnostics()
+            .sessions
+            .iter()
+            .any(|session| session.active_logical_streams > 0)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("adoption releases the target foreground connection lease");
+    // Selecting another Chat Agent does not change the accepted Task owner.
+    let store = WorkspaceSessionStore::new(f.pair.source_state.chat_workspace().as_path());
+    let chat_id = f.context.call.address.chat_id().as_str();
+    let mut changed_configuration = store
+        .load_configuration_snapshot(chat_id, &f.context.call.configuration_epoch)
+        .await
+        .unwrap()
+        .unwrap();
+    changed_configuration["epoch"] = json!("changed-agent-configuration");
+    changed_configuration["selected_agent_id"] = json!("changed-agent");
+    changed_configuration["agent_assignment"]["agent_id"] = json!("changed-agent");
+    store
+        .commit_chat_agent_switch(
+            chat_id,
+            "default",
+            Some(&f.context.call.configuration_epoch),
+            "changed-agent",
+            json!({"previous_agent_id":"default", "selected_agent_id":"changed-agent"}),
+            &changed_configuration,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .load_chat_header(chat_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .agent_id,
+        "changed-agent"
+    );
+    f.pair
+        .source
+        .runtime
+        .session_manager()
+        .disconnect_peer(&f.pair.target.device_id)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), f.channel.closed())
+        .await
+        .unwrap();
+    rua_config::atomic_write_json(&f.cwd.join("release"), &json!(true)).unwrap();
+    let completed = f
+        .pair
+        .source_state
+        .task_runtime
+        .await_terminal(&task.spec.owner, &task.task_id, Duration::from_secs(8))
+        .await
+        .unwrap();
+    assert_eq!(
+        completed.state,
+        rua_task::TaskState::Completed,
+        "{completed:?}"
+    );
+    assert!(completed
+        .result
+        .as_ref()
+        .unwrap()
+        .output
+        .contains("original-complete"));
+    assert_eq!(std::fs::read_to_string(f.cwd.join("starts")).unwrap(), "x");
+    assert_eq!(completed.attempts.len(), 1);
+    changed_configuration["epoch"] = json!("retry-current-configuration");
+    changed_configuration["capability_configuration"][rua_session::EXECUTION_DIRECTORY_KEY] = json!({
+        "device_id":f.pair.source.device_id, "path":f.cwd.join("missing-current-chat-default"),
+    });
+    store
+        .replace_chat_configuration(
+            chat_id,
+            "changed-agent-configuration",
+            changed_configuration,
+        )
+        .await
+        .unwrap();
+    let resolver = rua_server::services::task_authority::ServerTaskAuthorityResolver::new(
+        f.pair.source_state.rua_root.clone(),
+        "desktop",
+        f.pair.source_state.sync_device.clone(),
+    );
+    let retry_authorization = rua_task::TaskAttemptAuthorization::new("changed-agent")
+        .unwrap()
+        .with_configuration_epoch("retry-current-configuration".into());
+    let retry_position = rua_task::TaskAuthorityResolver::accept_attempt(
+        &resolver,
+        &task.spec,
+        &retry_authorization,
+        Some(&completed.attempts[0].device),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        retry_position.public_cwd.as_deref(),
+        f.cwd.to_str(),
+        "Retry does not resolve the Chat's changed default directory"
+    );
+    std::fs::rename(&f.cwd, f.cwd.with_extension("moved")).unwrap();
+    let retry = f
+        .pair
+        .source_state
+        .task_runtime
+        .retry(
+            &task.spec.owner,
+            &task.task_id,
+            rua_task::TaskAttemptAuthorization::new("changed-agent")
+                .unwrap()
+                .with_configuration_epoch("retry-current-configuration".into())
+                .with_origin(rua_task::TaskOrigin {
+                    turn_id: Some("retry-turn".into()),
+                    tool_call_id: Some("retry-call".into()),
+                }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        retry.to_string().contains(f.cwd.to_str().unwrap()),
+        "Retry rejects the missing original directory: {retry}"
+    );
+    assert_eq!(
+        f.pair
+            .source_state
+            .task_runtime
+            .get(&task.spec.owner, &task.task_id)
+            .await
+            .unwrap()
+            .attempts
+            .len(),
+        1
+    );
+    assert_eq!(
+        f.pair
+            .file_reads
+            .command_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call.action == ChatCommandAction::Start)
+            .count(),
+        1
+    );
+    f.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_cancel_reaps_the_original_adopted_process_and_preserves_output() {
+    let f =
+        CommandFixture::new("printf prefix; printf '%s' $$ > pid; sleep 60; printf late > late")
+            .await;
+    f.prepare().await;
+    f.send(ChatCommandAction::Start).await;
+    let pid: libc::pid_t = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(text) = std::fs::read_to_string(f.cwd.join("pid")) {
+                if let Ok(pid) = text.parse() {
+                    break pid;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let ChatCommandResponse::Task { task, .. } = f.send(ChatCommandAction::Adopt).await else {
+        panic!("expected accepted Task")
+    };
+    let stopped = f
+        .pair
+        .source_state
+        .task_runtime
+        .cancel(&task.spec.owner, &task.task_id)
+        .await
+        .unwrap();
+    assert_eq!(stopped.state, rua_task::TaskState::Cancelled, "{stopped:?}");
+    assert!(stopped.result.as_ref().unwrap().output.contains("prefix"));
+    assert!(!f.cwd.join("late").exists());
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
     f.shutdown().await;
 }
 

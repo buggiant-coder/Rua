@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS task_attempts (
     attempt_no INTEGER NOT NULL,
     state TEXT NOT NULL,
     authorization_agent_id TEXT NOT NULL DEFAULT '',
+    authorization_origin_json TEXT NOT NULL DEFAULT '{}',
     configuration_epoch TEXT,
     device_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
@@ -238,16 +239,25 @@ impl TaskStore {
                     "Chat already has {max_active} active Tasks"
                 )));
             }
-            record.state = derive_dependency_state(
-                &tx,
-                &record.spec.owner,
-                &record.spec.depends_on,
-                max_dependency_depth,
-            )?;
+            if record.state == TaskState::Running {
+                if !record.spec.depends_on.is_empty() {
+                    return Err(TaskError::Invalid(
+                        "An adopted execution cannot wait for dependencies".into(),
+                    ));
+                }
+            } else {
+                record.state = derive_dependency_state(
+                    &tx,
+                    &record.spec.owner,
+                    &record.spec.depends_on,
+                    max_dependency_depth,
+                )?;
+            }
             let attempt = TaskAttempt {
                 attempt_no: record.attempt_no,
                 state: record.state,
                 authorization_agent_id: authorization.agent_id,
+                authorization_origin: authorization.origin,
                 configuration_epoch: authorization.configuration_epoch,
                 device,
                 created_at: record.created_at,
@@ -368,6 +378,7 @@ impl TaskStore {
                     attempt_no: next_attempt,
                     state: TaskState::Accepted,
                     authorization_agent_id: authorization.agent_id,
+                    authorization_origin: authorization.origin,
                     configuration_epoch: authorization.configuration_epoch,
                     device,
                     created_at: now,
@@ -685,6 +696,24 @@ impl TaskStore {
                     .ok_or_else(|| TaskError::NotFound("task".to_string()))?
             };
             hydrate_record(&connection, &mut record)?;
+            Ok(record)
+        })
+        .await
+    }
+
+    pub(crate) async fn get_attempt(
+        &self,
+        owner: TaskOwner,
+        task_id: String,
+        attempt_no: u32,
+    ) -> Result<TaskRecord, TaskError> {
+        let path = self.path.clone();
+        blocking(move || {
+            let connection = open_connection(&path)?;
+            let record = load_record_at_attempt(&connection, &task_id, attempt_no)?;
+            if record.spec.owner != owner {
+                return Err(TaskError::NotFound("task".into()));
+            }
             Ok(record)
         })
         .await
@@ -1012,8 +1041,8 @@ fn insert_attempt(
     tx.execute(
         "INSERT INTO task_attempts (
              task_id, attempt_no, state, authorization_agent_id, device_json, created_at, updated_at,
-             started_at, finished_at, result_json, configuration_epoch
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             started_at, finished_at, result_json, configuration_epoch, authorization_origin_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             task_id,
             attempt.attempt_no,
@@ -1031,6 +1060,7 @@ fn insert_attempt(
                 .transpose()
                 .map_err(TaskError::serialize)?,
             attempt.configuration_epoch,
+            serde_json::to_string(&attempt.authorization_origin).map_err(TaskError::serialize)?,
         ],
     )
     .map_err(TaskError::store)?;
@@ -1299,7 +1329,7 @@ fn load_attempts(connection: &Connection, task_id: &str) -> Result<Vec<TaskAttem
     let mut statement = connection
         .prepare(
             "SELECT attempt_no, state, authorization_agent_id, device_json, created_at, updated_at,
-                    started_at, finished_at, result_json, configuration_epoch
+                    started_at, finished_at, result_json, configuration_epoch, authorization_origin_json
              FROM task_attempts
              WHERE task_id = ?1
              ORDER BY attempt_no ASC",
@@ -1314,6 +1344,7 @@ fn load_attempts(connection: &Connection, task_id: &str) -> Result<Vec<TaskAttem
                 attempt_no: row.get::<_, i64>(0)? as u32,
                 state: parse_json(&state, 1)?,
                 authorization_agent_id: row.get(2)?,
+                authorization_origin: parse_json(&row.get::<_, String>(10)?, 10)?,
                 configuration_epoch: row.get(9)?,
                 device: parse_json(&device, 3)?,
                 created_at: parse_time(row.get(4)?, 4)?,

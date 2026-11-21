@@ -72,6 +72,7 @@ impl BackgroundWork {
             ..Default::default()
         };
         let owner = rua_task::TaskOwner::from_address(address.clone());
+        let mut local_task_ids = std::collections::HashSet::new();
         let mut offset = 0;
         loop {
             let tasks = self
@@ -87,7 +88,11 @@ impl BackgroundWork {
                 .await
                 .map_err(|e| e.to_string())?;
             let count = tasks.len();
-            for task in tasks.into_iter().filter(|task| !task.state.is_terminal()) {
+            for task in tasks {
+                local_task_ids.insert(task.task_id.clone());
+                if task.state.is_terminal() {
+                    continue;
+                }
                 view.items.push(BackgroundWorkItem {
                     kind: "task".into(),
                     id: task.task_id,
@@ -126,6 +131,38 @@ impl BackgroundWork {
                 }
                 .into(),
                 id: task.task_id,
+                chat: address.clone(),
+            });
+        }
+        for reference in rua_session::task_refs::ChatTaskRef::list(
+            &store.chat_dir(address.chat_id().as_str()),
+            address.chat_id().as_str(),
+        )
+        .map_err(|error| error.to_string())?
+        {
+            if local_task_ids.contains(&reference.task_id)
+                || (reference.not_accepted && reference.last_target_evidence.is_none())
+            {
+                continue;
+            }
+            let state = reference
+                .last_target_evidence
+                .as_ref()
+                .map(|evidence| evidence.record.state);
+            if state.is_some_and(|state| state.is_terminal()) {
+                continue;
+            }
+            // A reference records the last target evidence, not current connectivity.
+            // Preserve unresolved approvals for the existing configuration gate.
+            view.items.push(BackgroundWorkItem {
+                kind: "task".into(),
+                id: reference.task_id,
+                status: if state == Some(rua_task::TaskState::WaitingApproval) {
+                    "waiting_approval"
+                } else {
+                    "unknown"
+                }
+                .into(),
                 chat: address.clone(),
             });
         }

@@ -113,6 +113,9 @@ mod remote_command_origin;
 #[path = "device_session_control_view/remote_commands.rs"]
 mod remote_commands;
 
+#[path = "device_session_control_view/task_notifications.rs"]
+mod task_notifications;
+
 fn epoch(wall_ms: u64) -> ConversationAuthorityEpoch {
     ConversationAuthorityEpoch::from_parts(wall_ms, 0, [0; 8])
 }
@@ -11030,6 +11033,10 @@ struct FileReadRecorder {
     inner: Arc<DeviceCommandHandler>,
     command_requests: Mutex<Vec<rua_server::services::chat_command::ChatCommandCommand>>,
     drop_next_command_start_reply: std::sync::atomic::AtomicBool,
+    drop_next_command_adopt_reply: std::sync::atomic::AtomicBool,
+    hold_next_command_adopt: std::sync::atomic::AtomicBool,
+    command_adopt_arrived: Notify,
+    release_command_adopt: Notify,
     requests: Mutex<Vec<rua_server::services::device_read_check::DeviceReadCheckRequest>>,
     drop_next_edit_reply: std::sync::atomic::AtomicBool,
     hold_next_edit_reply: std::sync::atomic::AtomicBool,
@@ -11061,7 +11068,13 @@ impl DeviceSessionCommandHandler for FileReadRecorder {
                 .map_err(|error| error.to_string())?;
         let is_start =
             command.action == rua_server::services::chat_command::ChatCommandAction::Start;
+        let is_adopt =
+            command.action == rua_server::services::chat_command::ChatCommandAction::Adopt;
         self.command_requests.lock().unwrap().push(command);
+        if is_adopt && self.hold_next_command_adopt.swap(false, Ordering::SeqCst) {
+            self.command_adopt_arrived.notify_one();
+            self.release_command_adopt.notified().await;
+        }
         let response = self
             .inner
             .handle_command_in_session(peer, context, payload)
@@ -11072,6 +11085,13 @@ impl DeviceSessionCommandHandler for FileReadRecorder {
                 .swap(false, Ordering::SeqCst)
         {
             return Err("fixture lost the Start receipt after target dispatch".into());
+        }
+        if is_adopt
+            && self
+                .drop_next_command_adopt_reply
+                .swap(false, Ordering::SeqCst)
+        {
+            return Err("fixture lost the Adopt receipt after durable acceptance".into());
         }
         Ok(response)
     }
@@ -11138,6 +11158,38 @@ struct RemoteInputConfirmationFixture {
     submission_id: String,
 }
 
+fn seeded_chat_task_service(
+    state: &AppState,
+) -> Arc<rua_server::services::chat_task::ChatTaskService> {
+    let device =
+        rua_server::services::device_context::current_sync_device_id(&state.sync_device).unwrap();
+    Arc::new(rua_server::services::chat_task::ChatTaskService::new(
+        state.rua_root.clone(),
+        device.clone(),
+        state.task_runtime.clone(),
+        Arc::new(
+            rua_server::services::task_authority::ServerTaskAuthorityResolver::new(
+                state.rua_root.clone(),
+                "test",
+                state.sync_device.clone(),
+            ),
+        ),
+        Arc::new(
+            rua_server::services::chat_file_read_admission::TargetFileReadContext::new(
+                state.rua_root.clone(),
+                device,
+                state.project_catalog.clone(),
+                state.agent_service.clone(),
+                state.tool_catalog.clone(),
+                state.tool_config_store.clone(),
+                state.security.clone(),
+            ),
+        ),
+        state.device_network.clone(),
+        state.conversation_authority.clone(),
+    ))
+}
+
 impl RemoteInputConfirmationFixture {
     async fn new(before_acceptance: Duration, hold_reply: bool) -> Self {
         let source_dir = TempDir::new().unwrap();
@@ -11164,7 +11216,14 @@ impl RemoteInputConfirmationFixture {
                 .unwrap();
         }
         let handler = Arc::new(InputConfirmationHandler {
-            inner: target_state.device_command_handler().unwrap(),
+            inner: Arc::new(
+                target_state
+                    .device_command_handler()
+                    .unwrap()
+                    .as_ref()
+                    .clone()
+                    .with_chat_task(seeded_chat_task_service(&target_state)),
+            ),
             before_acceptance,
             hold_reply,
             accepted: Notify::new(),
@@ -11188,18 +11247,39 @@ impl RemoteInputConfirmationFixture {
         let command_service =
             Arc::new(rua_server::services::chat_command::ChatCommandService::new(
                 source_state.rua_root.clone(),
-                source_device_id,
-                command_admission,
+                source_device_id.clone(),
+                command_admission.clone(),
                 source_state.sync_transfer_session_manager.clone(),
+                source_state.task_runtime.clone(),
             ));
+        let task_service = Arc::new(rua_server::services::chat_task::ChatTaskService::new(
+            source_state.rua_root.clone(),
+            source_device_id,
+            source_state.task_runtime.clone(),
+            Arc::new(
+                rua_server::services::task_authority::ServerTaskAuthorityResolver::new(
+                    source_state.rua_root.clone(),
+                    "desktop",
+                    source_state.sync_device.clone(),
+                ),
+            ),
+            command_admission,
+            source_state.device_network.clone(),
+            source_state.conversation_authority.clone(),
+        ));
         let source_handler = Arc::try_unwrap(source_state.device_command_handler().unwrap())
             .ok()
             .unwrap()
-            .with_chat_command(command_service);
+            .with_chat_command(command_service)
+            .with_chat_task(task_service);
         let file_reads = Arc::new(FileReadRecorder {
             inner: Arc::new(source_handler),
             command_requests: Mutex::default(),
             drop_next_command_start_reply: std::sync::atomic::AtomicBool::new(false),
+            drop_next_command_adopt_reply: std::sync::atomic::AtomicBool::new(false),
+            hold_next_command_adopt: std::sync::atomic::AtomicBool::new(false),
+            command_adopt_arrived: Notify::new(),
+            release_command_adopt: Notify::new(),
             requests: Mutex::default(),
             drop_next_edit_reply: std::sync::atomic::AtomicBool::new(false),
             hold_next_edit_reply: std::sync::atomic::AtomicBool::new(false),
@@ -11500,6 +11580,28 @@ async fn prepare_running_file_calls(
         .save_chat_header(&header)
         .await
         .unwrap();
+    let index = rua_session::chat_index::get(owner.chat_workspace().as_path(), &fixture.chat_id)
+        .await
+        .unwrap()
+        .unwrap();
+    rua_session::chat_index::upsert(replica.chat_workspace().as_path(), index)
+        .await
+        .unwrap();
+    // Header publication also installs its immutable configuration snapshot.
+    let epoch = header.extra["hook_configuration"]["epoch"]
+        .as_str()
+        .unwrap();
+    let original_snapshot = WorkspaceSessionStore::new(owner.chat_workspace().as_path())
+        .load_configuration_snapshot(&fixture.chat_id, epoch)
+        .await
+        .unwrap()
+        .unwrap();
+    let replicated_snapshot = WorkspaceSessionStore::new(replica.chat_workspace().as_path())
+        .load_configuration_snapshot(&fixture.chat_id, epoch)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(original_snapshot, replicated_snapshot);
     install_connectable_peer(&fixture.target, &fixture.source);
     *replica.sync_transfer_session_manager.write().unwrap() =
         Some(fixture.source.runtime.session_manager().clone());

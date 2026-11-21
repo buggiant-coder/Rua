@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -10,7 +11,7 @@ import { I18nextProvider } from "react-i18next";
 import { MemoryRouter } from "react-router-dom";
 import { ToastProvider } from "@/ui";
 import i18n from "@/i18n";
-import type { TaskRecord, TaskState } from "@/api/types/task";
+import type { TaskListItem, TaskRecord, TaskState } from "@/api/types/task";
 import TaskActivityDrawer from "./TaskActivityDrawer";
 import type {
   ChatSpec,
@@ -211,7 +212,7 @@ function taskFixture(
   };
 }
 
-function activityResponse(tasks: TaskRecord[]) {
+function activityResponse(tasks: TaskListItem[]) {
   return new Response(
     `event: snapshot\ndata: ${JSON.stringify({
       type: "snapshot",
@@ -225,14 +226,18 @@ function activityResponse(tasks: TaskRecord[]) {
 }
 
 function renderDrawer(
-  tasks: TaskRecord[],
+  tasks: TaskListItem[],
   currentDeviceId: string | null = "device-a",
   options: {
     backgroundWork?: ConversationBackgroundWorkView;
   } = {},
+  activity?: Response,
 ) {
   taskApiMock.listTasks.mockResolvedValue(tasks);
-  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(activityResponse(tasks)));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue(activity ?? activityResponse(tasks)),
+  );
   return render(
     <MemoryRouter>
       <I18nextProvider i18n={i18n}>
@@ -565,6 +570,45 @@ describe("TaskActivityDrawer", () => {
     });
   });
 
+  it("keeps an unconfirmed remote Task visible without inventing a record or retry action", async () => {
+    renderDrawer([
+      {
+        task_id: "unconfirmed-phone-task",
+        availability: "unknown",
+        execution: { device_id: "phone", public_cwd: "/storage/photos" },
+      },
+    ]);
+    const active = await screen.findByRole("region", { name: "In progress" });
+    expect(within(active).getByText("State unknown")).toBeInTheDocument();
+    expect(screen.getAllByText("unconfirmed-phone-task")).toHaveLength(2);
+    expect(screen.getAllByText("/storage/photos")).toHaveLength(2);
+    expect(
+      screen.queryByRole("button", { name: "Retry" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Cancel Task" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("labels cached terminal evidence as last known while the execution Device is unavailable", async () => {
+    renderDrawer([
+      taskFixture("completed", {
+        availability: "unknown",
+        execution: { device_id: "phone", public_cwd: "/storage/photos" },
+      }),
+    ]);
+    const active = await screen.findByRole("region", { name: "In progress" });
+    expect(
+      within(active).getByText(/Last known: Completed/),
+    ).toBeInTheDocument();
+    const ended = screen.getByRole("region", { name: "Ended" });
+    expect(within(ended).queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.getByText("/storage/photos")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Retry" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows Task identity separately from preserved Attempts and dependencies", async () => {
     const upstream = taskFixture("completed", {
       task_id: "upstream-task",
@@ -636,6 +680,87 @@ describe("TaskActivityDrawer", () => {
         name: /Cancel task|取消任务|Confirm cancellation|确认取消/,
       }),
     ).toBeNull();
+  });
+
+  it("keeps the new running Attempt controllable after an older Cancel reply arrives", async () => {
+    const latest = taskFixture("running");
+    const first = taskFixture("running", {
+      attempt_no: 1,
+      attempts: [{ ...latest.attempts[1], attempt_no: 1 }],
+    });
+    const cancelled = taskFixture("cancelled", {
+      attempt_no: 1,
+      attempts: [
+        {
+          ...first.attempts[0],
+          state: "cancelled",
+          finished_at: "2026-07-27T01:02:00Z",
+        },
+      ],
+    });
+    let reply!: (record: TaskRecord) => void;
+    taskApiMock.cancelTask.mockReturnValueOnce(
+      new Promise<TaskRecord>((resolve) => {
+        reply = resolve;
+      }),
+    );
+    taskApiMock.getTask.mockResolvedValue(latest);
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const activity = new Response(
+      new ReadableStream({
+        start(value) {
+          controller = value;
+        },
+      }),
+      { headers: { "Content-Type": "text/event-stream" } },
+    );
+    const { unmount } = renderDrawer([first], "device-a", {}, activity);
+    try {
+      const dialog = await screen.findByRole("dialog");
+      fireEvent.click(
+        await within(dialog).findByRole("button", { name: "Cancel task" }),
+      );
+      fireEvent.click(
+        within(dialog).getByRole("button", { name: "Confirm cancellation" }),
+      );
+      await waitFor(() =>
+        expect(taskApiMock.cancelTask).toHaveBeenCalledTimes(1),
+      );
+      await act(async () => {
+        controller.enqueue(
+          new TextEncoder().encode(
+            `event: task\ndata: ${JSON.stringify({
+              task_id: latest.task_id,
+            })}\n\n`,
+          ),
+        );
+      });
+      await waitFor(() =>
+        expect(within(dialog).getByRole("tab", { name: /#2/ })).toHaveAttribute(
+          "aria-selected",
+          "true",
+        ),
+      );
+      await act(async () => reply(cancelled));
+      expect(within(dialog).getByRole("tab", { name: /#2/ })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      expect(
+        within(dialog).getByRole("button", { name: "Cancel task" }),
+      ).toBeEnabled();
+      expect(
+        within(dialog).queryByRole("button", { name: "Retry" }),
+      ).toBeNull();
+      expect(
+        within(screen.getByRole("region", { name: "In progress" })).getByText(
+          latest.spec.instruction,
+        ),
+      ).toBeVisible();
+    } finally {
+      unmount();
+      controller.close();
+    }
   });
 
   it("renders capability-aware Watch and steering controls", async () => {

@@ -168,6 +168,9 @@ pub enum ConversationControlDeviceAction {
     DeliverBackgroundResult {
         note: serde_json::Value,
     },
+    DeliverTaskWatchOutput {
+        notification: serde_json::Value,
+    },
     PauseQueuedInputs {
         authority_epoch: ConversationAuthorityEpoch,
     },
@@ -643,48 +646,6 @@ pub enum ProjectDeviceAction {
         chat_id: String,
         force: bool,
     },
-    ListTasks {
-        project_id: rua_core::ProjectId,
-        chat_id: String,
-        filter: rua_task::TaskListFilter,
-    },
-    GetTask {
-        project_id: rua_core::ProjectId,
-        chat_id: String,
-        task_id: String,
-    },
-    SendTaskInput {
-        project_id: rua_core::ProjectId,
-        chat_id: String,
-        task_id: String,
-        submission: rua_task::TaskInputSubmission,
-    },
-    WatchTask {
-        project_id: rua_core::ProjectId,
-        chat_id: String,
-        task_id: String,
-    },
-    UnwatchTask {
-        project_id: rua_core::ProjectId,
-        chat_id: String,
-        task_id: String,
-    },
-    CancelTask {
-        project_id: rua_core::ProjectId,
-        chat_id: String,
-        task_id: String,
-    },
-    RetryTask {
-        project_id: rua_core::ProjectId,
-        chat_id: String,
-        task_id: String,
-        authorization_agent_id: String,
-    },
-    GetTaskResult {
-        project_id: rua_core::ProjectId,
-        chat_id: String,
-        task_id: String,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -728,21 +689,6 @@ pub enum ProjectDeviceResponse {
             crate::services::project_chat::ProjectChatDeleteResult,
             crate::services::project_chat::ProjectChatDeleteError,
         >,
-    },
-    TaskList {
-        tasks: serde_json::Value,
-    },
-    Task {
-        task: serde_json::Value,
-    },
-    TaskInput {
-        acceptance: rua_task::TaskInputAcceptance,
-    },
-    TaskWatch {
-        status: rua_task::TaskWatchStatus,
-    },
-    TaskResult {
-        result: serde_json::Value,
     },
 }
 
@@ -1036,6 +982,7 @@ pub(crate) enum DeviceCommandEnvelope {
     SyncTransfer(SyncTransferDeviceCommand),
     ChatTransfer(Box<super::chat_transfer::ChatTransferCommand>),
     ChatCommand(Box<super::chat_command::ChatCommandCommand>),
+    ChatTask(Box<super::chat_task::ChatTaskCommand>),
     ChatMediaPrepare(ChatMediaPrepareCommand),
     AgentsInstructions(AgentsInstructionCommand),
     ReadCheck(DeviceReadCheckRequest),
@@ -1058,11 +1005,15 @@ impl DeviceCommandEnvelope {
             Self::RemoteChatControl(command) => {
                 ("remote_chat_control", command.command_id.as_str())
             }
-            // A retry must observe the current Turn and the consumed decision.
+            // These operations reconcile against current Authority state and
+            // durable observation IDs. Caching a transient rejection would
+            // prevent recovery after approval, reconnect or Agent changes.
             Self::ConversationControl(command)
                 if matches!(
                     command.action,
                     ConversationControlDeviceAction::ClaimReadApproval { .. }
+                        | ConversationControlDeviceAction::DeliverBackgroundResult { .. }
+                        | ConversationControlDeviceAction::DeliverTaskWatchOutput { .. }
                 ) =>
             {
                 return None
@@ -1095,6 +1046,7 @@ impl DeviceCommandEnvelope {
             }
             Self::ChatTransfer(_)
             | Self::ChatCommand(_)
+            | Self::ChatTask(_)
             | Self::ReadCheck(_)
             | Self::ReadAllowedFile { .. }
             | Self::CancelFileOperation(_)
@@ -1142,6 +1094,9 @@ pub enum DeviceCommandResponse {
     },
     ChatCommand {
         response: super::chat_command::ChatCommandResponse,
+    },
+    ChatTask {
+        response: super::chat_task::ChatTaskResponse,
     },
     ChatMediaPrepared {
         response: ChatMediaPreparedResponse,
@@ -1351,10 +1306,10 @@ pub struct DeviceCommandHandler {
     read_check_context: Option<Arc<TargetFileReadContext>>,
     chat_transfer: Option<Arc<super::chat_transfer::ChatTransferService>>,
     chat_command: Option<Arc<super::chat_command::ChatCommandService>>,
+    chat_task: Option<Arc<super::chat_task::ChatTaskService>>,
     file_operations: Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
     sync_transfer_operations: Arc<crate::services::sync_transfer::SourceTransferOperationStore>,
     project_catalog: Option<Arc<rua_project::ProjectCatalog>>,
-    task_runtime: Option<Arc<rua_task::TaskRuntime>>,
     user_notifications: Option<Arc<UserNotificationService>>,
 }
 
@@ -1435,12 +1390,12 @@ impl DeviceCommandHandler {
             read_check_context: None,
             chat_transfer: None,
             chat_command: None,
+            chat_task: None,
             file_operations: Arc::default(),
             sync_transfer_operations: Arc::new(
                 crate::services::sync_transfer::SourceTransferOperationStore::new(),
             ),
             project_catalog: None,
-            task_runtime: None,
             user_notifications: None,
         }
     }
@@ -1537,6 +1492,11 @@ impl DeviceCommandHandler {
         self
     }
 
+    pub fn with_chat_task(mut self, service: Arc<super::chat_task::ChatTaskService>) -> Self {
+        self.chat_task = Some(service);
+        self
+    }
+
     pub fn with_foreground_operations(
         mut self,
         foreground_operations: Arc<
@@ -1553,11 +1513,6 @@ impl DeviceCommandHandler {
 
     pub fn with_project_runtime(mut self, catalog: Arc<rua_project::ProjectCatalog>) -> Self {
         self.project_catalog = Some(catalog);
-        self
-    }
-
-    pub fn with_task_runtime(mut self, task_runtime: Arc<rua_task::TaskRuntime>) -> Self {
-        self.task_runtime = Some(task_runtime);
         self
     }
 
@@ -1612,7 +1567,7 @@ impl DeviceCommandHandler {
             }
             return Ok(Vec::new());
         }
-        serde_json::to_vec(&self.handle_frame(peer, session, payload).await)
+        serde_json::to_vec(&Box::pin(self.handle_frame(peer, session, payload)).await)
             .map_err(|error| error.to_string())
     }
 
@@ -1696,6 +1651,19 @@ impl DeviceCommandHandler {
                     detail: "Command requires its authenticated execution connection".into(),
                 };
             }
+            DeviceCommandEnvelope::ChatTask(command) => {
+                validate_session_source(peer, &command.source_device_id)
+                    .and_then(|()| {
+                        if command.target_device_id == self.local_device_id
+                            && command.source_device_id != self.local_device_id
+                        {
+                            Ok(())
+                        } else {
+                            Err(DeviceCommandBusError::UnauthenticatedSource)
+                        }
+                    })
+                    .map_err(|error| ("invalid_task_route", error))
+            }
             DeviceCommandEnvelope::Project(command) => command
                 .validate_session_route(peer, &self.local_device_id)
                 .map_err(|error| ("invalid_project_route", error)),
@@ -1713,7 +1681,7 @@ impl DeviceCommandHandler {
             };
         }
         let Some(key) = envelope.idempotency_key() else {
-            return self.dispatch_envelope(envelope, session).await;
+            return Box::pin(self.dispatch_envelope(envelope, session)).await;
         };
         let command_lock = {
             let mut locks = self.command_locks.lock().await;
@@ -1740,7 +1708,7 @@ impl DeviceCommandHandler {
                 };
             }
         }
-        let dispatch = self.dispatch_envelope(envelope, session);
+        let dispatch = Box::pin(self.dispatch_envelope(envelope, session));
         let response = dispatch.await;
         self.command_results
             .lock()
@@ -1765,7 +1733,9 @@ impl DeviceCommandHandler {
                 self.handle_remote_chat_control(command).await
             }
             DeviceCommandEnvelope::ConversationControl(command) => {
-                self.handle_conversation_control(command).await
+                // Keep the large control future out of the enclosing transport
+                // state machine so nested remote observations fit the worker stack.
+                Box::pin(self.handle_conversation_control(command)).await
             }
             DeviceCommandEnvelope::ConversationManifest(command) => {
                 self.handle_conversation_manifest(command).await
@@ -1807,6 +1777,21 @@ impl DeviceCommandHandler {
                     Ok(response) => DeviceCommandResponse::ChatCommand { response },
                     Err(detail) => DeviceCommandResponse::Rejected {
                         reason: "chat_command_rejected".into(),
+                        detail,
+                    },
+                }
+            }
+            DeviceCommandEnvelope::ChatTask(command) => {
+                let Some(service) = &self.chat_task else {
+                    return DeviceCommandResponse::Rejected {
+                        reason: "task_unavailable".into(),
+                        detail: "Task routing is unavailable".into(),
+                    };
+                };
+                match service.handle(*command).await {
+                    Ok(response) => DeviceCommandResponse::ChatTask { response },
+                    Err(detail) => DeviceCommandResponse::Rejected {
+                        reason: "task_unavailable".into(),
                         detail,
                     },
                 }
@@ -2208,85 +2193,6 @@ impl DeviceCommandHandler {
     }
 
     async fn handle_project(&self, command: ProjectDeviceCommand) -> DeviceCommandResponse {
-        let task_chat = match &command.action {
-            ProjectDeviceAction::ListTasks {
-                project_id,
-                chat_id,
-                ..
-            }
-            | ProjectDeviceAction::GetTask {
-                project_id,
-                chat_id,
-                ..
-            }
-            | ProjectDeviceAction::SendTaskInput {
-                project_id,
-                chat_id,
-                ..
-            }
-            | ProjectDeviceAction::WatchTask {
-                project_id,
-                chat_id,
-                ..
-            }
-            | ProjectDeviceAction::UnwatchTask {
-                project_id,
-                chat_id,
-                ..
-            }
-            | ProjectDeviceAction::CancelTask {
-                project_id,
-                chat_id,
-                ..
-            }
-            | ProjectDeviceAction::RetryTask {
-                project_id,
-                chat_id,
-                ..
-            }
-            | ProjectDeviceAction::GetTaskResult {
-                project_id,
-                chat_id,
-                ..
-            } => Some((project_id, chat_id)),
-            _ => None,
-        };
-        if let Some((project, chat)) = task_chat {
-            let Some(root) = self.data_dir.as_deref() else {
-                return DeviceCommandResponse::Rejected {
-                    reason: "chat_unavailable".into(),
-                    detail: "Chat storage is unavailable".into(),
-                };
-            };
-            match crate::services::chat_context::load_chat_context(root, chat).await {
-                Ok(Some(context)) if context.project_id.as_deref() == Some(project.as_str()) => {
-                    if let ProjectDeviceAction::RetryTask {
-                        authorization_agent_id,
-                        ..
-                    } = &command.action
-                    {
-                        if *authorization_agent_id != context.agent_id {
-                            return DeviceCommandResponse::Rejected {
-                                reason: "agent_selection_changed".into(),
-                                detail: "The Chat selected a different Agent".into(),
-                            };
-                        }
-                    }
-                }
-                Ok(_) => {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "chat_not_found".into(),
-                        detail: "Chat does not belong to this Project".into(),
-                    }
-                }
-                Err(error) => {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "chat_unavailable".into(),
-                        detail: error.to_string(),
-                    }
-                }
-            }
-        }
         match command.action {
             action @ (ProjectDeviceAction::BrowseDirectory { .. }
             | ProjectDeviceAction::CreateDirectory { .. }) => {
@@ -2489,222 +2395,6 @@ impl DeviceCommandHandler {
                     .await;
                 DeviceCommandResponse::Project {
                     response: ProjectDeviceResponse::ChatDeleted { result },
-                }
-            }
-            ProjectDeviceAction::ListTasks {
-                project_id: _,
-                chat_id,
-                filter,
-            } => {
-                let Some(runtime) = self.task_runtime.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "task_runtime_unavailable".to_string(),
-                        detail: "Task Runtime is unavailable".to_string(),
-                    };
-                };
-                let owner = rua_task::TaskOwner::new(chat_id);
-                match runtime.list(&owner, filter).await {
-                    Ok(tasks) => DeviceCommandResponse::Project {
-                        response: ProjectDeviceResponse::TaskList {
-                            tasks: serde_json::to_value(tasks).expect("Task list is serializable"),
-                        },
-                    },
-                    Err(error) => project_task_error_response(error),
-                }
-            }
-            ProjectDeviceAction::GetTask {
-                project_id: _,
-                chat_id,
-                task_id,
-            } => {
-                let Some(runtime) = self.task_runtime.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "task_runtime_unavailable".to_string(),
-                        detail: "Task Runtime is unavailable".to_string(),
-                    };
-                };
-                let owner = rua_task::TaskOwner::new(chat_id);
-                match runtime.get(&owner, &task_id).await {
-                    Ok(task) => DeviceCommandResponse::Project {
-                        response: ProjectDeviceResponse::Task {
-                            task: serde_json::to_value(task).expect("Task is serializable"),
-                        },
-                    },
-                    Err(error) => project_task_error_response(error),
-                }
-            }
-            ProjectDeviceAction::SendTaskInput {
-                project_id: _,
-                chat_id,
-                task_id,
-                submission,
-            } => {
-                let Some(runtime) = self.task_runtime.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "task_runtime_unavailable".to_string(),
-                        detail: "Task Runtime is unavailable".to_string(),
-                    };
-                };
-                let owner = rua_task::TaskOwner::new(chat_id);
-                match runtime.send_input(&owner, &task_id, submission).await {
-                    Ok(acceptance) => DeviceCommandResponse::Project {
-                        response: ProjectDeviceResponse::TaskInput { acceptance },
-                    },
-                    Err(error) => project_task_error_response(error),
-                }
-            }
-            ProjectDeviceAction::WatchTask {
-                project_id: _,
-                chat_id,
-                task_id,
-            } => {
-                let Some(runtime) = self.task_runtime.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "task_runtime_unavailable".to_string(),
-                        detail: "Task Runtime is unavailable".to_string(),
-                    };
-                };
-                let owner = rua_task::TaskOwner::new(chat_id);
-                match runtime.watch(&owner, &task_id).await {
-                    Ok(status) => DeviceCommandResponse::Project {
-                        response: ProjectDeviceResponse::TaskWatch { status },
-                    },
-                    Err(error) => project_task_error_response(error),
-                }
-            }
-            ProjectDeviceAction::UnwatchTask {
-                project_id: _,
-                chat_id,
-                task_id,
-            } => {
-                let Some(runtime) = self.task_runtime.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "task_runtime_unavailable".to_string(),
-                        detail: "Task Runtime is unavailable".to_string(),
-                    };
-                };
-                let owner = rua_task::TaskOwner::new(chat_id);
-                match runtime.unwatch(&owner, &task_id).await {
-                    Ok(status) => DeviceCommandResponse::Project {
-                        response: ProjectDeviceResponse::TaskWatch { status },
-                    },
-                    Err(error) => project_task_error_response(error),
-                }
-            }
-            ProjectDeviceAction::CancelTask {
-                project_id: _,
-                chat_id,
-                task_id,
-            } => {
-                let Some(runtime) = self.task_runtime.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "task_runtime_unavailable".to_string(),
-                        detail: "Task Runtime is unavailable".to_string(),
-                    };
-                };
-                let owner = rua_task::TaskOwner::new(chat_id);
-                match runtime.cancel(&owner, &task_id).await {
-                    Ok(task) => DeviceCommandResponse::Project {
-                        response: ProjectDeviceResponse::Task {
-                            task: serde_json::to_value(task).expect("Task is serializable"),
-                        },
-                    },
-                    Err(error) => project_task_error_response(error),
-                }
-            }
-            ProjectDeviceAction::RetryTask {
-                project_id,
-                chat_id,
-                task_id,
-                authorization_agent_id,
-            } => {
-                let Some(runtime) = self.task_runtime.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "task_runtime_unavailable".to_string(),
-                        detail: "Task Runtime is unavailable".to_string(),
-                    };
-                };
-                let Some(catalog) = self.project_catalog.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "project_catalog_unavailable".into(),
-                        detail: "Project catalog unavailable".into(),
-                    };
-                };
-                let _admission = match catalog.begin_admission(&project_id) {
-                    Ok(guard) => guard,
-                    Err(error) => {
-                        return DeviceCommandResponse::Rejected {
-                            reason: "project_resources_changing".into(),
-                            detail: error.to_string(),
-                        }
-                    }
-                };
-                let owner = rua_task::TaskOwner::new(chat_id);
-                let mut authorization =
-                    match rua_task::TaskAttemptAuthorization::new(authorization_agent_id) {
-                        Ok(authorization) => authorization,
-                        Err(detail) => {
-                            return DeviceCommandResponse::Rejected {
-                                reason: "invalid_task_attempt_authorization".to_string(),
-                                detail,
-                            };
-                        }
-                    };
-                if let Some(root) = self.data_dir.as_deref() {
-                    let scope = rua_core::ChatStore::resolve(root, owner.chat_address.clone());
-                    match rua_session::WorkspaceSessionStore::new(scope.root())
-                        .load_chat_header(owner.chat_id())
-                        .await
-                    {
-                        Ok(Some(header)) => {
-                            authorization.configuration_epoch = header
-                                .extra
-                                .get("hook_configuration")
-                                .and_then(|configuration| configuration.get("epoch"))
-                                .and_then(serde_json::Value::as_str)
-                                .map(str::to_string)
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            return DeviceCommandResponse::Rejected {
-                                reason: "invalid_task_configuration".into(),
-                                detail: error.to_string(),
-                            }
-                        }
-                    }
-                }
-                match runtime.retry(&owner, &task_id, authorization).await {
-                    Ok(task) => DeviceCommandResponse::Project {
-                        response: ProjectDeviceResponse::Task {
-                            task: serde_json::to_value(task).expect("Task is serializable"),
-                        },
-                    },
-                    Err(error) => project_task_error_response(error),
-                }
-            }
-            ProjectDeviceAction::GetTaskResult {
-                project_id: _,
-                chat_id,
-                task_id,
-            } => {
-                let Some(runtime) = self.task_runtime.as_ref() else {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "task_runtime_unavailable".to_string(),
-                        detail: "Task Runtime is unavailable".to_string(),
-                    };
-                };
-                let owner = rua_task::TaskOwner::new(chat_id);
-                match runtime.read_full_result(&owner, &task_id).await {
-                    Ok(bytes) => match serde_json::from_slice(&bytes) {
-                        Ok(result) => DeviceCommandResponse::Project {
-                            response: ProjectDeviceResponse::TaskResult { result },
-                        },
-                        Err(error) => DeviceCommandResponse::Rejected {
-                            reason: "task_result_invalid".to_string(),
-                            detail: error.to_string(),
-                        },
-                    },
-                    Err(error) => project_task_error_response(error),
                 }
             }
         }
@@ -3052,7 +2742,7 @@ impl DeviceCommandHandler {
         command: ConversationControlDeviceCommand,
     ) -> DeviceCommandResponse {
         if let Some(intake) = self.conversation_input_intake.as_ref() {
-            return match intake.apply_conversation_control(command).await {
+            return match Box::pin(intake.apply_conversation_control(command)).await {
                 Ok(response) => DeviceCommandResponse::ConversationControl {
                     response: Box::new(response),
                 },
@@ -3394,6 +3084,7 @@ impl DeviceCommandHandler {
             | ConversationControlDeviceAction::StopTurn { .. }
             | ConversationControlDeviceAction::PauseQueuedInputs { .. }
             | ConversationControlDeviceAction::DeliverBackgroundResult { .. }
+            | ConversationControlDeviceAction::DeliverTaskWatchOutput { .. }
             | ConversationControlDeviceAction::DecideApproval { .. }
             | ConversationControlDeviceAction::ViewProjectionExclusions
             | ConversationControlDeviceAction::UpdateProjectionExclusions { .. }
@@ -5189,82 +4880,8 @@ impl ProjectDeviceCommand {
                 validate_id(project_id.as_str())?;
                 validate_id(chat_id)?;
             }
-            ProjectDeviceAction::ListTasks {
-                project_id,
-                chat_id,
-                ..
-            } => {
-                validate_id(project_id.as_str())?;
-                validate_id(chat_id)?;
-            }
-            ProjectDeviceAction::GetTask {
-                project_id,
-                chat_id,
-                task_id,
-            }
-            | ProjectDeviceAction::CancelTask {
-                project_id,
-                chat_id,
-                task_id,
-            }
-            | ProjectDeviceAction::WatchTask {
-                project_id,
-                chat_id,
-                task_id,
-            }
-            | ProjectDeviceAction::UnwatchTask {
-                project_id,
-                chat_id,
-                task_id,
-            }
-            | ProjectDeviceAction::RetryTask {
-                project_id,
-                chat_id,
-                task_id,
-                ..
-            }
-            | ProjectDeviceAction::GetTaskResult {
-                project_id,
-                chat_id,
-                task_id,
-            } => {
-                validate_id(project_id.as_str())?;
-                validate_id(chat_id)?;
-                validate_id(task_id)?;
-            }
-            ProjectDeviceAction::SendTaskInput {
-                project_id,
-                chat_id,
-                task_id,
-                submission,
-            } => {
-                validate_id(project_id.as_str())?;
-                validate_id(chat_id)?;
-                validate_id(task_id)?;
-                validate_id(&submission.submission_id)?;
-            }
         }
         Ok(())
-    }
-}
-
-fn project_task_error_response(error: rua_task::TaskError) -> DeviceCommandResponse {
-    let reason = match &error {
-        rua_task::TaskError::NotFound(_) => "task_not_found",
-        rua_task::TaskError::Invalid(_) => "task_invalid",
-        rua_task::TaskError::InvalidTransition(_) => "task_invalid_transition",
-        rua_task::TaskError::LimitExceeded(_) => "task_limit_exceeded",
-        rua_task::TaskError::AuthorityRejected(_) => "task_authority_rejected",
-        rua_task::TaskError::InputUnavailable(_) => "task_input_unavailable",
-        rua_task::TaskError::InputConflict(_) => "task_input_conflict",
-        rua_task::TaskError::AuthorityUnavailable(_)
-        | rua_task::TaskError::ResourceUnavailable(_) => "task_resource_unavailable",
-        rua_task::TaskError::WaitTimedOut(_) => "task_wait_timed_out",
-        _ => "task_operation_failed",
-    };
-    DeviceCommandResponse::Rejected {
-        reason: reason.to_string(),
-        detail: error.to_string(),
     }
 }
 
@@ -5654,6 +5271,31 @@ pub async fn deliver_sync_transfer_device_command_via_session(
     }
 }
 
+pub async fn deliver_chat_task_via_session(
+    manager: &rua_device_network::DeviceSessionManager,
+    command: &super::chat_task::ChatTaskCommand,
+    timeout: Duration,
+) -> Result<super::chat_task::ChatTaskResponse, String> {
+    // Mutations are submitted once. An unknown receipt is reconciled by Task ID,
+    // never by resubmitting a create, retry, input or cancellation operation.
+    match deliver_envelope_via_session(
+        manager,
+        &command.target_device_id,
+        DeviceCommandEnvelope::ChatTask(Box::new(command.clone())),
+        timeout,
+    )
+    .await
+    .map_err(|e| e.to_string())?
+    {
+        DeviceCommandResponse::ChatTask { response } => Ok(response),
+        DeviceCommandResponse::Rejected { reason, detail } => Err(format!("{reason}: {detail}")),
+        response => Err(format!(
+            "Expected Task response, received {}",
+            device_command_response_kind(&response)
+        )),
+    }
+}
+
 pub async fn deliver_chat_command_via_channel(
     channel: &rua_device_network::DeviceSessionCommandChannel,
     command: &super::chat_command::ChatCommandCommand,
@@ -5911,6 +5553,7 @@ fn device_command_response_kind(response: &DeviceCommandResponse) -> &'static st
         DeviceCommandResponse::SyncTransfer { .. } => "Sync Transfer",
         DeviceCommandResponse::ChatTransfer { .. } => "Chat file transfer",
         DeviceCommandResponse::ChatCommand { .. } => "Chat foreground command",
+        DeviceCommandResponse::ChatTask { .. } => "Chat Task",
         DeviceCommandResponse::ChatMediaPrepared { .. } => "Chat Media Prepared",
         DeviceCommandResponse::AgentsInstructions { .. } => "AGENTS.md discovery",
         DeviceCommandResponse::FileRead { .. } => "Previously allowed file read",

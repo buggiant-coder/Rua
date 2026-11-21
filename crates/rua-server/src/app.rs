@@ -414,6 +414,9 @@ pub async fn serve(options: ServerOptions) -> anyhow::Result<()> {
             crate::shutdown::arm_force_exit_watchdog(std::time::Duration::from_secs(8));
             crate::shutdown::arm_second_signal_force_exit();
 
+            // Record process shutdown before Agent cleanup requests ordinary
+            // cancellation, so accepted Tasks retain their interruption cause.
+            shutdown_voice_state.task_runtime.begin_shutdown().await;
             let _ = shutdown_tx.send(true);
             let _ = voice_start.await;
             shutdown_voice_state

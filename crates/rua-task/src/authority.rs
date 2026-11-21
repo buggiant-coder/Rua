@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::model::{TaskAttemptAuthorization, TaskDeviceContext, TaskOwner};
+use crate::model::{TaskAttemptAuthorization, TaskDeviceContext, TaskOwner, TaskSpec};
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum TaskAuthorityError {
@@ -12,15 +12,12 @@ pub enum TaskAuthorityError {
 
 #[async_trait]
 pub trait TaskAuthorityResolver: Send + Sync {
-    async fn accept(&self, owner: &TaskOwner) -> Result<TaskDeviceContext, TaskAuthorityError>;
-
     async fn accept_attempt(
         &self,
-        owner: &TaskOwner,
-        _authorization: &TaskAttemptAuthorization,
-    ) -> Result<TaskDeviceContext, TaskAuthorityError> {
-        self.accept(owner).await
-    }
+        spec: &TaskSpec,
+        authorization: &TaskAttemptAuthorization,
+        prior: Option<&TaskDeviceContext>,
+    ) -> Result<TaskDeviceContext, TaskAuthorityError>;
 
     async fn is_current(
         &self,

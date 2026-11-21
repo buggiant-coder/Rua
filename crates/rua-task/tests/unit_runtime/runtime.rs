@@ -44,7 +44,10 @@ impl TaskRunner for BlockingRunner {
     async fn run(&self, request: TaskRunRequest) -> Result<TaskRunOutput, TaskRunnerError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.started.notify_waiters();
-        self.release.notified().await;
+        tokio::select! {
+            _ = self.release.notified() => {},
+            _ = request.cancel.cancelled() => return Ok(TaskRunOutput::cancelled()),
+        }
         Ok(TaskRunOutput {
             outcome: rua_task::TaskRunOutcome::Completed,
             output:
@@ -88,7 +91,12 @@ impl MutableAuthority {
 
 #[async_trait]
 impl TaskAuthorityResolver for MutableAuthority {
-    async fn accept(&self, _owner: &TaskOwner) -> Result<TaskDeviceContext, TaskAuthorityError> {
+    async fn accept_attempt(
+        &self,
+        _spec: &TaskSpec,
+        _authorization: &TaskAttemptAuthorization,
+        _prior: Option<&TaskDeviceContext>,
+    ) -> Result<TaskDeviceContext, TaskAuthorityError> {
         Ok(self.current.lock().await.clone())
     }
 
@@ -109,10 +117,370 @@ impl TaskAuthorityResolver for MutableAuthority {
 
 struct RejectingAuthority;
 
+struct AcceptanceGate {
+    entered: Notify,
+    release: Notify,
+}
+
+#[async_trait]
+impl TaskAuthorityResolver for AcceptanceGate {
+    async fn accept_attempt(
+        &self,
+        _: &TaskSpec,
+        _: &TaskAttemptAuthorization,
+        _: Option<&TaskDeviceContext>,
+    ) -> Result<TaskDeviceContext, TaskAuthorityError> {
+        self.entered.notify_one();
+        self.release.notified().await;
+        Ok(TaskDeviceContext::default())
+    }
+    async fn is_current(
+        &self,
+        _: &TaskOwner,
+        _: &TaskDeviceContext,
+    ) -> Result<bool, TaskAuthorityError> {
+        Ok(true)
+    }
+    async fn local_device_id(&self) -> Result<Option<String>, TaskAuthorityError> {
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn cancel_during_acceptance_waits_for_the_original_execution_registration() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = Arc::new(AcceptanceGate {
+        entered: Notify::new(),
+        release: Notify::new(),
+    });
+    let runtime = Arc::new(
+        TaskRuntime::open_with_sink_and_authority(
+            TaskRuntimeConfig::new(dir.path()),
+            Arc::new(RecordingSink::default()),
+            gate.clone(),
+        )
+        .unwrap(),
+    );
+    runtime.register_runner(Arc::new(RedispatchProbeRunner {
+        calls: AtomicUsize::new(0),
+    }));
+    let owner = TaskOwner::new("accept-cancel-race");
+    let original_cancel = tokio_util::sync::CancellationToken::new();
+    let adopting = tokio::spawn({
+        let runtime = runtime.clone();
+        let owner = owner.clone();
+        let cancel = original_cancel.clone();
+        async move {
+            let observed = cancel.clone();
+            runtime
+                .adopt_running(
+                    "chat-command-accepting".into(),
+                    spec(owner),
+                    authorization("agent-a"),
+                    TaskAdoptedExecution::new(
+                        async move {
+                            observed.cancelled().await;
+                            TaskRunOutput::cancelled()
+                        },
+                        cancel,
+                    ),
+                )
+                .await
+        }
+    });
+    gate.entered.notified().await;
+    let cancelling = tokio::spawn({
+        let runtime = runtime.clone();
+        let owner = owner.clone();
+        async move { runtime.cancel(&owner, "chat-command-accepting").await }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        !cancelling.is_finished(),
+        "cancel cannot decide there is no execution during acceptance"
+    );
+    gate.release.notify_one();
+    adopting.await.unwrap().unwrap();
+    let cancelled = cancelling.await.unwrap().unwrap();
+    assert!(original_cancel.is_cancelled());
+    assert_eq!(cancelled.state, TaskState::Cancelled);
+    assert_eq!(cancelled.attempts.len(), 1);
+}
+
 struct PausedTerminalSink {
     entered: Notify,
     release: Notify,
 }
+
+#[tokio::test]
+async fn cancelled_attempt_receipt_does_not_follow_a_concurrent_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
+    let runner = Arc::new(BlockingRunner::new());
+    runtime.register_runner(runner.clone());
+    let owner = TaskOwner::new("cancel-receipt-retry");
+    let id = "adopted-cancel-receipt".to_owned();
+    let original_cancel = tokio_util::sync::CancellationToken::new();
+    let release = Arc::new(Notify::new());
+    let execution_cancel = original_cancel.clone();
+    let execution_release = release.clone();
+    runtime
+        .adopt_running(
+            id.clone(),
+            spec(owner.clone()),
+            authorization("agent-a"),
+            TaskAdoptedExecution::new(
+                async move {
+                    execution_cancel.cancelled().await;
+                    execution_release.notified().await;
+                    TaskRunOutput::cancelled()
+                },
+                original_cancel.clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    let mut cancellation = Box::pin(runtime.cancel(&owner, &id));
+    tokio::select! {
+        biased;
+        result = &mut cancellation => panic!("Cancellation completed before execution stopped: {result:?}"),
+        _ = original_cancel.cancelled() => {},
+    }
+    // Keep the caller unpolled while the target finishes and another caller
+    // explicitly retries, as can happen before a remote Cancel reply arrives.
+    release.notify_one();
+    assert_eq!(
+        runtime
+            .await_terminal(&owner, &id, Duration::from_secs(2))
+            .await
+            .unwrap()
+            .state,
+        TaskState::Cancelled
+    );
+    runtime
+        .retry(&owner, &id, authorization("agent-b"))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while runner.calls.load(Ordering::SeqCst) != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let receipt = cancellation.await.unwrap();
+    assert_eq!(receipt.attempt_no, 1);
+    assert_eq!(receipt.state, TaskState::Cancelled);
+    let current = runtime.get(&owner, &id).await.unwrap();
+    assert_eq!(current.attempt_no, 2);
+    assert_eq!(current.state, TaskState::Running);
+    runner.release.notify_one();
+    runtime.shutdown().await.unwrap();
+}
+
+async fn assert_terminal_delivery_releases_execution_capacity(adopted: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(PausedTerminalSink {
+        entered: Notify::new(),
+        release: Notify::new(),
+    });
+    let mut config = TaskRuntimeConfig::new(dir.path());
+    config.limits.max_concurrent_tasks_per_chat = 1;
+    config.limits.max_concurrent_tasks_per_runner = 1;
+    let runtime = Arc::new(TaskRuntime::open_with_sink(config, sink.clone()).unwrap());
+    let runner = Arc::new(BlockingRunner::new());
+    runtime.register_runner(runner.clone());
+    let owner = TaskOwner::new("terminal-capacity");
+    let (complete, completion) = tokio::sync::oneshot::channel();
+    let first = if adopted {
+        let id = "chat-command-terminal-capacity".to_string();
+        runtime
+            .adopt_running(
+                id.clone(),
+                spec(owner.clone()),
+                authorization("agent-a"),
+                TaskAdoptedExecution::new(
+                    async { completion.await.unwrap() },
+                    tokio_util::sync::CancellationToken::new(),
+                ),
+            )
+            .await
+            .unwrap();
+        id
+    } else {
+        let id = runtime
+            .create(spec(owner.clone()), authorization("agent-a"))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while runner.calls.load(Ordering::SeqCst) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        id
+    };
+    let mut dependent = spec(owner.clone());
+    dependent.depends_on = vec![first.clone()];
+    let next = runtime
+        .create(dependent, authorization("agent-a"))
+        .await
+        .unwrap();
+    if adopted {
+        complete
+            .send(TaskRunOutput::completed("original completed"))
+            .unwrap();
+    } else {
+        runner.release.notify_one();
+    }
+    sink.entered.notified().await;
+    assert_eq!(
+        runtime.get(&owner, &first).await.unwrap().state,
+        TaskState::Completed
+    );
+    assert!(runtime.attempt_execution_active(&owner, &first, 1));
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let expected = if adopted { 1 } else { 2 };
+        while runner.calls.load(Ordering::SeqCst) != expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("dependent execution must start before the first result delivery is acknowledged");
+    assert_eq!(
+        runtime.get(&owner, &next).await.unwrap().state,
+        TaskState::Running
+    );
+    runner.release.notify_one();
+    sink.entered.notified().await;
+    sink.release.notify_waiters();
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn runner_releases_capacity_while_terminal_delivery_waits() {
+    assert_terminal_delivery_releases_execution_capacity(false).await;
+}
+
+#[tokio::test]
+async fn adopted_execution_releases_capacity_while_terminal_delivery_waits() {
+    assert_terminal_delivery_releases_execution_capacity(true).await;
+}
+
+#[tokio::test]
+async fn cancellation_returns_real_terminal_before_notification_acknowledgement() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(PausedTerminalSink {
+        entered: Notify::new(),
+        release: Notify::new(),
+    });
+    let runtime = Arc::new(
+        TaskRuntime::open_with_sink(TaskRuntimeConfig::new(dir.path()), sink.clone()).unwrap(),
+    );
+    let runner = Arc::new(BlockingRunner::new());
+    runtime.register_runner(runner.clone());
+    let owner = TaskOwner::new("cancel-terminal-receipt");
+    let id = runtime
+        .create(spec(owner.clone()), authorization("agent-a"))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while runner.calls.load(Ordering::SeqCst) != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let cancelling = {
+        let runtime = runtime.clone();
+        let owner = owner.clone();
+        let id = id.clone();
+        tokio::spawn(async move { runtime.cancel(&owner, &id).await })
+    };
+    sink.entered.notified().await;
+    let result = tokio::time::timeout(Duration::from_secs(1), cancelling)
+        .await
+        .expect("real cancellation must not wait for its Chat result receipt")
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.state, TaskState::Cancelled);
+    assert!(runtime.attempt_execution_active(&owner, &id, 1));
+    sink.release.notify_one();
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn waiting_dependency_cancellation_returns_before_notification_and_never_dispatches() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(PausedTerminalSink {
+        entered: Notify::new(),
+        release: Notify::new(),
+    });
+    let runtime = Arc::new(
+        TaskRuntime::open_with_sink(TaskRuntimeConfig::new(dir.path()), sink.clone()).unwrap(),
+    );
+    let runner = Arc::new(BlockingRunner::new());
+    runtime.register_runner(runner.clone());
+    let owner = TaskOwner::new("cancel-waiting-receipt");
+    let upstream = runtime
+        .create(spec(owner.clone()), authorization("agent-a"))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while runner.calls.load(Ordering::SeqCst) != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut dependency = spec(owner.clone());
+    dependency.depends_on = vec![upstream.clone()];
+    let id = runtime
+        .create(dependency, authorization("agent-a"))
+        .await
+        .unwrap();
+    assert!(!runtime.attempt_execution_active(&owner, &id, 1));
+    let cancelling = {
+        let runtime = runtime.clone();
+        let owner = owner.clone();
+        let id = id.clone();
+        tokio::spawn(async move { runtime.cancel(&owner, &id).await })
+    };
+    sink.entered.notified().await;
+    let result = tokio::time::timeout(Duration::from_secs(1), cancelling)
+        .await
+        .expect("waiting cancellation must not wait for its result receipt")
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.state, TaskState::Cancelled);
+    assert!(runtime.attempt_execution_active(&owner, &id, 1));
+    assert!(runtime
+        .outstanding_attempts()
+        .await
+        .unwrap()
+        .iter()
+        .any(|record| record.task_id == id && record.attempt_no == 1));
+    runner.release.notify_one();
+    sink.entered.notified().await;
+    assert_eq!(
+        runtime.get(&owner, &upstream).await.unwrap().state,
+        TaskState::Completed
+    );
+    assert_eq!(
+        runtime.get(&owner, &id).await.unwrap().state,
+        TaskState::Cancelled
+    );
+    assert_eq!(
+        runner.calls.load(Ordering::SeqCst),
+        1,
+        "a cancelled dependency must never dispatch when its parent becomes ready"
+    );
+    sink.release.notify_waiters();
+    runtime.shutdown().await.unwrap();
+    assert!(!runtime.attempt_execution_active(&owner, &id, 1));
+}
+
 #[async_trait]
 impl TaskNotificationSink for PausedTerminalSink {
     async fn terminal(&self, _: TaskCompletionNotification) -> Result<(), TaskRunnerError> {
@@ -120,6 +488,95 @@ impl TaskNotificationSink for PausedTerminalSink {
         self.release.notified().await;
         Ok(())
     }
+}
+
+#[tokio::test]
+async fn retry_preserves_both_attempts_until_old_notification_tail_exits() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(PausedTerminalSink {
+        entered: Notify::new(),
+        release: Notify::new(),
+    });
+    let runtime = Arc::new(
+        TaskRuntime::open_with_sink(TaskRuntimeConfig::new(dir.path()), sink.clone()).unwrap(),
+    );
+    let runner = Arc::new(BlockingRunner::new());
+    runtime.register_runner(runner.clone());
+    let owner = TaskOwner::new("retry-delivery-tail");
+    let id = runtime
+        .create(spec(owner.clone()), authorization("agent-a"))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while runner.calls.load(Ordering::SeqCst) != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        runtime.cancel(&owner, &id).await.unwrap().state,
+        TaskState::Cancelled
+    );
+    sink.entered.notified().await;
+    runtime
+        .retry(&owner, &id, authorization("agent-b"))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while runner.calls.load(Ordering::SeqCst) != 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        runtime.attempt_execution_active(&owner, &id, 1),
+        "Retry must not hide the old notification tail from drain"
+    );
+    assert!(runtime.attempt_execution_active(&owner, &id, 2));
+    assert!(matches!(
+        runtime.cancel_attempt(&owner, &id, 1).await,
+        Err(TaskError::InvalidTransition(_))
+    ));
+    assert_eq!(
+        runtime.get(&owner, &id).await.unwrap().state,
+        TaskState::Running
+    );
+    let outstanding = runtime.outstanding_attempts().await.unwrap();
+    for (attempt_no, agent) in [(1, "agent-a"), (2, "agent-b")] {
+        let record = outstanding
+            .iter()
+            .find(|record| record.task_id == id && record.attempt_no == attempt_no)
+            .unwrap();
+        assert_eq!(
+            record
+                .attempts
+                .iter()
+                .find(|attempt| attempt.attempt_no == attempt_no)
+                .unwrap()
+                .authorization_agent_id,
+            agent
+        );
+    }
+    sink.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while runtime.attempt_execution_active(&owner, &id, 1) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        runtime.attempt_execution_active(&owner, &id, 2),
+        "the old receipt cannot remove the Retry execution handle"
+    );
+    let cancelled = runtime.cancel(&owner, &id).await.unwrap();
+    assert_eq!(cancelled.state, TaskState::Cancelled);
+    assert_eq!(cancelled.attempt_no, 2);
+    sink.entered.notified().await;
+    sink.release.notify_one();
+    runtime.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -166,7 +623,12 @@ async fn terminal_attempt_remains_outstanding_until_notification_tail_exits() {
 
 #[async_trait]
 impl TaskAuthorityResolver for RejectingAuthority {
-    async fn accept(&self, _owner: &TaskOwner) -> Result<TaskDeviceContext, TaskAuthorityError> {
+    async fn accept_attempt(
+        &self,
+        _spec: &TaskSpec,
+        _authorization: &TaskAttemptAuthorization,
+        _prior: Option<&TaskDeviceContext>,
+    ) -> Result<TaskDeviceContext, TaskAuthorityError> {
         Err(TaskAuthorityError::Rejected(
             "local Device is not the Chat authority".to_string(),
         ))
@@ -496,7 +958,9 @@ impl TaskRunner for CancellationRunner {
         request.cancel.cancelled().await;
         self.observed_cancel.store(true, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(50)).await;
-        Ok(TaskRunOutput::completed("runner cleanup complete"))
+        let mut output = TaskRunOutput::cancelled();
+        output.output = "runner cleanup complete".into();
+        Ok(output)
     }
 }
 
@@ -525,6 +989,184 @@ impl TaskRunner for CompletionRaceRunner {
 struct ShutdownRunner {
     started: AtomicUsize,
     observed_cancel: AtomicUsize,
+}
+
+struct ImmediateStoppedRunner {
+    started: Notify,
+}
+
+#[async_trait]
+impl TaskRunner for ImmediateStoppedRunner {
+    fn kind(&self) -> TaskRunnerKind {
+        TaskRunnerKind::Tool
+    }
+
+    async fn run(&self, request: TaskRunRequest) -> Result<TaskRunOutput, TaskRunnerError> {
+        self.started.notify_one();
+        request.cancel.cancelled().await;
+        let mut output = TaskRunOutput::cancelled();
+        output.output = "process output before shutdown".into();
+        output.raw_output = Some(b"retained process output".to_vec());
+        Ok(output)
+    }
+}
+
+#[tokio::test]
+async fn shutdown_cause_survives_a_runner_returning_cancelled_without_an_extra_yield() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
+    let runner = Arc::new(ImmediateStoppedRunner {
+        started: Notify::new(),
+    });
+    runtime.register_runner(runner.clone());
+    let owner = TaskOwner::new("shutdown-race");
+    let id = runtime
+        .create(spec(owner.clone()), authorization("agent-a"))
+        .await
+        .unwrap();
+    runner.started.notified().await;
+    runtime.shutdown().await.unwrap();
+    let record = runtime.get(&owner, &id).await.unwrap();
+    assert_eq!(record.state, TaskState::Interrupted);
+    assert_eq!(record.attempts[0].state, TaskState::Interrupted);
+    let result = record.result.unwrap();
+    assert_eq!(result.output, "process output before shutdown");
+    assert_eq!(
+        result.error.unwrap().details["provenance"],
+        "runtime_shutdown"
+    );
+    assert_eq!(
+        runtime.read_full_result(&owner, &id).await.unwrap(),
+        b"retained process output"
+    );
+}
+
+#[tokio::test]
+async fn begin_shutdown_preserves_waiting_task_cause_during_workspace_cancellation() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
+    let runner = Arc::new(ShutdownRunner {
+        started: AtomicUsize::new(0),
+        observed_cancel: AtomicUsize::new(0),
+    });
+    runtime.register_runner(runner.clone());
+    let owner = TaskOwner::new("waiting-at-shutdown");
+    let upstream = runtime
+        .create(spec(owner.clone()), authorization("agent-a"))
+        .await
+        .unwrap();
+    while runner.started.load(Ordering::SeqCst) == 0 {
+        tokio::task::yield_now().await;
+    }
+    let dependent = runtime
+        .create(
+            graph_spec(
+                owner.clone(),
+                "waiting for upstream",
+                vec![upstream.clone()],
+            ),
+            authorization("agent-a"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.get(&owner, &dependent).await.unwrap().state,
+        TaskState::Waiting
+    );
+
+    runtime.begin_shutdown().await;
+    let stopped = runtime.cancel_attempt(&owner, &dependent, 1).await.unwrap();
+    assert_eq!(stopped.state, TaskState::Interrupted);
+    assert_eq!(stopped.attempts[0].state, TaskState::Interrupted);
+    assert_eq!(
+        stopped.result.unwrap().error.unwrap().details["provenance"],
+        "runtime_shutdown"
+    );
+    assert!(matches!(
+        runtime
+            .create(spec(owner.clone()), authorization("agent-a"))
+            .await,
+        Err(TaskError::ResourceUnavailable(_))
+    ));
+    runtime.shutdown().await.unwrap();
+    assert_eq!(runner.started.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        runtime.get(&owner, &upstream).await.unwrap().state,
+        TaskState::Interrupted
+    );
+}
+
+#[tokio::test]
+async fn begin_shutdown_cause_survives_adopted_process_cleanup_becoming_ready_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
+    let runner = Arc::new(RedispatchProbeRunner {
+        calls: AtomicUsize::new(0),
+    });
+    runtime.register_runner(runner.clone());
+    let owner = TaskOwner::new("adopted-at-shutdown");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let execution_cancel = cancel.clone();
+    let started = Arc::new(Notify::new());
+    let execution_started = started.clone();
+    let id = runtime
+        .adopt_running(
+            "chat-command-adopted-shutdown".into(),
+            spec(owner.clone()),
+            authorization("agent-a"),
+            TaskAdoptedExecution::new(
+                async move {
+                    execution_started.notify_one();
+                    execution_cancel.cancelled().await;
+                    let mut output = TaskRunOutput::cancelled();
+                    output.output = "original process stopped".into();
+                    output
+                },
+                cancel.clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    started.notified().await;
+    runtime.begin_shutdown().await;
+    // Process/Workspace cleanup can independently stop the same original
+    // execution before the Task worker polls its own cancellation branch.
+    cancel.cancel();
+    runtime.shutdown().await.unwrap();
+    let record = runtime.get(&owner, &id).await.unwrap();
+    assert_eq!(record.state, TaskState::Interrupted);
+    let result = record.result.unwrap();
+    assert_eq!(result.output, "original process stopped");
+    assert_eq!(
+        result.error.unwrap().details["provenance"],
+        "runtime_shutdown"
+    );
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn natural_completion_ready_before_begin_shutdown_remains_completed() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
+    let runner = Arc::new(CompletionRaceRunner {
+        started: Notify::new(),
+        release: Notify::new(),
+        returning: Notify::new(),
+    });
+    runtime.register_runner(runner.clone());
+    let owner = TaskOwner::new("completed-at-shutdown");
+    let id = runtime
+        .create(spec(owner.clone()), authorization("agent-a"))
+        .await
+        .unwrap();
+    runner.started.notified().await;
+    runner.release.notify_one();
+    runner.returning.notified().await;
+    runtime.begin_shutdown().await;
+    runtime.shutdown().await.unwrap();
+    let record = runtime.get(&owner, &id).await.unwrap();
+    assert_eq!(record.state, TaskState::Completed);
+    assert!(record.result.unwrap().output.contains("natural completion"));
 }
 
 #[async_trait]
@@ -775,7 +1417,7 @@ async fn natural_completion_ready_before_cancel_remains_completed() {
 }
 
 #[tokio::test]
-async fn cancellation_force_drops_uncooperative_runner_after_grace() {
+async fn cancellation_wait_timeout_keeps_uncooperative_runner_until_shutdown() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = TaskRuntimeConfig::new(dir.path());
     config.limits.cancellation_grace = Duration::from_millis(25);
@@ -795,10 +1437,20 @@ async fn cancellation_force_drops_uncooperative_runner_after_grace() {
         .await
         .unwrap();
 
-    let started = std::time::Instant::now();
-    let cancelled = runtime.cancel(&owner, &task_id).await.unwrap();
-    assert_eq!(cancelled.state, TaskState::Cancelled);
-    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(matches!(
+        runtime.cancel(&owner, &task_id).await,
+        Err(TaskError::WaitTimedOut(_))
+    ));
+    assert_eq!(
+        runtime.get(&owner, &task_id).await.unwrap().state,
+        TaskState::Running
+    );
+    assert!(!dropped.load(Ordering::SeqCst));
+    runtime.shutdown().await.unwrap();
+    assert_eq!(
+        runtime.get(&owner, &task_id).await.unwrap().state,
+        TaskState::Interrupted
+    );
     assert!(dropped.load(Ordering::SeqCst));
 }
 
@@ -844,6 +1496,13 @@ async fn concurrent_cancellation_produces_one_terminal_transition() {
     assert_eq!(first.state, TaskState::Cancelled);
     assert_eq!(second.state, TaskState::Cancelled);
     assert_eq!(first.result, second.result);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while runtime.attempt_execution_active(&owner, &task_id, 1) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(sink.notifications.lock().await.len(), 1);
 }
 
@@ -938,9 +1597,9 @@ async fn activity_snapshot_keeps_all_active_tasks_beyond_recent_list_limit() {
     config.limits.activity_channel_capacity = 8;
     config.limits.cancellation_grace = Duration::from_millis(1);
     let runtime = Arc::new(TaskRuntime::open(config).unwrap());
-    runtime.register_runner(Arc::new(UncooperativeRunner {
+    runtime.register_runner(Arc::new(CancellationRunner {
         started: Notify::new(),
-        dropped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        observed_cancel: std::sync::atomic::AtomicBool::new(false),
     }));
     let owner = TaskOwner::new("chat-a");
 
@@ -1005,6 +1664,7 @@ async fn rollback_cancellation_only_targets_tasks_at_or_after_branch_point() {
 struct FailThenSucceedRunner {
     calls: AtomicUsize,
     authorization_agents: Mutex<Vec<String>>,
+    provenance: Mutex<Vec<(TaskDeviceContext, rua_task::TaskOrigin)>>,
 }
 
 #[async_trait]
@@ -1018,6 +1678,10 @@ impl TaskRunner for FailThenSucceedRunner {
             .lock()
             .await
             .push(request.authorization_agent_id.clone());
+        self.provenance
+            .lock()
+            .await
+            .push((request.device.clone(), request.authorization_origin.clone()));
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         if call == 0 {
             let mut output = TaskRunOutput::failed(
@@ -1076,24 +1740,38 @@ impl TaskRunner for FailThenSucceedRunner {
 async fn retry_preserves_attempt_history_and_immutable_specification() {
     let dir = tempfile::tempdir().unwrap();
     let sink = Arc::new(RecordingSink::default());
+    let mut config = TaskRuntimeConfig::new(dir.path());
+    config.device = TaskDeviceContext {
+        device_id: Some("device-original".into()),
+        public_cwd: Some("/original/cwd".into()),
+        ..Default::default()
+    };
+    let first_origin = rua_task::TaskOrigin {
+        turn_id: Some("first-turn".into()),
+        tool_call_id: Some("first-call".into()),
+    };
+    let retry_origin = rua_task::TaskOrigin {
+        turn_id: Some("retry-turn".into()),
+        tool_call_id: Some("retry-call".into()),
+    };
     let runtime = Arc::new(
-        TaskRuntime::open_with_sink(
-            TaskRuntimeConfig::new(dir.path()),
-            sink.clone() as Arc<dyn TaskNotificationSink>,
-        )
-        .unwrap(),
+        TaskRuntime::open_with_sink(config, sink.clone() as Arc<dyn TaskNotificationSink>).unwrap(),
     );
     let runner = Arc::new(FailThenSucceedRunner {
         calls: AtomicUsize::new(0),
         authorization_agents: Mutex::new(Vec::new()),
+        provenance: Mutex::new(Vec::new()),
     });
     runtime.register_runner(runner.clone());
     let owner = TaskOwner::from_address(rua_core::ChatAddress::new("chat-a"));
-    let original_spec = spec(owner.clone());
+    let mut original_spec = spec(owner.clone());
+    original_spec.origin = first_origin.clone();
     let task_id = runtime
         .create(
             original_spec.clone(),
-            authorization("agent-a").with_configuration_epoch("epoch-one".to_string()),
+            authorization("agent-a")
+                .with_configuration_epoch("epoch-one".to_string())
+                .with_origin(first_origin.clone()),
         )
         .await
         .unwrap();
@@ -1110,7 +1788,9 @@ async fn retry_preserves_attempt_history_and_immutable_specification() {
         .retry(
             &owner,
             &task_id,
-            authorization("agent-b").with_configuration_epoch("epoch-two".to_string()),
+            authorization("agent-b")
+                .with_configuration_epoch("epoch-two".to_string())
+                .with_origin(retry_origin.clone()),
         )
         .await
         .unwrap();
@@ -1140,6 +1820,15 @@ async fn retry_preserves_attempt_history_and_immutable_specification() {
         runner.authorization_agents.lock().await.as_slice(),
         ["agent-a", "agent-b"]
     );
+    assert_eq!(completed.attempts[0].authorization_origin, first_origin);
+    assert_eq!(completed.attempts[1].authorization_origin, retry_origin);
+    assert_eq!(completed.spec.origin, first_origin);
+    let seen = runner.provenance.lock().await;
+    assert_eq!(seen[0].0.device_id.as_deref(), Some("device-original"));
+    assert_eq!(seen[0].0.public_cwd.as_deref(), Some("/original/cwd"));
+    assert_eq!(seen[0].0, seen[1].0);
+    assert_eq!(seen[1].1, retry_origin);
+    drop(seen);
     let first_result = completed.attempts[0].result.as_ref().unwrap();
     assert_eq!(
         first_result.error.as_ref().unwrap().message,
@@ -1358,6 +2047,7 @@ impl TaskRunner for GraphRunner {
         if instruction == "cancel_then_success" && request.attempt_no == 1 {
             request.cancel.cancelled().await;
             tokio::time::sleep(Duration::from_millis(50)).await;
+            return Ok(TaskRunOutput::cancelled());
         }
         if let Some(gate) = gate {
             gate.notified().await;
@@ -1916,7 +2606,11 @@ async fn adopted_task_cancellation_reaches_original_execution_handle() {
                     execution_cancel_for_future.cancelled().await;
                     observed_cancel_for_future.store(true, Ordering::SeqCst);
                     tokio::time::sleep(Duration::from_millis(20)).await;
-                    TaskRunOutput::completed("cleanup complete")
+                    {
+                        let mut output = TaskRunOutput::cancelled();
+                        output.output = "cleanup complete".into();
+                        output
+                    }
                 },
                 execution_cancel,
             ),
@@ -1931,11 +2625,165 @@ async fn adopted_task_cancellation_reaches_original_execution_handle() {
 }
 
 #[tokio::test]
+async fn stable_task_id_acceptance_never_dispatches_the_same_specification_twice() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(TaskRuntime::open(TaskRuntimeConfig::new(dir.path())).unwrap());
+    let runner = Arc::new(RedispatchProbeRunner {
+        calls: AtomicUsize::new(0),
+    });
+    runtime.register_runner(runner.clone());
+    let owner = TaskOwner::new("stable-acceptance");
+    let task_id = "chat-command-stable-original".to_string();
+    let original = spec(owner.clone());
+    runtime
+        .create_with_id(task_id.clone(), original.clone(), authorization("agent-a"))
+        .await
+        .unwrap();
+    runtime
+        .await_terminal(&owner, &task_id, Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime
+            .create_with_id(task_id.clone(), original.clone(), authorization("agent-a"))
+            .await
+            .unwrap(),
+        task_id
+    );
+    let mut different = original;
+    different.instruction.push_str(" changed");
+    assert!(matches!(
+        runtime
+            .create_with_id(task_id.clone(), different, authorization("agent-a"))
+            .await,
+        Err(TaskError::Invalid(_))
+    ));
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        runtime
+            .create_with_id("../outside".into(), spec(owner), authorization("agent-a"))
+            .await,
+        Err(TaskError::Invalid(_))
+    ));
+}
+
+#[tokio::test]
+async fn adoption_holds_normal_execution_capacity_until_original_completion() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = TaskRuntimeConfig::new(dir.path());
+    config.limits.max_concurrent_tasks_per_chat = 1;
+    let runtime = Arc::new(TaskRuntime::open(config).unwrap());
+    let runner = Arc::new(RedispatchProbeRunner {
+        calls: AtomicUsize::new(0),
+    });
+    runtime.register_runner(runner.clone());
+    let owner = TaskOwner::new("capacity");
+    let (complete, completion) = tokio::sync::oneshot::channel();
+    let id = "chat-command-accepted".to_owned();
+    runtime
+        .adopt_running(
+            id.clone(),
+            spec(owner.clone()),
+            authorization("agent-a"),
+            TaskAdoptedExecution::new(
+                async { completion.await.unwrap() },
+                tokio_util::sync::CancellationToken::new(),
+            ),
+        )
+        .await
+        .unwrap();
+    let queued = runtime
+        .create(spec(owner.clone()), authorization("agent-a"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        runtime
+            .adopt_running(
+                "chat-command-excess".into(),
+                spec(owner.clone()),
+                authorization("agent-a"),
+                TaskAdoptedExecution::new(
+                    async { TaskRunOutput::completed("must not run") },
+                    tokio_util::sync::CancellationToken::new()
+                )
+            )
+            .await,
+        Err(TaskError::LimitExceeded(_))
+    ));
+    assert_eq!(
+        runtime.get(&owner, &id).await.unwrap().state,
+        TaskState::Running
+    );
+    assert!(matches!(
+        runtime.get(&owner, "chat-command-excess").await,
+        Err(TaskError::NotFound(_))
+    ));
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+    complete
+        .send(TaskRunOutput::completed("original complete"))
+        .unwrap();
+    runtime
+        .await_terminal(&owner, &queued, Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn adopted_cancellation_waits_for_real_completion_past_control_grace() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = TaskRuntimeConfig::new(dir.path());
+    config.limits.cancellation_grace = Duration::from_millis(10);
+    let runtime = Arc::new(TaskRuntime::open(config).unwrap());
+    runtime.register_runner(Arc::new(RedispatchProbeRunner {
+        calls: AtomicUsize::new(0),
+    }));
+    let owner = TaskOwner::new("real-terminal");
+    let task_id = "same-running-execution".to_owned();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (finish, completed) = tokio::sync::oneshot::channel();
+    runtime
+        .adopt_running(
+            task_id.clone(),
+            graph_spec(owner.clone(), "terminal evidence", Vec::new()),
+            authorization("agent-a"),
+            TaskAdoptedExecution::new(async move { completed.await.unwrap() }, cancel.clone()),
+        )
+        .await
+        .unwrap();
+    let control = tokio::spawn({
+        let runtime = runtime.clone();
+        let owner = owner.clone();
+        let task_id = task_id.clone();
+        async move { runtime.cancel(&owner, &task_id).await }
+    });
+    cancel.cancelled().await;
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    assert_eq!(
+        runtime.get(&owner, &task_id).await.unwrap().state,
+        TaskState::Running,
+        "a stop request and expired wait are not terminal evidence"
+    );
+    finish
+        .send(TaskRunOutput::completed(
+            "completed before stop took effect",
+        ))
+        .unwrap();
+    let record = control.await.unwrap().unwrap();
+    assert_eq!(record.state, TaskState::Completed);
+    assert_eq!(
+        record.result.unwrap().output,
+        "completed before stop took effect"
+    );
+}
+
+#[tokio::test]
 async fn authority_snapshot_is_per_attempt_and_stale_completion_is_suppressed() {
     let dir = tempfile::tempdir().unwrap();
     let sink = Arc::new(RecordingSink::default());
     let authority = Arc::new(MutableAuthority::new(TaskDeviceContext {
         device_id: Some("device-a".to_string()),
+        public_cwd: Some("/original".into()),
         device_name: Some("Desktop A".to_string()),
         host_profile: Some("desktop".to_string()),
         authority_epoch: Some("epoch-1".to_string()),
@@ -1972,6 +2820,7 @@ async fn authority_snapshot_is_per_attempt_and_stale_completion_is_suppressed() 
     authority
         .set(TaskDeviceContext {
             device_id: Some("device-a".to_string()),
+            public_cwd: Some("/original".into()),
             device_name: Some("Desktop A renamed".to_string()),
             host_profile: Some("desktop".to_string()),
             authority_epoch: Some("epoch-2".to_string()),
@@ -2295,6 +3144,7 @@ async fn retry_keeps_outstanding_delivery_for_the_previous_attempt() {
     let runner = Arc::new(FailThenSucceedRunner {
         calls: AtomicUsize::new(0),
         authorization_agents: Mutex::new(Vec::new()),
+        provenance: Mutex::new(Vec::new()),
     });
     runtime.register_runner(runner.clone());
     let owner = TaskOwner::new("chat-a");

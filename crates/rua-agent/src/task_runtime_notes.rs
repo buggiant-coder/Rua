@@ -43,35 +43,24 @@ impl TaskNotificationSink for TaskRuntimeNoteSink {
 
 pub async fn task_terminal_note(
     record: &rua_task::TaskRecord,
-    store: &rua_session::WorkspaceSessionStore,
+    _store: &rua_session::WorkspaceSessionStore,
 ) -> Result<RuntimeNote, TaskRunnerError> {
     let result = record
         .result
         .as_ref()
         .ok_or_else(|| TaskRunnerError::new("terminal task has no result"))?;
-    let epoch = record
+    let execution_directory = record
         .attempts
         .iter()
         .find(|attempt| attempt.attempt_no == record.attempt_no)
-        .and_then(|attempt| attempt.configuration_epoch.as_deref());
-    let execution_directory = match epoch {
-        Some(epoch) => store
-            .load_configuration_snapshot(record.spec.owner.chat_id(), epoch)
-            .await
-            .map_err(|error| TaskRunnerError::new(error.to_string()))?
-            .and_then(|snapshot| {
-                snapshot
-                    .get("capability_configuration")?
-                    .get(rua_session::EXECUTION_DIRECTORY_KEY)
-                    .cloned()
-            })
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|error| {
-                TaskRunnerError::new(format!("Invalid Task execution directory: {error}"))
-            })?,
-        None => None,
-    };
+        .and_then(|attempt| {
+            Some(Box::new(rua_session::ChatExecutionDirectory {
+                device_id: attempt.device.device_id.clone()?,
+                path: PathBuf::from(attempt.device.public_cwd.as_ref()?),
+                managed: false,
+                extra: Default::default(),
+            }))
+        });
     let terminal_status = match record.state {
         TaskState::Completed => "completed",
         TaskState::Failed => "failed",

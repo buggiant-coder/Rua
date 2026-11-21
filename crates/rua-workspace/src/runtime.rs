@@ -1709,6 +1709,7 @@ impl WorkspaceRuntime {
             )
             .with_toolkit(toolkit)
             .with_task_runtime(Arc::clone(&self.ctx.task_runtime))
+            .with_task_tool_router(self.ctx.task_tool_router.clone())
             .with_collaboration_runtime(Arc::clone(&self.ctx.collaboration_runtime))
             .with_chat_media_loader(self.chat_media_loader())
             .with_device_read_access(self.ctx.device_read_access.clone())

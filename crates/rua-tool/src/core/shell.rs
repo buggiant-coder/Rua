@@ -48,6 +48,28 @@ impl ShellTool {
         Self { executor }
     }
 
+    pub fn validate_arguments(args: &serde_json::Value) -> Result<()> {
+        validate_yield_seconds(args).map_err(rua_core::RuaError::from)?;
+        if !args["command"].is_string()
+            || args.get("device_id").is_some_and(|value| {
+                !value
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty() && id.trim() == id)
+            })
+            || args.get("cwd").is_some_and(|value| {
+                !value
+                    .as_str()
+                    .is_some_and(|cwd| !cwd.is_empty() && !cwd.contains('\0'))
+            })
+        {
+            return Err(rua_core::RuaError::Tool {
+                tool: "bash".into(),
+                message: "Expected a command string, optional nonempty device_id and cwd".into(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn spec() -> ToolSpec {
         ToolSpec {
             name: "bash".to_string(),
@@ -221,24 +243,7 @@ impl Tool for ShellTool {
     }
 
     async fn call(&self, args: serde_json::Value, ctx: ToolContext) -> Result<ToolResult> {
-        validate_yield_seconds(&args).map_err(rua_core::RuaError::from)?;
-        if !args["command"].is_string()
-            || args.get("device_id").is_some_and(|value| {
-                !value
-                    .as_str()
-                    .is_some_and(|id| !id.is_empty() && id.trim() == id)
-            })
-            || args.get("cwd").is_some_and(|value| {
-                !value
-                    .as_str()
-                    .is_some_and(|cwd| !cwd.is_empty() && !cwd.contains('\0'))
-            })
-        {
-            return Err(rua_core::RuaError::Tool {
-                tool: "bash".into(),
-                message: "Expected a command string, optional nonempty device_id and cwd".into(),
-            });
-        }
+        Self::validate_arguments(&args)?;
         if ctx.cancel.as_ref().is_some_and(|cancel| *cancel.borrow()) {
             return Err(rua_core::RuaError::Cancelled);
         }

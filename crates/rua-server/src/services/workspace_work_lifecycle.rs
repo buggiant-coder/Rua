@@ -111,7 +111,7 @@ impl WorkspaceWorkAuthority {
         }
     }
 
-    /// All non-terminal Task Attempts across every owner, with their real owner.
+    /// Running Attempts and terminal notification tails, with their real owner.
     async fn outstanding_tasks(&self) -> Result<Vec<rua_task::TaskRecord>, WorkspaceError> {
         self.task_runtime
             .outstanding_attempts()
@@ -141,20 +141,18 @@ impl WorkspaceWorkAuthority {
         // A Task keeps its authorizing Agent even if its Chat selects another.
         for record in self.outstanding_tasks().await? {
             let owner = record.spec.owner.chat_address.clone();
-            if record.attempts.is_empty() {
-                return Err(WorkspaceError::internal(
-                    "Outstanding Task has no authorization Attempt",
-                ));
-            }
-            if record
+            let attempt = record
                 .attempts
-                .last()
-                .is_none_or(|attempt| attempt.authorization_agent_id != agent_id)
-            {
+                .iter()
+                .find(|attempt| attempt.attempt_no == record.attempt_no)
+                .ok_or_else(|| {
+                    WorkspaceError::internal("Outstanding Task has no authorization Attempt")
+                })?;
+            if attempt.authorization_agent_id != agent_id {
                 continue;
             }
             work.units.push(WorkUnit {
-                attempt_no: record.attempts.last().map(|attempt| attempt.attempt_no),
+                attempt_no: Some(record.attempt_no),
                 kind: WorkKind::Task,
                 chat: owner,
                 id: record.task_id,
@@ -215,13 +213,15 @@ impl AgentWorkAuthority for WorkspaceWorkAuthority {
         for record in self.outstanding_tasks().await? {
             if record
                 .attempts
-                .last()
+                .iter()
+                .find(|attempt| attempt.attempt_no == record.attempt_no)
                 .is_none_or(|attempt| attempt.authorization_agent_id != agent_id)
+                || record.state.is_terminal()
             {
                 continue;
             }
             self.task_runtime
-                .cancel(&record.spec.owner, &record.task_id)
+                .cancel_attempt(&record.spec.owner, &record.task_id, record.attempt_no)
                 .await
                 .map_err(|error| {
                     WorkspaceError::internal(format!("Task cancellation failed: {error}"))

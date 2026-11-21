@@ -6,5 +6,7 @@ mod chats_lifecycle;
 mod support;
 #[path = "contract_chats_http/target_file_read.rs"]
 mod target_file_read;
+#[path = "contract_chats_http/task_approvals.rs"]
+mod task_approvals;
 #[path = "contract_chats_http/tasks.rs"]
 mod tasks;

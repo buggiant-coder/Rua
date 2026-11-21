@@ -43,7 +43,7 @@ use rua_core::tool::{ToolContext, ToolResult, ToolSchema};
 use crate::annotations::{ApprovalPolicy, ExtendedToolAnnotations};
 use crate::schema::ToolSpec;
 
-fn compact_task(record: &rua_task::TaskRecord) -> serde_json::Value {
+pub fn compact_task(record: &rua_task::TaskRecord) -> serde_json::Value {
     let mut task = serde_json::json!({
         "task_id": record.task_id,
         "status": record.state,
@@ -55,10 +55,21 @@ fn compact_task(record: &rua_task::TaskRecord) -> serde_json::Value {
     if !record.blocked_by.is_empty() {
         task["blocked_by"] = serde_json::json!(record.blocked_by);
     }
+    if let Some(attempt) = record
+        .attempts
+        .iter()
+        .find(|attempt| attempt.attempt_no == record.attempt_no)
+    {
+        if let (Some(device_id), Some(public_cwd)) =
+            (&attempt.device.device_id, &attempt.device.public_cwd)
+        {
+            task["execution"] = serde_json::json!({"device_id":device_id,"public_cwd":public_cwd});
+        }
+    }
     task
 }
 
-fn compact_task_list_item(record: &rua_task::TaskRecord) -> serde_json::Value {
+pub fn compact_task_list_item(record: &rua_task::TaskRecord) -> serde_json::Value {
     let mut task = compact_task(record);
     let description = record
         .spec
@@ -75,14 +86,57 @@ fn compact_task_list_item(record: &rua_task::TaskRecord) -> serde_json::Value {
     task
 }
 
+/// Routes Chat-owned Task tools to their execution Device. A local invocation
+/// returns None so the existing Tool implementation remains authoritative.
+#[async_trait]
+pub trait TaskToolRouter: Send + Sync {
+    async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<Option<ToolResult>, String>;
+}
+
 pub struct TaskRuntimeHandle {
     pub runtime: Arc<rua_task::TaskRuntime>,
+    pub router: Option<Arc<dyn TaskToolRouter>>,
 }
 
 impl TaskRuntimeHandle {
     pub fn new(runtime: Arc<rua_task::TaskRuntime>) -> Self {
-        Self { runtime }
+        Self {
+            runtime,
+            router: None,
+        }
     }
+
+    pub fn with_router(mut self, router: Arc<dyn TaskToolRouter>) -> Self {
+        self.router = Some(router);
+        self
+    }
+}
+
+async fn route_task_tool(
+    name: &str,
+    arguments: &serde_json::Value,
+    ctx: &ToolContext,
+) -> rua_core::Result<Option<ToolResult>> {
+    let Some(router) = ctx
+        .task_runtime
+        .as_ref()
+        .and_then(|handle| handle.downcast_ref::<TaskRuntimeHandle>())
+        .and_then(|handle| handle.router.as_ref())
+    else {
+        return Ok(None);
+    };
+    router
+        .execute(name, arguments.clone(), ctx)
+        .await
+        .map_err(|message| rua_core::RuaError::Tool {
+            tool: name.into(),
+            message,
+        })
 }
 
 pub struct TaskRunnerSessionHandle {
@@ -137,6 +191,75 @@ struct TaskCreateArgs {
     context_refs: Vec<rua_task::TaskContextRef>,
     #[serde(default)]
     depends_on: Vec<String>,
+}
+
+/// Build the same Task specification for local and remote acceptance.
+pub fn task_spec_from_context(
+    args: serde_json::Value,
+    ctx: &ToolContext,
+) -> rua_core::Result<rua_task::TaskSpec> {
+    let args: TaskCreateArgs =
+        serde_json::from_value(args).map_err(|e| rua_core::RuaError::Tool {
+            tool: "task_create".into(),
+            message: e.to_string(),
+        })?;
+
+    if !matches!(args.runner, rua_task::TaskRunnerSpec::Tool { .. }) {
+        return Err(rua_core::RuaError::Tool {
+            tool: "task_create".into(),
+            message:
+                "Task only executes background Tools; use chat_send for Agent or ACP collaboration"
+                    .into(),
+        });
+    }
+    if let rua_task::TaskRunnerSpec::Tool { tool_name, .. } = &args.runner {
+        if let Some(value) = ctx
+            .metadata
+            .get(super::introspect::EFFECTIVE_TOOL_NAMES_METADATA_KEY)
+            .or_else(|| ctx.metadata.get("chat_tool_allowlist"))
+        {
+            let allowed: Vec<String> = serde_json::from_value(value.clone()).map_err(|error| {
+                rua_core::RuaError::Security {
+                    message: format!("Invalid Chat tool allowlist: {error}"),
+                }
+            })?;
+            if !allowed.contains(tool_name) {
+                return Err(rua_core::RuaError::Security {
+                    message: format!(
+                        "Tool '{tool_name}' is not available in this Chat configuration"
+                    ),
+                });
+            }
+        }
+    }
+    let owner = task_owner_from_context(ctx);
+    let instruction = args.instruction.unwrap_or_else(|| match &args.runner {
+        rua_task::TaskRunnerSpec::Tool { tool_name, .. } => {
+            format!("Run tool {tool_name}")
+        }
+        _ => unreachable!("non-Tool Task runners are rejected above"),
+    });
+    let spec = rua_task::TaskSpec {
+        owner: owner.clone(),
+        instruction,
+        runner: args.runner,
+        context_refs: args.context_refs,
+        depends_on: args.depends_on,
+        origin: rua_task::TaskOrigin {
+            turn_id: ctx
+                .metadata
+                .get("turn_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            tool_call_id: ctx
+                .metadata
+                .get("tool_call_id")
+                .or_else(|| ctx.metadata.get("tool_use_id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+        },
+    };
+    Ok(spec)
 }
 
 pub struct TaskCreateTool;
@@ -238,66 +361,12 @@ impl Tool for TaskCreateTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> rua_core::Result<ToolResult> {
-        let args: TaskCreateArgs =
-            serde_json::from_value(args).map_err(|e| rua_core::RuaError::Tool {
-                tool: "task_create".into(),
-                message: e.to_string(),
-            })?;
-
+        if let Some(result) = route_task_tool(self.name(), &args, &ctx).await? {
+            return Ok(result);
+        }
+        let spec = task_spec_from_context(args, &ctx)?;
+        let owner = spec.owner.clone();
         let runtime = require_task_runtime(&ctx, "task_create")?;
-        if !matches!(args.runner, rua_task::TaskRunnerSpec::Tool { .. }) {
-            return Err(rua_core::RuaError::Tool {
-                tool: "task_create".into(),
-                message: "Task only executes background Tools; use chat_send for Agent or ACP collaboration".into(),
-            });
-        }
-        if let rua_task::TaskRunnerSpec::Tool { tool_name, .. } = &args.runner {
-            if let Some(value) = ctx
-                .metadata
-                .get(super::introspect::EFFECTIVE_TOOL_NAMES_METADATA_KEY)
-                .or_else(|| ctx.metadata.get("chat_tool_allowlist"))
-            {
-                let allowed: Vec<String> =
-                    serde_json::from_value(value.clone()).map_err(|error| {
-                        rua_core::RuaError::Security {
-                            message: format!("Invalid Chat tool allowlist: {error}"),
-                        }
-                    })?;
-                if !allowed.contains(tool_name) {
-                    return Err(rua_core::RuaError::Security {
-                        message: format!(
-                            "Tool '{tool_name}' is not available in this Chat configuration"
-                        ),
-                    });
-                }
-            }
-        }
-        let owner = task_owner_from_context(&ctx);
-        let instruction = args.instruction.unwrap_or_else(|| match &args.runner {
-            rua_task::TaskRunnerSpec::Tool { tool_name, .. } => {
-                format!("Run tool {tool_name}")
-            }
-            _ => unreachable!("non-Tool Task runners are rejected above"),
-        });
-        let spec = rua_task::TaskSpec {
-            owner: owner.clone(),
-            instruction,
-            runner: args.runner,
-            context_refs: args.context_refs,
-            depends_on: args.depends_on,
-            origin: rua_task::TaskOrigin {
-                turn_id: ctx
-                    .metadata
-                    .get("turn_id")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string),
-                tool_call_id: ctx
-                    .metadata
-                    .get("tool_use_id")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string),
-            },
-        };
         let authorization =
             rua_task::TaskAttemptAuthorization::new(ctx.agent_id.clone()).map_err(|message| {
                 rua_core::RuaError::Tool {
@@ -305,6 +374,19 @@ impl Tool for TaskCreateTool {
                     message,
                 }
             })?;
+        let authorization = authorization.with_origin(rua_task::TaskOrigin {
+            turn_id: ctx
+                .metadata
+                .get("turn_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            tool_call_id: ctx
+                .metadata
+                .get("tool_call_id")
+                .or_else(|| ctx.metadata.get("tool_use_id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        });
         let authorization = match ctx
             .metadata
             .get("chat_configuration_epoch")
@@ -424,6 +506,9 @@ impl Tool for TaskSendInputTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> rua_core::Result<ToolResult> {
+        if let Some(result) = route_task_tool(self.name(), &args, &ctx).await? {
+            return Ok(result);
+        }
         let args: TaskSendInputArgs =
             serde_json::from_value(args).map_err(|error| rua_core::RuaError::Tool {
                 tool: "task_send_input".into(),
@@ -506,6 +591,9 @@ impl Tool for TaskWatchTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> rua_core::Result<ToolResult> {
+        if let Some(result) = route_task_tool(self.name(), &args, &ctx).await? {
+            return Ok(result);
+        }
         let args: TaskIdArg =
             serde_json::from_value(args).map_err(|error| rua_core::RuaError::Tool {
                 tool: "Task_Watch".into(),
@@ -567,6 +655,9 @@ impl Tool for TaskUnwatchTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> rua_core::Result<ToolResult> {
+        if let Some(result) = route_task_tool(self.name(), &args, &ctx).await? {
+            return Ok(result);
+        }
         let args: TaskIdArg =
             serde_json::from_value(args).map_err(|error| rua_core::RuaError::Tool {
                 tool: "Task_Unwatch".into(),
@@ -677,6 +768,9 @@ impl Tool for TaskCancelTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> rua_core::Result<ToolResult> {
+        if let Some(result) = route_task_tool(self.name(), &args, &ctx).await? {
+            return Ok(result);
+        }
         let args: TaskCancelArgs =
             serde_json::from_value(args).map_err(|e| rua_core::RuaError::Tool {
                 tool: "task_cancel".into(),
@@ -761,6 +855,9 @@ impl Tool for TaskRetryTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> rua_core::Result<ToolResult> {
+        if let Some(result) = route_task_tool(self.name(), &args, &ctx).await? {
+            return Ok(result);
+        }
         let args: TaskRetryArgs =
             serde_json::from_value(args).map_err(|e| rua_core::RuaError::Tool {
                 tool: "task_retry".into(),
@@ -775,6 +872,19 @@ impl Tool for TaskRetryTool {
                     message,
                 }
             })?;
+        let authorization = authorization.with_origin(rua_task::TaskOrigin {
+            turn_id: ctx
+                .metadata
+                .get("turn_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            tool_call_id: ctx
+                .metadata
+                .get("tool_call_id")
+                .or_else(|| ctx.metadata.get("tool_use_id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        });
         let authorization = match ctx
             .metadata
             .get("chat_configuration_epoch")
@@ -871,6 +981,9 @@ impl Tool for TaskReadTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> rua_core::Result<ToolResult> {
+        if let Some(result) = route_task_tool(self.name(), &args, &ctx).await? {
+            return Ok(result);
+        }
         let args: TaskReadArgs =
             serde_json::from_value(args).map_err(|e| rua_core::RuaError::Tool {
                 tool: "task_read".into(),
@@ -1272,6 +1385,9 @@ impl Tool for TaskListTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> rua_core::Result<ToolResult> {
+        if let Some(result) = route_task_tool(self.name(), &args, &ctx).await? {
+            return Ok(result);
+        }
         let args: TaskListArgs =
             serde_json::from_value(args).map_err(|e| rua_core::RuaError::Tool {
                 tool: "task_list".into(),
@@ -1329,7 +1445,7 @@ struct TaskAwaitArgs {
 
 const DEFAULT_AWAIT_TIMEOUT_SECS: u64 = 30;
 
-fn normalize_id_list(value: &serde_json::Value) -> Vec<String> {
+pub fn normalize_id_list(value: &serde_json::Value) -> Vec<String> {
     match value {
         serde_json::Value::Array(arr) => arr
             .iter()
@@ -1448,6 +1564,9 @@ impl Tool for TaskAwaitTool {
         args: serde_json::Value,
         ctx: ToolContext,
     ) -> rua_core::Result<ToolResult> {
+        if let Some(result) = route_task_tool(self.name(), &args, &ctx).await? {
+            return Ok(result);
+        }
         let args: TaskAwaitArgs =
             serde_json::from_value(args).map_err(|e| rua_core::RuaError::Tool {
                 tool: "task_await".into(),

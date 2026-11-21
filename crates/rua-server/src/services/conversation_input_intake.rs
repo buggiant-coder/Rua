@@ -1,7 +1,7 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::FutureExt;
@@ -58,99 +58,20 @@ pub(crate) const TASK_WATCH_NOTIFICATION_META_KEY: &str = "task_watch_notificati
 pub(crate) const RUNTIME_OBSERVATION_META_KEY: &str = "runtime_observation";
 pub(crate) const RUNTIME_OBSERVATION_RECEIPT_META_KEY: &str = "runtime_observation_receipt_id";
 
-struct TaskWatchWakeReceipt {
-    address: ChatAddress,
-    sender: tokio::sync::oneshot::Sender<()>,
-}
+mod task_watch_wake_receipts;
+pub(crate) use task_watch_wake_receipts::TaskWatchWakeReceipts;
 
-#[derive(Clone, Default)]
-pub(crate) struct TaskWatchWakeReceipts {
-    inner: Arc<StdMutex<HashMap<String, TaskWatchWakeReceipt>>>,
-}
-
-struct TaskWatchWakeRegistration {
-    notification_id: String,
-    receipts: TaskWatchWakeReceipts,
-    receiver: Option<tokio::sync::oneshot::Receiver<()>>,
-}
-
-impl TaskWatchWakeReceipts {
-    fn register(
-        &self,
-        notification_id: String,
-        address: ChatAddress,
-    ) -> Result<TaskWatchWakeRegistration, String> {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if inner.contains_key(&notification_id) {
-            return Err(format!(
-                "Task Watch wake '{notification_id}' is already registered"
-            ));
-        }
-        inner.insert(
-            notification_id.clone(),
-            TaskWatchWakeReceipt { address, sender },
-        );
-        Ok(TaskWatchWakeRegistration {
-            notification_id,
-            receipts: self.clone(),
-            receiver: Some(receiver),
-        })
-    }
-
-    pub(crate) fn complete(&self, notification_id: &str) {
-        let receipt = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(notification_id);
-        if let Some(receipt) = receipt {
-            let _ = receipt.sender.send(());
-        }
-    }
-
-    pub(crate) fn complete_all_for_address(&self, address: &ChatAddress) {
-        let receipts = {
-            let mut inner = self
-                .inner
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let ids = inner
-                .iter()
-                .filter(|(_, receipt)| receipt.address == *address)
-                .map(|(notification_id, _)| notification_id.clone())
-                .collect::<Vec<_>>();
-            ids.into_iter()
-                .filter_map(|notification_id| inner.remove(&notification_id))
-                .collect::<Vec<_>>()
-        };
-        for receipt in receipts {
-            let _ = receipt.sender.send(());
-        }
-    }
-}
-
-impl TaskWatchWakeRegistration {
-    async fn wait(mut self) -> Result<(), String> {
-        self.receiver
-            .take()
-            .expect("Task Watch wake registration receiver")
-            .await
-            .map_err(|_| "Task Watch wake acknowledgement was dropped".to_string())
-    }
-}
-
-impl Drop for TaskWatchWakeRegistration {
-    fn drop(&mut self) {
-        self.receipts
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&self.notification_id);
-    }
+fn background_delivery_command_id(
+    kind: &str,
+    address: &ChatAddress,
+    observation_id: &str,
+) -> String {
+    use sha2::Digest;
+    let mut digest = sha2::Sha256::new();
+    digest.update(address.chat_id().as_str().as_bytes());
+    digest.update([0]);
+    digest.update(observation_id.as_bytes());
+    format!("{kind}-{}", hex::encode(digest.finalize()))
 }
 
 fn project_chat_mutation_error(error: rua_core::RuaError) -> DeviceCommandDeliveryError {
@@ -606,6 +527,7 @@ impl ConversationInputIntake {
     }
 
     pub fn with_conversation_authority(mut self, authority: Arc<ConversationAuthority>) -> Self {
+        self.task_watch_wake_receipts = authority.runtime_observation_receipts();
         self.conversation_authority = Some(authority);
         self
     }
@@ -750,6 +672,36 @@ impl ConversationInputIntake {
         let local_device_id = current_sync_device_id(&self.sync_device)
             .ok_or_else(|| "local Device identity is unavailable".to_string())?;
         let address = notification.owner.chat_address.clone();
+        let scope = ChatStore::resolve(self.session_sync.rua_root(), address.clone());
+        let placement =
+            crate::services::conversation_authority_target::load_chat_authority_placement_target(
+                scope.root(),
+                address.chat_id().as_str(),
+            )
+            .await?;
+        if placement.device_id != local_device_id {
+            let header = self.chat_header(&address).await?;
+            let id = notification.notification_id.clone();
+            let response = Box::pin(crate::services::conversation_control_dispatcher::dispatch_conversation_control(
+                self, crate::services::device_command_bus::ConversationControlDeviceCommand {
+                    agent_id: header.agent_id,
+                    command_id: background_delivery_command_id("task-watch", &address, &id),
+                    source_device_id: local_device_id,
+                    target_device_id: placement.device_id,
+                    address,
+                    authority_epoch: placement.authority_epoch,
+                    action: crate::services::device_command_bus::ConversationControlDeviceAction::DeliverTaskWatchOutput {
+                        notification: serde_json::to_value(notification).map_err(|error| error.to_string())?,
+                    },
+                },
+            )).await.map_err(|error| error.to_string())?;
+            return match response {
+                crate::services::device_command_bus::ConversationControlDeviceResponse::BackgroundResultDelivered { observation_id }
+                    if observation_id == id => Ok(()),
+                _ => Err("Task Watch was not acknowledged by the current Authority".into()),
+            };
+        }
+
         if notification.projection == rua_task::TaskLiveOutputProjection::ActivityOnly {
             let (source, _) = self
                 .runtime_observation_execution(&address, &local_device_id)
@@ -847,11 +799,20 @@ impl ConversationInputIntake {
         let note = rua_agent::task_runtime_notes::task_terminal_note(&record, &store)
             .await
             .map_err(|error| error.to_string())?;
-        if store
-            .load_collaboration_wake_state(record.spec.owner.chat_id())
-            .await
-            .map_err(|error| error.to_string())?
-            .suppressed
+        let local_device_id = current_sync_device_id(&self.sync_device)
+            .ok_or("Local Device identity is unavailable")?;
+        let placement =
+            crate::services::conversation_authority_target::load_chat_authority_placement_target(
+                scope.root(),
+                record.spec.owner.chat_id(),
+            )
+            .await?;
+        if placement.device_id == local_device_id
+            && store
+                .load_collaboration_wake_state(record.spec.owner.chat_id())
+                .await
+                .map_err(|error| error.to_string())?
+                .suppressed
         {
             let turns = store
                 .read_turn_range(record.spec.owner.chat_id(), 1, usize::MAX)
@@ -913,16 +874,6 @@ impl ConversationInputIntake {
             .ok_or_else(|| "local Device identity is unavailable".to_string())?;
         let root = self.session_sync.rua_root();
         let scope = ChatStore::resolve(root, address.clone());
-        if rua_session::WorkspaceSessionStore::new(scope.root())
-            .load_collaboration_wake_state(address.chat_id().as_str())
-            .await
-            .map_err(|error| error.to_string())?
-            .suppressed
-        {
-            return Err(
-                "Background result delivery is suppressed; result was retained".to_string(),
-            );
-        }
         if crate::services::chat_context::load_live_chat_header(root, address.chat_id().as_str())
             .await
             .map_err(|e| e.to_string())?
@@ -946,7 +897,7 @@ impl ConversationInputIntake {
             let agent_id = header.agent_id.clone();
             let response = Box::pin(crate::services::conversation_control_dispatcher::dispatch_conversation_control(self, crate::services::device_command_bus::ConversationControlDeviceCommand {
                 agent_id,
-                command_id: format!("background:{}", id), source_device_id: local_device_id,
+                command_id: background_delivery_command_id("background", &address, &id), source_device_id: local_device_id,
                 target_device_id: placement.device_id, address, authority_epoch: placement.authority_epoch,
                 action: crate::services::device_command_bus::ConversationControlDeviceAction::DeliverBackgroundResult { note: serde_json::to_value(note).map_err(|e| e.to_string())? },
             })).await.map_err(|e| e.to_string())?;
@@ -954,6 +905,16 @@ impl ConversationInputIntake {
                 crate::services::device_command_bus::ConversationControlDeviceResponse::BackgroundResultDelivered { observation_id } if observation_id == id => Ok(()),
                 _ => Err("Background delivery was not acknowledged by the current Authority".into()),
             };
+        }
+        if rua_session::WorkspaceSessionStore::new(scope.root())
+            .load_collaboration_wake_state(address.chat_id().as_str())
+            .await
+            .map_err(|error| error.to_string())?
+            .suppressed
+        {
+            return Err(
+                "Background result delivery is suppressed; result was retained".to_string(),
+            );
         }
         let mut extra = serde_json::Map::new();
         extra.insert(
@@ -1008,14 +969,10 @@ impl ConversationInputIntake {
             note.payload,
             rua_session::RuntimeNotePayload::TaskWatchOutput(_)
         );
-        let wake_receipt = if wait_for_watch {
-            Some(
-                self.task_watch_wake_receipts
-                    .register(observation_id.clone(), address.clone())?,
-            )
-        } else {
-            None
-        };
+        let wait_for_persistence = matches!(
+            note.payload,
+            rua_session::RuntimeNotePayload::TaskAttemptTerminal(_)
+        );
         let authority = self
             .conversation_authority
             .as_ref()
@@ -1038,6 +995,30 @@ impl ConversationInputIntake {
         if placement.device_id != local_device_id {
             return Err("Runtime observation is not on the current Conversation Authority".into());
         }
+        let store = rua_session::WorkspaceSessionStore::new(scope_root);
+        for turn in store
+            .read_turn_range(address.chat_id().as_str(), 1, usize::MAX)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .rev()
+        {
+            if (wait_for_persistence
+                || rua_session::TurnLifecycleStatus::parse(&turn.lifecycle.status)
+                    .is_syncable_conversation_state())
+                && store
+                    .read_runtime_notes_for_turn(address.chat_id().as_str(), &turn.turn_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .iter()
+                    .any(|saved| saved.runtime_note_id == observation_id)
+            {
+                // The receipt may have been lost, or the Authority may have restarted.
+                // A durable completed observation must not start another Turn or wait
+                // on a new receipt that no producer can ever complete.
+                return Ok(());
+            }
+        }
         let (driver, driver_detail) = self
             .conversation_driver_for(
                 execution_agent_id,
@@ -1054,12 +1035,6 @@ impl ConversationInputIntake {
             RUNTIME_OBSERVATION_META_KEY.to_string(),
             serde_json::to_value(note).map_err(|error| error.to_string())?,
         );
-        if wait_for_watch {
-            extra.insert(
-                RUNTIME_OBSERVATION_RECEIPT_META_KEY.to_string(),
-                serde_json::json!(observation_id),
-            );
-        }
         let configuration_key = crate::services::product_hooks::CHAT_HOOK_CONFIGURATION_META_KEY;
         let configuration = header.extra.get(configuration_key);
         if let Some(configuration) = configuration {
@@ -1077,6 +1052,26 @@ impl ConversationInputIntake {
             .map_err(|error| error.to_string())?,
         };
         extra.insert(rua_chat::TURN_AGENT_ASSIGNMENT_META_KEY.into(), assignment);
+        let mut wake_receipt = if wait_for_watch || wait_for_persistence {
+            let receipt = self
+                .task_watch_wake_receipts
+                .register(observation_id.clone(), address.clone());
+            if !receipt.fresh {
+                drop(transition);
+                return receipt.wait().await;
+            }
+            extra.insert(
+                RUNTIME_OBSERVATION_RECEIPT_META_KEY.into(),
+                serde_json::json!(receipt.receipt_id),
+            );
+            extra.insert(
+                SUBMISSION_ID_KEY.into(),
+                serde_json::json!(receipt.receipt_id),
+            );
+            Some(receipt)
+        } else {
+            None
+        };
         let pending = ConversationInputPayload {
             message: String::new(),
             model_override: None,
@@ -1104,6 +1099,9 @@ impl ConversationInputIntake {
                 true,
             )
             .await?;
+        if let Some(receipt) = wake_receipt.as_mut() {
+            receipt.enqueued = true;
+        }
         drop(transition);
         match acceptance {
             ConversationSubmissionAcceptance::Started {
@@ -1448,8 +1446,7 @@ impl ConversationInputIntake {
         &self,
         command: ConversationControlDeviceCommand,
     ) -> Result<ConversationControlDeviceResponse, DeviceCommandDeliveryError> {
-        self.apply_conversation_control_with_local_login(command, None)
-            .await
+        Box::pin(self.apply_conversation_control_with_local_login(command, None)).await
     }
 
     pub(crate) async fn apply_conversation_control_with_local_login(
@@ -1493,6 +1490,24 @@ impl ConversationInputIntake {
         }
 
         match command.action {
+            ConversationControlDeviceAction::DeliverTaskWatchOutput { notification } => {
+                let notification: rua_task::TaskWatchOutputNotification =
+                    serde_json::from_value(notification)
+                        .map_err(|error| reject("invalid_task_watch", error.to_string()))?;
+                if notification.owner.chat_address != target.address
+                    || notification.notification_id.is_empty()
+                {
+                    return Err(reject(
+                        "invalid_task_watch",
+                        "Task Watch belongs to another Chat or has no notification identity".into(),
+                    ));
+                }
+                let observation_id = notification.notification_id.clone();
+                Box::pin(self.deliver_task_watch_output(notification))
+                    .await
+                    .map_err(|error| reject("task_watch_delivery_failed", error))?;
+                Ok(ConversationControlDeviceResponse::BackgroundResultDelivered { observation_id })
+            }
             ConversationControlDeviceAction::DeliverBackgroundResult { note } => {
                 let note: rua_session::RuntimeNote = serde_json::from_value(note)
                     .map_err(|e| reject("invalid_background_result", e.to_string()))?;
@@ -7001,7 +7016,10 @@ impl ConversationInputIntake {
                     detail,
                 })
                 .await;
-                panic_task_watch_wake_receipts.complete_all_for_address(&panic_address);
+                panic_task_watch_wake_receipts.fail_all_for_address(
+                    &panic_address,
+                    "Runtime observation producer panicked before acknowledgement",
+                );
             }
         });
     }

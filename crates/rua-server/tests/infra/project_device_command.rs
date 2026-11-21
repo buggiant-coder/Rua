@@ -15,6 +15,38 @@ use rua_server::services::device_command_bus::{
 use tempfile::TempDir;
 use tokio::sync::{Mutex, Notify};
 
+fn chat_tasks(
+    state: &rua_server::AppState,
+    device_id: &str,
+    runtime: Arc<rua_task::TaskRuntime>,
+) -> Arc<rua_server::services::chat_task::ChatTaskService> {
+    Arc::new(rua_server::services::chat_task::ChatTaskService::new(
+        state.rua_root.clone(),
+        device_id.into(),
+        runtime,
+        Arc::new(
+            rua_server::services::task_authority::ServerTaskAuthorityResolver::new(
+                state.rua_root.clone(),
+                "desktop",
+                state.sync_device.clone(),
+            ),
+        ),
+        Arc::new(
+            rua_server::services::chat_file_read_admission::TargetFileReadContext::new(
+                state.rua_root.clone(),
+                device_id.into(),
+                state.project_catalog.clone(),
+                state.agent_service.clone(),
+                state.tool_catalog.clone(),
+                state.tool_config_store.clone(),
+                state.security.clone(),
+            ),
+        ),
+        state.device_network.clone(),
+        state.conversation_authority.clone(),
+    ))
+}
+
 struct RemoteTaskInputSink {
     inputs: Mutex<Vec<rua_task::TaskInput>>,
     accepted: Notify,
@@ -524,8 +556,21 @@ async fn remote_resource_validation_and_inspection_use_device_sessions_and_only_
         Arc::new(rua_project::ProjectCatalog::open(target_data.path().join("projects")).unwrap());
     let target_device_id =
         hex::encode(&iroh::SecretKey::from_bytes(&[2; 32]).public().as_bytes()[..8]);
-    let target_task_runtime = Arc::new(
-        rua_task::TaskRuntime::open(rua_task::TaskRuntimeConfig::new(target_data.path())).unwrap(),
+    let target_state = rua_server::AppState::from_tempdir(
+        target_data.path().into(),
+        rua_server::ServerProfile::Test,
+    );
+    let mut task_config = rua_task::TaskRuntimeConfig::new(target_data.path());
+    task_config.device = rua_task::TaskDeviceContext {
+        device_id: Some(target_device_id.clone()),
+        public_cwd: Some(target_repo.to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let target_task_runtime = Arc::new(rua_task::TaskRuntime::open(task_config).unwrap());
+    let target_tasks = chat_tasks(
+        &target_state,
+        &target_device_id,
+        target_task_runtime.clone(),
     );
     let remote_task_runner = Arc::new(RemoteTaskRunner {
         sink: Arc::new(RemoteTaskInputSink {
@@ -540,7 +585,7 @@ async fn remote_resource_validation_and_inspection_use_device_sessions_and_only_
             target_device_id.clone(),
         )
         .with_project_runtime(Arc::clone(&stores))
-        .with_task_runtime(Arc::clone(&target_task_runtime)),
+        .with_chat_task(target_tasks),
     );
     let target = build_peer(2, network_secret, vec![peer_entry(1)], Some(handler)).await;
     install_connectable_peer(&source, &target);
@@ -761,7 +806,7 @@ async fn remote_resource_validation_and_inspection_use_device_sessions_and_only_
     let task_id = target_task_runtime
         .create(
             rua_task::TaskSpec {
-                owner: task_owner,
+                owner: task_owner.clone(),
                 instruction: "Inspect remote Project".to_string(),
                 runner: rua_task::TaskRunnerSpec::Tool {
                     tool_name: "Fixture_RemoteProjectTask".to_string(),
@@ -789,71 +834,83 @@ async fn remote_resource_validation_and_inspection_use_device_sessions_and_only_
     })
     .await
     .unwrap();
-    let input = deliver_project_device_command_via_session(
+    use rua_server::services::chat_task::{ChatTaskAction, ChatTaskCommand, ChatTaskResponse};
+    use rua_server::services::device_command_bus::deliver_chat_task_via_session;
+    let input = deliver_chat_task_via_session(
         source.runtime.session_manager(),
-        &ProjectDeviceCommand {
-            command_id: "project-task-input-1".to_string(),
+        &ChatTaskCommand {
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
-            action: ProjectDeviceAction::SendTaskInput {
-                project_id: project.project_id.clone(),
-                chat_id: task_chat_id.to_string(),
+            owner: task_owner.clone(),
+            action: ChatTaskAction::Input {
                 task_id: task_id.clone(),
                 submission: rua_task::TaskInputSubmission::new(
                     "project-task-input-submission-1",
                     rua_task::TaskInput::Text {
-                        text: "remote-input".to_string(),
+                        text: "remote-input".into(),
                     },
                 )
                 .unwrap(),
             },
+            extra: Default::default(),
         },
         Duration::from_secs(5),
     )
     .await
     .unwrap();
-    match input {
-        ProjectDeviceResponse::TaskInput { acceptance } => {
-            assert!(acceptance.accepted);
-            assert_eq!(acceptance.task_id, task_id);
-            assert_eq!(acceptance.input_seq, 1);
-        }
-        other => panic!("unexpected Task Input response: {other:?}"),
-    }
+    let ChatTaskResponse::Value { value } = input else {
+        panic!("unexpected input response: {input:?}")
+    };
+    let acceptance: rua_task::TaskInputAcceptance = serde_json::from_value(value).unwrap();
+    assert!(acceptance.accepted);
+    assert_eq!(acceptance.task_id, task_id);
+    assert_eq!(acceptance.input_seq, 1);
     assert_eq!(
         remote_task_runner.sink.inputs.lock().await.as_slice(),
         &[rua_task::TaskInput::Text {
-            text: "remote-input".to_string()
+            text: "remote-input".into()
         }]
     );
-    let tasks = deliver_project_device_command_via_session(
+
+    let response = deliver_chat_task_via_session(
         source.runtime.session_manager(),
-        &ProjectDeviceCommand {
-            command_id: "project-task-list-1".to_string(),
+        &ChatTaskCommand {
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
-            action: ProjectDeviceAction::ListTasks {
-                project_id: project.project_id.clone(),
-                chat_id: task_chat_id.to_string(),
-                filter: rua_task::TaskListFilter::default(),
+            owner: task_owner.clone(),
+            action: ChatTaskAction::Get {
+                task_id: task_id.clone(),
             },
+            extra: Default::default(),
         },
         Duration::from_secs(5),
     )
     .await
     .unwrap();
-    let tasks = match tasks {
-        ProjectDeviceResponse::TaskList { tasks } => {
-            serde_json::from_value::<Vec<rua_task::TaskRecord>>(tasks).unwrap()
-        }
-        other => panic!("unexpected Task list response: {other:?}"),
+    let ChatTaskResponse::Record {
+        record,
+        reference: Some(reference),
+    } = response
+    else {
+        panic!("expected target Task evidence: {response:?}")
     };
+    assert_eq!(record.spec.owner, task_owner);
+    let source_tasks = chat_tasks(&state, &source.device_id, state.task_runtime.clone());
+    source_tasks.remember_reference(&reference).await.unwrap();
+    let tasks = source_tasks
+        .list_records(&task_owner, rua_task::TaskListFilter::default())
+        .await
+        .unwrap();
     assert_eq!(tasks.len(), 1);
-    assert_eq!(tasks[0].task_id, task_id);
-    assert_eq!(
-        tasks[0].spec.owner.chat_address,
-        rua_core::ChatAddress::new(task_chat_id)
-    );
+    assert_eq!(tasks[0]["task_id"], task_id);
+    assert_eq!(tasks[0]["availability"], "available");
+    assert_eq!(tasks[0]["execution"]["device_id"], target.device_id);
+    assert!(state
+        .task_runtime
+        .list(&task_owner, rua_task::TaskListFilter::default())
+        .await
+        .unwrap()
+        .is_empty());
 
     target.runtime.shutdown().await.unwrap();
     source.runtime.shutdown().await.unwrap();

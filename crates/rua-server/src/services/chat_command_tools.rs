@@ -37,6 +37,7 @@ pub struct ChatCommandToolService {
     network: Arc<DeviceNetworkAccess>,
     authority: Arc<ConversationAuthority>,
     approvals: Arc<rua_security::ApprovalAuthority>,
+    tasks: Arc<OnceLock<Arc<super::chat_task::ChatTaskService>>>,
 }
 
 impl ChatCommandToolService {
@@ -46,6 +47,7 @@ impl ChatCommandToolService {
         network: Arc<DeviceNetworkAccess>,
         authority: Arc<ConversationAuthority>,
         approvals: Arc<rua_security::ApprovalAuthority>,
+        tasks: Arc<OnceLock<Arc<super::chat_task::ChatTaskService>>>,
     ) -> Self {
         Self {
             sync_enabled,
@@ -53,6 +55,7 @@ impl ChatCommandToolService {
             network,
             authority,
             approvals,
+            tasks,
         }
     }
 
@@ -131,17 +134,30 @@ impl ChatCommandToolService {
         let ended = CancellationToken::new();
         let guard = ended.clone().drop_guard();
         let finished = CancellationToken::new();
+        let pending_adoption = Arc::new(AtomicBool::new(false));
+        let prepared_for_cleanup = Arc::new(OnceLock::<ChatCommandPreparation>::new());
         let cleanup = {
             let service = self.clone();
             let context = context.clone();
             let channel = channel.clone();
             let finished = finished.clone();
+            let pending_adoption = pending_adoption.clone();
+            let prepared_for_cleanup = prepared_for_cleanup.clone();
             tokio::spawn(async move {
                 tokio::select! {
                     biased;
                     _ = finished.cancelled() => {},
                     _ = ended.cancelled() => {
-                        let _ = service.control(&channel, &context, ChatCommandAction::Cancel).await;
+                        let response = service.control(&channel, &context, ChatCommandAction::Cancel).await;
+                        if let Some(preparation) = prepared_for_cleanup
+                            .get()
+                            .filter(|_| pending_adoption.load(Ordering::SeqCst))
+                        {
+                            // The caller can disappear after its reference is
+                            // durable but before adoption is accepted. Keep
+                            // the same execution identity and reconcile only.
+                            service.reconcile(&channel, &context, preparation, response, &pending_adoption).await;
+                        }
                     }
                 }
             })
@@ -166,6 +182,7 @@ impl ChatCommandToolService {
                 ))
             }
         };
+        let _ = prepared_for_cleanup.set((*preparation).clone());
 
         let started = AtomicBool::new(false);
         let cancel = CancellationToken::new();
@@ -174,18 +191,18 @@ impl ChatCommandToolService {
             _ = cancelled(ctx) => {
                 cancel.cancel();
                 let response = self.control(&channel, &context, ChatCommandAction::Cancel).await;
-                Ok(self.reconcile(&channel, &context, &preparation, response).await)
+                Ok(self.reconcile(&channel, &context, &preparation, response, &pending_adoption).await)
             },
             _ = channel.closed() => {
                 cancel.cancel();
                 if started.load(Ordering::SeqCst) {
                     let response = self.control(&channel, &context, ChatCommandAction::Status).await;
-                    Ok(self.reconcile(&channel, &context, &preparation, response).await)
+                    Ok(self.reconcile(&channel, &context, &preparation, response, &pending_adoption).await)
                 } else {
                     Err("Execution connection closed before command start".into())
                 }
             },
-            result = self.run(&channel, &context, &preparation, ctx, &cancel, &started) => result,
+            result = self.run(&channel, &context, &preparation, ctx, &cancel, &started, &pending_adoption) => result,
         };
         if !started.load(Ordering::SeqCst) && !cancel.is_cancelled() {
             let _ = self
@@ -198,6 +215,7 @@ impl ChatCommandToolService {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run(
         &self,
         channel: &DeviceSessionCommandChannel,
@@ -206,6 +224,7 @@ impl ChatCommandToolService {
         ctx: &ToolContext,
         cancel: &CancellationToken,
         started: &AtomicBool,
+        pending_adoption: &AtomicBool,
     ) -> Result<ToolResult, String> {
         if let Some(instructions) = &ctx.agents_instructions {
             if let AgentsInstructionDecision::Reconsider { reason } = instructions
@@ -258,6 +277,11 @@ impl ChatCommandToolService {
                     dispatch_token: permit.token(),
                 });
         started.store(true, Ordering::SeqCst);
+        let foreground_deadline = rua_tool::foreground_wait_limit(
+            &rua_tool::ShellTool::spec().to_tool_definition(),
+            &context.call.arguments,
+        )
+        .map(|wait| tokio::time::Instant::now() + wait);
         // Start is deliberately outside the polling loop: a lost receipt is not
         // permission to run the command again, even on another connection.
         let mut response = dispatch(channel, &invocation, ChatCommandAction::Start).await;
@@ -290,8 +314,15 @@ impl ChatCommandToolService {
             return Ok(result);
         }
         let mut failures = 0;
+        let mut adoption_requested = false;
+        let mut direct_adoption_reply = false;
         loop {
             match response {
+                Ok(ChatCommandResponse::Task { task, reference }) => {
+                    return Ok(self
+                        .project_task(context, preparation, *task, reference)
+                        .await);
+                }
                 Ok(ChatCommandResponse::Operation { operation }) => {
                     failures = 0;
                     if !valid_snapshot(context, preparation, &operation) {
@@ -302,6 +333,8 @@ impl ChatCommandToolService {
                         ));
                     }
                     if operation.state != ChatCommandState::Running {
+                        self.resolve_unaccepted_adoption(context, pending_adoption)
+                            .await;
                         if !self.invocation_active(context).await {
                             return Ok(unknown(
                                 context,
@@ -311,8 +344,34 @@ impl ChatCommandToolService {
                         }
                         return Ok(project_result(context, preparation, *operation));
                     }
+                    if !adoption_requested
+                        && foreground_deadline
+                            .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+                    {
+                        let Some(tasks) = self.tasks.get() else {
+                            return Ok(unknown(
+                                context,
+                                preparation,
+                                "Task routing is unavailable; target adoption was not requested",
+                            ));
+                        };
+                        pending_adoption.store(true, Ordering::SeqCst);
+                        if let Err(error) = tasks.register_foreground(context, preparation).await {
+                            return Ok(unknown(context, preparation, &format!("Could not retain the Task execution reference before adoption: {error}")));
+                        }
+                        // A lost adoption acknowledgement is reconciled through Status,
+                        // never another Adopt or Start. The target owns acceptance.
+                        adoption_requested = true;
+                        direct_adoption_reply = true;
+                        response = dispatch(channel, context, ChatCommandAction::Adopt).await;
+                        continue;
+                    }
                 }
                 Ok(ChatCommandResponse::Policy { response }) => {
+                    if direct_adoption_reply {
+                        self.resolve_unaccepted_adoption(context, pending_adoption)
+                            .await;
+                    }
                     return Ok(unknown(
                         context,
                         preparation,
@@ -334,6 +393,7 @@ impl ChatCommandToolService {
                 }
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
+            direct_adoption_reply = false;
             response = dispatch(channel, context, ChatCommandAction::Status).await;
         }
     }
@@ -449,12 +509,20 @@ impl ChatCommandToolService {
         context: &ChatCommandContext,
         preparation: &ChatCommandPreparation,
         mut response: Result<ChatCommandResponse, String>,
+        pending_adoption: &AtomicBool,
     ) -> ToolResult {
         for _ in 0..3 {
+            if let Ok(ChatCommandResponse::Task { task, reference }) = response {
+                return self
+                    .project_task(context, preparation, *task, reference)
+                    .await;
+            }
             if let Ok(ChatCommandResponse::Operation { operation }) = response {
                 if valid_snapshot(context, preparation, &operation)
                     && operation.state != ChatCommandState::Running
                 {
+                    self.resolve_unaccepted_adoption(context, pending_adoption)
+                        .await;
                     return project_result(context, preparation, *operation);
                 }
             }
@@ -468,6 +536,95 @@ impl ChatCommandToolService {
             preparation,
             "No target terminal evidence was available; the command was not replayed",
         )
+    }
+
+    async fn resolve_unaccepted_adoption(
+        &self,
+        context: &ChatCommandContext,
+        pending: &AtomicBool,
+    ) {
+        if !pending.load(Ordering::SeqCst) {
+            return;
+        }
+        if let Some(tasks) = self.tasks.get() {
+            let owner = rua_task::TaskOwner::from_address(context.call.address.clone());
+            if let Err(error) = tasks.mark_not_accepted(&owner, &context.execution_id).await {
+                tracing::warn!(%error, execution_id = %context.execution_id, "Unaccepted Task reference remains pending");
+            }
+        }
+    }
+
+    async fn project_task(
+        &self,
+        context: &ChatCommandContext,
+        preparation: &ChatCommandPreparation,
+        task: rua_task::TaskRecord,
+        reference: Option<Box<rua_session::task_refs::ChatTaskRef>>,
+    ) -> ToolResult {
+        let attempt = task
+            .attempts
+            .iter()
+            .find(|attempt| attempt.attempt_no == task.attempt_no);
+        if task.task_id != context.execution_id
+            || task.spec.owner.chat_address != context.call.address
+            || task.spec.origin.turn_id.as_deref() != Some(&context.call.turn_id)
+            || task.spec.origin.tool_call_id.as_deref() != Some(&context.call.tool_call_id)
+            || !attempt.is_some_and(|attempt| {
+                attempt.device.device_id.as_deref() == Some(&preparation.device_id)
+                    && attempt.device.public_cwd.as_deref() == Some(&preparation.public_cwd)
+            })
+        {
+            return unknown(
+                context,
+                preparation,
+                "The target Task acceptance did not match this execution",
+            );
+        }
+        let persistence = match self.tasks.get() {
+            Some(tasks) => match reference {
+                Some(reference)
+                    if reference.task_id == task.task_id
+                        && reference.owner == task.spec.owner
+                        && reference.execution.device_id == preparation.device_id
+                        && reference.execution.public_cwd == preparation.public_cwd =>
+                {
+                    tasks.remember_reference(&reference).await
+                }
+                _ => tasks.remember_task(&task).await,
+            },
+            None => Err("Chat Task routing is unavailable".into()),
+        };
+        let mut result = ToolResult::text(
+            &context.call.tool_call_id,
+            format!("Tool call moved to Background Tool Task on Device {} in {}. task_id: {}. The target accepted the original execution once; its results will return to this Chat.", preparation.device_id, preparation.public_cwd, task.task_id),
+        );
+        result.name = Some("bash".into());
+        result
+            .metadata
+            .insert("background_task_id".into(), json!(task.task_id));
+        result.metadata.insert(
+            "origin_tool_call_id".into(),
+            json!(context.call.tool_call_id),
+        );
+        result
+            .metadata
+            .insert("owner_agent_id".into(), json!(context.call.agent_id));
+        result.metadata.insert(
+            "owner_conversation_id".into(),
+            json!(context.call.address.chat_id().as_str()),
+        );
+        result
+            .metadata
+            .insert("execution_location".into(), location(preparation));
+        result
+            .metadata
+            .insert("execution_id".into(), json!(context.execution_id));
+        if let Err(error) = persistence {
+            result
+                .metadata
+                .insert("task_reference_error".into(), json!(error));
+        }
+        result
     }
 }
 

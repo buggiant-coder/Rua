@@ -59,6 +59,7 @@ export interface TaskSpec {
 
 export interface TaskDeviceContext {
   device_id?: string | null;
+  public_cwd?: string | null;
   device_name?: string | null;
   host_profile?: string | null;
   authority_epoch?: string | null;
@@ -108,6 +109,8 @@ export interface TaskAttempt {
 
 export interface TaskRecord {
   task_id: string;
+  availability?: "available" | "unknown";
+  execution?: { device_id: string; public_cwd: string };
   spec: TaskSpec;
   state: TaskState;
   attempt_no: number;
@@ -121,6 +124,18 @@ export interface TaskRecord {
   attempts: TaskAttempt[];
   waiting_on: string[];
   blocked_by: string[];
+}
+
+export interface UnconfirmedTask {
+  task_id: string;
+  availability: "unknown";
+  execution: { device_id: string; public_cwd: string };
+}
+
+export type TaskListItem = TaskRecord | UnconfirmedTask;
+
+export function isTaskRecord(task: TaskListItem | null): task is TaskRecord {
+  return task != null && "spec" in task;
 }
 
 export interface TaskEvent {

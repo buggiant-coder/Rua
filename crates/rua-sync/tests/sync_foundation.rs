@@ -14,6 +14,8 @@ mod control_store;
 mod device_list_adapter;
 #[path = "sync_foundation/evergreen_chat_adapter.rs"]
 mod evergreen_chat_adapter;
+#[path = "sync_foundation/history_authority.rs"]
+mod history_authority;
 #[path = "sync_foundation/inbound_inbox.rs"]
 mod inbound_inbox;
 #[path = "sync_foundation/liveactor_events.rs"]
@@ -63,3 +65,5 @@ mod transport_close;
 
 #[path = "sync_foundation/project_sidebar.rs"]
 mod project_sidebar;
+#[path = "sync_foundation/task_refs.rs"]
+mod task_refs;

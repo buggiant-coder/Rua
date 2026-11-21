@@ -446,6 +446,19 @@ pub struct ApprovalAuthority {
     tx: broadcast::Sender<ApprovalEvent>,
 }
 
+fn same_approval_identity(left: &ApprovalRequest, right: &ApprovalRequest) -> bool {
+    left.id == right.id
+        && left.agent_id == right.agent_id
+        && left.owner == right.owner
+        && left.turn_id == right.turn_id
+        && left.tool_call_id == right.tool_call_id
+        && left.tool_name == right.tool_name
+        && left.trigger == right.trigger
+        && left.tool_call == right.tool_call
+        && left.created_at == right.created_at
+        && left.reuse_options == right.reuse_options
+}
+
 pub trait AgentScopeRuleStore: Send + Sync + std::fmt::Debug {
     fn list_agent_rules(&self, agent_id: &str) -> Result<Vec<ApprovalReuseRule>, String>;
     fn upsert_agent_rule(&self, agent_id: &str, rule: &ApprovalReuseRule) -> Result<(), String>;
@@ -814,7 +827,7 @@ impl ApprovalAuthority {
         id: &str,
         decision: ApprovalDecision,
     ) -> Result<ApprovalRequest, ApprovalAuthorityError> {
-        self.decide_inner(None, id, decision, None).await
+        self.decide_inner(None, id, decision, None, None).await
     }
 
     pub async fn decide_for_agent(
@@ -823,7 +836,8 @@ impl ApprovalAuthority {
         id: &str,
         decision: ApprovalDecision,
     ) -> Result<ApprovalRequest, ApprovalAuthorityError> {
-        self.decide_inner(Some(agent_id), id, decision, None).await
+        self.decide_inner(Some(agent_id), id, decision, None, None)
+            .await
     }
 
     /// The caller obtains the user identity from the authority's own authentication context.
@@ -837,8 +851,103 @@ impl ApprovalAuthority {
         if agent_id.trim().is_empty() {
             return Err(ApprovalAuthorityError::NotFound(id.into()));
         }
-        self.decide_inner(Some(agent_id), id, decision, Some(authenticated_user_id))
-            .await
+        self.decide_inner(
+            Some(agent_id),
+            id,
+            decision,
+            Some(authenticated_user_id),
+            None,
+        )
+        .await
+    }
+
+    /// The server has verified this original card against its accepting Device.
+    /// Commit on the Chat authority without publishing a second pending card.
+    pub async fn decide_relayed_for_authenticated_user(
+        &self,
+        original: &ApprovalRequest,
+        decision: ApprovalDecision,
+        authenticated_user_id: &str,
+    ) -> Result<ApprovalRequest, ApprovalAuthorityError> {
+        if !matches!(decision, ApprovalDecision::AllowChat { .. })
+            || !matches!(
+                original.status,
+                ApprovalStatus::Pending | ApprovalStatus::Approved
+            )
+            || original.agent_id.trim().is_empty()
+            || (original.status == ApprovalStatus::Pending
+                && (original.decided_at.is_some()
+                    || original.decided_by.is_some()
+                    || original.authenticated_user_decision.is_some()))
+        {
+            return Err(ApprovalAuthorityError::InvalidState {
+                id: original.id.clone(),
+                current: original.status,
+                attempted: "persist a relayed Chat decision",
+            });
+        }
+        self.decide_inner(
+            Some(&original.agent_id),
+            &original.id,
+            decision,
+            Some(authenticated_user_id),
+            Some(original),
+        )
+        .await
+    }
+
+    /// Apply the current Chat authority's verified receipt to the existing card.
+    /// Its rule is synchronized from that authority; this Device never rewrites it.
+    pub async fn apply_chat_authority_decision(
+        &self,
+        original: &ApprovalRequest,
+        decided: &ApprovalRequest,
+    ) -> Result<ApprovalRequest, ApprovalAuthorityError> {
+        let mut requests = self.requests.write().await;
+        let current = requests
+            .get(&original.id)
+            .ok_or_else(|| ApprovalAuthorityError::NotFound(original.id.clone()))?;
+        let authenticated = decided
+            .authenticated_user_decision
+            .as_ref()
+            .is_some_and(|decision| {
+                !decision.user_id.trim().is_empty()
+                    && decision.decision == AuthenticatedApprovalDecision::AllowChat
+            });
+        if !same_approval_identity(current, original)
+            || !same_approval_identity(original, decided)
+            || decided.status != ApprovalStatus::Approved
+            || !authenticated
+            || decided.decided_at.is_none()
+            || decided.decided_by.is_none()
+            || decided.owner.as_chat_address().is_none()
+            || !decided
+                .reuse_options
+                .iter()
+                .any(|option| option.scope == ApprovalReuseScope::Chat)
+        {
+            return Err(ApprovalAuthorityError::InvalidState {
+                id: original.id.clone(),
+                current: current.status,
+                attempted: "apply a different Chat authority decision",
+            });
+        }
+        if current == decided {
+            return Ok(current.clone());
+        }
+        if current.status != ApprovalStatus::Pending {
+            return Err(ApprovalAuthorityError::InvalidState {
+                id: original.id.clone(),
+                current: current.status,
+                attempted: "replace an existing decision",
+            });
+        }
+        requests.insert(original.id.clone(), decided.clone());
+        let _ = self.tx.send(ApprovalEvent {
+            event: "approval.updated".into(),
+            request: decided.clone(),
+        });
+        Ok(decided.clone())
     }
 
     async fn decide_inner(
@@ -847,6 +956,7 @@ impl ApprovalAuthority {
         id: &str,
         decision: ApprovalDecision,
         authenticated_user_id: Option<&str>,
+        relayed: Option<&ApprovalRequest>,
     ) -> Result<ApprovalRequest, ApprovalAuthorityError> {
         // Persistent decisions commit the rule and resolve the card together. Use the
         // same lock order as readers that inspect both a rule and its source request.
@@ -855,13 +965,61 @@ impl ApprovalAuthority {
             _ => Some(self.reuse_rules.write().await),
         };
         let mut requests = self.requests.write().await;
-        let request = requests
-            .get_mut(id)
-            .ok_or_else(|| ApprovalAuthorityError::NotFound(id.into()))?;
+        let mut request = match (requests.get(id), relayed) {
+            (Some(existing), Some(original))
+                if !same_approval_identity(existing, original)
+                    || (original.status != ApprovalStatus::Pending && original != existing) =>
+            {
+                return Err(ApprovalAuthorityError::InvalidState {
+                    id: id.into(),
+                    current: existing.status,
+                    attempted: "replace the original approval identity",
+                });
+            }
+            (Some(existing), _) => existing.clone(),
+            (None, Some(original)) if original.status == ApprovalStatus::Pending => {
+                original.clone()
+            }
+            (None, _) => return Err(ApprovalAuthorityError::NotFound(id.into())),
+        };
         if expected_agent_id.is_some_and(|agent_id| request.agent_id != agent_id) {
             return Err(ApprovalAuthorityError::NotFound(id.into()));
         }
 
+        if relayed.is_some() && request.status == ApprovalStatus::Approved {
+            if let ApprovalDecision::AllowChat {
+                decided_by,
+                matcher,
+            } = &decision
+            {
+                let same_user = request
+                    .authenticated_user_decision
+                    .as_ref()
+                    .is_some_and(|prior| {
+                        Some(prior.user_id.as_str()) == authenticated_user_id
+                            && !prior.user_id.trim().is_empty()
+                            && prior.decision == AuthenticatedApprovalDecision::AllowChat
+                    });
+                if same_user && request.decided_by.as_ref() == Some(decided_by) {
+                    let rules = self
+                        .current_owner_rules(
+                            &request.owner,
+                            rule_cache.as_ref().expect("AllowChat locks rules"),
+                        )
+                        .map_err(ApprovalAuthorityError::Store)?;
+                    if rules.iter().any(|rule| {
+                        rule.source_approval_id == id
+                            && rule.agent_id == request.agent_id
+                            && rule.scope == ApprovalReuseScope::Chat
+                            && rule.enabled
+                            && rule.effect == PermissionRuleEffect::Allow
+                            && &rule.matcher == matcher
+                    }) {
+                        return Ok(request);
+                    }
+                }
+            }
+        }
         if request.status != ApprovalStatus::Pending {
             return Err(ApprovalAuthorityError::InvalidState {
                 id: id.into(),
@@ -1070,6 +1228,7 @@ impl ApprovalAuthority {
                 extra: BTreeMap::new(),
             });
         let updated = request.clone();
+        requests.insert(id.into(), updated.clone());
         let _ = self.tx.send(ApprovalEvent {
             event: "approval.updated".into(),
             request: updated.clone(),

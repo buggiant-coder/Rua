@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use rua_core::ChatStore;
 use rua_task::{
     TaskAttemptAuthorization, TaskAuthorityError, TaskAuthorityResolver, TaskDeviceContext,
-    TaskOwner,
+    TaskOwner, TaskRunnerSpec, TaskSpec,
 };
 
 use crate::services::device_context::{current_sync_device_id, device_name_snapshot};
@@ -73,15 +73,145 @@ impl ServerTaskAuthorityResolver {
 
 #[async_trait]
 impl TaskAuthorityResolver for ServerTaskAuthorityResolver {
-    async fn accept(&self, owner: &TaskOwner) -> Result<TaskDeviceContext, TaskAuthorityError> {
+    async fn accept_attempt(
+        &self,
+        spec: &TaskSpec,
+        authorization: &TaskAttemptAuthorization,
+        prior: Option<&TaskDeviceContext>,
+    ) -> Result<TaskDeviceContext, TaskAuthorityError> {
         let (device, local_device_id) = self.local_device()?;
-        let placement = self.placement(owner).await?;
-        if placement.device_id != local_device_id {
-            return Err(TaskAuthorityError::Rejected(format!(
-                "Chat authority is Device '{}', not local Device '{}'",
-                placement.device_id, local_device_id
-            )));
+        let owner = &spec.owner;
+        let scope = ChatStore::resolve(&self.data_dir, owner.chat_address.clone());
+        let store = rua_session::WorkspaceSessionStore::new(scope.root());
+        let header = store
+            .load_chat_header(owner.chat_id())
+            .await
+            .map_err(|error| TaskAuthorityError::Unavailable(error.to_string()))?
+            .ok_or_else(|| {
+                TaskAuthorityError::Rejected("Task owning Chat does not exist".into())
+            })?;
+        if header.metadata.archived || header.agent_id != authorization.agent_id {
+            return Err(TaskAuthorityError::Rejected(
+                "Task owning Chat or selected Agent changed".into(),
+            ));
         }
+        if let Some(value) = header
+            .extra
+            .get(rua_session::collaboration::COLLABORATION_META_KEY)
+        {
+            let descriptor: rua_session::collaboration::CollaborationDescriptor =
+                serde_json::from_value(value.clone()).map_err(|error| {
+                    TaskAuthorityError::Rejected(format!("Invalid collaboration state: {error}"))
+                })?;
+            if !descriptor.configuration.is_ready() {
+                return Err(TaskAuthorityError::Rejected(
+                    "Collaboration configuration is not ready".into(),
+                ));
+            }
+        }
+        let configuration = header.extra.get("hook_configuration").ok_or_else(|| {
+            TaskAuthorityError::Unavailable("Task Chat configuration is unavailable".into())
+        })?;
+        if authorization.configuration_epoch.as_deref()
+            != configuration
+                .get("epoch")
+                .and_then(serde_json::Value::as_str)
+        {
+            return Err(TaskAuthorityError::Rejected(
+                "Task Attempt authorization configuration is stale".into(),
+            ));
+        }
+        let captured: rua_session::ChatExecutionDirectory = serde_json::from_value(
+            configuration
+                .get("capability_configuration")
+                .and_then(|value| value.get(rua_session::EXECUTION_DIRECTORY_KEY))
+                .cloned()
+                .ok_or_else(|| {
+                    TaskAuthorityError::Unavailable(
+                        "Task captured execution directory is unavailable".into(),
+                    )
+                })?,
+        )
+        .map_err(|error| TaskAuthorityError::Rejected(error.to_string()))?;
+        let layout = rua_core::runtime_layout::RuntimeLayout::from_current_process(None);
+        let requested = if let Some(prior) = prior {
+            if prior.device_id.as_deref() != Some(&local_device_id) {
+                return Err(TaskAuthorityError::Rejected(
+                    "Retry belongs to the original execution Device".into(),
+                ));
+            }
+            PathBuf::from(prior.public_cwd.as_deref().ok_or_else(|| {
+                TaskAuthorityError::Unavailable(
+                    "Original Task execution directory is unavailable".into(),
+                )
+            })?)
+        } else {
+            let arguments = match &spec.runner {
+                TaskRunnerSpec::Tool {
+                    tool_name,
+                    arguments,
+                } if tool_name == "bash" => Some(arguments),
+                _ => None,
+            };
+            let selected = arguments
+                .and_then(|args| args["device_id"].as_str())
+                .unwrap_or(&captured.device_id);
+            if selected != local_device_id {
+                return Err(TaskAuthorityError::Rejected(
+                    "Task must be accepted on its selected execution Device".into(),
+                ));
+            }
+            match arguments.and_then(|args| args["cwd"].as_str()) {
+                Some(cwd) => {
+                    if captured.device_id != local_device_id
+                        && !rua_core::execution_directory::is_device_absolute_path(cwd)
+                    {
+                        return Err(TaskAuthorityError::Rejected(
+                            "Remote Task cwd must be an absolute public path".into(),
+                        ));
+                    }
+                    PathBuf::from(cwd)
+                }
+                None if captured.device_id == local_device_id => captured.path.clone(),
+                None => match &layout.linux_compat {
+                    Some(guest) => guest.guest_home.clone(),
+                    None => dirs::home_dir().ok_or_else(|| {
+                        TaskAuthorityError::Unavailable("Target home is unavailable".into())
+                    })?,
+                },
+            }
+        };
+        let base =
+            if prior.is_none() && !requested.is_absolute() && captured.device_id == local_device_id
+            {
+                captured
+                    .host_path()
+                    .map_err(|error| TaskAuthorityError::Unavailable(error.to_string()))?
+            } else {
+                self.data_dir.clone()
+            };
+        let fs = rua_tool::WorkspaceFs::for_execution(&base, layout)
+            .map_err(|error| TaskAuthorityError::Unavailable(error.to_string()))?;
+        let host = fs
+            .resolve(&requested)
+            .map_err(|error| TaskAuthorityError::Unavailable(error.to_string()))?;
+        if !host.is_dir() {
+            return Err(TaskAuthorityError::Unavailable(
+                "Task execution directory is not available".into(),
+            ));
+        }
+        let public_cwd = fs
+            .public_path_from_host(&host)
+            .and_then(|path| path.to_str().map(str::to_owned))
+            .ok_or_else(|| {
+                TaskAuthorityError::Unavailable("Task directory has no public path".into())
+            })?;
+        if prior.is_some_and(|prior| prior.public_cwd.as_deref() != Some(public_cwd.as_str())) {
+            return Err(TaskAuthorityError::Rejected(
+                "Original Task directory now resolves elsewhere".into(),
+            ));
+        }
+        let placement = self.placement(owner).await?;
         let device_name = device_name_snapshot(&self.data_dir, &local_device_id).or_else(|| {
             Some(rua_sync::device_list::default_friendly_name(
                 &self.host_profile,
@@ -90,74 +220,23 @@ impl TaskAuthorityResolver for ServerTaskAuthorityResolver {
         });
         Ok(TaskDeviceContext {
             device_id: Some(local_device_id),
+            public_cwd: Some(public_cwd),
             device_name,
             host_profile: Some(self.host_profile.clone()),
             authority_epoch: Some(placement.authority_epoch.to_string()),
         })
     }
 
-    async fn accept_attempt(
-        &self,
-        owner: &TaskOwner,
-        authorization: &TaskAttemptAuthorization,
-    ) -> Result<TaskDeviceContext, TaskAuthorityError> {
-        let scope = ChatStore::resolve(&self.data_dir, owner.chat_address.clone());
-        let header = rua_session::WorkspaceSessionStore::new(scope.root())
-            .load_chat_header(owner.chat_id())
-            .await
-            .map_err(|error| TaskAuthorityError::Unavailable(error.to_string()))?;
-        if let Some(header) = header {
-            if let Some(value) = header
-                .extra
-                .get(rua_session::collaboration::COLLABORATION_META_KEY)
-            {
-                let descriptor: rua_session::collaboration::CollaborationDescriptor =
-                    serde_json::from_value(value.clone()).map_err(|error| {
-                        TaskAuthorityError::Rejected(format!(
-                            "Invalid collaboration configuration state: {error}"
-                        ))
-                    })?;
-                if !descriptor.configuration.is_ready() {
-                    return Err(TaskAuthorityError::Rejected(format!(
-                        "Collaboration Chat configuration is not ready for source epoch {}",
-                        descriptor.configuration.desired_source_epoch
-                    )));
-                }
-                let current_epoch = header
-                    .extra
-                    .get("hook_configuration")
-                    .and_then(|configuration| configuration.get("epoch"))
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| {
-                        TaskAuthorityError::Rejected(
-                            "Collaboration Chat configuration head is unavailable".to_string(),
-                        )
-                    })?;
-                if authorization.configuration_epoch.as_deref() != Some(current_epoch) {
-                    return Err(TaskAuthorityError::Rejected(format!(
-                        "Task configuration epoch is stale; current child epoch is {current_epoch}"
-                    )));
-                }
-            }
-        }
-        self.accept(owner).await
-    }
-
     async fn is_current(
         &self,
-        owner: &TaskOwner,
+        _owner: &TaskOwner,
         accepted: &TaskDeviceContext,
     ) -> Result<bool, TaskAuthorityError> {
-        let local_device_id = current_sync_device_id(&self.sync_device).ok_or_else(|| {
-            TaskAuthorityError::Unavailable("local Device identity is unavailable".to_string())
+        let local = current_sync_device_id(&self.sync_device).ok_or_else(|| {
+            TaskAuthorityError::Unavailable("local Device identity is unavailable".into())
         })?;
-        let placement = self.placement(owner).await?;
-        Ok(
-            accepted.device_id.as_deref() == Some(local_device_id.as_str())
-                && accepted.authority_epoch.as_deref()
-                    == Some(placement.authority_epoch.to_string().as_str())
-                && placement.device_id == local_device_id,
-        )
+        // Chat placement can change while this Device still owns the same Attempt.
+        Ok(accepted.device_id.as_deref() == Some(local.as_str()))
     }
 
     async fn local_device_id(&self) -> Result<Option<String>, TaskAuthorityError> {

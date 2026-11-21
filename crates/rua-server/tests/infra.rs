@@ -70,6 +70,10 @@ mod remote_conversation_input;
 mod route_compat_ledger;
 #[path = "infra/runtime_notes.rs"]
 mod runtime_notes;
+#[path = "infra/runtime_observation_receipts.rs"]
+mod runtime_observation_receipt_tests;
+#[path = "../src/services/conversation_input_intake/task_watch_wake_receipts.rs"]
+mod runtime_observation_receipts;
 #[path = "infra/seed_coordinator.rs"]
 mod seed_coordinator;
 #[path = "infra/session_context_snapshot.rs"]

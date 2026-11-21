@@ -13,6 +13,7 @@ pub struct ServerTaskNotificationSink {
     data_dir: PathBuf,
     cancellation: tokio_util::sync::CancellationToken,
     tasks: OnceLock<Weak<rua_task::TaskRuntime>>,
+    local_device_id: OnceLock<String>,
     sync_runtime: OnceLock<SyncPublicationRuntime>,
     watch_delivery: OnceLock<crate::services::conversation_input_intake::ConversationInputIntake>,
 }
@@ -23,6 +24,7 @@ impl ServerTaskNotificationSink {
         Self {
             cancellation: tokio_util::sync::CancellationToken::new(),
             tasks: OnceLock::new(),
+            local_device_id: OnceLock::new(),
             data_dir,
             sync_runtime: OnceLock::new(),
             watch_delivery: OnceLock::new(),
@@ -31,6 +33,10 @@ impl ServerTaskNotificationSink {
 
     pub fn install_sync_runtime(&self, runtime: SyncPublicationRuntime) -> bool {
         self.sync_runtime.set(runtime).is_ok()
+    }
+
+    pub fn install_local_device_id(&self, device_id: String) -> bool {
+        self.local_device_id.set(device_id).is_ok()
     }
 
     pub fn install_tasks(&self, tasks: &Arc<rua_task::TaskRuntime>) {
@@ -51,7 +57,20 @@ impl ServerTaskNotificationSink {
             .await
             .map_err(|e| TaskRunnerError::new(e.to_string()))?
         {
-            self.terminal(TaskCompletionNotification { record }).await?;
+            let task_id = record.task_id.clone();
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                self.terminal(TaskCompletionNotification { record }),
+            )
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    // A busy Chat can defer durable note creation. Keep its
+                    // outbox entry, but let other Chats recover their results.
+                    tracing::debug!(%task_id, "Task result remains pending after delivery wait");
+                }
+            }
         }
         Ok(())
     }
@@ -64,13 +83,27 @@ impl ServerTaskNotificationSink {
         if installed {
             if let Some(tasks) = self.tasks.get().and_then(Weak::upgrade) {
                 let mut events = tasks.subscribe_activity();
+                let tasks = Arc::downgrade(&tasks);
                 let cancel = self.cancellation.child_token();
+                let root = self.data_dir.clone();
+                let local_device_id = self.local_device_id.get().cloned();
+                let sync_runtime = self.sync_runtime.get().cloned();
                 tokio::spawn(async move {
                     loop {
                         tokio::select! {
                             _ = cancel.cancelled() => break,
                             event = events.recv() => match event {
-                                Ok(event) => intake.publish_background_work(&event.owner.chat_address).await,
+                                Ok(event) => {
+                                    if let (Some(device_id), Some(tasks)) = (local_device_id.as_deref(), tasks.upgrade()) {
+                                        match tasks.get(&event.owner, &event.task_id).await {
+                                            Ok(record) => {
+                                                capture_and_publish(&root, device_id, &record, sync_runtime.as_ref()).await;
+                                            }
+                                            Err(error) => tracing::warn!(%error, "Could not capture Task activity"),
+                                        }
+                                    }
+                                    intake.publish_background_work(&event.owner.chat_address).await;
+                                }
                                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                             }
@@ -110,6 +143,15 @@ impl TaskNotificationSink for ServerTaskNotificationSink {
         notification: TaskCompletionNotification,
     ) -> Result<(), TaskRunnerError> {
         let owner = notification.owner().clone();
+        if let Some(device_id) = self.local_device_id.get() {
+            capture_and_publish(
+                &self.data_dir,
+                device_id,
+                &notification.record,
+                self.sync_runtime.get(),
+            )
+            .await;
+        }
         let intake = self.watch_delivery.get().cloned().ok_or_else(|| {
             TaskRunnerError::new(
                 "Background result delivery is not initialized; result remains pending",
@@ -138,5 +180,28 @@ impl TaskNotificationSink for ServerTaskNotificationSink {
             .await;
         }
         Ok(())
+    }
+}
+
+async fn capture_and_publish(
+    root: &std::path::Path,
+    local_device_id: &str,
+    record: &rua_task::TaskRecord,
+    runtime: Option<&SyncPublicationRuntime>,
+) {
+    if let Err(error) = super::chat_task::capture_task_reference(root, local_device_id, record) {
+        tracing::warn!(%error, task_id = %record.task_id, "Could not capture Task reference");
+        return;
+    }
+    if let Some(runtime) = runtime {
+        let scope = ChatStore::resolve(root, record.spec.owner.chat_address.clone());
+        let _ = publish_sync_fact_with_runtime(
+            runtime,
+            SyncPublicationFact::StableConversationState {
+                scope_root: scope.root().to_path_buf(),
+                address: record.spec.owner.chat_address.clone(),
+            },
+        )
+        .await;
     }
 }

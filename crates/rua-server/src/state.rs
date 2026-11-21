@@ -234,6 +234,7 @@ pub struct AppState {
     pub sync_transfer_bulk_handler: Arc<crate::services::sync_transfer::SyncTransferBulkHandler>,
     pub chat_transfer: Arc<crate::services::chat_transfer::ChatTransferService>,
     pub chat_command: Arc<crate::services::chat_command::ChatCommandService>,
+    pub chat_task: Arc<crate::services::chat_task::ChatTaskService>,
 
     pub sync_trigger: Arc<tokio::sync::RwLock<Option<rua_sync::trigger::SyncTriggerHandle>>>,
 
@@ -724,6 +725,7 @@ impl AppState {
             }),
             host_profile: Some(profile.to_string()),
             authority_epoch: None,
+            public_cwd: None,
         };
         task_runtime_config.limits = rua_task::TaskRuntimeLimits {
             max_active_tasks_per_chat: root_config.task_runtime.max_active_tasks_per_chat,
@@ -744,17 +746,19 @@ impl AppState {
         let task_notification_sink = Arc::new(
             crate::services::task_notification::ServerTaskNotificationSink::new(data_dir.clone()),
         );
+        task_notification_sink.install_local_device_id(local_device_id.clone());
+        let task_authority: Arc<dyn rua_task::TaskAuthorityResolver> = Arc::new(
+            crate::services::task_authority::ServerTaskAuthorityResolver::new(
+                data_dir.clone(),
+                profile.to_string(),
+                Arc::clone(&sync_device_cell),
+            ),
+        );
         let task_runtime = Arc::new(
             rua_task::TaskRuntime::open_with_sink_and_authority(
                 task_runtime_config,
                 task_notification_sink.clone(),
-                Arc::new(
-                    crate::services::task_authority::ServerTaskAuthorityResolver::new(
-                        data_dir.clone(),
-                        profile.to_string(),
-                        Arc::clone(&sync_device_cell),
-                    ),
-                ),
+                Arc::clone(&task_authority),
             )
             .expect("failed to initialize Task Runtime"),
         );
@@ -814,6 +818,7 @@ impl AppState {
         let collaboration_binding = Arc::new(std::sync::OnceLock::new());
         let sync_transfer_binding = Arc::new(std::sync::OnceLock::new());
         let remote_command_binding = Arc::new(std::sync::OnceLock::new());
+        let task_tool_binding = Arc::new(std::sync::OnceLock::new());
         let collaboration_runtime: Arc<dyn std::any::Any + Send + Sync> = Arc::new(
             rua_tool::extended::collaboration::CollaborationRuntimeHandle::new(Arc::new(
                 crate::services::collaboration_runtime::CollaborationRuntimeAdapter::new(
@@ -874,6 +879,11 @@ impl AppState {
             active_plugin_registry: Arc::clone(&active_plugin_registry),
             security: Arc::clone(&security_module),
             task_runtime: Arc::clone(&task_runtime),
+            task_tool_router: Some(Arc::new(
+                crate::services::chat_task_tools::RuntimeTaskToolRouter::new(Arc::clone(
+                    &task_tool_binding,
+                )),
+            )),
             collaboration_runtime: Arc::clone(&collaboration_runtime),
             sync_transfer_runtime,
             remote_command_runtime: Some(remote_command_runtime),
@@ -1201,11 +1211,22 @@ impl AppState {
             Arc::new(crate::services::sync_transfer::SourceTransferOperationStore::with_foreground_operations(Arc::clone(&foreground_operations))),
             Arc::clone(&sync_transfer_session_manager_cell), Arc::clone(&conversation_authority), Arc::clone(security_module.approval_authority()),
         ));
+        let chat_task = Arc::new(crate::services::chat_task::ChatTaskService::new(
+            data_dir.clone(),
+            local_device_id.clone(),
+            Arc::clone(&task_runtime),
+            task_authority,
+            Arc::clone(&target_file_context),
+            Arc::clone(&device_network_cell),
+            Arc::clone(&conversation_authority),
+        ));
+        let _ = task_tool_binding.set(Arc::clone(&chat_task));
         let chat_command = Arc::new(crate::services::chat_command::ChatCommandService::new(
             data_dir.clone(),
             local_device_id.clone(),
             Arc::clone(&target_file_context),
             Arc::clone(&sync_transfer_session_manager_cell),
+            Arc::clone(&task_runtime),
         ));
         conversation_authority.set_chat_completion_notifier(Arc::new(
             crate::services::chat_completion_notification::ChatCompletionNotifier::new(
@@ -1332,6 +1353,7 @@ impl AppState {
                     .with_read_check_context(Arc::clone(&target_file_context))
                     .with_chat_transfer(Arc::clone(&chat_transfer))
                     .with_chat_command(Arc::clone(&chat_command))
+                    .with_chat_task(Arc::clone(&chat_task))
                     .with_remote_history_sync(remote_history_sync_tx.clone())
                     .with_acp_chat_registry(
                         Arc::clone(&acp_chat_registry),
@@ -1348,7 +1370,6 @@ impl AppState {
                     ))
                     .with_chat_media_transfers(Arc::clone(&chat_media_transfers))
                     .with_project_runtime(Arc::clone(&project_catalog))
-                    .with_task_runtime(Arc::clone(&task_runtime))
                     .with_user_notifications(Arc::clone(&user_notifications))
                     .with_foreground_operations(Arc::clone(&foreground_operations)),
                 );
@@ -1692,6 +1713,7 @@ impl AppState {
                 Arc::clone(&device_network_cell),
                 Arc::clone(&conversation_authority),
                 Arc::clone(security_module.approval_authority()),
+                Arc::clone(&task_tool_binding),
             ),
         ));
 
@@ -1831,6 +1853,7 @@ impl AppState {
             sync_transfer_bulk_handler,
             chat_transfer,
             chat_command,
+            chat_task,
             sync_trigger,
             sync_runtime,
             sync_enabled,
@@ -1883,6 +1906,12 @@ impl AppState {
             });
         }
 
+        state.chat_task.install_publication(
+            crate::sync_publication::SyncPublicationRuntime::from_app_state(&state),
+        );
+        state
+            .chat_task
+            .spawn_result_recovery(state.conversation_input_intake.clone(), state.shutdown_rx());
         state.spawn_foreground_operation_lifecycle();
 
         if sync_enabled_flag {
@@ -2229,8 +2258,8 @@ impl AppState {
             .with_chat_media_transfers(Arc::clone(&self.chat_media_transfers))
             .with_chat_transfer(Arc::clone(&self.chat_transfer))
             .with_chat_command(Arc::clone(&self.chat_command))
+            .with_chat_task(Arc::clone(&self.chat_task))
             .with_project_runtime(Arc::clone(&self.project_catalog))
-            .with_task_runtime(Arc::clone(&self.task_runtime))
             .with_user_notifications(Arc::clone(&self.user_notifications))
             .with_foreground_operations(Arc::clone(&self.foreground_operations)),
         );

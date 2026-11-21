@@ -2,7 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildAuthHeaders } from "@/api/authHeaders";
 import { getApiUrl } from "@/api/config";
 import { taskApi } from "@/api/modules/task";
-import type { TaskEvent, TaskRecord } from "@/api/types/task";
+import {
+  isTaskRecord,
+  type TaskEvent,
+  type TaskListItem,
+} from "@/api/types/task";
 import { readSseChunks } from "../owned/sse";
 
 export type TaskActivityConnection =
@@ -17,20 +21,32 @@ type UseTaskActivityOptions = {
   authorizationAgentId: string;
 };
 
-function sortTasks(tasks: TaskRecord[]): TaskRecord[] {
+function sortTasks(tasks: TaskListItem[]): TaskListItem[] {
   return [...tasks].sort((left, right) =>
-    right.created_at.localeCompare(left.created_at),
+    (isTaskRecord(right) ? right.created_at : "").localeCompare(
+      isTaskRecord(left) ? left.created_at : "",
+    ),
   );
 }
 
-function upsertTask(tasks: TaskRecord[], next: TaskRecord): TaskRecord[] {
+function upsertTask(tasks: TaskListItem[], next: TaskListItem): TaskListItem[] {
   const index = tasks.findIndex((task) => task.task_id === next.task_id);
   if (index < 0) return sortTasks([...tasks, next]);
+  const previous = tasks[index];
+  if (
+    isTaskRecord(previous) &&
+    isTaskRecord(next) &&
+    next.attempt_no < previous.attempt_no
+  ) {
+    return tasks;
+  }
   const updated = [...tasks];
   updated[index] = next;
-  return tasks[index].created_at === next.created_at
-    ? updated
-    : sortTasks(updated);
+  const previousCreated = isTaskRecord(previous)
+    ? previous.created_at
+    : undefined;
+  const nextCreated = isTaskRecord(next) ? next.created_at : undefined;
+  return previousCreated === nextCreated ? updated : sortTasks(updated);
 }
 
 export function useTaskActivity({
@@ -38,7 +54,7 @@ export function useTaskActivity({
   chatId,
   authorizationAgentId,
 }: UseTaskActivityOptions) {
-  const [tasks, setTasks] = useState<TaskRecord[]>([]);
+  const [tasks, setTasks] = useState<TaskListItem[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
@@ -59,7 +75,7 @@ export function useTaskActivity({
     return () => taskReads.clear();
   }, [scope, taskReads]);
 
-  const replaceTasks = useCallback((records: TaskRecord[]) => {
+  const replaceTasks = useCallback((records: TaskListItem[]) => {
     const sorted = sortTasks(records);
     setTasks(sorted);
     setSelectedTaskId((current) => {
@@ -171,7 +187,7 @@ export function useTaskActivity({
         for await (const chunk of readSseChunks(response.body)) {
           if (stopped || scopeRef.current !== requestScope) return;
           const payload = JSON.parse(chunk.data) as
-            | { type?: "snapshot"; tasks?: TaskRecord[] }
+            | { type?: "snapshot"; tasks?: TaskListItem[] }
             | TaskEvent;
           if (
             chunk.event === "snapshot" ||

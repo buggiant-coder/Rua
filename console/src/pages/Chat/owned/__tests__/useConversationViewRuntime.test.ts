@@ -592,6 +592,64 @@ describe("useConversationViewRuntime", () => {
     });
   });
 
+  it("refreshes background Task approvals after the Turn ends and stops polling on unmount", async () => {
+    vi.useFakeTimers();
+    let unmount: (() => void) | undefined;
+    try {
+      chatApiMock.getChat.mockResolvedValue({ status: "idle", messages: [] });
+      const hook = renderHook(() =>
+        useConversationViewRuntime({ address: { chatId: "task-chat" } }),
+      );
+      unmount = hook.unmount;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(consoleApiMock.getApprovalSnapshot).toHaveBeenCalledTimes(1);
+      const approval = {
+        id: "target-task-approval",
+        agent_id: "captured-agent",
+        turn_id: "finished-turn",
+        tool_call_id: "task:remote:attempt:1:tool",
+        tool_name: "bash",
+        status: "pending",
+        tool_call: {
+          display: "phone command",
+          args: { device_id: "phone", command: "pwd" },
+        },
+        created_at: "2026-11-21T00:00:00Z",
+        reuse_options: [],
+      };
+      let resolveSnapshot: ((value: unknown) => void) | undefined;
+      consoleApiMock.getApprovalSnapshot.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSnapshot = resolve;
+          }),
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(consoleApiMock.getApprovalSnapshot).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(9000);
+      });
+      expect(consoleApiMock.getApprovalSnapshot).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        resolveSnapshot!({ pending: [approval], resolved: [] });
+      });
+      expect(hook.result.current.approvalSnapshot.pending).toEqual([approval]);
+      unmount();
+      unmount = undefined;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(9000);
+      });
+      expect(consoleApiMock.getApprovalSnapshot).toHaveBeenCalledTimes(2);
+    } finally {
+      unmount?.();
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps pending approvals and the open Live viewer through a change of executor", async () => {
     const live = controlledSseResponse();
     const fetchMock = routeFetchWithLiveStreams(live.response);

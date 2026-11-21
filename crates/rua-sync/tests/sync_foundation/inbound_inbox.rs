@@ -801,16 +801,25 @@ fn content_ready_reactivates_only_matching_dormant_blob() {
 }
 
 #[test]
-fn placement_only_wakes_that_chats_rules_waiting_for_its_header() {
+fn placement_wakes_only_its_chat_history_and_rules_waiting_for_header() {
     use rua_sync::inbound_inbox::RetryExhaustion;
     use rua_sync::SyncError;
 
     let (_dir, inbox) = temp_inbox();
     let writer = author(10);
-    let waiting = SyncError::PendingChatPermissionPlacement.to_string();
+    let waiting = SyncError::PendingChatPlacement {
+        chat_id: "chat-a".into(),
+    }
+    .to_string();
+    let other_chat = SyncError::PendingChatPlacement {
+        chat_id: "chat-b".into(),
+    }
+    .to_string();
     for (peer, key, reason) in [
         (writer, b"chat-a/rules".as_slice(), waiting.as_str()),
-        (writer, b"chat-b/rules".as_slice(), waiting.as_str()),
+        (writer, b"chat-a/turn_index".as_slice(), waiting.as_str()),
+        (writer, b"chat-a/messages/0".as_slice(), waiting.as_str()),
+        (writer, b"chat-b/rules".as_slice(), other_chat.as_str()),
         (author(11), b"chat-a/rules".as_slice(), "blob missing"),
     ] {
         inbox
@@ -822,13 +831,20 @@ fn placement_only_wakes_that_chats_rules_waiting_for_its_header() {
     }
     assert_eq!(
         inbox
-            .reactivate_chat_rules_for_placement(b"chat-a/rules")
+            .reactivate_chat_records_for_placement("chat-a")
             .unwrap(),
-        1
+        3
     );
     let ready = inbox.pending_ready(u64::MAX).unwrap();
-    assert_eq!(ready.len(), 1);
-    assert_eq!(ready[0].key, b"chat-a/rules");
-    assert_eq!(ready[0].author, writer);
+    assert_eq!(ready.len(), 3);
+    for key in [
+        b"chat-a/rules".as_slice(),
+        b"chat-a/turn_index",
+        b"chat-a/messages/0",
+    ] {
+        assert!(ready
+            .iter()
+            .any(|entry| entry.key == key && entry.author == writer));
+    }
     assert_eq!(inbox.count_by_state(InboxState::Dormant).unwrap(), 2);
 }

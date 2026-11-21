@@ -35,6 +35,20 @@ const WATCH_WAKE_MAX_DELAY: Duration = Duration::from_secs(2);
 const WATCH_OMISSION_MARKER_BYTES: usize = 256;
 const RUNTIME_SHUTDOWN_MESSAGE: &str = "runtime shutdown interrupted the Task";
 
+fn validate_task_id(id: &str) -> Result<(), TaskError> {
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(TaskError::Invalid(
+            "Task ID must contain 1-128 ASCII letters, digits, '-' or '_'".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum TaskError {
     #[error("task {0} not found")]
@@ -191,8 +205,13 @@ struct StaticTaskAuthorityResolver {
 
 #[async_trait]
 impl TaskAuthorityResolver for StaticTaskAuthorityResolver {
-    async fn accept(&self, _owner: &TaskOwner) -> Result<TaskDeviceContext, TaskAuthorityError> {
-        Ok(self.device.clone())
+    async fn accept_attempt(
+        &self,
+        _spec: &TaskSpec,
+        _authorization: &crate::model::TaskAttemptAuthorization,
+        prior: Option<&TaskDeviceContext>,
+    ) -> Result<TaskDeviceContext, TaskAuthorityError> {
+        Ok(prior.cloned().unwrap_or_else(|| self.device.clone()))
     }
 
     async fn is_current(
@@ -222,6 +241,7 @@ struct TaskExecutionHandle {
     attempt_no: u32,
     cancel: CancellationToken,
     stop_reason: Arc<AtomicU8>,
+    stop_changed: Arc<Notify>,
     session: Arc<TaskRunnerSession>,
 }
 
@@ -339,6 +359,7 @@ struct DispatchedTask {
     task_id: TaskId,
     attempt_no: u32,
     authorization_agent_id: String,
+    authorization_origin: crate::model::TaskOrigin,
     configuration_epoch: Option<String>,
     spec: TaskSpec,
     device: TaskDeviceContext,
@@ -445,6 +466,7 @@ impl TaskExecutionHandle {
             attempt_no,
             cancel: CancellationToken::new(),
             stop_reason: Arc::new(AtomicU8::new(TaskStopReason::None as u8)),
+            stop_changed: Arc::new(Notify::new()),
             session,
         }
     }
@@ -463,12 +485,14 @@ impl TaskExecutionHandle {
         self.stop_reason
             .store(TaskStopReason::Interrupted as u8, Ordering::SeqCst);
         self.cancel.cancel();
+        self.stop_changed.notify_waiters();
     }
 
     fn request_shutdown(&self) {
         self.stop_reason
             .store(TaskStopReason::RuntimeShutdown as u8, Ordering::SeqCst);
         self.cancel.cancel();
+        self.stop_changed.notify_waiters();
     }
 
     fn stop_output(&self) -> TaskRunOutput {
@@ -482,6 +506,9 @@ impl TaskExecutionHandle {
     }
 
     fn stop_output_preserving(&self, mut output: TaskRunOutput) -> TaskRunOutput {
+        if self.stop_reason.load(Ordering::SeqCst) == TaskStopReason::Cancelled as u8 {
+            return output;
+        }
         let stopped = self.stop_output();
         output.outcome = stopped.outcome;
         output.error = stopped.error;
@@ -489,6 +516,48 @@ impl TaskExecutionHandle {
             output.output = stopped.output;
         }
         output
+    }
+
+    fn preserve_ready_stop_cause(&self, output: TaskRunOutput) -> TaskRunOutput {
+        // A stopped Runner can become ready before the cancellation branch is
+        // polled. Preserve its registered cause without changing a natural
+        // completion or failure that won the race.
+        if matches!(
+            output.outcome,
+            TaskRunOutcome::Cancelled | TaskRunOutcome::Interrupted
+        ) && matches!(self.stop_reason.load(Ordering::SeqCst),
+            reason if reason == TaskStopReason::Interrupted as u8
+                || reason == TaskStopReason::RuntimeShutdown as u8)
+        {
+            self.stop_output_preserving(output)
+        } else {
+            output
+        }
+    }
+
+    async fn finish_after_stop<F: std::future::Future + Send + ?Sized>(
+        &self,
+        mut future: std::pin::Pin<&mut F>,
+        grace: Duration,
+    ) -> Option<F::Output> {
+        loop {
+            let changed = self.stop_changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if matches!(self.stop_reason.load(Ordering::SeqCst),
+                reason if reason == TaskStopReason::Interrupted as u8
+                    || reason == TaskStopReason::RuntimeShutdown as u8)
+            {
+                return tokio::time::timeout(grace, future).await.ok();
+            }
+            // A control wait can expire while the execution is still stopping.
+            // Only its own result, or runtime interruption, settles the Attempt.
+            tokio::select! {
+                biased;
+                result = future.as_mut() => return Some(result),
+                _ = &mut changed => {},
+            }
+        }
     }
 }
 
@@ -498,7 +567,7 @@ pub struct TaskRuntime {
     runners: RwLock<HashMap<TaskRunnerKind, Arc<dyn TaskRunner>>>,
     notification_sink: Arc<dyn TaskNotificationSink>,
     authority: Arc<dyn TaskAuthorityResolver>,
-    executions: StdMutex<HashMap<TaskId, TaskExecutionHandle>>,
+    executions: StdMutex<HashMap<(TaskId, u32), TaskExecutionHandle>>,
     sessions: StdMutex<HashMap<TaskId, TaskSessionEntry>>,
     watchers: StdMutex<HashMap<TaskId, TaskWatcherRegistration>>,
     execution_change: Notify,
@@ -607,6 +676,10 @@ impl TaskRuntime {
         &self.config.device
     }
 
+    pub async fn local_device_id(&self) -> Result<Option<String>, TaskError> {
+        self.authority.local_device_id().await.map_err(Into::into)
+    }
+
     pub fn register_runner(&self, runner: Arc<dyn TaskRunner>) {
         self.runners
             .write()
@@ -626,7 +699,28 @@ impl TaskRuntime {
         spec: TaskSpec,
         authorization: crate::model::TaskAttemptAuthorization,
     ) -> Result<TaskId, TaskError> {
+        self.create_with_id(uuid::Uuid::new_v4().to_string(), spec, authorization)
+            .await
+    }
+
+    pub async fn create_with_id(
+        self: &Arc<Self>,
+        task_id: TaskId,
+        spec: TaskSpec,
+        authorization: crate::model::TaskAttemptAuthorization,
+    ) -> Result<TaskId, TaskError> {
         let admission = self.admission_open.lock().await;
+        validate_task_id(&task_id)?;
+        match self.store.get(spec.owner.clone(), task_id.clone()).await {
+            Ok(existing) if existing.spec == spec => return Ok(task_id),
+            Ok(_) => {
+                return Err(TaskError::Invalid(
+                    "Task ID already belongs to a different specification".into(),
+                ))
+            }
+            Err(TaskError::NotFound(_)) => {}
+            Err(error) => return Err(error),
+        }
         if self
             .paused_agents
             .lock()
@@ -646,7 +740,7 @@ impl TaskRuntime {
         Self::ensure_tool_task_spec(&spec)?;
         let device = self
             .authority
-            .accept_attempt(&spec.owner, &authorization)
+            .accept_attempt(&spec, &authorization, None)
             .await?;
         let runner_kind = spec.runner.kind();
         let runner = self
@@ -656,7 +750,6 @@ impl TaskRuntime {
             .get(&runner_kind)
             .cloned()
             .ok_or(TaskError::RunnerUnavailable(runner_kind))?;
-        let task_id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
         let record = TaskRecord {
             task_id: task_id.clone(),
@@ -726,11 +819,9 @@ impl TaskRuntime {
         }
         Self::ensure_tool_task_spec(&spec)?;
         spec.validate().map_err(TaskError::Invalid)?;
-        if task_id.trim().is_empty() {
+        if let Err(error) = validate_task_id(&task_id) {
             execution.cancel.cancel();
-            return Err(TaskError::Invalid(
-                "adopted Task ID must not be empty".to_string(),
-            ));
+            return Err(error);
         }
         if !spec.depends_on.is_empty() {
             execution.cancel.cancel();
@@ -743,7 +834,11 @@ impl TaskRuntime {
             execution.cancel.cancel();
             return Err(TaskError::RunnerUnavailable(runner_kind));
         }
-        let device = match self.authority.accept(&spec.owner).await {
+        let device = match self
+            .authority
+            .accept_attempt(&spec, &authorization, None)
+            .await
+        {
             Ok(device) => device,
             Err(error) => {
                 execution.cancel.cancel();
@@ -751,17 +846,38 @@ impl TaskRuntime {
             }
         };
 
+        let chat_permit = self
+            .chat_permit(&spec.owner)
+            .await
+            .try_acquire_owned()
+            .map_err(|_| TaskError::LimitExceeded("Chat Task execution capacity is full".into()))?;
+        let runner_permit = self
+            .runner_permit(runner_kind)
+            .await
+            .try_acquire_owned()
+            .map_err(|_| {
+                TaskError::LimitExceeded("Runner Task execution capacity is full".into())
+            })?;
+        let session = execution
+            .session
+            .clone()
+            .unwrap_or_else(TaskRunnerSession::new);
+        if let Err(error) = session.bind(task_id.clone(), 1) {
+            execution.cancel.cancel();
+            return Err(TaskError::InputUnavailable(error.to_string()));
+        }
+
         let now = Utc::now();
         let record = TaskRecord {
             task_id: task_id.clone(),
             spec: spec.clone(),
-            state: TaskState::Accepted,
+            state: TaskState::Running,
             attempt_no: 1,
             input_capability: crate::session::TaskInputCapability::None,
             watch_active: false,
             created_at: now,
             updated_at: now,
-            started_at: None,
+            started_at: Some(now),
             finished_at: None,
             result: None,
             attempts: Vec::new(),
@@ -794,26 +910,9 @@ impl TaskRuntime {
             TaskState::Accepted,
         );
 
-        let session = execution
-            .session
-            .clone()
-            .unwrap_or_else(TaskRunnerSession::new);
-        if let Err(error) = session.bind(task_id.clone(), record.attempt_no) {
-            execution.cancel.cancel();
-            return Err(TaskError::InputUnavailable(error.to_string()));
-        }
         let task_execution =
             TaskExecutionHandle::new(spec.owner.clone(), record.attempt_no, session);
         self.insert_execution(task_id.clone(), task_execution.clone());
-        if let Err(error) = self
-            .store
-            .mark_running(task_id.clone(), record.attempt_no, Utc::now())
-            .await
-        {
-            self.remove_execution(&task_id);
-            execution.cancel.cancel();
-            return Err(error);
-        }
         self.publish_event(
             &spec.owner,
             &task_id,
@@ -832,6 +931,7 @@ impl TaskRuntime {
                     spec,
                     execution,
                     task_execution,
+                    (chat_permit, runner_permit),
                 )
                 .await;
         });
@@ -843,8 +943,7 @@ impl TaskRuntime {
         owner: &TaskOwner,
         task_id: &str,
     ) -> Result<Arc<TaskRunnerSession>, TaskError> {
-        uuid::Uuid::parse_str(task_id)
-            .map_err(|_| TaskError::Invalid("reserved Task ID must be a UUID".into()))?;
+        validate_task_id(task_id)?;
         let session = TaskRunnerSession::bound(task_id, 1);
         session.set_output_dir(self.config.attempt_dir(owner, task_id, 1).join("output"));
         Ok(session)
@@ -913,7 +1012,7 @@ impl TaskRuntime {
     ///
     /// Deliveries survive process restarts. A successful `TaskNotificationSink::terminal`
     /// call does not acknowledge delivery; the source must call
-    /// [`TaskRuntime::ack_terminal_delivery`] once the source input queue accepts the result.
+    /// [`TaskRuntime::ack_terminal_delivery`] once the owning source durably records the result.
     pub async fn pending_terminal_deliveries(
         &self,
         owner: Option<&TaskOwner>,
@@ -926,7 +1025,7 @@ impl TaskRuntime {
         Ok(resolved)
     }
 
-    /// Acknowledges that the owning source input queue accepted the terminal result of one exact
+    /// Acknowledges that the owning source durably recorded the terminal result of one exact
     /// Task Attempt, removing it from the outstanding delivery set. Returns `true` when a
     /// delivery was outstanding for that Task, Attempt, and owner, and `false` otherwise, so
     /// repeat acknowledgements are idempotent. An owner mismatch never acknowledges another
@@ -1343,7 +1442,16 @@ impl TaskRuntime {
             ));
         }
         let current = self.get(owner, task_id).await?;
-        let device = self.authority.accept_attempt(owner, &authorization).await?;
+        let prior = current_attempt_device(&current)?;
+        let device = self
+            .authority
+            .accept_attempt(&current.spec, &authorization, Some(&prior))
+            .await?;
+        if device.device_id != prior.device_id || device.public_cwd != prior.public_cwd {
+            return Err(TaskError::AuthorityRejected(
+                "Retry cannot change the original execution Device or directory".into(),
+            ));
+        }
         let runner_kind = current.spec.runner.kind();
         let runner = self
             .runners
@@ -1393,6 +1501,7 @@ impl TaskRuntime {
         }
         let device = attempt.device.clone();
         let authorization_agent_id = attempt.authorization_agent_id.clone();
+        let authorization_origin = attempt.authorization_origin.clone();
         let configuration_epoch = attempt.configuration_epoch.clone();
         let session = TaskRunnerSession::bound(record.task_id.clone(), record.attempt_no);
         let execution =
@@ -1406,6 +1515,7 @@ impl TaskRuntime {
                         task_id: record.task_id,
                         attempt_no: record.attempt_no,
                         authorization_agent_id,
+                        authorization_origin,
                         configuration_epoch,
                         spec: record.spec,
                         device,
@@ -1506,7 +1616,68 @@ impl TaskRuntime {
         owner: &TaskOwner,
         task_id: &str,
     ) -> Result<TaskRecord, TaskError> {
+        self.cancel_matching_attempt(owner, task_id, None).await
+    }
+
+    async fn await_attempt_terminal(
+        &self,
+        owner: &TaskOwner,
+        task_id: &str,
+        attempt_no: u32,
+        timeout: Duration,
+    ) -> Result<TaskRecord, TaskError> {
+        let mut events = self.subscribe_activity();
+        tokio::time::timeout(timeout, async {
+            loop {
+                let record = self
+                    .store
+                    .get_attempt(owner.clone(), task_id.to_owned(), attempt_no)
+                    .await?;
+                if record.state.is_terminal() {
+                    return Ok(record);
+                }
+                loop {
+                    match events.recv().await {
+                        Ok(event) if event.owner == *owner && event.task_id == task_id => break,
+                        Ok(_) => {}
+                        Err(broadcast::error::RecvError::Lagged(_)) => break,
+                        Err(broadcast::error::RecvError::Closed) => {
+                            return Err(TaskError::Store("Task activity channel closed".into()));
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|_| TaskError::WaitTimedOut(task_id.to_owned()))?
+    }
+
+    pub async fn cancel_attempt(
+        self: &Arc<Self>,
+        owner: &TaskOwner,
+        task_id: &str,
+        expected_attempt_no: u32,
+    ) -> Result<TaskRecord, TaskError> {
+        self.cancel_matching_attempt(owner, task_id, Some(expected_attempt_no))
+            .await
+    }
+
+    async fn cancel_matching_attempt(
+        self: &Arc<Self>,
+        owner: &TaskOwner,
+        task_id: &str,
+        expected_attempt_no: Option<u32>,
+    ) -> Result<TaskRecord, TaskError> {
+        // Acceptance commits its record and registers the original execution
+        // under this gate. Cancellation must not mistake that interval for a
+        // waiting Task with no running process.
+        let admission = self.admission_open.lock().await;
         let current = self.get(owner, task_id).await?;
+        if expected_attempt_no.is_some_and(|expected| expected != current.attempt_no) {
+            return Err(TaskError::InvalidTransition(
+                "Task Attempt changed before cancellation".into(),
+            ));
+        }
         if current.state.is_terminal() {
             return Ok(current);
         }
@@ -1514,28 +1685,70 @@ impl TaskRuntime {
             .executions
             .lock()
             .expect("Task execution registry lock poisoned")
-            .get(task_id)
+            .get(&(task_id.to_owned(), current.attempt_no))
             .cloned();
         let Some(execution) = execution else {
             let device = current_attempt_device(&current)?;
-            self.finish_cancelled(task_id, current.attempt_no, &current.spec, device)
-                .await;
-            return self.get(owner, task_id).await;
+            let runtime_shutdown = !*admission;
+            let record = self
+                .finish_waiting_cancellation(
+                    task_id,
+                    current.attempt_no,
+                    &current.spec,
+                    device,
+                    runtime_shutdown,
+                )
+                .await?;
+            let session = TaskRunnerSession::bound(task_id.to_owned(), current.attempt_no);
+            session.close().await;
+            self.executions
+                .lock()
+                .expect("Task execution registry lock poisoned")
+                .insert(
+                    (task_id.to_owned(), current.attempt_no),
+                    TaskExecutionHandle::new(owner.clone(), current.attempt_no, session),
+                );
+            self.execution_change.notify_waiters();
+            drop(admission);
+            let runtime = self.clone();
+            let notification = record.clone();
+            tokio::spawn(async move {
+                let task_id = notification.task_id.clone();
+                let attempt_no = notification.attempt_no;
+                if let Err(error) = runtime
+                    .refresh_dependents_and_dispatch(&notification.task_id)
+                    .await
+                {
+                    tracing::warn!(%error, "failed to refresh cancelled Task dependents");
+                }
+                if notification.state == TaskState::Cancelled || runtime_shutdown {
+                    if let Err(error) = runtime
+                        .notification_sink
+                        .terminal(TaskCompletionNotification {
+                            record: notification,
+                        })
+                        .await
+                    {
+                        tracing::warn!(%error, "failed to publish waiting Task cancellation");
+                    }
+                }
+                runtime.remove_execution(&task_id, attempt_no);
+            });
+            return Ok(record);
         };
+        drop(admission);
         execution.request_cancel();
-        let record = self
-            .await_terminal(
-                owner,
-                task_id,
-                self.config.limits.cancellation_grace + Duration::from_secs(2),
-            )
-            .await?;
-        self.await_execution_removed(
+        // The execution future and Runner resources are released before its
+        // terminal record is committed. Delivery may wait on this very Chat
+        // tool returning, so the separately tracked notification tail must not
+        // delay the cancellation receipt.
+        self.await_attempt_terminal(
+            owner,
             task_id,
+            current.attempt_no,
             self.config.limits.cancellation_grace + Duration::from_secs(2),
         )
-        .await?;
-        Ok(record)
+        .await
     }
 
     pub async fn interrupt(
@@ -1551,7 +1764,7 @@ impl TaskRuntime {
             .executions
             .lock()
             .expect("Task execution registry lock poisoned")
-            .get(task_id)
+            .get(&(task_id.to_owned(), current.attempt_no))
             .cloned();
         let Some(execution) = execution else {
             let device = current_attempt_device(&current)?;
@@ -1576,6 +1789,7 @@ impl TaskRuntime {
             .await?;
         self.await_execution_removed(
             task_id,
+            current.attempt_no,
             self.config.limits.cancellation_grace + Duration::from_secs(2),
         )
         .await?;
@@ -1600,7 +1814,9 @@ impl TaskRuntime {
                 .lock()
                 .expect("Task execution registry lock poisoned");
             for record in &records {
-                if let Some(execution) = executions.get(&record.task_id) {
+                if let Some(execution) =
+                    executions.get(&(record.task_id.clone(), record.attempt_no))
+                {
                     execution.request_interrupt();
                 } else {
                     without_execution.push(record.clone());
@@ -1641,11 +1857,14 @@ impl TaskRuntime {
             .lock()
             .expect("Task execution registry lock poisoned")
             .iter()
-            .map(|(id, handle)| (id.clone(), handle.owner.clone()))
+            .map(|((id, attempt_no), handle)| (id.clone(), *attempt_no, handle.owner.clone()))
             .collect();
-        for (id, owner) in executing {
-            if !records.iter().any(|record| record.task_id == id) {
-                records.push(self.store.get(owner, id).await?);
+        for (id, attempt_no, owner) in executing {
+            if !records
+                .iter()
+                .any(|record| record.task_id == id && record.attempt_no == attempt_no)
+            {
+                records.push(self.store.get_attempt(owner, id, attempt_no).await?);
             }
         }
         let mut resolved = Vec::with_capacity(records.len());
@@ -1655,14 +1874,26 @@ impl TaskRuntime {
         Ok(resolved)
     }
 
-    pub async fn shutdown(self: &Arc<Self>) -> Result<usize, TaskError> {
+    /// Fence new work and record the stop cause before process or Workspace
+    /// cleanup can cancel the underlying Runners. Terminal draining is separate.
+    pub async fn begin_shutdown(self: &Arc<Self>) {
+        let mut admission = self.admission_open.lock().await;
+        *admission = false;
+        for execution in self
+            .executions
+            .lock()
+            .expect("Task execution registry lock poisoned")
+            .values()
         {
-            let mut admission = self.admission_open.lock().await;
-            *admission = false;
+            execution.request_shutdown();
         }
+    }
+
+    pub async fn shutdown(self: &Arc<Self>) -> Result<usize, TaskError> {
+        self.begin_shutdown().await;
         self.cancel_all_watchers();
         let records = self.store.list_all_non_terminal().await?;
-        let owners = records
+        let mut owners = records
             .iter()
             .map(|record| record.spec.owner.clone())
             .collect::<HashSet<_>>();
@@ -1672,8 +1903,11 @@ impl TaskRuntime {
                 .executions
                 .lock()
                 .expect("Task execution registry lock poisoned");
+            owners.extend(executions.values().map(|execution| execution.owner.clone()));
             for record in &records {
-                if let Some(execution) = executions.get(&record.task_id) {
+                if let Some(execution) =
+                    executions.get(&(record.task_id.clone(), record.attempt_no))
+                {
                     execution.request_shutdown();
                 } else {
                     without_execution.push(record.clone());
@@ -1805,6 +2039,7 @@ impl TaskRuntime {
             task_id,
             attempt_no,
             authorization_agent_id,
+            authorization_origin,
             configuration_epoch,
             spec,
             device,
@@ -1827,7 +2062,7 @@ impl TaskRuntime {
             .await
         {
             tracing::error!(task_id, error = %error, "failed to mark task waiting");
-            self.remove_execution(&task_id);
+            self.remove_execution(&task_id, attempt_no);
             return;
         }
         self.publish_event(
@@ -1848,13 +2083,14 @@ impl TaskRuntime {
             } => result.ok(),
             _ = execution.cancel.cancelled() => None,
         };
-        let Some((_chat_permit, _runner_permit)) = permits else {
+        let Some(permits) = permits else {
             self.finish_task_output(task_id, attempt_no, spec, device, execution.stop_output())
                 .await;
             return;
         };
 
         if !self.attempt_is_current(&spec.owner, &device).await {
+            drop(permits);
             self.finish_interrupted(
                 &task_id,
                 attempt_no,
@@ -1873,7 +2109,7 @@ impl TaskRuntime {
             .await
         {
             tracing::error!(task_id, error = %error, "failed to mark task running");
-            self.remove_execution(&task_id);
+            self.remove_execution(&task_id, attempt_no);
             return;
         }
         self.publish_event(
@@ -1889,7 +2125,7 @@ impl TaskRuntime {
             Ok(results) => results,
             Err(error) => {
                 tracing::error!(task_id, error = %error, "failed to load Task dependencies");
-                self.remove_execution(&task_id);
+                self.remove_execution(&task_id, attempt_no);
                 return;
             }
         };
@@ -1897,6 +2133,7 @@ impl TaskRuntime {
             task_id: task_id.clone(),
             attempt_no,
             authorization_agent_id,
+            authorization_origin,
             configuration_epoch,
             spec: spec.clone(),
             task_dir: task_dir.clone(),
@@ -1910,7 +2147,7 @@ impl TaskRuntime {
         let output = tokio::select! {
             biased;
             result = &mut runner_future => match result {
-                Ok(output) => output,
+                Ok(output) => execution.preserve_ready_stop_cause(output),
                 Err(error) => TaskRunOutput {
                     outcome: TaskRunOutcome::Failed,
                     output: runner_failure_output(&error.message),
@@ -1926,12 +2163,11 @@ impl TaskRuntime {
                 },
             },
             _ = execution.cancel.cancelled() => {
-                match tokio::time::timeout(
-                    self.config.limits.cancellation_grace,
-                    &mut runner_future,
+                match execution.finish_after_stop(
+                    runner_future.as_mut(), self.config.limits.cancellation_grace,
                 ).await {
-                    Ok(Ok(output)) => execution.stop_output_preserving(output),
-                    Ok(Err(error)) => execution.stop_output_preserving(TaskRunOutput {
+                    Some(Ok(output)) => execution.stop_output_preserving(output),
+                    Some(Err(error)) => execution.stop_output_preserving(TaskRunOutput {
                         outcome: TaskRunOutcome::Failed,
                         output: runner_failure_output(&error.message),
                         raw_output: None,
@@ -1944,11 +2180,15 @@ impl TaskRuntime {
                             details: serde_json::Value::Null,
                         }),
                     }),
-                    Err(_) => execution.stop_output(),
+                    None => execution.stop_output(),
                 }
             }
         };
 
+        drop(runner_future);
+        // Result delivery can wait for the Chat to persist its observation.
+        // Only the completed execution consumes execution capacity.
+        drop(permits);
         self.finish_task_output(task_id, attempt_no, spec, device, output)
             .await;
     }
@@ -1960,6 +2200,10 @@ impl TaskRuntime {
         spec: TaskSpec,
         execution: TaskAdoptedExecution,
         task_execution: TaskExecutionHandle,
+        permits: (
+            tokio::sync::OwnedSemaphorePermit,
+            tokio::sync::OwnedSemaphorePermit,
+        ),
     ) {
         let TaskAdoptedExecution {
             mut future,
@@ -1968,18 +2212,19 @@ impl TaskRuntime {
         } = execution;
         let output = tokio::select! {
             biased;
-            output = &mut future => output,
+            output = &mut future => task_execution.preserve_ready_stop_cause(output),
             _ = task_execution.cancel.cancelled() => {
                 execution_cancel.cancel();
-                match tokio::time::timeout(
-                    self.config.limits.cancellation_grace,
-                    &mut future,
+                match task_execution.finish_after_stop(
+                    future.as_mut(), self.config.limits.cancellation_grace,
                 ).await {
-                    Ok(output) => task_execution.stop_output_preserving(output),
-                    Err(_) => task_execution.stop_output(),
+                    Some(output) => task_execution.stop_output_preserving(output),
+                    None => task_execution.stop_output(),
                 }
             }
         };
+        drop(future);
+        drop(permits);
         let device = match self
             .get(&spec.owner, &task_id)
             .await
@@ -1988,7 +2233,7 @@ impl TaskRuntime {
             Ok(device) => device,
             Err(error) => {
                 tracing::error!(task_id, error = %error, "failed to load adopted Task provenance");
-                self.remove_execution(&task_id);
+                self.remove_execution(&task_id, attempt_no);
                 return;
             }
         };
@@ -2098,7 +2343,7 @@ impl TaskRuntime {
             Ok(record) => record,
             Err(error) => {
                 tracing::error!(task_id, error = %error, "failed to persist terminal task result");
-                self.remove_execution(&task_id);
+                self.remove_execution(&task_id, attempt_no);
                 return;
             }
         };
@@ -2123,81 +2368,58 @@ impl TaskRuntime {
         {
             tracing::warn!(task_id, error = %error, "failed to publish task completion");
         }
-        self.remove_execution(&task_id);
+        self.remove_execution(&task_id, attempt_no);
     }
 
-    async fn finish_cancelled(
+    async fn finish_waiting_cancellation(
         self: &Arc<Self>,
         task_id: &str,
         attempt_no: u32,
         spec: &TaskSpec,
         device: TaskDeviceContext,
-    ) {
+        runtime_shutdown: bool,
+    ) -> Result<TaskRecord, TaskError> {
         self.close_task_session(&spec.owner, task_id, attempt_no)
             .await;
-        if !self.attempt_is_current(&spec.owner, &device).await {
-            self.finish_interrupted(
-                task_id,
-                attempt_no,
-                spec,
-                device,
-                false,
-                "Task cancellation completed under a stale conversation authority Epoch",
+        let (state, output) = if runtime_shutdown {
+            (TaskState::Interrupted, runtime_shutdown_output())
+        } else if self.attempt_is_current(&spec.owner, &device).await {
+            (TaskState::Cancelled, TaskRunOutput::cancelled())
+        } else {
+            (
+                TaskState::Interrupted,
+                TaskRunOutput::interrupted(
+                    "Task cancellation completed under a stale conversation authority Epoch",
+                ),
             )
-            .await;
-            return;
-        }
+        };
         let result = TaskResult {
-            status: TaskState::Cancelled,
-            output: TaskRunOutput::cancelled().output,
+            status: state,
+            output: output.output,
             full_result_ref: None,
             artifacts: Vec::new(),
             device,
-            error: Some(TaskErrorInfo {
-                kind: crate::model::TaskErrorKind::Runner,
-                message: "task cancelled".to_string(),
-                retryable: false,
-                details: serde_json::Value::Null,
+            error: output.error.or_else(|| {
+                Some(TaskErrorInfo {
+                    kind: crate::model::TaskErrorKind::Runner,
+                    message: "task cancelled".to_string(),
+                    retryable: false,
+                    details: serde_json::Value::Null,
+                })
             }),
         };
-        let terminal_record = match self
+        let terminal_record = self
             .store
-            .finish(
-                task_id.to_string(),
-                attempt_no,
-                TaskState::Cancelled,
-                result,
-                Utc::now(),
-            )
-            .await
-        {
-            Ok(record) => record,
-            Err(error) => {
-                tracing::warn!(task_id, error = %error, "failed to persist waiting Task cancellation");
-                self.remove_execution(task_id);
-                return;
-            }
-        };
+            .finish(task_id.to_string(), attempt_no, state, result, Utc::now())
+            .await?;
         self.publish_event(
             &spec.owner,
             task_id,
             attempt_no,
-            TaskEventKind::Cancelled,
-            TaskState::Cancelled,
+            event_kind_for_state(state),
+            state,
         );
-        if let Err(error) = self.refresh_dependents_and_dispatch(task_id).await {
-            tracing::warn!(task_id, error = %error, "failed to refresh dependent Tasks");
-        }
-        if let Err(error) = self
-            .notification_sink
-            .terminal(TaskCompletionNotification {
-                record: terminal_record,
-            })
-            .await
-        {
-            tracing::warn!(task_id, error = %error, "failed to publish Task cancellation");
-        }
-        self.remove_execution(task_id);
+        Ok(terminal_record)
     }
 
     async fn finish_interrupted(
@@ -2239,7 +2461,7 @@ impl TaskRuntime {
             Ok(record) => record,
             Err(error) => {
                 tracing::warn!(task_id, error = %error, "failed to persist Task interruption");
-                self.remove_execution(task_id);
+                self.remove_execution(task_id, attempt_no);
                 return;
             }
         };
@@ -2264,7 +2486,7 @@ impl TaskRuntime {
                 tracing::warn!(task_id, error = %error, "failed to publish Task interruption");
             }
         }
-        self.remove_execution(task_id);
+        self.remove_execution(task_id, attempt_no);
     }
 
     async fn attempt_is_current(&self, owner: &TaskOwner, device: &TaskDeviceContext) -> bool {
@@ -2303,7 +2525,7 @@ impl TaskRuntime {
         self.executions
             .lock()
             .expect("Task execution registry lock poisoned")
-            .insert(task_id, execution);
+            .insert((task_id, execution.attempt_no), execution);
         self.execution_change.notify_waiters();
         self.reattach_watcher_for_execution(watcher_task_id, watcher_execution);
     }
@@ -2420,6 +2642,7 @@ impl TaskRuntime {
             };
             if !batch.records.is_empty() {
                 let notification = TaskWatchOutputNotification {
+                    extra: Default::default(),
                     notification_id: format!(
                         "task-watch:{task_id}:attempt:{attempt_no}:batch:{notification_seq}"
                     ),
@@ -2556,17 +2779,17 @@ impl TaskRuntime {
         self.executions
             .lock()
             .expect("Task execution registry lock poisoned")
-            .get(task_id)
+            .get(&(task_id.to_owned(), attempt_no))
             .is_some_and(|execution| {
                 execution.owner == *owner && execution.attempt_no == attempt_no
             })
     }
 
-    fn remove_execution(&self, task_id: &str) {
+    fn remove_execution(&self, task_id: &str, attempt_no: u32) {
         self.executions
             .lock()
             .expect("Task execution registry lock poisoned")
-            .remove(task_id);
+            .remove(&(task_id.to_owned(), attempt_no));
         self.execution_change.notify_waiters();
     }
 
@@ -2599,6 +2822,7 @@ impl TaskRuntime {
     async fn await_execution_removed(
         &self,
         task_id: &str,
+        attempt_no: u32,
         timeout: Duration,
     ) -> Result<(), TaskError> {
         let deadline = tokio::time::Instant::now() + timeout;
@@ -2608,7 +2832,7 @@ impl TaskRuntime {
                 .executions
                 .lock()
                 .expect("Task execution registry lock poisoned")
-                .contains_key(task_id)
+                .contains_key(&(task_id.to_owned(), attempt_no))
             {
                 return Ok(());
             }
@@ -2646,7 +2870,8 @@ impl TaskRuntime {
         self: &Arc<Self>,
         upstream_task_id: &str,
     ) -> Result<(), TaskError> {
-        if !*self.admission_open.lock().await {
+        let admission = self.admission_open.lock().await;
+        if !*admission {
             return Ok(());
         }
         let records = self

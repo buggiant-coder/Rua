@@ -111,6 +111,7 @@ pub struct TaskRunRequest {
     pub task_id: TaskId,
     pub attempt_no: u32,
     pub authorization_agent_id: String,
+    pub authorization_origin: crate::model::TaskOrigin,
     pub configuration_epoch: Option<String>,
     pub spec: TaskSpec,
     pub task_dir: PathBuf,
@@ -180,7 +181,7 @@ impl TaskCompletionNotification {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TaskWatchOutputNotification {
     pub notification_id: String,
     pub owner: TaskOwner,
@@ -189,6 +190,8 @@ pub struct TaskWatchOutputNotification {
     pub origin_turn_id: Option<String>,
     pub projection: TaskLiveOutputProjection,
     pub records: Vec<TaskLiveOutputRecord>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[async_trait]

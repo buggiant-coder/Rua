@@ -737,6 +737,12 @@ async fn chat_agent_switch_blockers(
         .list_pending_for_address(address)
         .await
         .is_empty()
+        || authority
+            .background_work_view(address)
+            .await
+            .items
+            .iter()
+            .any(|item| item.status == "waiting_approval")
     {
         blockers.push(ChatAgentSwitchBlocker::UnresolvedApproval);
     }

@@ -14,7 +14,8 @@ use crate::sync_registry::{sync_cursor_record_id, ApplyOutcome, DomainSyncAdapte
 use crate::{SyncError, SyncResult};
 
 mod chat_permissions;
-pub use chat_permissions::validate_permission_rule_author;
+mod history_authority;
+pub use chat_permissions::validate_chat_record_author;
 
 pub const EVERGREEN_CHAT_DOMAIN: &str = "evergreen_chat";
 pub const EVERGREEN_CHAT_KIND_FILE_UPSERT: &str = "file_upsert";
@@ -93,9 +94,19 @@ impl EvergreenChatSyncAdapter {
     ) -> SyncResult<Vec<SyncChange>> {
         let device_id = device_id.into();
         let permissions = chat_permissions::snapshot(scope_root, address, &device_id)?;
+        let placement = history_authority::placement(scope_root, address)?;
         collect_evergreen_chat_file_snapshots(scope_root, address.chat_id().as_str(), &device_id)
             .into_iter()
             .filter_map(|item| {
+                let history_epoch = if history_authority::owns_record(&item.relative) {
+                    let (authority, epoch) = placement.as_ref()?;
+                    if authority != &device_id {
+                        return None;
+                    }
+                    Some(*epoch)
+                } else {
+                    None
+                };
                 if !item.is_delete && item.relative.starts_with("history_replacements/") {
                     if rua_session::history_replacement_version_is_superseded(&item.payload) {
                         tracing::debug!(
@@ -137,6 +148,11 @@ impl EvergreenChatSyncAdapter {
                         ))));
                     }
                 }
+                let content = if item.is_delete {
+                    serde_json::json!({})
+                } else {
+                    item.payload
+                };
                 Some(Ok(SyncChange::new(
                     Self::new_op_id(),
                     EVERGREEN_CHAT_DOMAIN,
@@ -152,11 +168,10 @@ impl EvergreenChatSyncAdapter {
                     } else {
                         item.hlc
                     },
-                    if item.is_delete {
-                        serde_json::Value::Object(Default::default())
-                    } else {
-                        item.payload
-                    },
+                    history_epoch.map_or_else(
+                        || content.clone(),
+                        |epoch| history_authority::wrap(content.clone(), epoch),
+                    ),
                 )))
             })
             .chain(permissions.map(Ok))
@@ -255,9 +270,13 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
             )?);
         }
         changes.sort_by(|a, b| {
-            chat_permissions::is_rule_record(a)
-                .cmp(&chat_permissions::is_rule_record(b))
-                .then_with(|| a.record_id.cmp(&b.record_id))
+            (!a.record_id.ends_with("/session"))
+                .cmp(&(!b.record_id.ends_with("/session")))
+                .then_with(|| {
+                    chat_permissions::is_rule_record(a)
+                        .cmp(&chat_permissions::is_rule_record(b))
+                        .then_with(|| a.record_id.cmp(&b.record_id))
+                })
         });
         Ok(changes)
     }
@@ -274,8 +293,59 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
             )));
         }
         let (address, relative) = parse_file_record_id(&change.record_id)?;
+        if history_authority::owns_record(relative) {
+            return history_authority::apply(self, &address, relative, change, merge_store).await;
+        }
         let cursor_id = sync_cursor_record_id(EVERGREEN_CHAT_DOMAIN, &change.record_id);
         let is_delete = change.kind == EVERGREEN_CHAT_KIND_FILE_DELETE;
+        let is_task_ref = relative.starts_with("task_refs/");
+        let deleted =
+            rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(&self.data_dir)
+                .load(&address)
+                .map_err(SyncError::Store)?
+                .is_some()
+                || self.project_is_deleted(&address, None);
+        if deleted {
+            if is_delete {
+                let path = self.path_for_record(&address, relative)?;
+                match std::fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            return Ok(ApplyOutcome::Applied {
+                cursor: tombstone_cursor(change.hlc, None),
+            });
+        }
+        if is_delete {
+            return Err(SyncError::PendingChatPlacement {
+                chat_id: address.chat_id().to_string(),
+            });
+        }
+        let newer_placement = !is_delete && matches!(relative, "session" | "session.json") && {
+            let current = history_authority::placement(&self.scope_root(&address), &address)?;
+            history_authority::header_placement(&change.payload)?
+                .is_some_and(|(_, incoming)| current.is_none_or(|(_, current)| incoming > current))
+        };
+        let runtime_cursor = if matches!(relative, "session" | "session.json") {
+            let local = read_json_file(&self.path_for_record(&address, relative)?);
+            history_authority::runtime_header_epoch(
+                local.as_ref(),
+                &change.payload,
+                &change.device_id,
+                &self.device_id,
+            )?
+            .map(|epoch| format!("{cursor_id}:authority:{}", epoch.to_sortable_string()))
+        } else {
+            None
+        };
+        let newer_runtime = match &runtime_cursor {
+            Some(key) => merge_store
+                .get_record_cursor(key)?
+                .is_none_or(|cursor| change.hlc > cursor.hlc),
+            None => false,
+        };
         if !is_delete
             && change.kind != EVERGREEN_CHAT_KIND_FILE_UPSERT
             && change.kind != EVERGREEN_CHAT_KIND_FILE_SNAPSHOT
@@ -286,45 +356,12 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
             )));
         }
         let decision = merge_store.resolve_lww(&cursor_id, change.hlc, is_delete)?;
-        if decision == LwwDecision::Skip {
+        let stale_header = (newer_placement || newer_runtime)
+            && merge_store
+                .get_record_cursor(&cursor_id)?
+                .is_some_and(|cursor| change.hlc <= cursor.hlc);
+        if decision == LwwDecision::Skip && !is_task_ref && !newer_placement && !newer_runtime {
             return Ok(ApplyOutcome::Skipped);
-        }
-        if !is_delete
-            && rua_session::chat_deletion::ChatDeleteIntentStore::from_rua_root(&self.data_dir)
-                .load(&address)
-                .map_err(SyncError::Store)?
-                .is_some()
-        {
-            return Ok(ApplyOutcome::Applied {
-                cursor: tombstone_cursor(change.hlc, None),
-            });
-        }
-        if !is_delete {
-            if let Some(record_id) = history_replacement_record_id(relative) {
-                if rua_session::history_replacement_version_is_superseded(&change.payload) {
-                    tracing::debug!(
-                        record_id = %change.record_id,
-                        "[sync-v4] ignore superseded history replacement version"
-                    );
-                    return Ok(ApplyOutcome::Applied {
-                        cursor: live_cursor(change.hlc, None),
-                    });
-                }
-                let record: rua_session::HistoryReplacementRecord =
-                    serde_json::from_value(change.payload.clone()).map_err(|error| {
-                        SyncError::InvalidPayload(format!(
-                            "invalid history replacement payload for {}: {error}",
-                            change.record_id
-                        ))
-                    })?;
-                rua_session::validate_history_replacement_record(&address, record_id, &record)
-                    .map_err(|error| {
-                        SyncError::InvalidPayload(format!(
-                            "invalid history replacement record {}: {error}",
-                            change.record_id
-                        ))
-                    })?;
-            }
         }
         if relative.starts_with("projection_cache/") {
             tracing::debug!(
@@ -338,7 +375,7 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
             };
             return Ok(ApplyOutcome::Applied { cursor });
         }
-        if !is_delete && !relative.starts_with("messages/") {
+        if !is_task_ref && !newer_placement && !newer_runtime {
             if let Some(cursor) = merge_store.get_record_cursor(&cursor_id)? {
                 if cursor.state == RecordState::Live && change.hlc <= cursor.hlc {
                     return Ok(ApplyOutcome::Skipped);
@@ -375,19 +412,7 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
-            return Ok(ApplyOutcome::Applied {
-                cursor: tombstone_cursor(change.hlc, None),
-            });
-        }
-        if is_delete {
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
-            return Ok(ApplyOutcome::Applied {
-                cursor: tombstone_cursor(change.hlc, None),
-            });
+            return Ok(history_apply_outcome(change.hlc, true, None));
         }
 
         if let Some(name) = relative.strip_prefix("configurations/") {
@@ -421,13 +446,21 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
                 .merge_replicated_chat_header(
                     address.chat_id().as_str(),
                     change.payload.clone(),
-                    preserve_confirmed_authority,
+                    |local, incoming| {
+                        history_authority::preserve_runtime_header(
+                            local,
+                            incoming,
+                            &change.device_id,
+                            &self.device_id,
+                        )?;
+                        if stale_header {
+                            if let Some(local) = local {
+                                history_authority::overlay_listing(local, incoming);
+                            }
+                        }
+                        preserve_confirmed_authority(local, incoming)
+                    },
                 )
-                .await
-                .map_err(|error| SyncError::Store(error.to_string()))?;
-        } else if relative == "configuration_head" {
-            rua_session::WorkspaceSessionStore::new(self.scope_root(&address))
-                .apply_replicated_configuration_head(address.chat_id().as_str(), &change.payload)
                 .await
                 .map_err(|error| SyncError::Store(error.to_string()))?;
         } else if let Some(name) = relative.strip_prefix("media_refs/") {
@@ -442,14 +475,67 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
                 ));
             }
             manifest.register(path.parent().expect("validated media reference path"))?;
-        } else if relative.starts_with("messages/") {
-            write_message_log_payload(&path, &change.payload)?;
+        } else if let Some(name) = relative.strip_prefix("task_refs/") {
+            let reference: rua_session::task_refs::ChatTaskRef =
+                serde_json::from_value(change.payload.clone())?;
+            if name != format!("{}.json", reference.task_id)
+                || reference.owner.chat_id() != address.chat_id().as_str()
+            {
+                return Err(SyncError::InvalidPayload(
+                    "Task reference belongs to a different record".into(),
+                ));
+            }
+            let chat_dir = path
+                .parent()
+                .and_then(Path::parent)
+                .expect("validated Task reference path");
+            if !reference.register(chat_dir, address.chat_id().as_str())? {
+                return Ok(ApplyOutcome::Skipped);
+            }
+            // Relays may export a newer target revision with an older file HLC.
+            // Keep the transport cursor monotonic without making it the state arbiter.
+            let hlc = merge_store
+                .get_record_cursor(&cursor_id)?
+                .map_or(change.hlc, |cursor| cursor.hlc.max(change.hlc));
+            return Ok(ApplyOutcome::Applied {
+                cursor: live_cursor(hlc, None),
+            });
         } else {
             write_json_payload(&path, &change.payload)?;
         }
-        Ok(ApplyOutcome::Applied {
-            cursor: live_cursor(change.hlc, None),
-        })
+        if newer_placement || newer_runtime {
+            let hlc = merge_store
+                .get_record_cursor(&cursor_id)?
+                .map_or(change.hlc, |cursor| cursor.hlc.max(change.hlc));
+            let cursor = live_cursor(hlc, None);
+            return Ok(match runtime_cursor {
+                Some(key) => ApplyOutcome::AppliedWithCursors {
+                    cursor,
+                    additional_cursors: vec![(key, live_cursor(change.hlc, None))],
+                },
+                None => ApplyOutcome::Applied { cursor },
+            });
+        }
+        Ok(history_apply_outcome(change.hlc, false, None))
+    }
+}
+
+fn history_apply_outcome(
+    hlc: HlcTimestamp,
+    deleted: bool,
+    authority_cursor: Option<String>,
+) -> ApplyOutcome {
+    let cursor = if deleted {
+        tombstone_cursor(hlc, None)
+    } else {
+        live_cursor(hlc, None)
+    };
+    match authority_cursor {
+        Some(key) => ApplyOutcome::AppliedWithCursors {
+            additional_cursors: vec![(key, cursor.clone())],
+            cursor,
+        },
+        None => ApplyOutcome::Applied { cursor },
     }
 }
 
@@ -564,6 +650,7 @@ pub fn collect_evergreen_chat_file_snapshots(
         "media_refs",
         device_id,
     );
+    collect_task_refs(&mut items, &chat_dir, chat_id, device_id);
     collect_json_dir(
         &mut items,
         &chat_dir.join("checkpoints"),
@@ -657,6 +744,11 @@ fn evergreen_chat_file_path(
         let raw = name.strip_prefix('.')?.strip_suffix(".media.json")?;
         let id = uuid::Uuid::parse_str(raw).ok()?;
         return (raw == id.to_string()).then(|| chat_dir.join("media_refs").join(name));
+    }
+    if let Some(name) = relative.strip_prefix("task_refs/") {
+        let task_id = name.strip_suffix(".json")?;
+        rua_session::task_refs::ChatTaskRef::validate_id(task_id).ok()?;
+        return Some(chat_dir.join("task_refs").join(name));
     }
     if let Some(name) = relative.strip_prefix("checkpoints/") {
         return safe_leaf_file(name).map(|name| chat_dir.join("checkpoints").join(name));
@@ -757,6 +849,38 @@ fn collect_json_dir(
             hlc: export_hlc(&path, device_id),
             is_delete: false,
         });
+    }
+}
+
+fn collect_task_refs(
+    items: &mut Vec<EvergreenChatFileSnapshot>,
+    chat_dir: &Path,
+    chat_id: &str,
+    device_id: &str,
+) {
+    let Some(entries) = sorted_dir_entries(&chat_dir.join("task_refs")) else {
+        return;
+    };
+    for path in entries {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(task_id) = name.strip_suffix(".json") else {
+            continue;
+        };
+        let Ok(Some(reference)) =
+            rua_session::task_refs::ChatTaskRef::load(chat_dir, chat_id, task_id)
+        else {
+            continue;
+        };
+        if let Ok(payload) = serde_json::to_value(reference) {
+            items.push(EvergreenChatFileSnapshot {
+                relative: format!("task_refs/{name}"),
+                payload,
+                hlc: export_hlc(&path, device_id),
+                is_delete: false,
+            });
+        }
     }
 }
 

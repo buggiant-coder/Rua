@@ -28,6 +28,8 @@ mod send_file_contract;
 mod shell_contract;
 #[path = "contract_tools/sync_transfer_contract.rs"]
 mod sync_transfer_contract;
+#[path = "contract_tools/task_router_contract.rs"]
+mod task_router_contract;
 #[path = "contract_tools/time_tool_contract.rs"]
 mod time_tool_contract;
 #[path = "contract_tools/token_usage_tool_contract.rs"]

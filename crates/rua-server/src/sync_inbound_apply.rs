@@ -705,7 +705,6 @@ struct ReadableInboundChange {
 }
 
 struct InboundApplyContext<'a> {
-    log: &'a rua_sync::opaque_replica_log::OpaqueReplicaLog,
     resource_application: &'a Option<ResourceApplicationContext>,
     device_key: &'a [u8; 32],
     inbox: &'a rua_sync::inbound_inbox::InboundInbox,
@@ -784,7 +783,6 @@ async fn drain_inbound_batch(args: InboundBatchContext<'_>) -> InboundBatchResul
     tokio::pin!(read_results);
 
     let apply_context = InboundApplyContext {
-        log,
         resource_application: &resource_application,
         device_key,
         inbox,
@@ -931,7 +929,7 @@ async fn apply_readable_inbound_change(
             None
         };
         let domain_apply_started = Instant::now();
-        let prepared = match rua_sync::evergreen_chat_adapter::validate_permission_rule_author(
+        let prepared = match rua_sync::evergreen_chat_adapter::validate_chat_record_author(
             &change,
             entry.author,
         ) {
@@ -1077,6 +1075,7 @@ async fn apply_readable_inbound_change(
                             return;
                         }
                     }
+                    let deleted_chat_id = plan.address().chat_id().to_string();
                     if let Err(error) = plan.apply().await {
                         record_limited_retry(
                             result,
@@ -1088,6 +1087,12 @@ async fn apply_readable_inbound_change(
                             ),
                         );
                         return;
+                    }
+                    if let Err(error) = context
+                        .inbox
+                        .reactivate_chat_records_for_placement(&deleted_chat_id)
+                    {
+                        tracing::warn!(%error, "could not settle pending Chat records after deletion");
                     }
                 }
                 if let Some(commit) = pending_commit {
@@ -1165,7 +1170,7 @@ async fn apply_readable_inbound_change(
                     return;
                 }
                 let (reason, exhaustion) = match e {
-                    rua_sync::SyncError::PendingChatPermissionPlacement => (
+                    rua_sync::SyncError::PendingChatPlacement { .. } => (
                         e.to_string(),
                         rua_sync::inbound_inbox::RetryExhaustion::Dormant,
                     ),
@@ -1325,15 +1330,11 @@ async fn publish_chat_placement_sync_wake(
     else {
         return;
     };
-    let rules_key = context.log.record_entry_key(
-        &apply_result.domain,
-        &rua_sync::evergreen_chat_adapter::file_record_id(&address, "permission_rules"),
-    );
     if let Err(error) = context
         .inbox
-        .reactivate_chat_rules_for_placement(&rules_key)
+        .reactivate_chat_records_for_placement(address.chat_id().as_str())
     {
-        tracing::warn!(%error, "could not wake Chat permission rules after placement");
+        tracing::warn!(%error, "could not wake Chat records after placement");
     }
     let Some(hub) = context.chat_activity_wake_hub else {
         return;

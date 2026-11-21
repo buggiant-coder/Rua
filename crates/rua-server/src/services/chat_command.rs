@@ -35,6 +35,7 @@ pub struct ChatCommandCommand {
 pub enum ChatCommandAction {
     Prepare,
     Start,
+    Adopt,
     Status,
     Cancel,
 }
@@ -83,6 +84,10 @@ pub enum ChatCommandResponse {
     Policy {
         response: DeviceReadCheckReply,
     },
+    Task {
+        task: Box<rua_task::TaskRecord>,
+        reference: Option<Box<rua_session::task_refs::ChatTaskRef>>,
+    },
 }
 
 const COMMAND_OUTPUT_BYTES: usize = 64 * 1024;
@@ -95,6 +100,7 @@ struct CommandExecution {
     host_cwd: PathBuf,
     cancel: CancellationToken,
     finished: CancellationToken,
+    foreground_released: CancellationToken,
     runner_session: Arc<rua_task::TaskRunnerSession>,
     state: tokio::sync::Mutex<CommandExecutionState>,
 }
@@ -103,6 +109,7 @@ struct CommandExecutionState {
     snapshot: ChatCommandSnapshot,
     connection: Option<DeviceSessionCommandContext>,
     last_used: Instant,
+    task_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -111,6 +118,7 @@ pub struct ChatCommandService {
     local_device_id: String,
     target: Arc<TargetFileReadContext>,
     sessions: Arc<RwLock<Option<DeviceSessionManager>>>,
+    tasks: Arc<rua_task::TaskRuntime>,
     executions: Arc<Mutex<HashMap<String, Arc<CommandExecution>>>>,
 }
 
@@ -120,12 +128,14 @@ impl ChatCommandService {
         local_device_id: String,
         target: Arc<TargetFileReadContext>,
         sessions: Arc<RwLock<Option<DeviceSessionManager>>>,
+        tasks: Arc<rua_task::TaskRuntime>,
     ) -> Self {
         Self {
             rua_root,
             local_device_id,
             target,
             sessions,
+            tasks,
             executions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -165,6 +175,23 @@ impl ChatCommandService {
             if !same_invocation(&execution.context, &context) {
                 return Err("Execution identity belongs to a different Chat invocation".into());
             }
+            let accepted_task = execution.state.lock().await.task_id.clone();
+            if let Some(task_id) = accepted_task {
+                return self.task_response(&context, &task_id).await;
+            }
+        } else if matches!(
+            command.action,
+            ChatCommandAction::Status | ChatCommandAction::Adopt | ChatCommandAction::Cancel
+        ) {
+            let owner = rua_task::TaskOwner::from_address(context.call.address.clone());
+            if let Ok(task) = self.tasks.get(&owner, &context.execution_id).await {
+                if task.spec.origin.turn_id.as_deref() != Some(&context.call.turn_id)
+                    || task.spec.origin.tool_call_id.as_deref() != Some(&context.call.tool_call_id)
+                {
+                    return Err("Task identity belongs to another Chat invocation".into());
+                }
+                return self.task_response(&context, &context.execution_id).await;
+            }
         }
         match command.action {
             ChatCommandAction::Prepare => self.prepare(context, connection, existing).await,
@@ -175,13 +202,24 @@ impl ChatCommandService {
                 self.start(&context, connection, execution).await
             }
             ChatCommandAction::Status => match existing {
-                Some(execution) => Ok(operation(&execution).await),
+                Some(execution) => self.execution_response(&execution).await,
                 None => Ok(self.missing(&context)),
             },
+            ChatCommandAction::Adopt => {
+                let Some(execution) = existing else {
+                    return Ok(self.missing(&context));
+                };
+                let service = self.clone();
+                // Acceptance must finish even when the RPC stream disappears
+                // while its SQLite transaction is committing.
+                tokio::spawn(async move { service.adopt(context, connection, execution).await })
+                    .await
+                    .map_err(|error| error.to_string())?
+            }
             ChatCommandAction::Cancel => match existing {
                 Some(execution) => {
                     cancel_execution(&execution).await;
-                    Ok(operation(&execution).await)
+                    self.execution_response(&execution).await
                 }
                 None => Ok(self.missing(&context)),
             },
@@ -297,6 +335,7 @@ impl ChatCommandService {
                 host_cwd,
                 cancel: CancellationToken::new(),
                 finished: CancellationToken::new(),
+                foreground_released: CancellationToken::new(),
                 runner_session: rua_task::TaskRunnerSession::new(),
                 state: tokio::sync::Mutex::new(CommandExecutionState {
                     snapshot: ChatCommandSnapshot {
@@ -309,6 +348,7 @@ impl ChatCommandService {
                     },
                     connection: Some(connection.clone()),
                     last_used: Instant::now(),
+                    task_id: None,
                 }),
             });
             let inserted = {
@@ -331,6 +371,7 @@ impl ChatCommandService {
                 tokio::select! {
                     biased;
                     _ = watched.finished.cancelled() => return,
+                    _ = watched.foreground_released.cancelled() => return,
                     _ = connection.closed() => { cancel_execution(&watched).await; return; },
                     _ = tokio::time::sleep(Duration::from_secs(600)) => {
                         let mut state = watched.state.lock().await;
@@ -346,6 +387,7 @@ impl ChatCommandService {
                 tokio::select! {
                     biased;
                     _ = watched.finished.cancelled() => {},
+                    _ = watched.foreground_released.cancelled() => {},
                     _ = connection.closed() => cancel_execution(&watched).await,
                 }
             });
@@ -498,6 +540,138 @@ impl ChatCommandService {
         bridge.abort();
     }
 
+    async fn task_response(
+        &self,
+        context: &ChatCommandContext,
+        task_id: &str,
+    ) -> Result<ChatCommandResponse, String> {
+        let task = self
+            .tasks
+            .get(
+                &rua_task::TaskOwner::from_address(context.call.address.clone()),
+                task_id,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let reference =
+            super::chat_task::capture_task_reference(&self.rua_root, &self.local_device_id, &task)
+                .ok()
+                .map(Box::new);
+        Ok(ChatCommandResponse::Task {
+            task: Box::new(task),
+            reference,
+        })
+    }
+
+    async fn execution_response(
+        &self,
+        execution: &CommandExecution,
+    ) -> Result<ChatCommandResponse, String> {
+        let mut state = execution.state.lock().await;
+        state.last_used = Instant::now();
+        if let Some(task_id) = state.task_id.clone() {
+            drop(state);
+            self.task_response(&execution.context, &task_id).await
+        } else {
+            Ok(snapshot(&state))
+        }
+    }
+
+    async fn adopt(
+        &self,
+        context: ChatCommandContext,
+        connection: DeviceSessionCommandContext,
+        execution: Arc<CommandExecution>,
+    ) -> Result<ChatCommandResponse, String> {
+        let mut state = execution.state.lock().await;
+        if let Some(task_id) = state.task_id.clone() {
+            drop(state);
+            return self.task_response(&context, &task_id).await;
+        }
+        if state.snapshot.state != ChatCommandState::Running {
+            return Ok(snapshot(&state));
+        }
+        if execution.cancel.is_cancelled()
+            || connection.is_closed()
+            || state.connection.as_ref().is_none_or(|owner| {
+                owner.generation() != connection.generation() || owner.is_closed()
+            })
+        {
+            return Ok(policy(DeviceReadCheckReply::Unavailable));
+        }
+        let mut arguments = context.call.arguments.clone();
+        arguments["device_id"] = self.local_device_id.clone().into();
+        arguments["cwd"] = state.snapshot.public_cwd.clone().into();
+        let origin = rua_task::TaskOrigin {
+            turn_id: Some(context.call.turn_id.clone()),
+            tool_call_id: Some(context.call.tool_call_id.clone()),
+        };
+        let spec = rua_task::TaskSpec {
+            owner: rua_task::TaskOwner::from_address(context.call.address.clone()),
+            instruction: context.call.arguments["command"]
+                .as_str()
+                .unwrap_or("bash command")
+                .to_owned(),
+            runner: rua_task::TaskRunnerSpec::Tool {
+                tool_name: "bash".into(),
+                arguments,
+            },
+            context_refs: Vec::new(),
+            depends_on: Vec::new(),
+            origin: origin.clone(),
+        };
+        let mut authorization = rua_task::TaskAttemptAuthorization::new(&context.call.agent_id)
+            .map_err(|error| error.to_string())?
+            .with_origin(origin);
+        authorization.configuration_epoch = Some(context.call.configuration_epoch.clone());
+        let collecting = execution.clone();
+        let execution_id = context.execution_id.clone();
+        let device_id = self.local_device_id.clone();
+        let future = async move {
+            collecting.finished.cancelled().await;
+            let state = collecting.state.lock().await;
+            let Some(result) = state.snapshot.result.clone() else {
+                return rua_task::TaskRunOutput::interrupted(
+                    "Command terminal result is unavailable",
+                );
+            };
+            let mut output = rua_tool::adapt_tool_task_result(
+                &execution_id,
+                1,
+                "bash",
+                result,
+                Some(&device_id),
+            );
+            if state.snapshot.state == ChatCommandState::Unknown {
+                output.outcome = rua_task::TaskRunOutcome::Interrupted;
+                output.error =
+                    rua_task::TaskRunOutput::interrupted("Command terminal status is unconfirmed")
+                        .error;
+            } else if state.snapshot.state == ChatCommandState::Cancelled {
+                output.outcome = rua_task::TaskRunOutcome::Cancelled;
+            }
+            output
+        };
+        self.tasks
+            .adopt_running(
+                context.execution_id.clone(),
+                spec,
+                authorization,
+                rua_task::TaskAdoptedExecution::new(future, execution.cancel.clone())
+                    .with_session(execution.runner_session.clone()),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        // The Task commit, connection cancellation and natural completion all
+        // serialize under this lock. After acceptance only Task control owns it.
+        state.task_id = Some(context.execution_id.clone());
+        state.connection = None;
+        state.last_used = Instant::now();
+        execution.foreground_released.cancel();
+        drop(state);
+        self.task_response(&context, &context.execution_id).await
+    }
+
     fn command_result(
         &self,
         execution: &CommandExecution,
@@ -592,12 +766,6 @@ fn snapshot(state: &CommandExecutionState) -> ChatCommandResponse {
     }
 }
 
-async fn operation(execution: &CommandExecution) -> ChatCommandResponse {
-    let mut state = execution.state.lock().await;
-    state.last_used = Instant::now();
-    snapshot(&state)
-}
-
 fn finish_before_start(execution: &CommandExecution, state: &mut CommandExecutionState) {
     state.snapshot.state = ChatCommandState::Cancelled;
     state.snapshot.result = Some(ToolResult::error(
@@ -610,8 +778,11 @@ fn finish_before_start(execution: &CommandExecution, state: &mut CommandExecutio
 }
 
 async fn cancel_execution(execution: &CommandExecution) {
-    execution.cancel.cancel();
     let mut state = execution.state.lock().await;
+    if state.task_id.is_some() {
+        return;
+    }
+    execution.cancel.cancel();
     if state.snapshot.state == ChatCommandState::Prepared {
         finish_before_start(execution, &mut state);
     } else if state.snapshot.state == ChatCommandState::Running {

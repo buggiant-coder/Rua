@@ -2358,6 +2358,7 @@ async fn project_task_routes_use_typed_project_chat_ownership() {
     test.state
         .conversation_input_intake
         .deliver_task_watch_output(rua_task::TaskWatchOutputNotification {
+            extra: Default::default(),
             notification_id: "project-task-watch-after-switch".to_string(),
             owner: owner.clone(),
             task_id: task_id.clone(),

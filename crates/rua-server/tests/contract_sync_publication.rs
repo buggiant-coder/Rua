@@ -9,7 +9,7 @@ use rua_server::sync_publication::{
 };
 use rua_server::{AppState, ServerProfile};
 use rua_session::store::{NewConversationMessage, NewConversationTurn, TurnLifecycle};
-use rua_session::{ChatMetadata, ChatSessionHeader, WorkspaceSessionStore};
+use rua_session::WorkspaceSessionStore;
 use rua_task::{
     TaskArtifact, TaskResourceRef, TaskRunOutput, TaskRunRequest, TaskRunner, TaskRunnerError,
     TaskRunnerKind, TaskRunnerSpec, TaskSpec,
@@ -71,55 +71,130 @@ fn build_state(sync_enabled: bool, with_network: bool) -> (AppState, TempDir) {
     (state, tmp)
 }
 
-async fn seed_task_chat(state: &AppState, data_dir: &std::path::Path, chat_id: &str) {
-    let workspace_dir = data_dir.join("workspaces/default");
-    let now = Utc::now();
-    let device_id = state
-        .task_runtime
-        .device_context()
-        .device_id
-        .clone()
-        .expect("local task Device");
-    let store = WorkspaceSessionStore::new(&workspace_dir);
-    let mut header = ChatSessionHeader::new(ChatMetadata {
-        chat_id: chat_id.to_string(),
-        agent_id: "default".to_string(),
-        title: "Task publication".to_string(),
-        created_at: now.to_rfc3339(),
-        last_activity_at: now.to_rfc3339(),
-        pinned: false,
-        archived: false,
-        preview: None,
-    });
-    header.extra.insert(
-        "authority_placement".to_string(),
-        json!({
-            "device_id": device_id,
-            "authority_epoch": "0000000000000001000000000000000000000000",
-            "base_manifest_hash": format!("sha256:{}", "0".repeat(64))
-        }),
-    );
-    rua_chat::apply_chat_defaults(&mut header);
-    store
-        .save_chat_header(&header)
+async fn seed_task_chat(state: &AppState, data_dir: &std::path::Path, chat_id: &str) -> String {
+    use rua_server::services::conversation_authority_placement::{
+        ConversationAuthorityEpoch, ConversationAuthorityPlacement,
+    };
+    use rua_server::services::product_hooks::ChatConfigurationMaterialization;
+
+    let address = ChatAddress::new(chat_id);
+    let workspace_dir = ChatStore::resolve(data_dir, address.clone())
+        .root()
+        .to_path_buf();
+    let runtime = state.registry.get_or_create("default").await.unwrap();
+    let device_id = state.task_runtime.local_device_id().await.unwrap().unwrap();
+    let placement = ConversationAuthorityPlacement {
+        device_id: device_id.clone(),
+        authority_epoch: ConversationAuthorityEpoch::next_for_device(&device_id, None),
+        base_manifest_hash:
+            rua_server::services::conversation_manifest::initial_conversation_manifest_hash(
+                &address,
+            )
+            .unwrap(),
+    };
+    rua_server::services::console_chat::materialize_targeted_chat(
+        &workspace_dir,
+        "default",
+        chat_id,
+        "Task publication",
+        &placement,
+    )
+    .await
+    .unwrap();
+    let agent = state
+        .agent_service
+        .get_agent("default")
         .await
-        .expect("save chat header");
+        .unwrap()
+        .unwrap();
+    let running: rua_config::AgentsRunningConfig = agent
+        .running
+        .clone()
+        .map(serde_json::from_value)
+        .transpose()
+        .unwrap()
+        .unwrap_or_default();
+    let configs: serde_json::Map<String, serde_json::Value> = agent
+        .tools
+        .as_ref()
+        .and_then(|tools| tools.get("builtin_tools"))
+        .and_then(serde_json::Value::as_object)
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|(name, entry)| {
+                    entry
+                        .get("config")
+                        .filter(|config| config.is_object())
+                        .map(|config| (name.clone(), config.clone()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let directory = json!({
+        "device_id": device_id,
+        "path": runtime.workspace_dir().canonicalize().unwrap(),
+    });
+    let mut capabilities = runtime.capability_configuration(None).await.unwrap();
+    capabilities.extra.insert(
+        rua_session::EXECUTION_DIRECTORY_KEY.into(),
+        directory.clone(),
+    );
+    let configuration = state
+        .product_hooks
+        .resolve_complete_chat_configuration(
+            &address,
+            ChatConfigurationMaterialization {
+                project_id: None,
+                selected_agent_id: "default".into(),
+                running_config: rua_config::ChatRunningConfig::from_agent_defaults(&running),
+                security_config: state.security.config_store().load("default").unwrap(),
+                agent_assignment: Some(
+                    rua_server::services::console_chat::turn_agent_assignment_from_agent(&agent)
+                        .unwrap(),
+                ),
+                prompt_file_content: None,
+                tool_config_snapshot: rua_tool::tool_config_secret_io::ToolConfigSnapshot::capture(
+                    &serde_json::Value::Object(configs),
+                ),
+                capability_configuration: Some(capabilities),
+                model: None,
+                thinking: None,
+                collaboration_mode: json!("default"),
+                harness_configuration: None,
+                authority_device_id: device_id,
+            },
+        )
+        .await
+        .unwrap();
+    let epoch = configuration.epoch.clone();
+    let store = WorkspaceSessionStore::new(&workspace_dir);
+    let mut header = store.load_chat_header(chat_id).await.unwrap().unwrap();
+    header
+        .extra
+        .insert(rua_session::EXECUTION_DIRECTORY_KEY.into(), directory);
+    header.extra.insert(
+        "hook_configuration".into(),
+        serde_json::to_value(configuration).unwrap(),
+    );
+    store.save_chat_header(&header).await.unwrap();
+    let now = Utc::now().to_rfc3339();
     store
         .append_conversation_turn(
             chat_id,
             NewConversationTurn {
                 turn_id: "task-publication-turn".to_string(),
                 lifecycle: TurnLifecycle {
-                    user_submitted_at: now.to_rfc3339(),
-                    assistant_started_at: Some(now.to_rfc3339()),
-                    assistant_completed_at: Some(now.to_rfc3339()),
+                    user_submitted_at: now.clone(),
+                    assistant_started_at: Some(now.clone()),
+                    assistant_completed_at: Some(now.clone()),
                     status: "completed".to_string(),
                 },
                 selected_variant_id: None,
                 messages: vec![NewConversationMessage {
                     message_id: "task-publication-user".to_string(),
                     role: "user".to_string(),
-                    created_at: now.to_rfc3339(),
+                    created_at: now,
                     status: "completed".to_string(),
                     content: json!([{"type": "text", "text": "Run the background task"}]),
                     provider: None,
@@ -130,31 +205,7 @@ async fn seed_task_chat(state: &AppState, data_dir: &std::path::Path, chat_id: &
         )
         .await
         .expect("seed task publication Turn");
-    rua_server::services::chat_index::upsert(
-        &workspace_dir,
-        rua_server::services::chat_index::ChatIndexEntry {
-            id: chat_id.to_string(),
-            name: "Task publication".to_string(),
-            user_id: "default".to_string(),
-            channel: "console".to_string(),
-            created_at: now,
-            updated_at: now,
-            meta: json!({
-                "authority_placement": {
-                    "device_id": device_id,
-                    "authority_epoch": "0000000000000001000000000000000000000000",
-                    "base_manifest_hash": format!("sha256:{}", "0".repeat(64))
-                }
-            }),
-            status: "active".to_string(),
-            pinned: false,
-            pin_order: 0,
-            tag: rua_session::ChatTag::None,
-            archived: false,
-        },
-    )
-    .await
-    .expect("save chat index");
+    epoch
 }
 
 async fn collect_v4_changes(state: &AppState) -> Vec<rua_sync::opaque_replica_log::SyncChange> {
@@ -216,8 +267,8 @@ async fn collect_v4_frame_stats(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn terminal_task_runtime_note_is_published_as_evergreen_chat_state() {
     let (state, tmp) = build_state(true, true);
-    let chat_id = "task-publication-chat";
-    seed_task_chat(&state, tmp.path(), chat_id).await;
+    let chat_id = "00000000-0000-0000-0000-000000001003";
+    let configuration_epoch = seed_task_chat(&state, tmp.path(), chat_id).await;
     state
         .task_runtime
         .register_runner(Arc::new(ImmediateTaskRunner));
@@ -236,15 +287,23 @@ async fn terminal_task_runtime_note_is_published_as_evergreen_chat_state() {
                 depends_on: Vec::new(),
                 origin: Default::default(),
             },
-            rua_task::TaskAttemptAuthorization::new("default").unwrap(),
+            rua_task::TaskAttemptAuthorization::new("default")
+                .unwrap()
+                .with_configuration_epoch(configuration_epoch.clone()),
         )
         .await
         .expect("create task");
-    state
+    let completed = state
         .task_runtime
         .await_terminal(&owner, &task_id, Duration::from_secs(2))
         .await
         .expect("task terminal");
+    assert_eq!(completed.state, rua_task::TaskState::Completed);
+    assert_eq!(
+        completed.attempts[0].configuration_epoch.as_deref(),
+        Some(configuration_epoch.as_str())
+    );
+    assert!(completed.attempts[0].device.public_cwd.is_some());
 
     let published_note = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -255,9 +314,9 @@ async fn terminal_task_runtime_note_is_published_as_evergreen_chat_state() {
                     change.domain == "evergreen_chat"
                         && change
                             .record_id
-                            .starts_with(&format!("agent/default/{chat_id}/messages/"))
+                            .starts_with(&format!("chats/{chat_id}/messages/"))
                 })
-                .filter_map(|change| change.payload.as_str().map(str::to_string))
+                .filter_map(|change| change.payload["content"].as_str().map(str::to_string))
                 .flat_map(|content| {
                     content
                         .lines()
@@ -1244,21 +1303,30 @@ async fn publication_skips_when_sync_enabled_without_bound_network() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stable_conversation_fact_publishes_evergreen_snapshots_when_bound() {
     let (state, tmp) = build_state(true, true);
-    let workspace_dir = tmp.path().join("workspaces/default");
     let chat_id = "00000000-0000-0000-0000-000000001001";
+    let workspace_dir = ChatStore::resolve(tmp.path(), ChatAddress::new(chat_id))
+        .root()
+        .to_path_buf();
+    let mut header = rua_session::ChatSessionHeader::new(rua_session::ChatMetadata {
+        chat_id: chat_id.into(),
+        agent_id: "default".into(),
+        title: "Published chat".into(),
+        created_at: "2026-06-25T00:00:00Z".into(),
+        last_activity_at: "2026-06-25T00:00:00Z".into(),
+        pinned: false,
+        archived: false,
+        preview: None,
+    });
+    header.extra.insert(
+        "authority_placement".into(),
+        json!({
+            "device_id": state.task_runtime.device_context().device_id,
+            "authority_epoch": "0000000000000001000000000000000000000000",
+            "base_manifest_hash": format!("sha256:{}", "0".repeat(64))
+        }),
+    );
     rua_session::WorkspaceSessionStore::new(&workspace_dir)
-        .save_chat_header(&rua_session::ChatSessionHeader::new(
-            rua_session::ChatMetadata {
-                chat_id: chat_id.into(),
-                agent_id: "default".into(),
-                title: "Published chat".into(),
-                created_at: "2026-06-25T00:00:00Z".into(),
-                last_activity_at: "2026-06-25T00:00:00Z".into(),
-                pinned: false,
-                archived: false,
-                preview: None,
-            },
-        ))
+        .save_chat_header(&header)
         .await
         .unwrap();
     let store = rua_session::WorkspaceSessionStore::new(&workspace_dir);
@@ -1315,13 +1383,13 @@ async fn stable_conversation_fact_publishes_evergreen_snapshots_when_bound() {
     let changes = collect_v4_changes(&state).await;
     assert!(changes.iter().any(|change| {
         change.domain == "evergreen_chat"
-            && change.record_id == format!("agent/default/{chat_id}/turn_index")
-            && change.payload.to_string().contains("completed")
+            && change.record_id == format!("chats/{chat_id}/turn_index")
+            && change.payload["content"].to_string().contains("completed")
     }));
     assert!(changes.iter().any(|change| {
         change.domain == "evergreen_chat"
-            && change.record_id == format!("agent/default/{chat_id}/messages/000000000000.jsonl")
-            && change.payload.to_string().contains("hi")
+            && change.record_id == format!("chats/{chat_id}/messages/000000000000.jsonl")
+            && change.payload["content"].to_string().contains("hi")
     }));
 }
 

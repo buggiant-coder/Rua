@@ -2419,10 +2419,12 @@ impl ToolTaskExecution for CancelAwareExecution {
         self.started.notify_one();
         request.cancel.cancelled().await;
         tokio::time::sleep(Duration::from_millis(20)).await;
-        Ok(agent_types::ToolResult::text(
+        let mut result = agent_types::ToolResult::error(
             format!("{}:{}", request.task_id, request.attempt_no),
             "output captured during cancellation",
-        ))
+        );
+        result.metadata.insert("cancelled".into(), true.into());
+        Ok(result)
     }
 }
 

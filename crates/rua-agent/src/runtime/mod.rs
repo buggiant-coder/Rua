@@ -258,6 +258,7 @@ pub struct ReactAgentRuntime {
     usage_recorder: Option<Arc<dyn UsageRecorder>>,
     toolkit: Option<Arc<AgentToolkit>>,
     task_runtime: Option<Arc<rua_task::TaskRuntime>>,
+    task_tool_router: Option<Arc<dyn rua_tool::extended::task_tools::TaskToolRouter>>,
     collaboration_runtime: Option<Arc<dyn std::any::Any + Send + Sync>>,
     chat_media_loader: Option<Arc<dyn rua_core::ChatMediaLoader>>,
     device_read_access: Option<Arc<dyn rua_core::tool::DeviceReadAccess>>,
@@ -693,6 +694,7 @@ impl ReactAgentRuntime {
             usage_recorder: None,
             toolkit: None,
             task_runtime: None,
+            task_tool_router: None,
             collaboration_runtime: None,
             chat_media_loader: None,
             device_read_access: None,
@@ -1856,6 +1858,14 @@ impl ReactAgentRuntime {
         self
     }
 
+    pub fn with_task_tool_router(
+        mut self,
+        router: Option<Arc<dyn rua_tool::extended::task_tools::TaskToolRouter>>,
+    ) -> Self {
+        self.task_tool_router = router;
+        self
+    }
+
     pub fn with_collaboration_runtime(
         mut self,
         runtime: Arc<dyn std::any::Any + Send + Sync>,
@@ -2779,9 +2789,13 @@ impl AgentRuntime for ReactAgentRuntime {
                 .map(|root| root.join("tool_call_logs"));
             let task_runtime_handle: Option<Arc<dyn std::any::Any + Send + Sync>> =
                 self.task_runtime.as_ref().map(|task_runtime| {
-                    Arc::new(rua_tool::extended::task_tools::TaskRuntimeHandle::new(
+                    let mut handle = rua_tool::extended::task_tools::TaskRuntimeHandle::new(
                         Arc::clone(task_runtime),
-                    )) as Arc<dyn std::any::Any + Send + Sync>
+                    );
+                    if let Some(router) = self.task_tool_router.clone() {
+                        handle = handle.with_router(router);
+                    }
+                    Arc::new(handle) as Arc<dyn std::any::Any + Send + Sync>
                 });
 
             let (

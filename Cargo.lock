@@ -8866,6 +8866,7 @@ dependencies = [
  "rua-core",
  "rua-i18n",
  "rua-skills",
+ "rua-task",
  "rua-text-search",
  "rusqlite",
  "serde",

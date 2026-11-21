@@ -18,6 +18,9 @@ struct TaskToolWaitStateHook {
     owner: rua_task::TaskOwner,
     task_id: String,
     attempt_no: u32,
+    cancel: tokio_util::sync::CancellationToken,
+    cancelled_before_execution: Arc<std::sync::atomic::AtomicBool>,
+    approvals: Arc<rua_security::ApprovalAuthority>,
 }
 
 #[async_trait]
@@ -70,10 +73,25 @@ impl AgentHook for TaskToolWaitStateHook {
                 }
             }
         }
-        let decision = self
-            .inner
-            .wait_for_approval_request(request_id, tool_use_id, tool_name, prompt, call)
-            .await;
+        let decision = tokio::select! {
+            biased;
+            _ = self.cancel.cancelled() => {
+                self.cancelled_before_execution.store(true, std::sync::atomic::Ordering::SeqCst);
+                if let Some(request_id) = request_id {
+                    self.approvals.supersede_request(request_id).await;
+                } else {
+                    for pending in self.approvals.list_pending_for_address(&self.owner.chat_address).await {
+                        if pending.tool_call_id == call.id {
+                            self.approvals.supersede_request(&pending.id).await;
+                        }
+                    }
+                }
+                react_agent::hooks::ApprovalResult::Deny {
+                    reason: "Task cancelled while awaiting approval; the Tool was not executed".into(),
+                }
+            },
+            decision = self.inner.wait_for_approval_request(request_id, tool_use_id, tool_name, prompt, call) => decision,
+        };
         match self
             .runtime
             .set_waiting_approval(&self.owner, &self.task_id, self.attempt_no, false)
@@ -161,27 +179,48 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             .await
             .map_err(|error| error.to_string())?
             .ok_or("Task owning Chat is unavailable")?;
-        let directory: rua_session::ChatExecutionDirectory = serde_json::from_value(
-            configuration
-                .extra
-                .get(rua_session::EXECUTION_DIRECTORY_KEY)
-                .ok_or("Task configuration has no captured execution directory")?
-                .clone(),
-        )
-        .map_err(|error| format!("Invalid Task execution directory: {error}"))?;
-        if runtime.task_runtime().device_context().device_id.as_deref()
-            != Some(directory.device_id.as_str())
+        let execution_device = request
+            .device
+            .device_id
+            .as_deref()
+            .ok_or("Task has no execution Device")?;
+        if runtime
+            .task_runtime()
+            .local_device_id()
+            .await
+            .map_err(|error| error.to_string())?
+            .as_deref()
+            != Some(execution_device)
         {
-            return Err("Task execution directory belongs to another Device".into());
+            return Err("Task execution belongs to another Device".into());
         }
-        let working_dir = directory.host_path().map_err(|error| error.to_string())?;
+        let public_cwd = request
+            .device
+            .public_cwd
+            .as_deref()
+            .ok_or("Task has no original execution directory")?;
+        let fs = rua_tool::WorkspaceFs::for_execution(
+            &runtime.rua_root(),
+            rua_core::runtime_layout::RuntimeLayout::from_current_process(None),
+        )
+        .map_err(|error| error.to_string())?;
+        let working_dir = fs.resolve(public_cwd).map_err(|error| error.to_string())?;
+        if !working_dir.is_dir()
+            || fs
+                .public_path_from_host(&working_dir)
+                .as_ref()
+                .and_then(|path| path.to_str())
+                != Some(public_cwd)
+        {
+            return Err("Task original execution directory is unavailable or changed".into());
+        }
         let project_root = header.project_id.as_ref().map(|_| working_dir.as_path());
         let toolkit = runtime
             .task_toolkit_for_configuration(
                 scope.root(),
                 project_root,
                 &chat_id,
-                request.origin_turn_id.as_deref(),
+                request.authorization_origin.turn_id.as_deref(),
                 &configuration,
             )
             .await
@@ -213,14 +252,15 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             .security_module()
             .await
             .ok_or_else(|| "agent security module is unavailable".to_string())?;
+        let approvals = Arc::clone(security.approval_authority());
         let mut security_hook = rua_agent::hooks::SecurityAgentHook::new(security, true)
             .with_session_id(&chat_id)
             .with_agent_id(&execution_agent_id)
-            .with_local_device_id(&directory.device_id)
+            .with_local_device_id(execution_device)
             .with_chat_address(request.owner.chat_address.clone())
             .with_working_dir(working_dir.to_string_lossy().to_string())
             .with_security_snapshot(Arc::clone(&security_snapshot));
-        if let Some(turn_id) = request.origin_turn_id.as_ref() {
+        if let Some(turn_id) = request.authorization_origin.turn_id.as_ref() {
             security_hook = security_hook.with_turn_id(turn_id);
         }
         if header.project_id.is_some()
@@ -231,21 +271,30 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             security_hook =
                 security_hook.with_project_resource_roots(configuration.project_write_roots());
         }
+        let cancelled_before_execution = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let hook: Arc<dyn AgentHook> = Arc::new(TaskToolWaitStateHook {
             inner: Arc::new(security_hook),
             runtime: runtime.task_runtime(),
             owner: request.owner.clone(),
             task_id: request.task_id.clone(),
             attempt_no: request.attempt_no,
+            cancel: request.cancel.clone(),
+            cancelled_before_execution: cancelled_before_execution.clone(),
+            approvals,
         });
 
+        let mut arguments = request.arguments;
+        if request.tool_name == "bash" {
+            arguments["device_id"] = execution_device.into();
+            arguments["cwd"] = public_cwd.into();
+        }
         let call = ToolCall {
             id: format!(
                 "task:{}:attempt:{}:tool",
                 request.task_id, request.attempt_no
             ),
             name: request.tool_name,
-            arguments: request.arguments,
+            arguments,
             raw_arguments: None,
             provider_call_id: None,
             metadata: Default::default(),
@@ -256,7 +305,9 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             "task_id".to_string(),
             serde_json::Value::String(request.task_id),
         )]);
-        if let (Some(_), Some(turn_id)) = (&header.project_id, &request.origin_turn_id) {
+        if let (Some(_), Some(turn_id)) =
+            (&header.project_id, &request.authorization_origin.turn_id)
+        {
             if let Some(resources) = store
                 .read_turn(&chat_id, turn_id)
                 .await
@@ -301,7 +352,7 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             rua_agent::hooks::SECURITY_CHAT_ADDRESS_METADATA_KEY.to_string(),
             serde_json::to_value(&request.owner.chat_address).map_err(|error| error.to_string())?,
         );
-        if let Some(turn_id) = request.origin_turn_id {
+        if let Some(turn_id) = request.authorization_origin.turn_id {
             metadata.insert("turn_id".to_string(), serde_json::json!(turn_id));
         }
         metadata.insert(
@@ -321,7 +372,7 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             );
         }
         let tool_context = rua_core::tool::ToolContext {
-            local_device_id: Some(directory.device_id),
+            local_device_id: Some(execution_device.to_owned()),
             chat_media_loader: runtime.chat_media_loader(),
             device_read_access: None,
             device_read_confirmation_wait: None,
@@ -349,7 +400,7 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
         });
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(32);
         let event_drain = tokio::spawn(async move { while event_rx.recv().await.is_some() {} });
-        let result = react_agent::react_loop::execute_single_tool(
+        let mut result = react_agent::react_loop::execute_single_tool(
             &call,
             &toolkit,
             &hook,
@@ -365,6 +416,14 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
         drop(event_tx);
         let _ = event_drain.await;
         cancel_bridge.abort();
+        if cancelled_before_execution.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Ok(result) = &mut result {
+                result.metadata.insert("cancelled".into(), true.into());
+                result
+                    .metadata
+                    .insert("execution_status".into(), "not_executed".into());
+            }
+        }
         result
     }
 }

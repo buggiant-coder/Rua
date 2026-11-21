@@ -3399,6 +3399,14 @@ async fn collaboration_presets_enforce_permissions_through_real_task_execution()
             attempt_no: 1,
             owner: rua_task::TaskOwner::from_address(child.chat.clone()),
             authorization_agent_id: agent.into(),
+            authorization_origin: Default::default(),
+            device: rua_task::TaskDeviceContext {
+                device_id: rua_server::services::device_context::current_sync_device_id(
+                    &test.state.sync_device,
+                ),
+                public_cwd: Some(workspace.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
             configuration_epoch: Some(configuration.epoch),
             tool_name: "edit".into(),
             arguments: json!({"patch":format!("*** Begin Patch\n*** Add File: {}\n+verified\n*** End Patch", target.display())}),
@@ -3427,6 +3435,14 @@ async fn collaboration_presets_enforce_permissions_through_real_task_execution()
                     attempt_no: 1,
                     owner: rua_task::TaskOwner::from_address(child.chat.clone()),
                     authorization_agent_id: agent.into(),
+                    authorization_origin: Default::default(),
+                    device: rua_task::TaskDeviceContext {
+                        device_id: rua_server::services::device_context::current_sync_device_id(
+                            &test.state.sync_device,
+                        ),
+                        public_cwd: Some(workspace.to_string_lossy().into_owned()),
+                        ..Default::default()
+                    },
                     configuration_epoch: None,
                     tool_name: "read".into(),
                     arguments: json!({"file_path":readable}),
@@ -3444,6 +3460,14 @@ async fn collaboration_presets_enforce_permissions_through_real_task_execution()
                     attempt_no: 1,
                     owner: rua_task::TaskOwner::from_address(child.chat.clone()),
                     authorization_agent_id: agent.into(),
+                    authorization_origin: Default::default(),
+                    device: rua_task::TaskDeviceContext {
+                        device_id: rua_server::services::device_context::current_sync_device_id(
+                            &test.state.sync_device,
+                        ),
+                        public_cwd: Some(workspace.to_string_lossy().into_owned()),
+                        ..Default::default()
+                    },
                     configuration_epoch: Some(
                         test.state
                             .product_hooks
@@ -3476,6 +3500,12 @@ async fn collaboration_presets_enforce_permissions_through_real_task_execution()
                 task_id: "implementation-verify".into(), attempt_no: 1,
                 owner: rua_task::TaskOwner::from_address(child.chat.clone()),
                 authorization_agent_id: agent.into(),
+                authorization_origin: Default::default(),
+                device: rua_task::TaskDeviceContext {
+                    device_id: rua_server::services::device_context::current_sync_device_id(&test.state.sync_device),
+                    public_cwd: Some(workspace.to_string_lossy().into_owned()),
+                    ..Default::default()
+                },
                 configuration_epoch: Some(test.state.product_hooks.chat_configuration(&child.chat).await.unwrap().epoch),
                 tool_name: "bash".into(), arguments: json!({"command":"test -f controlled-test.txt && printf 'verification passed'", "cwd": workspace}),
                 origin_turn_id: None, dependencies: Vec::new(), cancel: tokio_util::sync::CancellationToken::new(),
@@ -3616,6 +3646,18 @@ async fn task_approval_wait_is_visible_and_decision_preserves_write_boundary() {
                 .cancel(&owner, task_id)
                 .await
                 .unwrap();
+            let snapshot = test
+                .state
+                .security
+                .approval_authority()
+                .snapshot_at(&child.chat)
+                .await;
+            assert!(
+                snapshot.pending.is_empty(),
+                "cancelled Task must not leave a pending approval"
+            );
+            assert!(snapshot.resolved.iter().any(|item| item.id == pending
+                && item.status == rua_security::AuthorityStatus::Superseded));
         }
         let response = request(
             &approvals,
@@ -3624,7 +3666,14 @@ async fn task_approval_wait_is_visible_and_decision_preserves_write_boundary() {
             Some(json!({"decision":if decision == "cancel" { "run_once" } else { decision },"decided_by":"test"})),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::OK);
+        if decision == "cancel" {
+            assert!(
+                response.status().is_client_error(),
+                "a cancelled approval cannot grant a late execution"
+            );
+        } else {
+            assert_eq!(response.status(), StatusCode::OK);
+        }
         let finished = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 let record = test.state.task_runtime.get(&owner, task_id).await.unwrap();
@@ -4968,6 +5017,12 @@ async fn project_collaboration_keeps_resource_root_and_rejects_archived_project(
             attempt_no: 1,
             owner: rua_task::TaskOwner::from_address(child.chat.clone()),
             authorization_agent_id: "default".into(),
+            authorization_origin: Default::default(),
+            device: rua_task::TaskDeviceContext {
+                device_id: Some(device.to_string()),
+                public_cwd: Some(cwd.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
             configuration_epoch: Some(configuration.epoch),
             tool_name: "read".into(),
             arguments: json!({"file_path":"task-resource.json"}),

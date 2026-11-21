@@ -79,13 +79,41 @@ impl TaskRunner for ShutdownOwnershipRunner {
     }
 }
 
+#[derive(Default)]
+struct ShutdownOwnershipSink {
+    entered: Notify,
+    release: Notify,
+}
+
+#[async_trait]
+impl rua_task::TaskNotificationSink for ShutdownOwnershipSink {
+    async fn terminal(
+        &self,
+        notification: rua_task::TaskCompletionNotification,
+    ) -> Result<(), TaskRunnerError> {
+        if notification.record.attempts.iter().any(|attempt| {
+            attempt.attempt_no == notification.record.attempt_no
+                && attempt.authorization_agent_id == "agent-a"
+        }) {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn workspace_shutdown_cancels_only_the_authorized_agent_tasks_in_a_project_chat() {
     use rua_workspace::AgentWorkAuthority;
     let app = build_app();
     let temp = tempfile::tempdir().unwrap();
+    let sink = Arc::new(ShutdownOwnershipSink::default());
     let runtime = Arc::new(
-        rua_task::TaskRuntime::open(rua_task::TaskRuntimeConfig::new(temp.path())).unwrap(),
+        rua_task::TaskRuntime::open_with_sink(
+            rua_task::TaskRuntimeConfig::new(temp.path()),
+            sink.clone(),
+        )
+        .unwrap(),
     );
     runtime.register_runner(Arc::new(ShutdownOwnershipRunner));
     let owner = TaskOwner::from_address(rua_core::ChatAddress::new("chat-task-only"));
@@ -132,6 +160,10 @@ async fn workspace_shutdown_cancels_only_the_authorized_agent_tasks_in_a_project
     })
     .await
     .unwrap();
+    assert_eq!(
+        runtime.get(&owner, &a).await.unwrap().state,
+        TaskState::Cancelled
+    );
     assert!(!runtime.get(&owner, &b).await.unwrap().state.is_terminal());
     assert_eq!(
         authority
@@ -142,7 +174,77 @@ async fn workspace_shutdown_cancels_only_the_authorized_agent_tasks_in_a_project
             .len(),
         1
     );
+    tokio::time::timeout(Duration::from_secs(2), sink.entered.notified())
+        .await
+        .unwrap();
+    runtime
+        .retry(
+            &owner,
+            &a,
+            rua_task::TaskAttemptAuthorization::new("agent-b").unwrap(),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while runtime.get(&owner, &a).await.unwrap().state != TaskState::Running {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let old_work = authority.outstanding_work("agent-a").await.unwrap();
+    assert_eq!(old_work.units.len(), 1);
+    assert_eq!(old_work.units[0].attempt_no, Some(1));
+    let new_work = authority.outstanding_work("agent-b").await.unwrap();
+    assert_eq!(new_work.units.len(), 2);
+    assert!(new_work
+        .units
+        .iter()
+        .any(|unit| { unit.id == a && unit.attempt_no == Some(2) }));
+    assert!(authority
+        .terminated_units(&old_work.units)
+        .await
+        .unwrap()
+        .is_empty());
+    authority.cancel_work("agent-a").await.unwrap();
+    assert_eq!(
+        runtime.get(&owner, &a).await.unwrap().state,
+        TaskState::Running
+    );
+    sink.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !authority
+            .outstanding_work("agent-a")
+            .await
+            .unwrap()
+            .units
+            .is_empty()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        authority.terminated_units(&old_work.units).await.unwrap(),
+        old_work.units
+    );
+    assert_eq!(
+        runtime.get(&owner, &a).await.unwrap().state,
+        TaskState::Running
+    );
+    runtime.begin_shutdown().await;
+    authority.begin_shutdown("agent-b").await.unwrap();
+    authority.cancel_work("agent-b").await.unwrap();
     runtime.shutdown().await.unwrap();
+    for task_id in [&a, &b] {
+        let interrupted = runtime.get(&owner, task_id).await.unwrap();
+        assert_eq!(interrupted.state, TaskState::Interrupted);
+        assert_eq!(
+            interrupted.result.unwrap().error.unwrap().details["provenance"],
+            "runtime_shutdown"
+        );
+    }
 }
 
 struct HttpTaskInputSink {
@@ -219,7 +321,11 @@ async fn task_input_http_routes_by_chat_and_preserves_submission_identity() {
                 depends_on: Vec::new(),
                 origin: Default::default(),
             },
-            rua_task::TaskAttemptAuthorization::new("task-input-agent").unwrap(),
+            rua_task::TaskAttemptAuthorization::new("task-input-agent")
+                .unwrap()
+                .with_configuration_epoch(
+                    chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id).await,
+                ),
         )
         .await
         .unwrap();
@@ -783,6 +889,12 @@ async fn process_task_runtime_isolates_two_agents_and_multiple_chats() {
                 ToolContext {
                     agent_id: agent_id.clone(),
                     session_id: chat_id.clone(),
+                    metadata: std::collections::HashMap::from([(
+                        "chat_configuration_epoch".into(),
+                        chat_configuration_epoch(test.state.chat_workspace().as_path(), chat_id)
+                            .await
+                            .into(),
+                    )]),
                     working_dir: test.state.rua_root.join("workspaces").join(agent_id),
                     task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
                         &test.state.task_runtime,
@@ -983,12 +1095,12 @@ impl TaskRunner for CancellableRunner {
         self.started.notify_one();
         request.cancel.cancelled().await;
         tokio::time::sleep(Duration::from_millis(20)).await;
-        Ok(TaskRunOutput::completed("cleanup complete"))
+        Ok(TaskRunOutput::cancelled())
     }
 }
 
 #[tokio::test]
-async fn task_creation_is_rejected_when_the_local_device_is_not_chat_authority() {
+async fn task_creation_uses_captured_execution_device_independently_of_chat_authority() {
     let test = build_app();
     create_agent(
         &test.app,
@@ -1013,7 +1125,7 @@ async fn task_creation_is_rejected_when_the_local_device_is_not_chat_authority()
     .await
     .unwrap();
 
-    let error = TaskCreateTool
+    let created = TaskCreateTool
         .call(
             serde_json::json!({
                 "runner": {
@@ -1025,6 +1137,12 @@ async fn task_creation_is_rejected_when_the_local_device_is_not_chat_authority()
             ToolContext {
                 agent_id: "remote-authority-agent".to_string(),
                 session_id: chat_id.clone(),
+                metadata: std::collections::HashMap::from([(
+                    "chat_configuration_epoch".into(),
+                    chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id)
+                        .await
+                        .into(),
+                )]),
                 task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
                     &test.state.task_runtime,
                 )))),
@@ -1032,20 +1150,16 @@ async fn task_creation_is_rejected_when_the_local_device_is_not_chat_authority()
             },
         )
         .await
-        .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("Chat authority is Device 'remote-device'"));
-    assert!(test
-        .state
-        .task_runtime
-        .list(
-            &TaskOwner::new(chat_id),
-            rua_task::TaskListFilter::default(),
-        )
-        .await
-        .unwrap()
-        .is_empty());
+        .unwrap();
+    let created: serde_json::Value = serde_json::from_str(&created.text_content()).unwrap();
+    let task_id = created["task_id"].as_str().unwrap();
+    let record = wait_for_terminal(&test.state, &TaskOwner::new(&chat_id), task_id).await;
+    assert_eq!(record.state, TaskState::Completed);
+    assert_eq!(
+        record.attempts[0].device.device_id,
+        test.state.task_runtime.local_device_id().await.unwrap()
+    );
+    assert!(record.attempts[0].device.public_cwd.is_some());
 }
 
 #[tokio::test]
@@ -1171,7 +1285,7 @@ async fn remote_task_runtime_note_remains_readable_without_local_task_details() 
 }
 
 #[tokio::test]
-async fn authority_transfer_interrupts_tasks_and_commits_the_runtime_note_before_handoff() {
+async fn authority_transfer_preserves_running_task_on_its_original_device() {
     let test = build_app();
     create_agent(&test.app, "transfer-task-agent", "Transfer Task Agent").await;
     let chat = seed_materialized_chat(&test, "transfer-task-agent", "transfer-task-chat").await;
@@ -1196,10 +1310,15 @@ async fn authority_transfer_interrupts_tasks_and_commits_the_runtime_note_before
             ToolContext {
                 agent_id: "transfer-task-agent".to_string(),
                 session_id: chat_id.clone(),
-                metadata: std::collections::HashMap::from([(
-                    "turn_id".to_string(),
-                    serde_json::Value::String("turn-transfer-task".to_string()),
-                )]),
+                metadata: std::collections::HashMap::from([
+                    ("turn_id".into(), "turn-transfer-task".into()),
+                    (
+                        "chat_configuration_epoch".into(),
+                        chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id)
+                            .await
+                            .into(),
+                    ),
+                ]),
                 task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
                     &test.state.task_runtime,
                 )))),
@@ -1213,6 +1332,9 @@ async fn authority_transfer_interrupts_tasks_and_commits_the_runtime_note_before
     tokio::time::timeout(Duration::from_secs(2), runner.started.notified())
         .await
         .unwrap();
+
+    let original = test.state.task_runtime.get(&owner, &task_id).await.unwrap();
+    assert_eq!(original.state, TaskState::Running);
 
     test.state
         .conversation_authority
@@ -1229,18 +1351,21 @@ async fn authority_transfer_interrupts_tasks_and_commits_the_runtime_note_before
         .await
         .unwrap();
 
-    let interrupted = test.state.task_runtime.get(&owner, &task_id).await.unwrap();
-    assert_eq!(interrupted.state, TaskState::Interrupted);
+    let running = test.state.task_runtime.get(&owner, &task_id).await.unwrap();
+    assert_eq!(running.state, TaskState::Running);
+    assert_eq!(running.attempts[0].device, original.attempts[0].device);
+    assert!(running.result.is_none());
+    assert!(wait_for_task_runtime_notes(&store, &chat_id, &task_id, 0)
+        .await
+        .is_empty());
+    test.state
+        .task_runtime
+        .cancel(&owner, &task_id)
+        .await
+        .unwrap();
     assert_eq!(
-        interrupted.result.as_ref().unwrap().device.authority_epoch,
-        interrupted.attempts[0].device.authority_epoch
-    );
-    let notes = wait_for_task_runtime_notes(&store, &chat_id, &task_id, 1).await;
-    let note = task_attempt_note(&notes[0]);
-    assert_eq!(note.terminal_status, "interrupted");
-    assert_eq!(
-        note.device["authority_epoch"].as_str(),
-        interrupted.attempts[0].device.authority_epoch.as_deref()
+        wait_for_terminal(&test.state, &owner, &task_id).await.state,
+        TaskState::Cancelled
     );
 }
 
@@ -1267,6 +1392,12 @@ async fn task_activity_reconnects_with_snapshot_and_chat_delete_removes_tasks() 
             ToolContext {
                 agent_id: "task-lifecycle-agent".to_string(),
                 session_id: chat_id.clone(),
+                metadata: std::collections::HashMap::from([(
+                    "chat_configuration_epoch".into(),
+                    chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id)
+                        .await
+                        .into(),
+                )]),
                 task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
                     &test.state.task_runtime,
                 )))),
@@ -1352,6 +1483,12 @@ async fn task_activity_reconnects_with_snapshot_and_chat_delete_removes_tasks() 
             ToolContext {
                 agent_id: "task-lifecycle-agent".to_string(),
                 session_id: chat_id.clone(),
+                metadata: std::collections::HashMap::from([(
+                    "chat_configuration_epoch".into(),
+                    chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id)
+                        .await
+                        .into(),
+                )]),
                 task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
                     &test.state.task_runtime,
                 )))),
@@ -1439,10 +1576,15 @@ async fn task_retry_http_preserves_attempt_history_under_same_id() {
             ToolContext {
                 agent_id: "task-retry-agent".to_string(),
                 session_id: chat_id.clone(),
-                metadata: std::collections::HashMap::from([(
-                    "turn_id".to_string(),
-                    serde_json::Value::String("turn-task-retry".to_string()),
-                )]),
+                metadata: std::collections::HashMap::from([
+                    ("turn_id".into(), "turn-task-retry".into()),
+                    (
+                        "chat_configuration_epoch".into(),
+                        chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id)
+                            .await
+                            .into(),
+                    ),
+                ]),
                 task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
                     &test.state.task_runtime,
                 )))),
@@ -1453,9 +1595,55 @@ async fn task_retry_http_preserves_attempt_history_under_same_id() {
         .unwrap();
     let created: serde_json::Value = serde_json::from_str(&created.text_content()).unwrap();
     let task_id = created["task_id"].as_str().unwrap().to_string();
+    let original = wait_for_terminal(&test.state, &owner, &task_id).await;
+    assert_eq!(original.state, TaskState::Failed);
+    wait_for_task_runtime_notes(&session_store, &chat_id, &task_id, 1).await;
+    create_agent(&test.app, "task-retry-next-agent", "Next Task Agent").await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while test
+            .state
+            .conversation_authority
+            .active_turn(&owner.chat_address)
+            .await
+            .is_some()
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("Task result notification Turn should finish before changing Agent");
+    let switched = request(
+        &test.app,
+        Method::PATCH,
+        &format!("/api/chats/{chat_id}/agent-selection"),
+        Some(serde_json::json!({"expected_agent_id":"task-retry-agent","agent_id":"task-retry-next-agent"})),
+        Some("task-retry-agent"),
+    ).await;
     assert_eq!(
-        wait_for_terminal(&test.state, &owner, &task_id).await.state,
-        TaskState::Failed
+        switched.status(),
+        StatusCode::OK,
+        "{}",
+        read_json(switched).await
+    );
+    let next_directory = tempfile::tempdir().unwrap();
+    let changed_directory = request(
+        &test.app,
+        Method::PATCH,
+        &format!("/api/chats/{chat_id}/execution-directory"),
+        Some(serde_json::json!({"device_id":original.attempts[0].device.device_id,"path":next_directory.path()})),
+        Some("task-retry-next-agent"),
+    ).await;
+    assert_eq!(
+        changed_directory.status(),
+        StatusCode::OK,
+        "{}",
+        read_json(changed_directory).await
+    );
+    let current_epoch =
+        chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id).await;
+    assert_ne!(
+        original.attempts[0].configuration_epoch.as_deref(),
+        Some(current_epoch.as_str())
     );
 
     let retry = request(
@@ -1463,7 +1651,7 @@ async fn task_retry_http_preserves_attempt_history_under_same_id() {
         Method::POST,
         &format!("/api/chats/{chat_id}/tasks/{task_id}/retry"),
         None,
-        Some("task-retry-agent"),
+        Some("task-retry-next-agent"),
     )
     .await;
     assert_eq!(retry.status(), StatusCode::OK);
@@ -1476,6 +1664,27 @@ async fn task_retry_http_preserves_attempt_history_under_same_id() {
     assert_eq!(completed.attempts.len(), 2);
     assert_eq!(completed.attempts[0].state, TaskState::Failed);
     assert_eq!(completed.attempts[1].state, TaskState::Completed);
+    assert_eq!(completed.spec.origin, original.spec.origin);
+    assert_eq!(
+        completed.attempts[1].authorization_agent_id,
+        "task-retry-next-agent"
+    );
+    assert_eq!(
+        completed.attempts[1].configuration_epoch.as_deref(),
+        Some(current_epoch.as_str())
+    );
+    assert_eq!(
+        completed.attempts[1].authorization_origin,
+        rua_task::TaskOrigin::default()
+    );
+    assert_eq!(
+        completed.attempts[1].device.device_id,
+        original.attempts[0].device.device_id
+    );
+    assert_eq!(
+        completed.attempts[1].device.public_cwd,
+        original.attempts[0].device.public_cwd
+    );
 
     let mut notes = wait_for_task_runtime_notes(&session_store, &chat_id, &task_id, 2).await;
     notes.sort_by_key(|note| task_attempt_note(note).attempt_no);
@@ -1508,6 +1717,12 @@ async fn task_http_exposes_derived_blocked_dependency_state() {
     let ctx = ToolContext {
         agent_id: "task-graph-agent".to_string(),
         session_id: chat_id.clone(),
+        metadata: std::collections::HashMap::from([(
+            "chat_configuration_epoch".into(),
+            chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id)
+                .await
+                .into(),
+        )]),
         task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
             &test.state.task_runtime,
         )))),
@@ -1582,4 +1797,189 @@ async fn task_http_exposes_derived_blocked_dependency_state() {
     let body = read_json(list).await;
     assert_eq!(body.as_array().unwrap().len(), 1);
     assert_eq!(body[0]["task_id"], downstream_id);
+}
+
+#[tokio::test]
+async fn task_http_keeps_unconfirmed_and_cached_remote_tasks_unknown_and_chat_scoped() {
+    use rua_session::task_refs::{
+        ChatTaskEvidence, ChatTaskExecution, ChatTaskOrigin, ChatTaskRef,
+    };
+    let test = build_app();
+    create_agent(&test.app, "task-offline-agent", "Offline Task Agent").await;
+    let chat = seed_materialized_chat(&test, "task-offline-agent", "task-offline-chat").await;
+    let chat_id = chat["id"].as_str().unwrap();
+    let other = seed_materialized_chat(&test, "task-offline-agent", "task-other-chat").await;
+    let other_id = other["id"].as_str().unwrap();
+    let owner = TaskOwner::new(chat_id);
+    let execution = ChatTaskExecution {
+        device_id: "offline-device".into(),
+        public_cwd: "/photos".into(),
+        extra: Default::default(),
+    };
+    let pending = ChatTaskRef {
+        task_id: "unconfirmed-task".into(),
+        owner: owner.clone(),
+        execution: execution.clone(),
+        origin: ChatTaskOrigin {
+            turn_id: None,
+            tool_call_id: None,
+            agent_id: "task-offline-agent".into(),
+            configuration_epoch: None,
+            extra: Default::default(),
+        },
+        last_target_evidence: None,
+        not_accepted: false,
+        extra: Default::default(),
+    };
+    test.state
+        .chat_task
+        .remember_reference(&pending)
+        .await
+        .unwrap();
+
+    // Produce actual terminal evidence in a separate execution Runtime; the
+    // Chat's local Runtime must never serve as a fallback for this Task.
+    let remote_root = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(
+        rua_task::TaskRuntime::open(rua_task::TaskRuntimeConfig::new(remote_root.path())).unwrap(),
+    );
+    runtime.register_runner(Arc::new(FailThenSucceedTaskRunner {
+        calls: std::sync::atomic::AtomicUsize::new(1),
+    }));
+    let id = runtime
+        .create(
+            TaskSpec {
+                owner: owner.clone(),
+                instruction: "completed on the remote device".into(),
+                runner: TaskRunnerSpec::Tool {
+                    tool_name: "fixture".into(),
+                    arguments: serde_json::json!({}),
+                },
+                context_refs: Vec::new(),
+                depends_on: Vec::new(),
+                origin: Default::default(),
+            },
+            rua_task::TaskAttemptAuthorization::new("task-offline-agent").unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut record = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let record = runtime.get(&owner, &id).await.unwrap();
+            if record.state.is_terminal() {
+                break record;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(record.state, TaskState::Completed);
+    record.attempts[0].device.device_id = Some(execution.device_id.clone());
+    record.attempts[0].device.public_cwd = Some(execution.public_cwd.clone());
+    let cached = ChatTaskRef {
+        task_id: id.clone(),
+        last_target_evidence: Some(ChatTaskEvidence {
+            revision: 1,
+            record,
+            extra: Default::default(),
+        }),
+        ..pending.clone()
+    };
+    test.state
+        .chat_task
+        .remember_reference(&cached)
+        .await
+        .unwrap();
+
+    let list = request(
+        &test.app,
+        Method::GET,
+        &format!("/api/chats/{chat_id}/tasks"),
+        None,
+        Some("task-offline-agent"),
+    )
+    .await;
+    assert_eq!(list.status(), StatusCode::OK);
+    let values = read_json(list).await;
+    let values = values.as_array().unwrap();
+    assert_eq!(values.len(), 2);
+    let unconfirmed = values
+        .iter()
+        .find(|value| value["task_id"] == pending.task_id)
+        .unwrap();
+    assert_eq!(unconfirmed["availability"], "unknown");
+    assert!(unconfirmed.get("spec").is_none());
+    assert!(unconfirmed.get("state").is_none());
+    let completed = values.iter().find(|value| value["task_id"] == id).unwrap();
+    assert_eq!(completed["availability"], "unknown");
+    assert_eq!(
+        completed["state"], "completed",
+        "cached terminal state is historical evidence only"
+    );
+    for value in values {
+        assert_eq!(value["execution"]["device_id"], "offline-device");
+        assert_eq!(value["execution"]["public_cwd"], "/photos");
+    }
+    for suffix in ["", "/cancel", "/retry"] {
+        let response = request(
+            &test.app,
+            if suffix.is_empty() {
+                Method::GET
+            } else {
+                Method::POST
+            },
+            &format!("/api/chats/{chat_id}/tasks/{id}{suffix}"),
+            None,
+            Some("task-offline-agent"),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{}",
+            read_json(response).await
+        );
+    }
+    for task_id in [&id, &pending.task_id] {
+        let response = request(
+            &test.app,
+            Method::GET,
+            &format!("/api/chats/{other_id}/tasks/{task_id}"),
+            None,
+            Some("task-offline-agent"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(read_json(response).await["detail"], "Task not found");
+    }
+    test.state
+        .chat_task
+        .mark_not_accepted(&owner, &pending.task_id)
+        .await
+        .unwrap();
+    let list = request(
+        &test.app,
+        Method::GET,
+        &format!("/api/chats/{chat_id}/tasks"),
+        None,
+        Some("task-offline-agent"),
+    )
+    .await;
+    assert_eq!(list.status(), StatusCode::OK);
+    let list = read_json(list).await;
+    assert_eq!(
+        list.as_array().unwrap().len(),
+        1,
+        "definitive non-acceptance is not a phantom Task"
+    );
+    assert_eq!(list[0]["task_id"], id);
+    assert!(test
+        .state
+        .task_runtime
+        .list(&owner, rua_task::TaskListFilter::default())
+        .await
+        .unwrap()
+        .is_empty());
+    runtime.shutdown().await.unwrap();
 }

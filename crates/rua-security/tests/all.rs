@@ -20,6 +20,8 @@ mod models;
 mod project_resource_policy;
 #[path = "all/redaction.rs"]
 mod redaction;
+#[path = "all/relayed_chat_approval.rs"]
+mod relayed_chat_approval;
 #[path = "all/security_module_enforce.rs"]
 mod security_module_enforce;
 #[path = "all/security_module_per_agent.rs"]

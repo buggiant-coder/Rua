@@ -223,6 +223,7 @@ pub struct ConversationAllowedControls {
 }
 
 pub struct ConversationAuthority {
+    runtime_observation_receipts: crate::services::conversation_input_intake::TaskWatchWakeReceipts,
     project_resources:
         std::sync::OnceLock<(Arc<rua_project::ProjectCatalog>, rua_core::WorkspaceRoot)>,
     background_work: std::sync::OnceLock<Arc<crate::services::background_work::BackgroundWork>>,
@@ -461,6 +462,25 @@ impl ConversationAuthority {
         )
     }
 
+    pub(crate) fn runtime_observation_receipts(
+        &self,
+    ) -> crate::services::conversation_input_intake::TaskWatchWakeReceipts {
+        self.runtime_observation_receipts.clone()
+    }
+
+    fn discard_runtime_observation(&self, pending: &ConversationInputPayload) {
+        if let Some(id) = pending
+            .extra
+            .get(crate::services::conversation_input_intake::RUNTIME_OBSERVATION_RECEIPT_META_KEY)
+            .and_then(serde_json::Value::as_str)
+        {
+            self.runtime_observation_receipts.fail(
+                id,
+                "Runtime observation was discarded before acknowledgement",
+            );
+        }
+    }
+
     pub fn with_foreground_operations(
         foreground_operations: Arc<ForegroundOperationRegistry>,
     ) -> Self {
@@ -483,6 +503,7 @@ impl ConversationAuthority {
     ) -> Self {
         let (global_control_events, _) = broadcast::channel(256);
         Self {
+            runtime_observation_receipts: Default::default(),
             active_turns: RwLock::new(HashMap::new()),
             background_work: std::sync::OnceLock::new(),
             project_resources: std::sync::OnceLock::new(),
@@ -944,12 +965,16 @@ impl ConversationAuthority {
         let _transition = gate.lock().await;
         if let Some(queue) = self.queue.write().await.get_mut(address) {
             queue.retain(|entry| {
-                entry
+                let retained = entry
                     .pending
                     .extra
                     .get(ACCEPTANCE_MODE_KEY)
                     .and_then(serde_json::Value::as_str)
-                    == Some("started")
+                    == Some("started");
+                if !retained {
+                    self.discard_runtime_observation(&entry.pending);
+                }
+                retained
             });
         }
         self.set_queued_count_from_queue(address).await;
@@ -987,7 +1012,10 @@ impl ConversationAuthority {
     }
 
     async fn clear_queue_locked(&self, address: &ChatAddress) {
-        self.queue.write().await.remove(address);
+        let removed = self.queue.write().await.remove(address);
+        for entry in removed.into_iter().flatten() {
+            self.discard_runtime_observation(&entry.pending);
+        }
         self.set_queued_count(address, 0).await;
         self.publish_control_snapshot(address, "queue_cleared", &serde_json::json!({}))
             .await;
@@ -1912,6 +1940,7 @@ impl ConversationAuthority {
                 }
                 return Some(next);
             }
+            self.discard_runtime_observation(&next.pending);
         }
 
         streams.mark_completed(stream_key, producer_id).await;
@@ -2132,21 +2161,6 @@ impl ConversationAuthority {
                 "cannot change authority placement while the chat has an active turn".to_string(),
             ));
         }
-        if let Some(state) = state {
-            rua_session::WorkspaceSessionStore::new(workspace_dir)
-                .set_collaboration_wake_suppressed(address.chat_id().as_str(), true)
-                .await
-                .map_err(|error| ChatMetadataStoreError::Internal(error.to_string()))?;
-            state
-                .task_runtime
-                .interrupt_owner(&rua_task::TaskOwner::from_address(address.clone()))
-                .await
-                .map_err(|error| {
-                    ChatMetadataStoreError::Internal(format!(
-                        "failed to interrupt active Tasks before authority transfer: {error}"
-                    ))
-                })?;
-        }
         let record = update_authority_placement(state, workspace_dir, address, target).await?;
         self.publish_control_snapshot(address, "authority_placement_updated", &record.meta)
             .await;
@@ -2331,6 +2345,7 @@ impl ConversationAuthority {
             if queue.is_empty() {
                 queues.remove(&key);
             }
+            self.discard_runtime_observation(&entry.pending);
             entry.snapshot
         };
         {

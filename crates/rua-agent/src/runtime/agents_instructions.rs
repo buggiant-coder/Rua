@@ -408,6 +408,22 @@ fn truncate_utf8(text: &mut String, max_bytes: usize) {
 
 fn explicit_targets(call: &ToolCall, ctx: &ToolContext) -> Vec<AgentsInstructionTarget> {
     let args = &call.arguments;
+    if call.name == "task_create" && args["runner"]["type"].as_str() == Some("tool") {
+        if let Some(name) = args["runner"]["tool_name"]
+            .as_str()
+            .filter(|name| *name != "task_create")
+        {
+            if name == "bash"
+                && rua_tool::core::shell::is_remote_command(&args["runner"]["arguments"], ctx)
+            {
+                return Vec::new();
+            }
+            return explicit_targets(
+                &ToolCall::new(&call.id, name, args["runner"]["arguments"].clone()),
+                ctx,
+            );
+        }
+    }
     if call.name == "sync_send" {
         return transfer_targets(args);
     }

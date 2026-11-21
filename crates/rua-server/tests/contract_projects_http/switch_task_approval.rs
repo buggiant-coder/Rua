@@ -371,6 +371,7 @@ async fn watch_arriving_during_switch_uses_the_committed_agent(
     .await
     .unwrap();
     let note = rua_task::TaskWatchOutputNotification {
+        extra: Default::default(),
         notification_id: "switching-watch".into(),
         owner: TaskOwner::from_address(address.clone()),
         task_id: "fixture-watch".into(),

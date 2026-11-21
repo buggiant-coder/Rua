@@ -5208,22 +5208,36 @@ async fn materialize_runtime_observation_turn(
     value: &serde_json::Value,
     turn_agent_assignment: Option<&serde_json::Value>,
     project_resources: Option<&serde_json::Value>,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<bool, String> {
     let note: rua_session::RuntimeNote =
         serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
     let store = WorkspaceSessionStore::new(scope_root);
-    if store
+    let turns = store
         .read_turn_range(chat_id, 1, usize::MAX)
         .await
-        .map_err(|error| error.to_string())?
-        .iter()
-        .any(|turn| turn.turn_id == turn_id)
-    {
+        .map_err(|error| error.to_string())?;
+    if matches!(
+        note.payload,
+        rua_session::RuntimeNotePayload::TaskAttemptTerminal(_)
+    ) {
+        for turn in &turns {
+            if store
+                .read_runtime_notes_for_turn(chat_id, &turn.turn_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .iter()
+                .any(|saved| saved.runtime_note_id == note.runtime_note_id)
+            {
+                return Ok(false);
+            }
+        }
+    }
+    if turns.iter().any(|turn| turn.turn_id == turn_id) {
         store
             .append_runtime_note(chat_id, turn_id, note)
             .await
             .map_err(|error| error.to_string())?;
-        return Ok(());
+        return Ok(true);
     }
     let created_at = note.created_at.clone();
     let mut message = note
@@ -5258,7 +5272,7 @@ async fn materialize_runtime_observation_turn(
         )
         .await
         .map_err(|error| error.to_string())?;
-    Ok(())
+    Ok(true)
 }
 
 fn current_sync_device_id(
@@ -5637,6 +5651,15 @@ pub(crate) async fn drive_conversation_producer(
             .get(crate::services::conversation_input_intake::RUNTIME_OBSERVATION_RECEIPT_META_KEY)
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
+        let task_watch_observation_id = pending
+            .extra
+            .get(crate::services::conversation_input_intake::RUNTIME_OBSERVATION_META_KEY)
+            .filter(|note| {
+                note.get("kind").and_then(serde_json::Value::as_str) == Some("task_watch_output")
+            })
+            .and_then(|note| note.get("runtime_note_id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
         if let Some(observation) = pending
             .extra
             .get(crate::services::conversation_input_intake::RUNTIME_OBSERVATION_META_KEY)
@@ -5652,13 +5675,16 @@ pub(crate) async fn drive_conversation_producer(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)
             else {
-                tracing::warn!(chat_id, "Task Watch notification is missing its Turn ID");
+                tracing::warn!(chat_id, "Runtime observation is missing its Turn ID");
                 if let Some(notification_id) = task_watch_notification_id.as_deref() {
-                    task_watch_wake_receipts.complete(notification_id);
+                    task_watch_wake_receipts.fail(
+                        notification_id,
+                        "Runtime observation is missing its Turn ID",
+                    );
                 }
                 continue;
             };
-            if let Err(error) = materialize_runtime_observation_turn(
+            let materialized = materialize_runtime_observation_turn(
                 &workspace_dir,
                 &chat_id,
                 &turn_id,
@@ -5666,12 +5692,25 @@ pub(crate) async fn drive_conversation_producer(
                 turn_agent_assignment.as_ref(),
                 pending.extra.get(rua_session::TURN_PROJECT_RESOURCES_KEY),
             )
-            .await
-            {
-                tracing::warn!(chat_id, error = %error, "failed to materialize Task Watch notification Turn");
-                if let Some(notification_id) = task_watch_notification_id.as_deref() {
-                    task_watch_wake_receipts.complete(notification_id);
+            .await;
+            let materialized = match materialized {
+                Ok(materialized) => materialized,
+                Err(error) => {
+                    tracing::warn!(chat_id, error = %error, "failed to materialize runtime observation Turn");
+                    if let Some(notification_id) = task_watch_notification_id.as_deref() {
+                        task_watch_wake_receipts.fail(notification_id, &error);
+                    }
+                    continue;
                 }
+            };
+            if observation.get("kind").and_then(serde_json::Value::as_str)
+                == Some("task_attempt_terminal")
+            {
+                if let Some(receipt_id) = task_watch_notification_id.as_deref() {
+                    task_watch_wake_receipts.complete(receipt_id);
+                }
+            }
+            if !materialized {
                 continue;
             }
             pending.extra.insert(
@@ -5720,11 +5759,11 @@ pub(crate) async fn drive_conversation_producer(
                 let detail = format!("workspace for '{agent_id}' unavailable: {err}");
                 let json =
                     rua_channel::core::console::make_response_done_json(&chat_id, Some("error"));
+                if let Some(notification_id) = task_watch_notification_id.as_deref() {
+                    task_watch_wake_receipts.fail(notification_id, &detail);
+                }
                 streams.push_event_keyed(&key, detail).await;
                 streams.push_event_keyed(&key, json).await;
-                if let Some(notification_id) = task_watch_notification_id.as_deref() {
-                    task_watch_wake_receipts.complete(notification_id);
-                }
                 continue;
             }
         };
@@ -6214,8 +6253,72 @@ pub(crate) async fn drive_conversation_producer(
 
         let turn_completed = terminal_handoff.is_some();
         let next_input = terminal_handoff.and_then(|handoff| handoff.next_input);
-        if let Some(notification_id) = task_watch_notification_id.as_deref() {
-            task_watch_wake_receipts.complete(notification_id);
+        if let (Some(receipt_id), Some(observation_id)) = (
+            task_watch_notification_id.as_deref(),
+            task_watch_observation_id.as_deref(),
+        ) {
+            if let (true, Some(authority), Some(turn_id)) = (
+                turn_completed,
+                conversation_authority.as_ref(),
+                live_turn_id.as_deref(),
+            ) {
+                // Serialize durable completion and receipt removal with Intake's
+                // note lookup and registration. An in-memory Authority terminal
+                // alone is not restart-safe evidence that this Watch was processed.
+                let gate = authority.transition_gate(&address);
+                let _transition = gate.lock().await;
+                let persisted = async {
+                    persist_conversation_terminal_to_session(
+                        &workspace_dir,
+                        &agent_id,
+                        &chat_id,
+                        turn_id,
+                        ConversationTerminalFact {
+                            terminal_status: status,
+                            lifecycle_status: status,
+                            reason: "runtime_observation_processed",
+                            summary: String::new(),
+                            write_runtime_note: false,
+                            marker: None,
+                        },
+                        session_sync.as_ref(),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                    let store = WorkspaceSessionStore::new(&workspace_dir);
+                    let terminal = store
+                        .read_turn_range(&chat_id, 1, usize::MAX)
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .into_iter()
+                        .any(|turn| {
+                            turn.turn_id == turn_id
+                                && TurnLifecycleStatus::parse(&turn.lifecycle.status)
+                                    .is_syncable_conversation_state()
+                        });
+                    let has_note = store
+                        .read_runtime_notes_for_turn(&chat_id, turn_id)
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .iter()
+                        .any(|note| note.runtime_note_id == observation_id);
+                    if terminal && has_note {
+                        Ok(())
+                    } else {
+                        Err("Watch processing has no durable terminal observation".to_string())
+                    }
+                }
+                .await;
+                match persisted {
+                    Ok(()) => task_watch_wake_receipts.complete(receipt_id),
+                    Err(error) => task_watch_wake_receipts.fail(receipt_id, &error),
+                }
+            } else {
+                task_watch_wake_receipts.fail(
+                    receipt_id,
+                    "Runtime observation processing ended without a committed Turn",
+                );
+            }
         }
         if let Some(next) = next_input {
             if control.is_stop() {

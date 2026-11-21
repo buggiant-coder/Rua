@@ -1296,9 +1296,22 @@ impl WorkspaceSessionStore {
         write_json_atomic(&path, &incoming).await
     }
 
-    /// Replication may deliver the head before its immutable snapshot or Session file.
-    /// Use the same publication lock as local configuration edits and Agent switches.
-    pub async fn apply_replicated_configuration_head(
+    /// Fence replicated history validation and synchronous persistence against
+    /// local Chat writes and configuration publication. The callback cannot await
+    /// between checking the current placement and committing its record.
+    pub async fn apply_replicated_chat_state<T>(
+        &self,
+        chat_id: &str,
+        apply: impl FnOnce() -> T,
+    ) -> T {
+        let write_lock = self.chat_write_lock(chat_id);
+        let _write_guard = write_lock.lock().await;
+        let head_lock = chat_write_lock_for_path(self.configuration_head_path(chat_id));
+        let _head_guard = head_lock.lock().await;
+        apply()
+    }
+
+    pub fn validate_replicated_configuration_head(
         &self,
         chat_id: &str,
         value: &Value,
@@ -1310,10 +1323,7 @@ impl WorkspaceSessionStore {
                 }
             })?;
         self.configuration_snapshot_path(chat_id, &head.epoch)?;
-        let path = self.configuration_head_path(chat_id);
-        let lock = chat_write_lock_for_path(path.clone());
-        let _guard = lock.lock().await;
-        write_json_atomic(&path, value).await
+        Ok(())
     }
 
     pub fn configuration_head_path(&self, chat_id: &str) -> PathBuf {

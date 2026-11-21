@@ -9,12 +9,19 @@ pub(super) fn is_rule_record(change: &SyncChange) -> bool {
     change.domain == EVERGREEN_CHAT_DOMAIN && change.record_id.rsplit('/').next() == Some(RECORD)
 }
 
-/// Rules are written by the Chat authority. Bind the claimed writer to the
+/// History and rules are written by the Chat authority. Bind the claimed writer to the
 /// iroh-docs entry signature before using that identity for placement checks.
-pub fn validate_permission_rule_author(change: &SyncChange, author: AuthorId) -> SyncResult<()> {
-    if is_rule_record(change) && change.device_id != hex::encode(&author.as_bytes()[..8]) {
+pub fn validate_chat_record_author(change: &SyncChange, author: AuthorId) -> SyncResult<()> {
+    let history = change.domain == EVERGREEN_CHAT_DOMAIN
+        && parse_file_record_id(&change.record_id).is_ok_and(|(_, relative)| {
+            history_authority::owns_record(relative)
+                || matches!(relative, "session" | "session.json")
+        });
+    if (is_rule_record(change) || history)
+        && change.device_id != hex::encode(&author.as_bytes()[..8])
+    {
         return Err(SyncError::InvalidPayload(
-            "Chat permission rule writer differs from the signed entry author".into(),
+            "Chat authority record writer differs from the signed entry author".into(),
         ));
     }
     Ok(())
@@ -24,7 +31,9 @@ fn placement(directory: &Path, address: &ChatAddress) -> SyncResult<(String, Hlc
     let file = match std::fs::File::open(directory.join("session.json")) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(SyncError::PendingChatPermissionPlacement);
+            return Err(SyncError::PendingChatPlacement {
+                chat_id: address.chat_id().to_string(),
+            });
         }
         Err(error) => return Err(error.into()),
     };
@@ -42,7 +51,9 @@ fn placement(directory: &Path, address: &ChatAddress) -> SyncResult<(String, Hlc
     device
         .zip(epoch)
         .map(|(id, epoch)| (id.to_owned(), epoch))
-        .ok_or(SyncError::PendingChatPermissionPlacement)
+        .ok_or(SyncError::PendingChatPlacement {
+            chat_id: address.chat_id().to_string(),
+        })
 }
 
 pub(super) fn snapshot(
@@ -59,7 +70,7 @@ pub(super) fn snapshot(
     };
     let (authority, epoch) = match placement(&directory, address) {
         Ok(placement) => placement,
-        Err(SyncError::PendingChatPermissionPlacement) => return Ok(None),
+        Err(SyncError::PendingChatPlacement { .. }) => return Ok(None),
         Err(error) => return Err(error),
     };
     if authority != local_device {
@@ -115,7 +126,9 @@ pub(super) fn apply(
         return Ok(ApplyOutcome::Skipped);
     }
     if epoch > current_epoch {
-        return Err(SyncError::PendingChatPermissionPlacement);
+        return Err(SyncError::PendingChatPlacement {
+            chat_id: address.chat_id().to_string(),
+        });
     }
     if change.device_id != authority {
         return Err(SyncError::InvalidPayload(

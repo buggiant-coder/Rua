@@ -493,6 +493,55 @@ async fn task_owned_tool_ignores_foreground_transfer_wait() {
     assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
+#[tokio::test]
+async fn task_owned_cancellation_waits_for_the_same_execution_terminal_evidence() {
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (toolkit, call) = blocking_tool(started_tx, release_rx, executions.clone());
+    let mut ctx = rua_core::tool::ToolContext::default();
+    ctx.metadata
+        .insert("task_id".into(), "existing-task".into());
+    let cancel = CancellationToken::new();
+    let signal = cancel.clone();
+    let execution = tokio::spawn(async move {
+        let hook: Arc<dyn react_agent::AgentHook> = Arc::new(NoopHook);
+        let (events, _receiver) = tokio::sync::mpsc::channel(8);
+        execute_single_tool(
+            &call,
+            &toolkit,
+            &hook,
+            &ctx,
+            &react_agent::ToolDisclosureConfig::default(),
+            0,
+            &cancel,
+            Duration::from_millis(5),
+            &events,
+        )
+        .await
+    });
+    started_rx.await.unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        !execution.is_finished(),
+        "ordinary Tool timeout cannot discard a Task runner"
+    );
+    signal.cancel();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        !execution.is_finished(),
+        "cancellation must await real process termination"
+    );
+    release_tx.send(()).unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(2), execution)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.text_content(), "background-complete");
+    assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn shell_foreground_wait_expiry_keeps_the_same_process_running() {

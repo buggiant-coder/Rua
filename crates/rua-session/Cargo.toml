@@ -18,6 +18,7 @@ rua-command = { path = "../rua-command" }
 rua-contract.workspace = true
 rua-i18n.workspace = true
 rua-skills.workspace = true
+rua-task.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rusqlite.workspace = true

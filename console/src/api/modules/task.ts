@@ -1,5 +1,5 @@
 import { request } from "../request";
-import type { TaskRecord, TaskState } from "../types/task";
+import type { TaskListItem, TaskRecord, TaskState } from "../types/task";
 
 function taskPath(chatId: string): string {
   return `/chats/${encodeURIComponent(chatId)}/tasks`;
@@ -14,7 +14,7 @@ export const taskApi = {
     if (options?.state) search.set("state", options.state);
     if (options?.limit != null) search.set("limit", String(options.limit));
     const query = search.toString();
-    return request<TaskRecord[]>(
+    return request<TaskListItem[]>(
       `${taskPath(chatId)}${query ? `?${query}` : ""}`,
     );
   },

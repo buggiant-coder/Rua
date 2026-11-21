@@ -2235,7 +2235,8 @@ async fn execute_approved_tool(
                 )
             });
     let mut tool_future: RunningToolFuture = Box::pin(async move {
-        if transfer_eligible || remote_foreground_command || timeout.is_zero() {
+        if already_task_owned || transfer_eligible || remote_foreground_command || timeout.is_zero()
+        {
             return Ok(executor_for_exec
                 .execute(&call_for_exec, &enriched_ctx)
                 .await);
@@ -2273,7 +2274,16 @@ async fn execute_approved_tool(
         _ = cancel.cancelled() => {
             execution_cancel.cancel();
             let _ = execution_cancel_tx.send(true);
-            Err(AgentError::Cancelled)
+            if already_task_owned {
+                // Task Runtime owns this execution until its runner reports real
+                // termination. Dropping the future would lose the process result.
+                match tool_future.await {
+                    Ok(result) => result,
+                    Err(_) => Err(AgentError::Timeout { timeout_secs: timeout.as_secs() }),
+                }
+            } else {
+                Err(AgentError::Cancelled)
+            }
         }
         _ = wait_for_interjection(&mut run_control) => {
             if transfer_available {
