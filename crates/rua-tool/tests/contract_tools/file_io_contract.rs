@@ -942,17 +942,24 @@ async fn edit_stops_and_reports_an_unconfirmed_write_when_the_directory_cannot_b
 async fn checked_remote_read_reports_target_policy_without_reading_its_local_namesake() {
     use rua_core::tool::{DeviceReadAccess, DeviceReadCheck};
 
-    struct CheckedRead(serde_json::Value);
+    struct PolicyCheck {
+        expected_args: serde_json::Value,
+        needs_confirmation: bool,
+    }
     #[async_trait::async_trait]
-    impl DeviceReadAccess for CheckedRead {
+    impl DeviceReadAccess for PolicyCheck {
         async fn check(
             &self,
             ctx: &ToolContext,
             args: &serde_json::Value,
         ) -> rua_core::Result<DeviceReadCheck> {
-            assert_eq!(args, &self.0);
+            assert_eq!(args, &self.expected_args);
             assert_eq!(ctx.local_device_id.as_deref(), Some("desktop"));
-            Ok(DeviceReadCheck::Checked)
+            if self.needs_confirmation {
+                Ok(DeviceReadCheck::ConfirmationRequired)
+            } else {
+                Ok(DeviceReadCheck::Checked)
+            }
         }
     }
 
@@ -962,15 +969,21 @@ async fn checked_remote_read_reports_target_policy_without_reading_its_local_nam
     let args = json!({"file_path":path,"device_id":"phone","limit":4});
     let mut ctx = make_ctx(&root);
     ctx.local_device_id = Some("desktop".into());
-    ctx.device_read_access = Some(std::sync::Arc::new(CheckedRead(args.clone())));
-    let result = ReadFileTool.call(args, ctx).await.unwrap();
-    assert!(result.is_error);
-    assert_eq!(
-        result.metadata["file_location"]["target_permission_check"],
-        "checked"
-    );
-    assert_eq!(result.metadata["file_location"]["dispatched"], false);
-    assert!(!result.text_content().contains("desktop-only marker"));
+    for (needs_confirmation, status) in [(false, "checked"), (true, "confirmation_required")] {
+        ctx.device_read_access = Some(std::sync::Arc::new(PolicyCheck {
+            expected_args: args.clone(),
+            needs_confirmation,
+        }));
+        let result = ReadFileTool.call(args.clone(), ctx.clone()).await.unwrap();
+        assert!(result.is_error);
+        assert_eq!(
+            result.metadata["file_location"]["target_permission_check"],
+            status
+        );
+        assert_eq!(result.metadata["file_location"]["dispatched"], false);
+        assert!(result.text_content().contains(status));
+        assert!(!result.text_content().contains("desktop-only marker"));
+    }
 }
 
 #[tokio::test]

@@ -115,6 +115,7 @@ async fn call_local(
                     let (status, detail) = match access.check(&ctx, &args).await? {
                         DeviceReadCheck::Denied(detail) => ("denied", detail),
                         DeviceReadCheck::Unavailable(detail) => ("unavailable", detail),
+                        DeviceReadCheck::ConfirmationRequired => ("confirmation_required", "the target policy requires the user's confirmation for this read".into()),
                         DeviceReadCheck::Checked => ("checked", "the target checked the requested path against its policy; no file content was read".into()),
                     };
                     location["target_permission_check"] = json!(status);

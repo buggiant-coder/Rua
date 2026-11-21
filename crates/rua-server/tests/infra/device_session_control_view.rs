@@ -11048,7 +11048,7 @@ impl RemoteInputConfirmationFixture {
             171,
             [173; 32],
             vec![peer_entry(172)],
-            None,
+            Some(source_state.device_command_handler().unwrap()),
             Vec::new(),
             test_config(),
         )
@@ -11281,7 +11281,11 @@ async fn conversation_control_requires_authenticated_source_and_local_target_for
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn read_approval_claim_is_bound_to_the_running_turn_requesting_device_and_one_decision() {
-    use rua_server::services::conversation_authority::ConversationActiveTurnPhase;
+    use rua_server::services::{
+        conversation_authority::ConversationActiveTurnPhase,
+        device_command_bus::deliver_read_check_via_session,
+        device_read_check::{DeviceReadCheckReply, DeviceReadCheckRequest, DeviceReadConfirmation},
+    };
     let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
     let owner = &fixture.target_state;
     let release = Arc::new(Notify::new());
@@ -11295,6 +11299,7 @@ async fn read_approval_claim_is_bound_to_the_running_turn_requesting_device_and_
         ToolCall::new("ordinary", "read", arguments.clone()),
         ToolCall::new("wrong-device", "read", other_device),
         ToolCall::new("ended", "read", arguments.clone()),
+        ToolCall::new("policy-check", "read", arguments.clone()),
     ];
     owner
         .registry
@@ -11320,6 +11325,69 @@ async fn read_approval_claim_is_bound_to_the_running_turn_requesting_device_and_
     })
     .await
     .expect("the admitted Turn reached its ToolCall events");
+    // The file device has the same committed Chat header as the authority, but no approval records.
+    let replica = &fixture.source_state;
+    let header = WorkspaceSessionStore::new(owner.chat_workspace().as_path())
+        .load_chat_header(&fixture.chat_id)
+        .await
+        .unwrap()
+        .unwrap();
+    WorkspaceSessionStore::new(replica.chat_workspace().as_path())
+        .save_chat_header(&header)
+        .await
+        .unwrap();
+    install_connectable_peer(&fixture.target, &fixture.source);
+    *replica.sync_transfer_session_manager.write().unwrap() =
+        Some(fixture.source.runtime.session_manager().clone());
+    let mut check = DeviceReadCheckRequest {
+        source_device_id: fixture.target.device_id.clone(),
+        target_device_id: fixture.source.device_id.clone(),
+        address: address.clone(),
+        agent_id: "default".into(),
+        authority_epoch: turn.authority_epoch,
+        configuration_epoch: header.extra["hook_configuration"]["epoch"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+        turn_id: turn.turn_id.clone(),
+        tool_call_id: "policy-check".into(),
+        arguments: arguments.clone(),
+        confirmation: None,
+    };
+    let query_file_device = async |request: &DeviceReadCheckRequest| {
+        deliver_read_check_via_session(
+            fixture.target.runtime.session_manager(),
+            request,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap()
+    };
+    assert_eq!(
+        query_file_device(&check).await,
+        DeviceReadCheckReply::Checked
+    );
+    let mut security = replica.security.config_store().load("default").unwrap();
+    security.tool_guard.approval_mode = "ask_first".into();
+    replica
+        .security
+        .config_store()
+        .save("default", &security)
+        .unwrap();
+    assert_eq!(
+        query_file_device(&check).await,
+        DeviceReadCheckReply::ConfirmationRequired
+    );
+    let mut stale = check.clone();
+    stale.authority_epoch = ConversationAuthorityEpoch::next_for_device(
+        &check.source_device_id,
+        Some(check.authority_epoch),
+    );
+    assert_eq!(
+        query_file_device(&stale).await,
+        DeviceReadCheckReply::Unavailable
+    );
+
     let approvals = owner.security.approval_authority();
     let mut claims = Vec::new();
     for call in calls {
@@ -11367,8 +11435,8 @@ async fn read_approval_claim_is_bound_to_the_running_turn_requesting_device_and_
             },
         });
     }
-    let [valid, ordinary, wrong_device, ended]: [ConversationControlDeviceCommand; 4] =
-        claims.try_into().unwrap();
+    let [valid, ordinary, wrong_device, ended, policy_check]: [ConversationControlDeviceCommand;
+        5] = claims.try_into().unwrap();
     let denied = |result| {
         assert!(
             matches!(result,
@@ -11402,6 +11470,39 @@ async fn read_approval_claim_is_bound_to_the_running_turn_requesting_device_and_
 
     denied(fixture.send_control(&valid).await);
     let resource_device = fixture.source.device_id.as_str();
+    let (check_permit, _) = issue(&policy_check, resource_device);
+    let ConversationControlDeviceAction::ClaimReadApproval { approval_id, .. } =
+        policy_check.action
+    else {
+        unreachable!()
+    };
+    check.confirmation = Some(DeviceReadConfirmation {
+        approval_id: approval_id.clone(),
+        dispatch_token: check_permit.token(),
+    });
+    stale.confirmation = check.confirmation.clone();
+    assert_eq!(
+        query_file_device(&stale).await,
+        DeviceReadCheckReply::Unavailable
+    );
+    assert_eq!(
+        query_file_device(&check).await,
+        DeviceReadCheckReply::Checked
+    );
+    assert_eq!(
+        approvals.request(&approval_id).await.unwrap().status,
+        rua_security::AuthorityStatus::Consumed
+    );
+    assert_eq!(
+        query_file_device(&check).await,
+        DeviceReadCheckReply::Unavailable
+    );
+    let target_approvals = replica
+        .security
+        .approval_authority()
+        .snapshot_at(&address)
+        .await;
+    assert!(target_approvals.pending.is_empty() && target_approvals.resolved.is_empty());
     let (old_permit, dropped) = issue(&valid, resource_device);
     drop(old_permit);
     let (permit, valid) = issue(&valid, resource_device);

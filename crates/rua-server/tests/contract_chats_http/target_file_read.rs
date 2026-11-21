@@ -122,7 +122,7 @@ async fn metadata_denies_names_protected_by_the_file_tool_before_any_file_is_ope
     let f = Fixture::materialize(build_agent().await).await;
     let parent = f.app.state.rua_root.join("test-only");
     for (directory, expected) in [
-        ("public", Ok(())),
+        ("public", Ok(FileReadAdmission::Allowed)),
         (".azure", Err(TargetReadRejection::Denied)),
     ] {
         let args =
@@ -135,13 +135,62 @@ async fn metadata_denies_names_protected_by_the_file_tool_before_any_file_is_ope
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metadata_distinguishes_an_exact_allow_from_ask_first_without_file_access_or_approval() {
+    let f = Fixture::materialize(build_agent().await).await;
+    let path = f.app.state.rua_root.join("policy-only.txt");
+    let inquiry = json!({"device_id":f.device, "file_path":path});
+    let allowed = json!({"device_id":f.device, "file_path":path, "limit":1});
+    let security = &f.app.state.security;
+    let mut policy = security.config_store().load(AGENT).unwrap();
+    policy.tool_guard.approval_mode = "ask_first".into();
+    security.save_and_invalidate(AGENT, &policy).unwrap();
+    let authority = security.approval_authority();
+    authority
+        .create_agent_rule(
+            AGENT,
+            PermissionRuleInput {
+                label: "Allow a one-line preview".into(),
+                enabled: true,
+                effect: PermissionRuleEffect::Allow,
+                matcher: ApprovalReuseMatcher::ToolCall {
+                    tool_name: "read".into(),
+                    input_params: Some(allowed.to_string()),
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(!path.exists());
+    for exists in [false, true] {
+        if exists {
+            std::fs::write(&path, "test fixture").unwrap();
+        }
+        assert_eq!(
+            f.context.check_metadata(&f.request(&inquiry)).await,
+            Ok(FileReadAdmission::RequiresUserConfirmation)
+        );
+        assert_eq!(
+            f.context.check_metadata(&f.request(&allowed)).await,
+            Ok(FileReadAdmission::Allowed)
+        );
+    }
+    let approvals = authority.snapshot_at(&f.address).await;
+    assert!(approvals.pending.is_empty());
+    assert!(approvals.resolved.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn metadata_rejects_only_after_checking_the_replica_without_probing_the_file() {
     let f = Fixture::materialize(build_agent().await).await;
     let path = f.app.state.rua_root.join("metadata-only.txt");
     let args = json!({"device_id": f.device, "file_path": path});
     let request = f.request(&args);
     assert_eq!(f.context.check_authority(&request).await, Ok(()));
-    assert_eq!(f.context.check_metadata(&request).await, Ok(()));
+    assert_eq!(
+        f.context.check_metadata(&request).await,
+        Ok(FileReadAdmission::Allowed)
+    );
 
     for stale in [
         TargetChatRead {

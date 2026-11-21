@@ -31,6 +31,7 @@ pub const DEFAULT_TOKEN_ESTIMATE_DIVISOR: f64 = 4.0;
 pub enum DeviceReadCheck {
     Unavailable(String),
     Denied(String),
+    ConfirmationRequired,
     Checked,
 }
 

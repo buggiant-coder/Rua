@@ -90,13 +90,13 @@ impl TargetFileReadContext {
             .map_err(Into::into)
     }
 
-    /// Reject invalid Chat state and policy denials using only the requested path spelling.
-    /// Success means the target still needs its own file-access authorization and an opened-file
-    /// check. This function performs no filesystem operation on the requested path.
+    /// Classify the target policy from the requested path spelling without probing the file or
+    /// creating an approval. Both outcomes still require independent target file-access
+    /// authorization and verification of the opened file before any contents may be read.
     pub async fn check_metadata(
         &self,
         request: &TargetChatRead<'_>,
-    ) -> Result<(), TargetReadRejection> {
+    ) -> Result<FileReadAdmission, TargetReadRejection> {
         let path = self
             .requested_path(request)
             .map_err(|_| TargetReadRejection::Denied)?;
@@ -104,7 +104,6 @@ impl TargetFileReadContext {
             .map_err(|_| TargetReadRejection::Denied)?;
         self.inspect_policy(request, &[path])
             .await
-            .map(|_| ())
             .map_err(Into::into)
     }
 

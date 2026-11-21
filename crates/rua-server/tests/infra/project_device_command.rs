@@ -252,8 +252,7 @@ fn read_check_request(
         configuration_epoch: "config".into(),
         turn_id: "turn".into(),
         tool_call_id: "call".into(),
-        approval_id: "approval".into(),
-        dispatch_token: uuid::Uuid::new_v4(),
+        confirmation: None,
         arguments: serde_json::json!({"device_id":target,"file_path":"/fixture.txt"}),
     }
 }

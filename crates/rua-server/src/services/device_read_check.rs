@@ -29,9 +29,15 @@ pub struct DeviceReadCheckRequest {
     pub configuration_epoch: String,
     pub turn_id: String,
     pub tool_call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation: Option<DeviceReadConfirmation>,
+    pub arguments: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceReadConfirmation {
     pub approval_id: String,
     pub dispatch_token: Uuid,
-    pub arguments: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +45,7 @@ pub struct DeviceReadCheckRequest {
 pub enum DeviceReadCheckReply {
     Unavailable,
     Denied,
+    ConfirmationRequired,
     Checked,
 }
 
@@ -99,34 +106,41 @@ impl DeviceReadAccess for ForegroundReadAccess {
             active.authority_device_id == local
                 && active.turn_id == turn
                 && active.driver == ConversationDriverKind::Rua
-                && active.phase == ConversationActiveTurnPhase::RunningTool
+                && matches!(
+                    active.phase,
+                    ConversationActiveTurnPhase::Streaming
+                        | ConversationActiveTurnPhase::RunningTool
+                )
         }) else {
             return Ok(unavailable(
                 "the original tool call is no longer running on this device",
             ));
         };
         let records = approvals.snapshot_at(&address).await;
-        let mut matches = records
-            .resolved
-            .iter()
-            .filter(|r| r.agent_id == ctx.agent_id && r.turn_id == turn && r.tool_call_id == call);
-        let Some(record) = matches.next() else {
-            return Ok(unavailable(
-                "no confirmed single-file request is available for this check",
-            ));
-        };
+        let mut matches =
+            records.pending.iter().chain(&records.resolved).filter(|r| {
+                r.agent_id == ctx.agent_id && r.turn_id == turn && r.tool_call_id == call
+            });
+        let record = matches.next();
         if matches.next().is_some()
-            || record.status != ApprovalStatus::Approved
-            || record.tool_name != "read"
-            || record.tool_call.args != *args
-            || record
-                .authenticated_user_decision
-                .as_ref()
-                .is_none_or(|user| user.decision != AuthenticatedApprovalDecision::RunOnce)
+            || record.is_some_and(|r| {
+                r.status != ApprovalStatus::Approved
+                    || r.tool_name != "read"
+                    || r.tool_call.args != *args
+            })
         {
             return Ok(unavailable(
-                "no matching one-time user decision is available for this check",
+                "the approval state does not match this running read",
             ));
+        }
+        // A read admitted by existing policy has no one-time decision to claim.
+        let one_time = record.filter(|r| {
+            r.authenticated_user_decision
+                .as_ref()
+                .is_some_and(|user| user.decision == AuthenticatedApprovalDecision::RunOnce)
+        });
+        if one_time.is_some() && active.phase != ConversationActiveTurnPhase::RunningTool {
+            return Ok(unavailable("the one-time read is no longer running"));
         }
         let transport = network
             .lock()
@@ -136,7 +150,7 @@ impl DeviceReadAccess for ForegroundReadAccess {
         let Some(transport) = transport else {
             return Ok(unavailable("the device network is unavailable"));
         };
-        let permit = authority.begin_read_dispatch(&record.id, device);
+        let permit = one_time.map(|r| authority.begin_read_dispatch(&r.id, device));
         let request = DeviceReadCheckRequest {
             source_device_id: local.into(),
             target_device_id: device.into(),
@@ -146,8 +160,12 @@ impl DeviceReadAccess for ForegroundReadAccess {
             configuration_epoch: epoch.into(),
             turn_id: turn.into(),
             tool_call_id: call.into(),
-            approval_id: record.id.clone(),
-            dispatch_token: permit.token(),
+            confirmation: one_time
+                .zip(permit.as_ref())
+                .map(|(r, p)| DeviceReadConfirmation {
+                    approval_id: r.id.clone(),
+                    dispatch_token: p.token(),
+                }),
             arguments: args.clone(),
         };
         let check = deliver_read_check_via_session(&transport, &request, Duration::from_secs(20));
@@ -167,11 +185,12 @@ impl DeviceReadAccess for ForegroundReadAccess {
         drop(permit);
         Ok(match response {
             Ok(DeviceReadCheckReply::Checked) => DeviceReadCheck::Checked,
+            Ok(DeviceReadCheckReply::ConfirmationRequired) => DeviceReadCheck::ConfirmationRequired,
             Ok(DeviceReadCheckReply::Denied) => DeviceReadCheck::Denied(
                 "the target device denied this read under its current policy".into(),
             ),
             Ok(DeviceReadCheckReply::Unavailable) => {
-                unavailable("the target could not verify the Chat or this one-time read")
+                unavailable("the target could not verify this Chat's read request")
             }
             Err(_) => unavailable("the target did not confirm the permission check"),
         })
@@ -182,6 +201,7 @@ impl DeviceReadCheckRequest {
     pub(super) async fn verify_at_origin(
         &self,
         manager: &rua_device_network::DeviceSessionManager,
+        confirmation: &DeviceReadConfirmation,
     ) -> bool {
         let command = ConversationControlDeviceCommand {
             command_id: Uuid::new_v4().to_string(),
@@ -191,14 +211,14 @@ impl DeviceReadCheckRequest {
             source_device_id: self.target_device_id.clone(),
             target_device_id: self.source_device_id.clone(),
             action: ConversationControlDeviceAction::ClaimReadApproval {
-                approval_id: self.approval_id.clone(),
-                dispatch_token: self.dispatch_token,
+                approval_id: confirmation.approval_id.clone(),
+                dispatch_token: confirmation.dispatch_token,
                 turn_id: self.turn_id.clone(),
                 tool_call_id: self.tool_call_id.clone(),
                 arguments: self.arguments.clone(),
             },
         };
         matches!(deliver_conversation_control_via_session(manager, &command, Duration::from_secs(8)).await,
-            Ok(ConversationControlDeviceResponse::ReadApprovalClaimed {approval_id}) if approval_id == self.approval_id)
+            Ok(ConversationControlDeviceResponse::ReadApprovalClaimed {approval_id}) if approval_id == confirmation.approval_id)
     }
 }

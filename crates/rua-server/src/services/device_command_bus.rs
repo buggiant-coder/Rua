@@ -14,7 +14,7 @@ use rua_core::{ChatAddress, ChatStore};
 use rua_security::approval_authority::ApprovalReuseMatcher;
 
 use crate::services::chat_file_read_admission::{
-    TargetChatRead, TargetFileReadContext, TargetReadRejection,
+    FileReadAdmission, TargetChatRead, TargetFileReadContext, TargetReadRejection,
 };
 use crate::services::chat_metadata_store::{AcpBindingMetadata, ChatMetadataRecord};
 use crate::services::console_chat::CONSOLE_CHANNEL_ID;
@@ -1676,18 +1676,26 @@ impl DeviceCommandHandler {
         if let Err(rejection) = context.check_authority(&read).await {
             return rejection.into();
         }
-        let manager = self
-            .sync_transfer_session_manager
-            .as_ref()
-            .and_then(|cell| cell.read().ok().and_then(|manager| manager.clone()));
-        let Some(manager) = manager else {
-            return DeviceReadCheckReply::Unavailable;
-        };
-        if !request.verify_at_origin(&manager).await {
-            return DeviceReadCheckReply::Unavailable;
+        if let Some(confirmation) = &request.confirmation {
+            let manager = self
+                .sync_transfer_session_manager
+                .as_ref()
+                .and_then(|cell| cell.read().ok().and_then(|manager| manager.clone()));
+            let Some(manager) = manager else {
+                return DeviceReadCheckReply::Unavailable;
+            };
+            if !request.verify_at_origin(&manager, confirmation).await {
+                return DeviceReadCheckReply::Unavailable;
+            }
         }
         match context.check_metadata(&read).await {
-            Ok(()) => DeviceReadCheckReply::Checked,
+            Ok(FileReadAdmission::Allowed) => DeviceReadCheckReply::Checked,
+            Ok(FileReadAdmission::RequiresUserConfirmation) if request.confirmation.is_some() => {
+                DeviceReadCheckReply::Checked
+            }
+            Ok(FileReadAdmission::RequiresUserConfirmation) => {
+                DeviceReadCheckReply::ConfirmationRequired
+            }
             Err(rejection) => rejection.into(),
         }
     }
