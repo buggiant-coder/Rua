@@ -93,6 +93,7 @@ impl FileGuard {
         let ctx = ToolCallContext {
             security_snapshot: None,
             agent_id: String::new(),
+            local_device_id: None,
             approval_owner: crate::ApprovalOwner::runtime_session("", ""),
             session_id: String::new(),
             tool_name: "read".into(),

@@ -10,6 +10,8 @@ pub const EFFECTIVE_SECURITY_CONFIG_METADATA_KEY: &str = "effective_security_con
 pub struct ToolCallContext {
     pub security_snapshot: Option<std::sync::Arc<rua_config::types::security::SecurityConfig>>,
     pub agent_id: String,
+    /// Device running this call, supplied by the runtime rather than tool arguments.
+    pub local_device_id: Option<String>,
 
     pub approval_owner: ApprovalOwner,
 
@@ -43,6 +45,7 @@ impl ToolCallContext {
             security_snapshot: None,
             approval_owner: ApprovalOwner::runtime_session(&agent_id, &session_id),
             agent_id,
+            local_device_id: None,
             session_id,
             tool_name: tool_name.into(),
             tool_input,

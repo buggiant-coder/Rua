@@ -246,6 +246,47 @@ async fn legacy_balanced_mode_allows_ordinary_bash_without_authority_request() {
 }
 
 #[tokio::test]
+async fn local_read_approval_offers_the_executing_device_and_keeps_the_original_arguments() {
+    let (security, _tmp) = make_test_security();
+    let mut config = SecurityConfig::default();
+    config.tool_guard.approval_mode = "ask_first".into();
+    security.config_store().save("agent-1", &config).unwrap();
+    let address = rua_core::ChatAddress::new("chat-1");
+    let hook = SecurityAgentHook::new(Arc::clone(&security), true)
+        .with_agent_id("agent-1")
+        .with_session_id("chat-1")
+        .with_chat_address(address.clone())
+        .with_turn_id("turn-1")
+        .with_local_device_id("phone");
+    let call = make_call_with_args("read", serde_json::json!({"file_path": "/work/notes.txt"}));
+
+    let decision = hook.before_tool_call(&call, 0).await.unwrap();
+    let ToolDecision::RequiresApproval { request_id, .. } = decision else {
+        panic!("expected a pending read approval, got {decision:?}");
+    };
+    let snapshot = security.approval_authority().snapshot_at(&address).await;
+    let [request] = snapshot.pending.as_slice() else {
+        panic!("expected one pending read approval");
+    };
+    assert_eq!(request.id, request_id);
+    assert_eq!(request.tool_call.args, call.arguments);
+    let chat_option = request
+        .reuse_options
+        .iter()
+        .find(|option| option.scope == rua_security::approval_authority::ApprovalReuseScope::Chat)
+        .expect("Chat reuse option");
+    let ApprovalReuseMatcher::ToolCall {
+        tool_name,
+        input_params,
+    } = &chat_option.matcher;
+    assert_eq!(tool_name, "read");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(input_params.as_deref().unwrap()).unwrap(),
+        serde_json::json!({"device_id": "phone", "file_path": "/work/notes.txt"})
+    );
+}
+
+#[tokio::test]
 async fn wait_for_approval_reuses_structured_request_created_by_security_module() {
     let (security, _tmp) = make_test_security();
     let address = rua_core::ChatAddress::new("chat-1");

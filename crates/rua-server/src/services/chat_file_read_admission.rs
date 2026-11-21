@@ -276,6 +276,7 @@ impl TargetFileReadContext {
             request.args.clone(),
         )
         .with_chat_address(request.address.clone());
+        ctx.local_device_id = Some(self.local_device_id.clone());
         ctx.metadata
             .insert("turn_id".into(), request.turn_id.into());
         ctx.metadata

@@ -18,6 +18,7 @@ pub struct SecurityAgentHook {
     enabled: bool,
     session_id: Option<String>,
     agent_id: Option<String>,
+    local_device_id: Option<String>,
     chat_address: Option<rua_core::ChatAddress>,
     turn_id: Option<String>,
     working_dir: Option<String>,
@@ -34,6 +35,7 @@ impl SecurityAgentHook {
             enabled,
             session_id: None,
             agent_id: None,
+            local_device_id: None,
             chat_address: None,
             turn_id: None,
             working_dir: None,
@@ -55,6 +57,11 @@ impl SecurityAgentHook {
 
     pub fn with_agent_id(mut self, agent_id: impl Into<String>) -> Self {
         self.agent_id = Some(agent_id.into());
+        self
+    }
+
+    pub fn with_local_device_id(mut self, device_id: impl Into<String>) -> Self {
+        self.local_device_id = Some(device_id.into());
         self
     }
 
@@ -111,6 +118,7 @@ impl AgentHook for SecurityAgentHook {
             &call.name,
             call.arguments.clone(),
         );
+        ctx.local_device_id = self.local_device_id.clone();
         ctx.security_snapshot = self.security_snapshot.clone();
         if let Some(chat_address) = self.chat_address.as_ref() {
             ctx.approval_owner = rua_security::ApprovalOwner::chat(chat_address.clone());
@@ -213,18 +221,21 @@ impl AgentHook for SecurityAgentHook {
             existing.id
         } else {
             authority
-                .create_request(rua_security::ApprovalRequestInput {
-                    agent_id: agent_id.to_string(),
-                    owner: approval_owner,
-                    turn_id,
-                    tool_call_id: call.id.clone(),
-                    tool_name: call.name.clone(),
-                    trigger: rua_security::ApprovalTrigger::approval_mode(prompt.to_string()),
-                    tool_call: rua_security::ToolCallSnapshot {
-                        display: format!("{} {}", call.name, call.arguments),
-                        args: call.arguments.clone(),
+                .create_request_for_device(
+                    rua_security::ApprovalRequestInput {
+                        agent_id: agent_id.to_string(),
+                        owner: approval_owner,
+                        turn_id,
+                        tool_call_id: call.id.clone(),
+                        tool_name: call.name.clone(),
+                        trigger: rua_security::ApprovalTrigger::approval_mode(prompt.to_string()),
+                        tool_call: rua_security::ToolCallSnapshot {
+                            display: format!("{} {}", call.name, call.arguments),
+                            args: call.arguments.clone(),
+                        },
                     },
-                })
+                    self.local_device_id.as_deref(),
+                )
                 .await
                 .id
         };
@@ -270,18 +281,21 @@ impl AgentHook for SecurityAgentHook {
             .unwrap_or_else(|| rua_security::ApprovalOwner::runtime_session(agent_id, &session_id));
         let authority = self.security.approval_authority();
         let request = authority
-            .create_request(rua_security::ApprovalRequestInput {
-                agent_id: agent_id.to_string(),
-                owner,
-                turn_id,
-                tool_call_id: call.id.clone(),
-                tool_name: call.name.clone(),
-                trigger: rua_security::ApprovalTrigger::approval_mode(prompt.to_string()),
-                tool_call: rua_security::ToolCallSnapshot {
-                    display: format!("{} {}", call.name, call.arguments),
-                    args: call.arguments.clone(),
+            .create_request_for_device(
+                rua_security::ApprovalRequestInput {
+                    agent_id: agent_id.to_string(),
+                    owner,
+                    turn_id,
+                    tool_call_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    trigger: rua_security::ApprovalTrigger::approval_mode(prompt.to_string()),
+                    tool_call: rua_security::ToolCallSnapshot {
+                        display: format!("{} {}", call.name, call.arguments),
+                        args: call.arguments.clone(),
+                    },
                 },
-            })
+                self.local_device_id.as_deref(),
+            )
             .await;
         let authority_decision = match decision {
             react_agent::PermissionHookDecision::Allow { .. } => {

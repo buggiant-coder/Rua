@@ -512,12 +512,25 @@ impl ApprovalAuthority {
     }
 
     pub async fn create_request(&self, input: ApprovalRequestInput) -> ApprovalRequest {
+        self.create_request_for_device(input, None).await
+    }
+
+    pub async fn create_request_for_device(
+        &self,
+        input: ApprovalRequestInput,
+        local_device_id: Option<&str>,
+    ) -> ApprovalRequest {
         let _registration = match input.owner.as_chat_address() {
             Some(address) => Some(self.hold_chat_registrations(address).await),
             None => None,
         };
-        let reuse_options =
-            reuse_options_for(&input.owner, &input.tool_name, &input.tool_call.args);
+        let call =
+            PermissionToolCall::new(&input.tool_name, &input.tool_call.args, local_device_id);
+        let reuse_options = reuse_options_for(
+            &input.owner,
+            &input.tool_name,
+            call.bound_read.as_deref().unwrap_or(&input.tool_call.args),
+        );
         let request = ApprovalRequest {
             id: Uuid::new_v4().to_string(),
             agent_id: input.agent_id,
@@ -1149,8 +1162,7 @@ impl ApprovalAuthority {
             agent_id,
             Some(owner),
             PermissionRuleEffect::Allow,
-            tool_name,
-            args,
+            &PermissionToolCall::new(tool_name, args, None),
         )
         .await
     }
@@ -1162,6 +1174,24 @@ impl ApprovalAuthority {
         effect: PermissionRuleEffect,
         tool_name: &str,
         args: &serde_json::Value,
+        snapshot_rules: &[StoredApprovalReuseRule],
+    ) -> Result<Option<ApprovalReuseRule>, String> {
+        self.find_rule_in_snapshot(
+            agent_id,
+            owner,
+            effect,
+            &PermissionToolCall::new(tool_name, args, None),
+            snapshot_rules,
+        )
+        .await
+    }
+
+    pub(crate) async fn find_rule_in_snapshot(
+        &self,
+        agent_id: &str,
+        owner: &ApprovalOwner,
+        effect: PermissionRuleEffect,
+        call: &PermissionToolCall<'_>,
         snapshot_rules: &[StoredApprovalReuseRule],
     ) -> Result<Option<ApprovalReuseRule>, String> {
         let stored_chat_rules = match (owner.as_chat_address(), self.chat_rule_store.as_ref()) {
@@ -1177,7 +1207,7 @@ impl ApprovalAuthority {
                 ) && rule.owner.as_ref() == Some(owner)
                     && rule.effect == effect
                     && rule.enabled
-                    && rule.pattern().matches(tool_name, args)
+                    && rule.pattern().matches(call)
             }) {
                 rule.hit_count += 1;
                 return Ok(Some(rule.clone()));
@@ -1186,7 +1216,7 @@ impl ApprovalAuthority {
         if let Some(address) = owner.as_chat_address() {
             if let Some(store) = &self.chat_rule_store {
                 if let Some(mut rule) = stored_chat_rules.into_iter().find(|rule| {
-                    rule.enabled && rule.effect == effect && rule.pattern().matches(tool_name, args)
+                    rule.enabled && rule.effect == effect && rule.pattern().matches(call)
                 }) {
                     rule.hit_count += 1;
                     let _ = store.upsert_chat_rule(address, &rule);
@@ -1197,9 +1227,7 @@ impl ApprovalAuthority {
         }
         Ok(snapshot_rules
             .iter()
-            .find(|rule| {
-                rule.enabled && rule.effect == effect && rule.pattern().matches(tool_name, args)
-            })
+            .find(|rule| rule.enabled && rule.effect == effect && rule.pattern().matches(call))
             .cloned()
             .map(|rule| rule.into_runtime(agent_id.to_string(), None, ApprovalReuseScope::Agent)))
     }
@@ -1210,17 +1238,21 @@ impl ApprovalAuthority {
         tool_name: &str,
         args: &serde_json::Value,
     ) -> Option<ApprovalReuseRule> {
-        self.find_permission_rule(agent_id, None, PermissionRuleEffect::Deny, tool_name, args)
-            .await
+        self.find_permission_rule(
+            agent_id,
+            None,
+            PermissionRuleEffect::Deny,
+            &PermissionToolCall::new(tool_name, args, None),
+        )
+        .await
     }
 
-    async fn find_permission_rule(
+    pub(crate) async fn find_permission_rule(
         &self,
         agent_id: &str,
         owner: Option<&ApprovalOwner>,
         effect: PermissionRuleEffect,
-        tool_name: &str,
-        args: &serde_json::Value,
+        call: &PermissionToolCall<'_>,
     ) -> Option<ApprovalReuseRule> {
         {
             let mut rules = self.reuse_rules.write().await;
@@ -1229,7 +1261,7 @@ impl ApprovalAuthority {
                     && rule.owner.as_ref() == owner
                     && rule.effect == effect
                     && rule.enabled
-                    && rule.pattern().matches(tool_name, args)
+                    && rule.pattern().matches(call)
             }) {
                 rule.hit_count += 1;
                 return Some(rule.clone());
@@ -1240,7 +1272,7 @@ impl ApprovalAuthority {
                     && rule.scope == ApprovalReuseScope::Agent
                     && rule.effect == effect
                     && rule.enabled
-                    && rule.pattern().matches(tool_name, args)
+                    && rule.pattern().matches(call)
             }) {
                 rule.hit_count += 1;
                 if let Some(store) = &self.agent_rule_store {
@@ -1261,7 +1293,7 @@ impl ApprovalAuthority {
                         && rule.owner.as_ref() == owner
                         && rule.effect == effect
                         && rule.enabled
-                        && rule.pattern().matches(tool_name, args)
+                        && rule.pattern().matches(call)
                 })
             {
                 rule.hit_count += 1;
@@ -1281,7 +1313,7 @@ impl ApprovalAuthority {
                     && rule.scope == ApprovalReuseScope::Agent
                     && rule.effect == effect
                     && rule.enabled
-                    && rule.pattern().matches(tool_name, args)
+                    && rule.pattern().matches(call)
             })?;
         rule.hit_count += 1;
         let _ = store.upsert_agent_rule(agent_id, &rule);
@@ -1400,10 +1432,14 @@ impl ApprovalAuthority {
         let Some(existing) = rules.iter_mut().find(|rule| rule.id == rule_id) else {
             return Ok(None);
         };
-        existing.exact_read_args = input
-            .matcher
-            .read_args_with_asterisk()
-            .then(|| existing.matcher == input.matcher && existing.pattern().exact_read_args);
+        if existing.matcher != input.matcher {
+            existing.exact_read_args = (input.matcher.read_args_with_asterisk()
+                || (existing.source == PermissionRuleSource::Approval
+                    && input.matcher.file_read_args().is_some()))
+            .then_some(false);
+        } else if existing.exact_read_args.is_none() && input.matcher.read_args_with_asterisk() {
+            existing.exact_read_args = Some(existing.pattern().exact_read_args);
+        }
         existing.effect = input.effect;
         existing.enabled = input.enabled;
         existing.label = input.label;
@@ -1449,7 +1485,7 @@ fn same_permission_rule_key(left: &ApprovalReuseRule, right: &ApprovalReuseRule)
         ApprovalReuseScope::Agent => left.agent_id == right.agent_id,
         ApprovalReuseScope::Chat | ApprovalReuseScope::RuntimeSession => left.owner == right.owner,
     };
-    same_owner && left.scope == right.scope && left.pattern() == right.pattern()
+    same_owner && left.scope == right.scope && left.pattern().same_matcher(&right.pattern())
 }
 
 fn reuse_options_for(
@@ -1506,14 +1542,118 @@ fn reuse_options_for(
         .collect()
 }
 
-#[derive(PartialEq)]
+pub(crate) struct PermissionToolCall<'a> {
+    tool_name: &'a str,
+    args: &'a serde_json::Value,
+    bound_read: Option<std::borrow::Cow<'a, serde_json::Value>>,
+    unqualified_local_read: Option<serde_json::Value>,
+}
+
+fn is_file_read(tool_name: &str, args: &serde_json::Value) -> bool {
+    tool_name == "read"
+        && args.get("device_id").is_none_or(|device| {
+            device
+                .as_str()
+                .is_some_and(|id| !id.is_empty() && id.trim() == id)
+        })
+        && args["file_path"].as_str().is_some_and(|path| {
+            rua_core::execution_directory::is_device_absolute_path(path)
+                && rua_core::chat_media::reference_id(path).is_none()
+        })
+}
+
+impl<'a> PermissionToolCall<'a> {
+    pub(crate) fn new(
+        tool_name: &'a str,
+        args: &'a serde_json::Value,
+        local_device_id: Option<&str>,
+    ) -> Self {
+        use std::borrow::Cow;
+        let mut call = Self {
+            tool_name,
+            args,
+            bound_read: None,
+            unqualified_local_read: None,
+        };
+        let Some(local) = local_device_id.filter(|id| !id.is_empty() && id.trim() == *id) else {
+            return call;
+        };
+        if !is_file_read(tool_name, args) {
+            return call;
+        }
+        match args["device_id"].as_str() {
+            None => {
+                let mut bound = args.clone();
+                bound["device_id"] = local.into();
+                call.bound_read = Some(Cow::Owned(bound));
+            }
+            Some(id) => {
+                call.bound_read = Some(Cow::Borrowed(args));
+                if id == local {
+                    call.unqualified_local_read = Self::without_device_id(args);
+                }
+            }
+        }
+        call
+    }
+
+    fn without_device_id(args: &serde_json::Value) -> Option<serde_json::Value> {
+        let mut fields = args.as_object()?.clone();
+        fields.remove("device_id")?;
+        Some(fields.into())
+    }
+
+    pub(crate) fn target_read_for_denial(
+        args: &'a serde_json::Value,
+        local_device_id: Option<&str>,
+    ) -> Self {
+        let mut call = Self::new("read", args, local_device_id);
+        // Older target-side callers already checked the destination but supplied it only in args.
+        if local_device_id.is_none() {
+            call.unqualified_local_read = Self::without_device_id(args);
+        }
+        call
+    }
+
+    fn alternate_local_args(&self) -> Option<&serde_json::Value> {
+        self.unqualified_local_read
+            .as_ref()
+            .or(match &self.bound_read {
+                Some(std::borrow::Cow::Owned(qualified)) => Some(qualified),
+                _ => None,
+            })
+    }
+}
+
 pub(crate) struct PermissionRulePattern<'a> {
     matcher: &'a ApprovalReuseMatcher,
     exact_read_args: bool,
+    approved_file_args: Option<serde_json::Value>,
+    effect: PermissionRuleEffect,
 }
 
 impl PermissionRulePattern<'_> {
-    pub(crate) fn matches(&self, tool_name: &str, args: &serde_json::Value) -> bool {
+    pub(crate) fn same_matcher(&self, other: &Self) -> bool {
+        self.matcher == other.matcher
+            && self.exact_read_args == other.exact_read_args
+            && self.approved_file_args.is_some() == other.approved_file_args.is_some()
+    }
+
+    pub(crate) fn matches(&self, call: &PermissionToolCall<'_>) -> bool {
+        if let (Some(approved), Some(bound)) =
+            (&self.approved_file_args, call.bound_read.as_deref())
+        {
+            // A legacy file approval without a Device cannot name this destination.
+            return approved == bound;
+        }
+        self.matches_args(call.tool_name, call.args)
+            || self.effect == PermissionRuleEffect::Deny
+                && call
+                    .alternate_local_args()
+                    .is_some_and(|args| self.matches_args(call.tool_name, args))
+    }
+
+    fn matches_args(&self, tool_name: &str, args: &serde_json::Value) -> bool {
         let ApprovalReuseMatcher::ToolCall {
             tool_name: tool_pattern,
             input_params,
@@ -1532,6 +1672,18 @@ impl PermissionRulePattern<'_> {
 }
 
 impl ApprovalReuseMatcher {
+    fn file_read_args(&self) -> Option<serde_json::Value> {
+        let Self::ToolCall {
+            tool_name,
+            input_params,
+        } = self;
+        if tool_name != "read" {
+            return None;
+        }
+        let args = serde_json::from_str(input_params.as_deref()?).ok()?;
+        is_file_read(tool_name, &args).then_some(args)
+    }
+
     fn read_args_with_asterisk(&self) -> bool {
         matches!(self, Self::ToolCall { tool_name, input_params: Some(params) }
             if tool_name == "read" && params.contains('*'))
@@ -1553,6 +1705,12 @@ impl ApprovalReuseMatcher {
             matcher: self,
             exact_read_args: self.read_args_with_asterisk()
                 && exact_read_args.unwrap_or(approved_read),
+            approved_file_args: if approved_read && exact_read_args != Some(false) {
+                self.file_read_args()
+            } else {
+                None
+            },
+            effect,
         }
     }
 

@@ -216,6 +216,7 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
         let mut security_hook = rua_agent::hooks::SecurityAgentHook::new(security, true)
             .with_session_id(&chat_id)
             .with_agent_id(&execution_agent_id)
+            .with_local_device_id(&directory.device_id)
             .with_chat_address(request.owner.chat_address.clone())
             .with_working_dir(working_dir.to_string_lossy().to_string())
             .with_security_snapshot(Arc::clone(&security_snapshot));

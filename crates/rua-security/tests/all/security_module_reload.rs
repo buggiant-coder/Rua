@@ -40,6 +40,237 @@ fn write_agent_security(dir: &std::path::Path, agent_id: &str, config: SecurityC
     std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }
 
+const READ_PATH: &str = "/fixture/note.txt";
+
+fn device_read(local: &str, target: Option<&str>, call_id: &str) -> ToolCallContext {
+    let mut args = serde_json::json!({"file_path": READ_PATH});
+    if let Some(device) = target {
+        args["device_id"] = device.into();
+    }
+    let mut ctx = ToolCallContext::new("agent", "chat", "read", args)
+        .with_chat_address(rua_core::ChatAddress::new("chat"));
+    ctx.local_device_id = Some(local.to_owned());
+    ctx.metadata.insert("turn_id".into(), "turn".into());
+    ctx.metadata.insert("tool_call_id".into(), call_id.into());
+    ctx
+}
+
+#[tokio::test]
+async fn device_read_allow_chat_recognizes_the_phone_after_restart() {
+    use rua_security::security_module::FileReadAdmission::{Allowed, RequiresUserConfirmation};
+    use rua_security::{ApprovalDecision, ApprovalReuseScope};
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = SecurityConfig::default();
+    config.tool_guard.approval_mode = "ask_first".into();
+    {
+        let module = make_module(tmp.path());
+        module.save_and_invalidate("agent", &config).unwrap();
+        let original =
+            device_read("phone", None, "first").with_security_snapshot(Arc::new(config.clone()));
+        let SecurityVerdict::RequiresApproval { request_id, .. } =
+            module.enforce(&original, &[]).await
+        else {
+            panic!("expected an Ask First card for the phone file")
+        };
+        let authority = module.approval_authority();
+        let card = authority.request(&request_id).await.unwrap();
+        let option = card
+            .reuse_options
+            .iter()
+            .find(|o| o.scope == ApprovalReuseScope::Chat)
+            .unwrap();
+        authority
+            .decide_for_authenticated_user(
+                "agent",
+                &request_id,
+                ApprovalDecision::AllowChat {
+                    decided_by: "webui".into(),
+                    matcher: option.matcher.clone(),
+                },
+                "user",
+            )
+            .await
+            .unwrap();
+    }
+    let reopened = make_module(tmp.path());
+    for (local, target, expected) in [
+        ("phone", None, Allowed),
+        ("phone", Some("phone"), Allowed),
+        ("desktop", Some("phone"), Allowed),
+        ("desktop", None, RequiresUserConfirmation),
+        ("desktop", Some("desktop"), RequiresUserConfirmation),
+    ] {
+        let call = format!("{local}-{target:?}");
+        let ctx =
+            device_read(local, target, &call).with_security_snapshot(Arc::new(config.clone()));
+        let verdict = reopened.enforce(&ctx, &[]).await;
+        assert!(
+            matches!(
+                (&expected, &verdict),
+                (Allowed, SecurityVerdict::Allow)
+                    | (
+                        RequiresUserConfirmation,
+                        SecurityVerdict::RequiresApproval { .. }
+                    )
+            ),
+            "{call}: {verdict:?}"
+        );
+        if target == Some(local) {
+            assert_eq!(
+                reopened
+                    .inspect_chat_file_read(&ctx, &config, &[READ_PATH])
+                    .await
+                    .unwrap(),
+                expected,
+                "{call}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn device_read_manual_deny_coexists_with_the_identical_legacy_allow_after_restart() {
+    use rua_security::{ApprovalReuseMatcher, PermissionRuleEffect, PermissionRuleInput};
+    let tmp = tempfile::tempdir().unwrap();
+    let module = make_module(tmp.path());
+    let config = legacy_path_only_allow();
+    module.save_and_invalidate("agent", &config).unwrap();
+    let implicit = device_read("phone", None, "implicit");
+    let deny = module
+        .approval_authority()
+        .create_agent_rule(
+            "agent",
+            PermissionRuleInput {
+                effect: PermissionRuleEffect::Deny,
+                enabled: true,
+                label: "Local fixture".into(),
+                matcher: ApprovalReuseMatcher::ToolCall {
+                    tool_name: "read".into(),
+                    input_params: Some(implicit.tool_input.to_string()),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    drop(module);
+    let module = make_module(tmp.path());
+    let rules = module.approval_authority().list_agent_rules("agent").await;
+    assert_eq!(rules.len(), 2);
+    assert!(rules
+        .iter()
+        .any(|r| r.id == "rule" && r.effect == PermissionRuleEffect::Allow));
+    assert!(rules
+        .iter()
+        .any(|r| r.id == deny.id && r.effect == PermissionRuleEffect::Deny));
+    let captured = Arc::new(module.config_store().load("agent").unwrap());
+    for call in [implicit, device_read("phone", Some("phone"), "explicit")] {
+        let ctx = call.with_security_snapshot(captured.clone());
+        let verdict = module.enforce(&ctx, &[]).await;
+        assert!(
+            matches!(&verdict, SecurityVerdict::Deny { reason } if reason.contains("Local fixture")),
+            "{verdict:?}"
+        );
+    }
+}
+
+fn legacy_path_only_allow() -> SecurityConfig {
+    let mut config = SecurityConfig::default();
+    config.tool_guard.approval_mode = "ask_first".into();
+    config.extra.insert(
+        "permission_rules".into(),
+        legacy_file_approval("allow", READ_PATH),
+    );
+    config
+}
+
+#[tokio::test]
+async fn device_read_legacy_path_only_approval_does_not_authorize_another_device() {
+    use rua_security::security_module::FileReadAdmission;
+    let tmp = tempfile::tempdir().unwrap();
+    let module = make_module(tmp.path());
+    let config = legacy_path_only_allow();
+    module.save_and_invalidate("agent", &config).unwrap();
+    let implicit = device_read("desktop", None, "implicit-desktop")
+        .with_security_snapshot(Arc::new(config.clone()));
+    assert!(module.enforce(&implicit, &[]).await.requires_approval());
+    let ctx = device_read("tablet", Some("tablet"), "tablet")
+        .with_security_snapshot(Arc::new(config.clone()));
+    assert!(module.enforce(&ctx, &[]).await.requires_approval());
+    assert_eq!(
+        module
+            .inspect_chat_file_read(&ctx, &config, &[READ_PATH])
+            .await
+            .unwrap(),
+        FileReadAdmission::RequiresUserConfirmation
+    );
+}
+
+#[tokio::test]
+async fn device_read_legacy_approval_uses_the_matcher_selected_in_settings_after_restart() {
+    use rua_security::security_module::FileReadAdmission::Allowed;
+    use rua_security::{ApprovalReuseMatcher, PermissionRuleEffect, PermissionRuleInput};
+    let other_path = "/fixture/another-note.txt";
+    for (tool, input_params, device_arg) in [
+        (
+            "read",
+            Some(serde_json::json!({"file_path":other_path}).to_string()),
+            None,
+        ),
+        ("read", None, Some("tablet")),
+        ("rea*", None, Some("tablet")),
+    ] {
+        let path_limited = input_params.is_some();
+        let tmp = tempfile::tempdir().unwrap();
+        let module = make_module(tmp.path());
+        module
+            .save_and_invalidate("agent", &legacy_path_only_allow())
+            .unwrap();
+        module
+            .approval_authority()
+            .update_agent_rule(
+                "agent",
+                "rule",
+                PermissionRuleInput {
+                    effect: PermissionRuleEffect::Allow,
+                    enabled: true,
+                    label: "Updated in settings".into(),
+                    matcher: ApprovalReuseMatcher::ToolCall {
+                        tool_name: tool.into(),
+                        input_params,
+                    },
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        drop(module);
+        let reopened = make_module(tmp.path());
+        let mut ctx = device_read("tablet", device_arg, "updated");
+        ctx.tool_input["file_path"] = other_path.into();
+        let verdict = reopened.enforce(&ctx, &[]).await;
+        assert!(
+            verdict.is_allow(),
+            "{tool} with {device_arg:?}: {verdict:?}"
+        );
+        if device_arg == ctx.local_device_id.as_deref() {
+            let captured = reopened.config_store().load("agent").unwrap();
+            assert_eq!(
+                reopened
+                    .inspect_chat_file_read(&ctx, &captured, &[other_path])
+                    .await
+                    .unwrap(),
+                Allowed
+            );
+        }
+        if path_limited {
+            ctx.tool_input["file_path"] = READ_PATH.into();
+            assert!(reopened.enforce(&ctx, &[]).await.requires_approval());
+        }
+        ctx.tool_name = "glob".into();
+        assert!(reopened.enforce(&ctx, &[]).await.requires_approval());
+    }
+}
+
 #[tokio::test]
 async fn invalidate_clears_cached_engine() {
     let tmp = tempfile::tempdir().unwrap();
@@ -297,18 +528,22 @@ async fn snapshot_permission_rules_do_not_follow_agent_rule_updates() {
     ));
 }
 
+fn legacy_file_approval(effect: &str, path: &str) -> serde_json::Value {
+    serde_json::json!([{
+        "id": "rule", "label": "Reports", "source": "approval", "source_approval_id": "original",
+        "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
+        "effect": effect, "hit_count": 0, "matcher": {
+            "type": "tool_call", "tool_name": "read",
+            "input_params": serde_json::json!({"file_path": path}).to_string()
+        }
+    }])
+}
+
 fn write_legacy_approval_deny(dir: &std::path::Path) {
     let mut config = SecurityConfig::default();
     config.extra.insert(
         "permission_rules".into(),
-        serde_json::json!([{
-            "id": "rule", "label": "Reports", "source": "approval", "source_approval_id": "original",
-            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
-            "effect": "deny", "hit_count": 0, "matcher": {
-                "type": "tool_call", "tool_name": "read",
-                "input_params": serde_json::json!({"file_path": "/fixture/report-*.txt"}).to_string()
-            }
-        }]),
+        legacy_file_approval("deny", "/fixture/report-*.txt"),
     );
     write_agent_security(dir, "agent", config);
 }

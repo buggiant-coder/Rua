@@ -2747,6 +2747,10 @@ impl AgentRuntime for ReactAgentRuntime {
             builder = builder.model_name(model);
         }
 
+        let local_device_id = self
+            .task_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.device_context().device_id.clone());
         if let Some(working_dir) = req.working_dir() {
             let tool_result_store_dir = req
                 .conversation_store_dir()
@@ -2771,10 +2775,7 @@ impl AgentRuntime for ReactAgentRuntime {
             let configured_user_timezone = self.configured_user_timezone()?;
 
             let tool_ctx = ToolContext {
-                local_device_id: self
-                    .task_runtime
-                    .as_ref()
-                    .and_then(|rt| rt.device_context().device_id.clone()),
+                local_device_id: local_device_id.clone(),
                 agent_id: req.agent_id.to_string(),
                 session_id: security_session_id.clone(),
                 working_dir: working_dir.to_path_buf(),
@@ -2868,6 +2869,9 @@ impl AgentRuntime for ReactAgentRuntime {
                 .with_session_id(security_session_id)
                 .with_agent_id(req.agent_id.to_string())
                 .with_working_dir(ws_dir);
+            if let Some(device_id) = local_device_id {
+                hook = hook.with_local_device_id(device_id);
+            }
             if let Some(roots) = req
                 .metadata
                 .get("project_resource_roots")

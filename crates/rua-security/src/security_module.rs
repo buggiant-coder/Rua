@@ -11,7 +11,7 @@ use rua_core::{ChatAddress, ChatStore};
 use crate::approval_authority::{
     AgentScopeRuleStore, ApprovalAuthority, ApprovalModePreset, ApprovalRequestInput,
     ApprovalReuseRule, ApprovalReuseScope, ApprovalTrigger, ApprovalTriggerSource,
-    ChatScopeRuleStore, StoredApprovalReuseRule, ToolCallSnapshot,
+    ChatScopeRuleStore, PermissionToolCall, StoredApprovalReuseRule, ToolCallSnapshot,
 };
 use crate::config_store::{SecurityConfigStore, StoreError};
 use crate::engine::ToolGuardEngine;
@@ -145,20 +145,21 @@ impl SecurityModule {
             .await
             .map_err(Unavailable)?;
         let mut admission = FileReadAdmission::Allowed;
+        let call = PermissionToolCall::new("read", &ctx.tool_input, ctx.local_device_id.as_deref());
         for config in std::iter::once(captured).chain((captured != &current).then_some(&current)) {
             let mut rules = snapshot_permission_rules(config).map_err(Unavailable)?;
             rules.extend(chat_rules.iter().map(ApprovalReuseRule::to_stored));
             let allowed = rules.iter().any(|rule| {
                 rule.enabled
                     && rule.effect == crate::PermissionRuleEffect::Allow
-                    && rule.pattern().matches("read", &ctx.tool_input)
+                    && rule.pattern().matches(&call)
             });
             let engine = ToolGuardEngine::new(config, self.paths.as_deref());
             let mode = canonical_approval_mode_preset(&config.tool_guard.approval_mode);
             for path in local_names {
                 let mut operation = ctx.clone();
                 operation.tool_input["file_path"] = serde_json::json!(path);
-                check_file_read_denials(&operation.tool_input, &rules).map_err(Denied)?;
+                check_file_read_denials(&operation, &rules).map_err(Denied)?;
                 let guard = engine.evaluate(&operation);
                 if guard.decision == GuardDecision::Deny {
                     return Err(Denied(format!(
@@ -355,10 +356,7 @@ impl SecurityModule {
                 "Tool '{}' contains an operation requiring approval: {}",
                 ctx.tool_name, trigger.message
             );
-            let request = self
-                .approval_authority
-                .create_request(approval_input_from_ctx(ctx, trigger))
-                .await;
+            let request = self.create_approval_request(ctx, trigger).await;
             return SecurityVerdict::RequiresApproval {
                 request_id: request.id,
                 prompt,
@@ -405,11 +403,10 @@ impl SecurityModule {
                 }
                 GuardDecision::RequiresApproval => {
                     let request = self
-                        .approval_authority
-                        .create_request(approval_input_from_ctx(
+                        .create_approval_request(
                             ctx,
                             trigger_from_finding(primary_finding(&result.findings)),
-                        ))
+                        )
                         .await;
                     return SecurityVerdict::RequiresApproval {
                         request_id: request.id,
@@ -427,11 +424,7 @@ impl SecurityModule {
             ApprovalModePreset::AskFirst => {
                 let message = format!("Tool '{}' requires approval (Ask First)", ctx.tool_name);
                 let request = self
-                    .approval_authority
-                    .create_request(approval_input_from_ctx(
-                        ctx,
-                        ApprovalTrigger::approval_mode(message.clone()),
-                    ))
+                    .create_approval_request(ctx, ApprovalTrigger::approval_mode(message.clone()))
                     .await;
                 return SecurityVerdict::RequiresApproval {
                     request_id: request.id,
@@ -441,11 +434,7 @@ impl SecurityModule {
             ApprovalModePreset::Balanced if mode.requires_approval_for_tool(&ctx.tool_name) => {
                 let message = format!("Tool '{}' requires approval (Balanced)", ctx.tool_name);
                 let request = self
-                    .approval_authority
-                    .create_request(approval_input_from_ctx(
-                        ctx,
-                        ApprovalTrigger::approval_mode(message.clone()),
-                    ))
+                    .create_approval_request(ctx, ApprovalTrigger::approval_mode(message.clone()))
                     .await;
                 return SecurityVerdict::RequiresApproval {
                     request_id: request.id,
@@ -463,11 +452,7 @@ impl SecurityModule {
         {
             let message = format!("Tool '{}' requires approval", ctx.tool_name);
             let request = self
-                .approval_authority
-                .create_request(approval_input_from_ctx(
-                    ctx,
-                    ApprovalTrigger::approval_mode(message.clone()),
-                ))
+                .create_approval_request(ctx, ApprovalTrigger::approval_mode(message.clone()))
                 .await;
             return SecurityVerdict::RequiresApproval {
                 request_id: request.id,
@@ -516,37 +501,36 @@ impl SecurityModule {
         ctx: &ToolCallContext,
         effect: crate::PermissionRuleEffect,
     ) -> Result<Option<ApprovalReuseRule>, String> {
+        let call = PermissionToolCall::new(
+            &ctx.tool_name,
+            &ctx.tool_input,
+            ctx.local_device_id.as_deref(),
+        );
         if let Some(config) = ctx.security_snapshot.as_ref() {
             let rules = snapshot_permission_rules(config)?;
             return self
                 .approval_authority
-                .find_permission_rule_with_snapshot(
-                    &ctx.agent_id,
-                    &ctx.approval_owner,
-                    effect,
-                    &ctx.tool_name,
-                    &ctx.tool_input,
-                    &rules,
-                )
+                .find_rule_in_snapshot(&ctx.agent_id, &ctx.approval_owner, effect, &call, &rules)
                 .await;
         }
-        Ok(match effect {
-            crate::PermissionRuleEffect::Deny => {
-                self.approval_authority
-                    .find_deny_rule(&ctx.agent_id, &ctx.tool_name, &ctx.tool_input)
-                    .await
-            }
-            crate::PermissionRuleEffect::Allow => {
-                self.approval_authority
-                    .find_reuse_rule_for_owner(
-                        &ctx.agent_id,
-                        &ctx.approval_owner,
-                        &ctx.tool_name,
-                        &ctx.tool_input,
-                    )
-                    .await
-            }
-        })
+        let owner = (effect == crate::PermissionRuleEffect::Allow).then_some(&ctx.approval_owner);
+        Ok(self
+            .approval_authority
+            .find_permission_rule(&ctx.agent_id, owner, effect, &call)
+            .await)
+    }
+
+    async fn create_approval_request(
+        &self,
+        ctx: &ToolCallContext,
+        trigger: ApprovalTrigger,
+    ) -> crate::ApprovalRequest {
+        self.approval_authority
+            .create_request_for_device(
+                approval_input_from_ctx(ctx, trigger),
+                ctx.local_device_id.as_deref(),
+            )
+            .await
     }
 
     fn get_or_create_engine(&self, agent_id: &str) -> Arc<RwLock<ToolGuardEngine>> {
@@ -639,21 +623,15 @@ fn snapshot_permission_rules(
 }
 
 fn check_file_read_denials(
-    args: &serde_json::Value,
+    ctx: &ToolCallContext,
     rules: &[StoredApprovalReuseRule],
 ) -> Result<(), String> {
     use crate::PermissionRuleEffect;
 
-    // A read invoked on its own Device may omit the routing argument. Its exact
-    // local deny still applies to the same file when a remote Chat supplies it.
-    let mut local_args = args.clone();
-    if let Some(fields) = local_args.as_object_mut() {
-        fields.remove("device_id");
-    }
+    let call =
+        PermissionToolCall::target_read_for_denial(&ctx.tool_input, ctx.local_device_id.as_deref());
     if let Some(rule) = rules.iter().find(|rule| {
-        rule.enabled
-            && rule.effect == PermissionRuleEffect::Deny
-            && (rule.pattern().matches("read", args) || rule.pattern().matches("read", &local_args))
+        rule.enabled && rule.effect == PermissionRuleEffect::Deny && rule.pattern().matches(&call)
     }) {
         return Err(format!(
             "File read denied by permission rule '{}'",
@@ -689,7 +667,9 @@ impl AgentScopeRuleStore for ConfigBackedAgentScopeRuleStore {
             .load(agent_id)
             .map_err(|error| error.to_string())?;
         let mut rules = read_stored_permission_rules_from_security_config(&config);
-        rules.retain(|existing| existing.id != rule.id && existing.pattern() != rule.pattern());
+        rules.retain(|existing| {
+            existing.id != rule.id && !existing.pattern().same_matcher(&rule.pattern())
+        });
         rules.push(rule.to_stored());
         write_stored_permission_rules_to_security_config(&mut config, &rules)?;
         self.config_store
@@ -756,7 +736,9 @@ impl ChatScopeRuleStore for FileBackedChatScopeRuleStore {
         }
         let path = self.permission_rules_path(address);
         let mut rules = read_stored_permission_rules_from_path(&path)?;
-        rules.retain(|existing| existing.id != rule.id && existing.pattern() != rule.pattern());
+        rules.retain(|existing| {
+            existing.id != rule.id && !existing.pattern().same_matcher(&rule.pattern())
+        });
         rules.push(rule.to_stored());
         write_stored_permission_rules_to_path(&path, &rules)
     }
