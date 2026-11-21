@@ -148,17 +148,22 @@ impl DeviceReadAccess for ForegroundReadAccess {
                 "the approval state does not match this running read",
             ));
         }
-        // A read admitted by existing policy has no one-time decision to claim.
-        let one_time = record.filter(|r| {
-            r.authenticated_user_decision
-                .as_ref()
-                .is_some_and(|user| user.decision == AuthenticatedApprovalDecision::RunOnce)
+        // A fresh user decision also authorizes this invocation while reusable settings sync.
+        let confirmed = record.filter(|r| {
+            r.authenticated_user_decision.as_ref().is_some_and(|user| {
+                matches!(
+                    user.decision,
+                    AuthenticatedApprovalDecision::RunOnce
+                        | AuthenticatedApprovalDecision::AllowChat
+                        | AuthenticatedApprovalDecision::AllowAgent
+                )
+            })
         });
-        if one_time.is_some()
+        if confirmed.is_some()
             && active.phase != ConversationActiveTurnPhase::RunningTool
             && !(active.phase == ConversationActiveTurnPhase::WaitingApproval && parallel_wait)
         {
-            return Ok(unavailable("the one-time read is no longer running"));
+            return Ok(unavailable("the confirmed read is no longer running"));
         }
         let transport = network
             .lock()
@@ -168,7 +173,7 @@ impl DeviceReadAccess for ForegroundReadAccess {
         let Some(transport) = transport else {
             return Ok(unavailable("the device network is unavailable"));
         };
-        let permit = one_time.map(|r| authority.begin_read_dispatch(&r.id, device));
+        let permit = confirmed.map(|r| authority.begin_read_dispatch(&r.id, device));
         let mut request = DeviceReadCheckRequest {
             source_device_id: local.into(),
             target_device_id: device.into(),
@@ -178,7 +183,7 @@ impl DeviceReadAccess for ForegroundReadAccess {
             configuration_epoch: epoch.into(),
             turn_id: turn.into(),
             tool_call_id: call.into(),
-            confirmation: one_time
+            confirmation: confirmed
                 .zip(permit.as_ref())
                 .map(|(r, p)| DeviceReadConfirmation {
                     approval_id: r.id.clone(),
@@ -188,27 +193,32 @@ impl DeviceReadAccess for ForegroundReadAccess {
         };
         let mut response = request.send(&transport, ctx).await?;
         drop(permit);
-        let mut permission_saved = false;
+        let mut permission_saved = confirmed.is_some_and(|r| {
+            r.authenticated_user_decision
+                .as_ref()
+                .is_some_and(|user| user.decision != AuthenticatedApprovalDecision::RunOnce)
+        });
         if response.as_ref().is_ok_and(|reply| {
             *reply == DeviceFileReadReply::Policy(DeviceReadCheckReply::ConfirmationRequired)
         }) && record.is_none()
         {
-            let one_time_id = match request
+            let decision = match request
                 .wait_for_confirmation(ctx, &approvals, &authority)
                 .await?
             {
                 Ok(decision) => decision,
                 Err(status) => return Ok(status),
             };
-            permission_saved = one_time_id.is_none();
-            let permit = one_time_id.map(|id| {
+            permission_saved = decision.1;
+            let id = decision.0;
+            let permit = {
                 let permit = authority.begin_read_dispatch(&id, device);
                 request.confirmation = Some(DeviceReadConfirmation {
                     approval_id: id,
                     dispatch_token: permit.token(),
                 });
                 permit
-            });
+            };
             response = request.send(&transport, ctx).await?;
             drop(permit);
         }
@@ -358,7 +368,7 @@ impl DeviceReadCheckRequest {
         ctx: &ToolContext,
         approvals: &Arc<rua_security::ApprovalAuthority>,
         authority: &Arc<ConversationAuthority>,
-    ) -> rua_core::Result<Result<Option<String>, DeviceReadCheck>> {
+    ) -> rua_core::Result<Result<(String, bool), DeviceReadCheck>> {
         use rua_security::{
             ApprovalOwner, ApprovalRequestInput, ApprovalTrigger, ToolCallSnapshot,
         };
@@ -468,16 +478,16 @@ impl DeviceReadCheckRequest {
                     .authenticated_user_decision
                     .map(|user| user.decision)
                 {
-                    Some(AuthenticatedApprovalDecision::RunOnce) => return Ok(Some(request.id)),
+                    Some(AuthenticatedApprovalDecision::RunOnce) => return Ok((request.id, false)),
                     Some(
                         AuthenticatedApprovalDecision::AllowChat
                         | AuthenticatedApprovalDecision::AllowAgent,
-                    ) => return Ok(None),
+                    ) => return Ok((request.id, true)),
                     _ => {}
                 }
             }
             Err(DeviceReadCheck::Unavailable(
-                "the active read did not receive a one-time user confirmation".into(),
+                "the active read did not receive user confirmation".into(),
             ))
         };
         let outcome = tokio::select! {

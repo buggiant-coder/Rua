@@ -11382,8 +11382,17 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
     let owner = &fixture.target_state;
     let phone = &fixture.source_state;
     let release = Arc::new(Notify::new());
-    // This fixture has no file-delivery authorization for note.txt on the phone.
-    let args = serde_json::json!({"device_id": fixture.source.device_id, "file_path": "/fixture/note.txt"});
+    // Each first read uses a file with no prior approval on the resource device.
+    let files = TempDir::new().unwrap();
+    let folder = files.path().canonicalize().unwrap();
+    let first_path = folder.join("note.txt");
+    let second_path = folder.join("second-note.txt");
+    let fourth_path = folder.join("fourth-note.txt");
+    let contents = format!("fresh-phone-file-{}", uuid::Uuid::new_v4());
+    for path in [&first_path, &second_path, &fourth_path] {
+        std::fs::write(path, &contents).unwrap();
+    }
+    let args = serde_json::json!({"device_id": fixture.source.device_id, "file_path": first_path});
     let mut calls = [
         "no-card",
         "decline",
@@ -11397,8 +11406,8 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
         "fourth",
     ]
     .map(|id| ToolCall::new(id, "read", args.clone()));
-    calls[7].arguments["file_path"] = "/fixture/second-note.txt".into();
-    calls[9].arguments["file_path"] = "/fixture/fourth-note.txt".into();
+    calls[7].arguments["file_path"] = serde_json::json!(second_path);
+    calls[9].arguments["file_path"] = serde_json::json!(fourth_path);
     let (address, turn, epoch, _) = prepare_running_file_calls(&fixture, &calls, &release).await;
     let ordinary = phone.security.config_store().load("default").unwrap();
     let mut ask = ordinary.clone();
@@ -11470,15 +11479,9 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
         tokio::pin!(operation);
         if id == "no-card" {
             let result = operation.await.unwrap();
-            assert_eq!(
-                result.metadata["file_location"]["target_permission_check"],
-                "checked"
-            );
-            assert_eq!(result.metadata["file_location"]["dispatched"], false);
-            assert_eq!(
-                result.metadata["file_location"]["file_delivery"],
-                "not_authorized"
-            );
+            assert!(!result.is_error, "{}", result.text_content());
+            assert!(result.text_content().contains(&contents));
+            assert_eq!(result.metadata["file_location"]["dispatched"], true);
             let original = approvals.snapshot_at(&address).await;
             assert!(original.pending.is_empty() && original.resolved.is_empty());
             phone.security.save_and_invalidate("default", &ask).unwrap();
@@ -11511,11 +11514,6 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
         } else {
             if matches!(id, "remember-chat" | "remember-agent") {
                 let decision = if id == "remember-agent" {
-                    // Current target policy permits the metadata check on the second attempt.
-                    phone
-                        .security
-                        .save_and_invalidate("default", &ordinary)
-                        .unwrap();
                     "allow_agent"
                 } else {
                     "allow_chat"
@@ -11539,56 +11537,38 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
                 ).await;
                 assert_eq!(reply["authenticated_user_decision"]["decision"], decision);
             } else {
-                let decision = if id == "allow" {
-                    ApprovalDecision::RunOnce {
-                        decided_by: "webui".into(),
-                    }
-                } else {
-                    ApprovalDecision::Reject {
-                        decided_by: "webui".into(),
-                    }
-                };
-                approvals
-                    .decide_for_authenticated_user("default", &pending.id, decision, "fixture-user")
-                    .await
-                    .unwrap();
+                let decision = if id == "allow" { "run_once" } else { "reject" };
+                approved_phone_file::request(
+                    owner,
+                    Method::POST,
+                    &format!(
+                        "/api/chats/{}/approvals/{request_id}/decide",
+                        fixture.chat_id
+                    ),
+                    serde_json::json!({"decision": decision, "decided_by": "webui"}),
+                    Some(&token),
+                )
+                .await;
             }
             let result = tokio::time::timeout(Duration::from_secs(8), &mut operation)
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(result.metadata["file_location"]["dispatched"], false);
-            let expected = match id {
-                "allow" | "remember-agent" => "checked",
-                "remember-chat" => {
-                    assert!(result.is_error);
-                    assert!(result
-                        .text_content()
-                        .contains("your read permission was saved"));
-                    "confirmation_required"
-                }
-                _ => "denied",
-            };
+            let allowed = matches!(id, "allow" | "remember-chat" | "remember-agent");
             assert_eq!(
-                result.metadata["file_location"]["target_permission_check"],
-                expected
+                result.metadata["file_location"]["dispatched"], allowed,
+                "{id}"
             );
-            if matches!(id, "allow" | "remember-agent") {
+            if allowed {
+                assert!(!result.is_error, "{id}: {}", result.text_content());
+                assert!(result.text_content().contains(&contents));
+            } else {
                 assert!(result.is_error);
                 assert_eq!(
-                    result.metadata["file_location"]["file_delivery"],
-                    "not_authorized"
+                    result.metadata["file_location"]["target_permission_check"],
+                    "denied"
                 );
-                let detail = result.text_content();
-                assert!(
-                    detail.contains("no matching authorization to return this file"),
-                    "{detail}"
-                );
-                assert!(detail.contains("the file was not opened"), "{detail}");
-            } else {
-                assert!(result.metadata["file_location"]
-                    .get("file_delivery")
-                    .is_none());
+                assert!(!result.text_content().contains(&contents));
             }
         }
         {
@@ -11601,7 +11581,7 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
                 .all(|r| r.arguments == args && r.target_device_id == fixture.source.device_id));
             assert!(sent[0].confirmation.is_none());
             if rechecked {
-                assert_eq!(sent[1].confirmation.is_some(), id == "allow");
+                assert!(sent[1].confirmation.is_some());
             }
         }
         if id == "remember-agent" {
@@ -11677,10 +11657,8 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            first_result.metadata["file_location"]["target_permission_check"],
-            "checked"
-        );
+        assert!(!first_result.is_error, "{}", first_result.text_content());
+        assert!(first_result.text_content().contains(&contents));
         owner
             .conversation_authority
             .observe_runtime_event(
@@ -11717,8 +11695,12 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
             .unwrap()
             .unwrap();
         assert_eq!(
-            second_result.metadata["file_location"]["target_permission_check"],
-            if second_allowed { "checked" } else { "denied" }
+            second_result.metadata["file_location"]["dispatched"],
+            second_allowed
+        );
+        assert_eq!(
+            second_result.text_content().contains(&contents),
+            second_allowed
         );
         assert!(approvals.snapshot_at(&address).await.pending.is_empty());
     }

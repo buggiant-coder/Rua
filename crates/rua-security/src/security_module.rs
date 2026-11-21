@@ -111,39 +111,17 @@ impl SecurityModule {
         &self.approval_authority
     }
 
-    /// Inspect a file already allowed by an authenticated user on this Device. The caller
-    /// verifies any invocation confirmation against the exact active Chat call. It can satisfy
-    /// the approval mode, while every path-specific guard still checks the opened file's names.
-    pub async fn inspect_preapproved_chat_file_read(
+    /// Evaluate policy with a confirmation verified against this exact active Chat call.
+    /// Explicit denials apply to every resolved name even after the user confirms.
+    pub async fn inspect_confirmed_chat_file_read(
         &self,
         ctx: &ToolCallContext,
         captured: &SecurityConfig,
         local_names: &[&str],
         confirmed_invocation: bool,
     ) -> Result<FileReadAdmission, FileReadPolicyError> {
-        use FileReadPolicyError::{Denied, Unavailable};
-
-        let admission = self
-            .inspect_file_read_policy(ctx, captured, local_names, confirmed_invocation)
-            .await?;
-        let device = ctx
-            .local_device_id
-            .as_deref()
-            .ok_or_else(|| Denied("No local Device for the approved read".into()))?;
-        let approved = self
-            .approval_authority
-            .locally_approved_chat_read(ctx, device)
+        self.inspect_file_read_policy(ctx, captured, local_names, confirmed_invocation)
             .await
-            .map_err(Unavailable)?;
-        if approved
-            .as_deref()
-            .is_none_or(|path| Some(path) != local_names.first().copied())
-        {
-            return Err(Denied(
-                "No current local approval for this file read".into(),
-            ));
-        }
-        Ok(admission)
     }
 
     /// Evaluate the captured and current policies against the supplied local names of the file.
@@ -190,19 +168,23 @@ impl SecurityModule {
             .chat_rules_for_inspection(address)
             .await
             .map_err(Unavailable)?;
+        // Reusable grants and revocations are live user settings. A captured Turn
+        // keeps its guard configuration, while permission changes take effect immediately.
+        let mut current_rules = snapshot_permission_rules(&current).map_err(Unavailable)?;
+        current_rules.extend(chat_rules.iter().map(ApprovalReuseRule::to_stored));
+        let allows = |args: &serde_json::Value| {
+            let call = PermissionToolCall::new("read", args, ctx.local_device_id.as_deref());
+            current_rules.iter().any(|rule| {
+                rule.enabled
+                    && rule.effect == crate::PermissionRuleEffect::Allow
+                    && rule.pattern().matches(&call)
+            })
+        };
+        let requested_allowed = allows(&ctx.tool_input);
         let mut admission = FileReadAdmission::Allowed;
         for config in std::iter::once(captured).chain((captured != &current).then_some(&current)) {
             let mut rules = snapshot_permission_rules(config).map_err(Unavailable)?;
             rules.extend(chat_rules.iter().map(ApprovalReuseRule::to_stored));
-            let allows = |args: &serde_json::Value| {
-                let call = PermissionToolCall::new("read", args, ctx.local_device_id.as_deref());
-                rules.iter().any(|rule| {
-                    rule.enabled
-                        && rule.effect == crate::PermissionRuleEffect::Allow
-                        && rule.pattern().matches(&call)
-                })
-            };
-            let requested_allowed = allows(&ctx.tool_input);
             let engine = ToolGuardEngine::new(config, self.paths.as_deref());
             let mode = canonical_approval_mode_preset(&config.tool_guard.approval_mode);
             if !confirmed_invocation
@@ -229,6 +211,7 @@ impl SecurityModule {
                 }
                 // A guard on a resolved or backing name requires an allow that covers that name too.
                 if guard.decision == GuardDecision::RequiresApproval
+                    && !confirmed_invocation
                     && (!requested_allowed || !allows(&operation.tool_input))
                 {
                     admission = FileReadAdmission::RequiresUserConfirmation;

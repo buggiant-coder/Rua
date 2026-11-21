@@ -7,8 +7,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, Mutex as AsyncMutex, OwnedMutexGuard, RwLock};
 use uuid::Uuid;
 
-mod local_chat_read;
-
 const BROADCAST_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -434,8 +432,6 @@ impl std::error::Error for ApprovalAuthorityError {}
 #[derive(Debug)]
 struct CachedRule {
     rule: ApprovalReuseRule,
-    // Only a successful local authenticated persistent read decision can set this bit.
-    locally_decided_read: bool,
 }
 
 #[derive(Debug)]
@@ -576,7 +572,7 @@ impl ApprovalAuthority {
                 && is_file_read(&input.tool_name, args)
                 && args["device_id"]
                     .as_str()
-                    .is_some_and(|device| local_chat_read::single_local_read(args, device)))
+                    .is_some_and(|device| single_device_read(args, device)))
         {
             reuse_options_for(
                 &input.owner,
@@ -1054,14 +1050,7 @@ impl ApprovalAuthority {
                 }
                 ApprovalReuseScope::RuntimeSession => {}
             }
-            let locally_decided_read = authenticated_user_id.is_some()
-                && matches!(
-                    kind,
-                    AuthenticatedApprovalDecision::AllowChat
-                        | AuthenticatedApprovalDecision::AllowAgent
-                )
-                && request.tool_name == "read";
-            cache_rule(rules, rule, locally_decided_read);
+            cache_rule(rules, rule);
         }
 
         request.status = status;
@@ -1177,16 +1166,29 @@ impl ApprovalAuthority {
         target_device_id: &str,
         file_path: &str,
     ) -> Option<String> {
-        self.consume_authenticated_read_once_if(ctx, target_device_id, file_path, |_| true)
+        self.claim_authenticated_read(ctx, target_device_id, file_path, false, |_| true)
             .await
     }
 
-    /// Check the live dispatch under the approval write lock immediately before consumption.
-    pub async fn consume_authenticated_read_once_if(
+    /// Verify the user's current decision for this invocation and claim its live dispatch once.
+    /// A reusable decision must still have its persisted rule in effect.
+    pub async fn consume_authenticated_read_confirmation_if(
         &self,
         ctx: &crate::ToolCallContext,
         target_device_id: &str,
         file_path: &str,
+        claim_dispatch: impl FnOnce(&str) -> bool,
+    ) -> Option<String> {
+        self.claim_authenticated_read(ctx, target_device_id, file_path, true, claim_dispatch)
+            .await
+    }
+
+    async fn claim_authenticated_read(
+        &self,
+        ctx: &crate::ToolCallContext,
+        target_device_id: &str,
+        file_path: &str,
+        allow_persistent: bool,
         claim_dispatch: impl FnOnce(&str) -> bool,
     ) -> Option<String> {
         let address = ctx.approval_owner.as_chat_address()?;
@@ -1218,6 +1220,18 @@ impl ApprovalAuthority {
             return None;
         }
 
+        // Keep the same lock order as persistent decisions and rule revocation.
+        let mut cache = self.reuse_rules.write().await;
+        let mut rules = self.current_owner_rules(&ctx.approval_owner, &cache).ok()?;
+        rules.extend(self.current_agent_rules(&ctx.agent_id, &mut cache).ok()?);
+        let call = PermissionToolCall::new(&ctx.tool_name, &ctx.tool_input, Some(target_device_id));
+        if rules.iter().any(|rule| {
+            rule.enabled
+                && rule.effect == PermissionRuleEffect::Deny
+                && rule.pattern().matches(&call)
+        }) {
+            return None;
+        }
         let mut requests = self.requests.write().await;
         let mut matches = requests.values_mut().filter(|request| {
             request.agent_id == ctx.agent_id
@@ -1230,18 +1244,40 @@ impl ApprovalAuthority {
             || request.status != ApprovalStatus::Approved
             || request.tool_name != ctx.tool_name
             || request.tool_call.args != ctx.tool_input
-            || request.authenticated_user_decision.as_ref()?.decision
-                != AuthenticatedApprovalDecision::RunOnce
-            || !claim_dispatch(&request.id)
         {
             return None;
         }
 
-        request.status = ApprovalStatus::Consumed;
-        let _ = self.tx.send(ApprovalEvent {
-            event: "approval.updated".into(),
-            request: request.clone(),
-        });
+        let decision = request.authenticated_user_decision.as_ref()?.decision;
+        let scope = match decision {
+            AuthenticatedApprovalDecision::RunOnce => None,
+            AuthenticatedApprovalDecision::AllowChat if allow_persistent => {
+                Some(ApprovalReuseScope::Chat)
+            }
+            AuthenticatedApprovalDecision::AllowAgent if allow_persistent => {
+                Some(ApprovalReuseScope::Agent)
+            }
+            _ => return None,
+        };
+        if scope.is_some_and(|scope| {
+            !rules.iter().any(|rule| {
+                rule.enabled
+                    && rule.effect == PermissionRuleEffect::Allow
+                    && rule.scope == scope
+                    && rule.source_approval_id == request.id
+                    && rule.pattern().matches(&call)
+            })
+        }) || !claim_dispatch(&request.id)
+        {
+            return None;
+        }
+        if decision == AuthenticatedApprovalDecision::RunOnce {
+            request.status = ApprovalStatus::Consumed;
+            let _ = self.tx.send(ApprovalEvent {
+                event: "approval.updated".into(),
+                request: request.clone(),
+            });
+        }
         Some(request.id.clone())
     }
 
@@ -1366,17 +1402,14 @@ impl ApprovalAuthority {
             })?;
         rule.hit_count += 1;
         // Counting an exact file read must not write an old permission back into synchronized policy.
-        let local = rules
-            .get(&rule.id)
-            .is_some_and(|entry| entry.locally_decided_read && entry.rule.same_permission(&rule));
         if !inspect_stored_read {
             let _ = store.upsert_agent_rule(agent_id, &rule);
         }
-        cache_rule(&mut rules, rule.clone(), local);
+        cache_rule(&mut rules, rule.clone());
         Some(rule)
     }
 
-    /// Reconcile locally signed Agent reads with current settings before using either copy.
+    /// Read the current Agent settings and retain in-memory hit counts for matching rules.
     fn current_agent_rules(
         &self,
         agent_id: &str,
@@ -1395,13 +1428,6 @@ impl ApprovalAuthority {
         };
         let mut current = store.list_agent_rules(agent_id)?;
         current.retain(|rule| scoped(rule) && rule.owner.is_none());
-        for entry in cache
-            .values_mut()
-            .filter(|entry| entry.locally_decided_read && scoped(&entry.rule))
-        {
-            entry.locally_decided_read =
-                current.iter().any(|rule| entry.rule.same_permission(rule));
-        }
         for rule in &mut current {
             if let Some(entry) = cache
                 .get(&rule.id)
@@ -1472,12 +1498,10 @@ impl ApprovalAuthority {
         };
         rule.hit_count += 1;
         // A lookup must not write an older permission back over a synchronized edit.
-        let entry = cache.entry(rule.id.clone()).or_insert_with(|| CachedRule {
-            rule: rule.clone(),
-            locally_decided_read: false,
-        });
+        let entry = cache
+            .entry(rule.id.clone())
+            .or_insert_with(|| CachedRule { rule: rule.clone() });
         if entry.rule.owner.as_ref() == Some(owner) {
-            entry.locally_decided_read &= entry.rule.same_permission(&rule);
             entry.rule = rule.clone();
         }
         Ok(Some(rule))
@@ -1541,7 +1565,7 @@ impl ApprovalAuthority {
         if let Some(store) = &self.agent_rule_store {
             store.upsert_agent_rule(agent_id, &rule)?;
         }
-        cache_rule(&mut cache, rule.clone(), false);
+        cache_rule(&mut cache, rule.clone());
         Ok(rule)
     }
 
@@ -1573,10 +1597,7 @@ impl ApprovalAuthority {
         if let Some(store) = &self.agent_rule_store {
             store.upsert_agent_rule(agent_id, &updated)?;
         }
-        let local = cache.get(rule_id).is_some_and(|entry| {
-            entry.locally_decided_read && entry.rule.same_permission(&updated)
-        });
-        cache_rule(&mut cache, updated.clone(), local);
+        cache_rule(&mut cache, updated.clone());
         Ok(Some(updated))
     }
 
@@ -1597,19 +1618,9 @@ impl ApprovalAuthority {
     }
 }
 
-fn cache_rule(
-    rules: &mut HashMap<String, CachedRule>,
-    rule: ApprovalReuseRule,
-    locally_decided_read: bool,
-) {
+fn cache_rule(rules: &mut HashMap<String, CachedRule>, rule: ApprovalReuseRule) {
     rules.retain(|_, entry| !same_permission_rule_key(&entry.rule, &rule));
-    rules.insert(
-        rule.id.clone(),
-        CachedRule {
-            rule,
-            locally_decided_read,
-        },
-    );
+    rules.insert(rule.id.clone(), CachedRule { rule });
 }
 
 impl Default for ApprovalAuthority {
@@ -1915,4 +1926,29 @@ fn looks_like_path(token: &str) -> bool {
         || token.starts_with("./")
         || token.starts_with("../")
         || token.starts_with("~/")
+}
+
+fn single_device_read(args: &serde_json::Value, local_device_id: &str) -> bool {
+    let Some(fields) = args.as_object() else {
+        return false;
+    };
+    let Some(path) = args["file_path"].as_str() else {
+        return false;
+    };
+    args["device_id"].as_str() == Some(local_device_id)
+        && !path.starts_with("//")
+        && !path.starts_with(r"\\")
+        && !path.ends_with(['/', '\\'])
+        && !path
+            .split(['/', '\\'])
+            .any(|part| part == "." || part == "..")
+        && !path.chars().any(char::is_control)
+        && !(fields.contains_key("byte_offset")
+            && (fields.contains_key("start_line") || fields.contains_key("limit")))
+        && fields.iter().all(|(key, value)| match key.as_str() {
+            "device_id" | "file_path" => true,
+            "byte_offset" => value.as_u64().is_some(),
+            "start_line" | "limit" => value.as_u64().is_some_and(|n| n > 0),
+            _ => false,
+        })
 }

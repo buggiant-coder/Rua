@@ -504,6 +504,92 @@ async fn authenticated_read_claim_matches_the_entire_invocation_and_is_consumed_
 }
 
 #[tokio::test]
+async fn remembered_read_claim_uses_current_scoped_permission_and_single_dispatch() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let path = "/selected/new-note.txt";
+    for scope in [ApprovalReuseScope::Chat, ApprovalReuseScope::Agent] {
+        let root = tempfile::tempdir().unwrap();
+        let security = open_file_rule_module(root.path());
+        let authority = security.approval_authority();
+        let (input, ctx) = chat_file_read(json!({"device_id":"phone","file_path":path}));
+        let pending = authority.create_request(input).await;
+        let option = pending
+            .reuse_options
+            .iter()
+            .find(|option| option.scope == scope)
+            .unwrap();
+        let decision = match scope {
+            ApprovalReuseScope::Chat => ApprovalDecision::AllowChat {
+                decided_by: "console".into(),
+                matcher: option.matcher.clone(),
+            },
+            ApprovalReuseScope::Agent => ApprovalDecision::AllowAgent {
+                decided_by: "console".into(),
+                matcher: option.matcher.clone(),
+            },
+            _ => unreachable!(),
+        };
+        authority
+            .decide_for_authenticated_user(&ctx.agent_id, &pending.id, decision, "alice")
+            .await
+            .unwrap();
+        let dispatch = AtomicBool::new(true);
+        for (key, value) in [
+            ("device_id", "computer"),
+            ("file_path", "/selected/other.txt"),
+        ] {
+            let mut changed = ctx.clone();
+            changed.tool_input[key] = json!(value);
+            assert!(authority
+                .consume_authenticated_read_confirmation_if(&changed, "phone", path, |_| dispatch
+                    .swap(false, Ordering::SeqCst))
+                .await
+                .is_none());
+            assert!(dispatch.load(Ordering::SeqCst));
+        }
+        assert_eq!(
+            authority
+                .consume_authenticated_read_confirmation_if(&ctx, "phone", path, |_| dispatch
+                    .swap(false, Ordering::SeqCst))
+                .await
+                .as_deref(),
+            Some(pending.id.as_str())
+        );
+        assert!(authority
+            .consume_authenticated_read_confirmation_if(&ctx, "phone", path, |_| dispatch
+                .swap(false, Ordering::SeqCst))
+            .await
+            .is_none());
+        assert_eq!(
+            authority.request(&pending.id).await.unwrap().status,
+            ApprovalStatus::Approved
+        );
+        match scope {
+            ApprovalReuseScope::Chat => authority
+                .delete_chat_rules(ctx.approval_owner.as_chat_address().unwrap())
+                .await
+                .unwrap(),
+            ApprovalReuseScope::Agent => {
+                let rules = authority.list_agent_rules(&ctx.agent_id).await;
+                assert_eq!(rules.len(), 1);
+                assert!(authority
+                    .delete_agent_rule(&ctx.agent_id, &rules[0].id)
+                    .await
+                    .unwrap());
+            }
+            _ => unreachable!(),
+        }
+        // A still-visible approved card cannot override a subsequent permission revocation.
+        assert!(authority
+            .consume_authenticated_read_confirmation_if(&ctx, "phone", path, |_| panic!(
+                "revoked permission must not claim a new dispatch"
+            ))
+            .await
+            .is_none());
+    }
+}
+
+#[tokio::test]
 async fn authenticated_read_claim_excludes_directory_paging_media_and_nonlocal_paths() {
     for (path, extras) in [
         ("/folder", json!({"after":"a.txt"})),
@@ -1494,11 +1580,8 @@ async fn archive_style_pending_clear_preserves_project_chat_rules() {
 }
 
 #[tokio::test]
-async fn confirmed_preapproved_read_satisfies_ask_first_and_preserves_path_guards() {
-    use rua_security::security_module::{
-        FileReadAdmission::{Allowed, RequiresUserConfirmation},
-        FileReadPolicyError,
-    };
+async fn confirmed_read_satisfies_ask_first_and_preserves_explicit_path_denials() {
+    use rua_security::security_module::{FileReadAdmission::Allowed, FileReadPolicyError};
 
     let dir = tempfile::tempdir().unwrap();
     let security = open_file_rule_module(dir.path());
@@ -1526,18 +1609,18 @@ async fn confirmed_preapproved_read_satisfies_ask_first_and_preserves_path_guard
             .inspect_chat_file_read(&ctx, &captured, &names)
             .await
             .unwrap(),
-        RequiresUserConfirmation
+        Allowed
     );
     assert_eq!(
         security
-            .inspect_preapproved_chat_file_read(&ctx, &captured, &names, false)
+            .inspect_confirmed_chat_file_read(&ctx, &captured, &names, false)
             .await
             .unwrap(),
-        RequiresUserConfirmation
+        Allowed
     );
     assert_eq!(
         security
-            .inspect_preapproved_chat_file_read(&ctx, &captured, &names, true)
+            .inspect_confirmed_chat_file_read(&ctx, &captured, &names, true)
             .await
             .unwrap(),
         Allowed
@@ -1547,10 +1630,10 @@ async fn confirmed_preapproved_read_satisfies_ask_first_and_preserves_path_guard
     protected.file_guard.sensitive_files.push(backing.into());
     assert_eq!(
         security
-            .inspect_preapproved_chat_file_read(&ctx, &protected, &names, true)
+            .inspect_confirmed_chat_file_read(&ctx, &protected, &names, true)
             .await
             .unwrap(),
-        RequiresUserConfirmation
+        Allowed
     );
     let mut current = security.config_store().load(&ctx.agent_id).unwrap();
     current.file_guard.sensitive_files.push(backing.into());
@@ -1559,10 +1642,10 @@ async fn confirmed_preapproved_read_satisfies_ask_first_and_preserves_path_guard
         .unwrap();
     assert_eq!(
         security
-            .inspect_preapproved_chat_file_read(&ctx, &captured, &names, true)
+            .inspect_confirmed_chat_file_read(&ctx, &captured, &names, true)
             .await
             .unwrap(),
-        RequiresUserConfirmation
+        Allowed
     );
 
     security
@@ -1578,39 +1661,44 @@ async fn confirmed_preapproved_read_satisfies_ask_first_and_preserves_path_guard
         .unwrap();
     assert!(matches!(
         security
-            .inspect_preapproved_chat_file_read(&ctx, &captured, &names, true)
+            .inspect_confirmed_chat_file_read(&ctx, &captured, &names, true)
             .await,
         Err(FileReadPolicyError::Denied(_))
     ));
 }
 
 #[tokio::test]
-async fn an_invocation_confirmation_still_requires_the_exact_local_file_approval() {
-    use rua_security::security_module::FileReadPolicyError;
+async fn an_invocation_confirmation_allows_a_new_file_without_a_target_approval_record() {
+    use rua_security::security_module::FileReadAdmission::{Allowed, RequiresUserConfirmation};
     let dir = tempfile::tempdir().unwrap();
     let security = open_file_rule_module(dir.path());
     let path = "/fixture/note.txt";
     let args = json!({"device_id":"phone","file_path":path,"limit":1});
-    let (_, mut ctx) = chat_file_read(args.clone());
+    let (_, mut ctx) = chat_file_read(args);
     ctx.local_device_id = Some("phone".into());
-    let config = security.config_store().load(&ctx.agent_id).unwrap();
-    assert!(matches!(
+    let mut config = security.config_store().load(&ctx.agent_id).unwrap();
+    config.tool_guard.approval_mode = "ask_first".into();
+    security
+        .save_and_invalidate(&ctx.agent_id, &config)
+        .unwrap();
+    assert_eq!(
         security
-            .inspect_preapproved_chat_file_read(&ctx, &config, &[path], true)
-            .await,
-        Err(FileReadPolicyError::Denied(_))
-    ));
-    allow_read_from_card(
-        security.approval_authority(),
-        args,
-        ApprovalReuseScope::Agent,
-    )
-    .await;
-    ctx.tool_input["limit"] = 2.into();
-    assert!(matches!(
+            .inspect_confirmed_chat_file_read(&ctx, &config, &[path], false)
+            .await
+            .unwrap(),
+        RequiresUserConfirmation
+    );
+    assert_eq!(
         security
-            .inspect_preapproved_chat_file_read(&ctx, &config, &[path], true)
-            .await,
-        Err(FileReadPolicyError::Denied(_))
-    ));
+            .inspect_confirmed_chat_file_read(&ctx, &config, &[path], true)
+            .await
+            .unwrap(),
+        Allowed
+    );
+    assert!(security
+        .approval_authority()
+        .snapshot_at(&ChatAddress::new("chat-1"))
+        .await
+        .resolved
+        .is_empty());
 }

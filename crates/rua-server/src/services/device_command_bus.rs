@@ -1701,22 +1701,21 @@ impl DeviceCommandHandler {
             return DeviceFileReadReply::Policy(DeviceReadCheckReply::Unavailable);
         };
         match context
-            .read_previously_allowed(
+            .read_authorized(
                 &request.as_target_read(),
                 max_text_bytes,
                 confirmed_invocation,
             )
             .await
         {
-            Ok(Some(page)) => DeviceFileReadReply::Page(page),
-            Ok(None) => DeviceFileReadReply::FileNotAuthorized,
+            Ok(page) => DeviceFileReadReply::Page(page),
             Err(TargetReadRejection::FileUnavailable) => DeviceFileReadReply::FileUnavailable,
             Err(rejection) => DeviceFileReadReply::Policy(rejection.into()),
         }
     }
 
     /// On admission, report whether the authority actually consumed this invocation's
-    /// confirmation. The receiver checks its own file grant separately before reading.
+    /// confirmation. File execution rechecks shared policy and the opened file.
     async fn check_read_policy(
         &self,
         request: &DeviceReadCheckRequest,

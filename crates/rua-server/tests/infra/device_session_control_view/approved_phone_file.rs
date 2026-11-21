@@ -89,7 +89,7 @@ async fn sync_chat(
     address: &ChatAddress,
 ) {
     // Deliver the authoritative Chat snapshots through the production Sync adapter.
-    // The receiver retains its own local approval decision.
+    // Permission rules travel with the ordinary versioned Chat snapshots.
     let replica = EvergreenChatSyncAdapter::new(receiver.rua_root.clone(), receiver_id);
     let merge_dir = TempDir::new().unwrap();
     let merge = rua_sync::merge_store::MergeStore::open(merge_dir.path()).unwrap();
@@ -110,12 +110,12 @@ async fn sync_chat(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn after_moving_a_chat_its_signed_in_phone_file_allow_applies_to_just_that_file() {
+async fn after_moving_a_chat_without_synced_rules_desktop_confirmation_allows_just_that_file() {
     read_after_handoff(false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_synced_desktop_can_run_once_for_the_file_previously_allowed_on_the_phone() {
+async fn a_synced_desktop_reuses_the_shared_file_permission_without_another_confirmation() {
     read_after_handoff(true).await;
 }
 
@@ -371,9 +371,9 @@ async fn read_after_handoff(desktop_was_synced: bool) {
     let source_call = invocation(desktop_id, &address, &turn.turn_id, &requested)
         .with_security_snapshot(Arc::new(captured));
     let source_verdict = desktop.security.enforce(&source_call, &[]).await;
-    if desktop_was_synced {
+    if !desktop_was_synced {
         let SecurityVerdict::RequiresApproval { request_id, .. } = source_verdict else {
-            panic!("expected desktop Ask First after ordinary Sync: {source_verdict:?}");
+            panic!("expected desktop Ask First before permission Sync: {source_verdict:?}");
         };
         let desktop_token = logged_in(desktop, "desktop-user").await;
         let decision = request(

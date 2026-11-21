@@ -2043,7 +2043,7 @@ impl ConversationInputIntake {
                 let unavailable = || {
                     reject(
                         "read_approval_unavailable",
-                        "This file read has no matching active one-time user decision".into(),
+                        "This file read has no matching active user decision".into(),
                     )
                 };
                 let gate = authority.transition_gate(&target.address);
@@ -2115,7 +2115,7 @@ impl ConversationInputIntake {
                 ctx.metadata
                     .insert("tool_call_id".into(), tool_call_id.into());
                 let approval_id = approvals
-                    .consume_authenticated_read_once_if(
+                    .consume_authenticated_read_confirmation_if(
                         &ctx,
                         &command.source_device_id,
                         path,

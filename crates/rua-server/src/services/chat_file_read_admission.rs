@@ -92,8 +92,7 @@ impl TargetFileReadContext {
     }
 
     /// Classify the target policy from the requested path spelling without probing the file or
-    /// creating an approval. Both outcomes still require independent target file-access
-    /// authorization and verification of the opened file before any contents may be read.
+    /// creating an approval. File execution rechecks policy against the opened file.
     pub async fn check_metadata(
         &self,
         request: &TargetChatRead<'_>,
@@ -132,34 +131,23 @@ impl TargetFileReadContext {
             .map_err(|e| e.to_string())
     }
 
-    /// Read the exact file previously approved by a signed-in user on this Device.
-    /// Return None when no local authorization covers the requested file.
-    pub(super) async fn read_previously_allowed(
+    /// Apply the shared user policy and any verified confirmation for this invocation,
+    /// then read the file on its named Device through the checked handle.
+    pub(super) async fn read_authorized(
         &self,
         request: &TargetChatRead<'_>,
         max_text_bytes: usize,
         confirmed_invocation: bool,
-    ) -> Result<Option<rua_core::tool::SharedReadPage>, TargetReadRejection> {
+    ) -> Result<rua_core::tool::SharedReadPage, TargetReadRejection> {
         let ctx = self.tool_call_context(request);
-        let local_approval = || {
-            self.security
-                .approval_authority()
-                .locally_approved_chat_read(&ctx, &self.local_device_id)
-        };
-        let Some(path) = local_approval()
-            .await
-            .map_err(|_| TargetReadRejection::Unavailable)?
-        else {
-            return Ok(None);
-        };
-        if self.requested_path(request).ok() != Some(path.as_str()) {
-            return Err(TargetReadRejection::Denied);
-        }
-        let approved = Path::new(&path);
+        let path = self
+            .requested_path(request)
+            .map_err(|_| TargetReadRejection::Denied)?;
+        let approved = Path::new(path);
         rua_tool::fs::WorkspaceFs::check_secret_dir(approved)
             .map_err(|_| TargetReadRejection::Denied)?;
         if self
-            .inspect_policy(request, &[path.as_str()], confirmed_invocation)
+            .inspect_policy(request, &[path], confirmed_invocation)
             .await?
             != FileReadAdmission::Allowed
         {
@@ -182,7 +170,7 @@ impl TargetFileReadContext {
         }
         let resolved = file.resolved_public_path().to_owned();
         let backing = file.backing_path().to_owned();
-        let mut names = vec![path.as_str()];
+        let mut names = vec![path];
         for p in [&resolved, &backing] {
             let name = p.to_str().ok_or(TargetReadRejection::Unavailable)?;
             if !names.contains(&name) {
@@ -209,16 +197,10 @@ impl TargetFileReadContext {
             .read_opened_page(file, request.args.clone(), local)
             .await
             .map_err(|_| TargetReadRejection::FileUnavailable)?;
-        if local_approval()
-            .await
-            .map_err(|_| TargetReadRejection::Unavailable)?
-            .as_ref()
-            != Some(&path)
-            || permitted().await? != FileReadAdmission::Allowed
-        {
+        if permitted().await? != FileReadAdmission::Allowed {
             return Err(TargetReadRejection::Denied);
         }
-        Ok(Some(page))
+        Ok(page)
     }
 
     fn requested_path<'a>(&self, request: &TargetChatRead<'a>) -> Result<&'a str, String> {
@@ -363,7 +345,7 @@ impl TargetFileReadContext {
         let ctx = self.tool_call_context(request);
         if confirmed_invocation {
             self.security
-                .inspect_preapproved_chat_file_read(
+                .inspect_confirmed_chat_file_read(
                     &ctx,
                     &captured.security_config,
                     local_names,
