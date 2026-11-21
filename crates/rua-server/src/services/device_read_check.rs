@@ -192,8 +192,30 @@ impl DeviceReadAccess for ForegroundReadAccess {
             Ok(DeviceReadCheckReply::Unavailable) => {
                 unavailable("the target could not verify this Chat's read request")
             }
-            Err(_) => unavailable("the target did not confirm the permission check"),
+            Err(error) => error.into(),
         })
+    }
+}
+
+impl From<super::device_command_bus::DeviceCommandDeliveryError> for DeviceReadCheck {
+    fn from(error: super::device_command_bus::DeviceCommandDeliveryError) -> Self {
+        use super::device_command_bus::DeviceCommandDeliveryError as Delivery;
+        use rua_device_network::DeviceSessionError as Session;
+
+        let detail = match error {
+            Delivery::Timeout | Delivery::Session(Session::Timeout { .. }) => {
+                "the permission check timed out before the target confirmed it"
+            }
+            Delivery::Connect(_) | Delivery::Session(Session::Connect(_)) => {
+                "could not connect to the target device"
+            }
+            Delivery::Session(Session::PeerNotPaired(_)) => "the target device is not paired",
+            Delivery::Session(Session::Closed(_) | Session::Replaced) => {
+                "the device connection ended before the target confirmed the permission check"
+            }
+            _ => "the target did not confirm the permission check",
+        };
+        Self::Unavailable(detail.into())
     }
 }
 

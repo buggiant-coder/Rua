@@ -316,6 +316,29 @@ impl DeviceSessionCommandHandler for DisconnectBeforeReply {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_permission_check_distinguishes_an_unpaired_target_from_a_timeout() {
+    use rua_core::tool::DeviceReadCheck;
+
+    let source = build_peer(1, [44; 32], Vec::new(), None).await;
+    let target_id = hex::encode(peer_entry(2).device_id);
+    let request = read_check_request(&source.device_id, &target_id);
+    for (budget, expected) in [
+        (Duration::from_secs(2), "not paired"),
+        (Duration::ZERO, "timed out"),
+    ] {
+        let error =
+            deliver_read_check_via_session(source.runtime.session_manager(), &request, budget)
+                .await
+                .unwrap_err();
+        let DeviceReadCheck::Unavailable(detail) = error.into() else {
+            panic!("expected an unavailable read");
+        };
+        assert!(detail.contains(expected), "{detail}");
+    }
+    source.runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn read_permission_check_uses_the_paired_session_once_on_lost_reply() {
     use rua_server::services::device_read_check::DeviceReadCheckReply;
     use std::sync::atomic::Ordering;
