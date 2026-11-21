@@ -1363,3 +1363,125 @@ async fn archive_style_pending_clear_preserves_project_chat_rules() {
         .await
         .is_some());
 }
+
+#[tokio::test]
+async fn confirmed_preapproved_read_satisfies_ask_first_and_preserves_path_guards() {
+    use rua_security::security_module::{
+        FileReadAdmission::{Allowed, RequiresUserConfirmation},
+        FileReadPolicyError,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let security = open_file_rule_module(dir.path());
+    let requested = "/fixture/public/note.txt";
+    let backing = "/fixture/volume/note.txt";
+    let names = [requested, backing];
+    let args = json!({"device_id":"phone","file_path":requested});
+    let (_, mut ctx) = chat_file_read(args.clone());
+    ctx.local_device_id = Some("phone".into());
+    ctx = ctx.with_chat_address(ChatAddress::new("second-chat"));
+    let mut captured = security.config_store().load(&ctx.agent_id).unwrap();
+    captured.tool_guard.approval_mode = "ask_first".into();
+    security
+        .save_and_invalidate(&ctx.agent_id, &captured)
+        .unwrap();
+    allow_read_from_card(
+        security.approval_authority(),
+        args,
+        ApprovalReuseScope::Agent,
+    )
+    .await;
+
+    assert_eq!(
+        security
+            .inspect_chat_file_read(&ctx, &captured, &names)
+            .await
+            .unwrap(),
+        RequiresUserConfirmation
+    );
+    assert_eq!(
+        security
+            .inspect_preapproved_chat_file_read(&ctx, &captured, &names, false)
+            .await
+            .unwrap(),
+        RequiresUserConfirmation
+    );
+    assert_eq!(
+        security
+            .inspect_preapproved_chat_file_read(&ctx, &captured, &names, true)
+            .await
+            .unwrap(),
+        Allowed
+    );
+
+    let mut protected = captured.clone();
+    protected.file_guard.sensitive_files.push(backing.into());
+    assert_eq!(
+        security
+            .inspect_preapproved_chat_file_read(&ctx, &protected, &names, true)
+            .await
+            .unwrap(),
+        RequiresUserConfirmation
+    );
+    let mut current = security.config_store().load(&ctx.agent_id).unwrap();
+    current.file_guard.sensitive_files.push(backing.into());
+    security
+        .save_and_invalidate(&ctx.agent_id, &current)
+        .unwrap();
+    assert_eq!(
+        security
+            .inspect_preapproved_chat_file_read(&ctx, &captured, &names, true)
+            .await
+            .unwrap(),
+        RequiresUserConfirmation
+    );
+
+    security
+        .approval_authority()
+        .create_agent_rule(
+            &ctx.agent_id,
+            manual_read_rule(
+                PermissionRuleEffect::Deny,
+                &json!({"device_id":"phone","file_path":backing}),
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        security
+            .inspect_preapproved_chat_file_read(&ctx, &captured, &names, true)
+            .await,
+        Err(FileReadPolicyError::Denied(_))
+    ));
+}
+
+#[tokio::test]
+async fn an_invocation_confirmation_still_requires_the_exact_local_file_approval() {
+    use rua_security::security_module::FileReadPolicyError;
+    let dir = tempfile::tempdir().unwrap();
+    let security = open_file_rule_module(dir.path());
+    let path = "/fixture/note.txt";
+    let args = json!({"device_id":"phone","file_path":path,"limit":1});
+    let (_, mut ctx) = chat_file_read(args.clone());
+    ctx.local_device_id = Some("phone".into());
+    let config = security.config_store().load(&ctx.agent_id).unwrap();
+    assert!(matches!(
+        security
+            .inspect_preapproved_chat_file_read(&ctx, &config, &[path], true)
+            .await,
+        Err(FileReadPolicyError::Denied(_))
+    ));
+    allow_read_from_card(
+        security.approval_authority(),
+        args,
+        ApprovalReuseScope::Agent,
+    )
+    .await;
+    ctx.tool_input["limit"] = 2.into();
+    assert!(matches!(
+        security
+            .inspect_preapproved_chat_file_read(&ctx, &config, &[path], true)
+            .await,
+        Err(FileReadPolicyError::Denied(_))
+    ));
+}

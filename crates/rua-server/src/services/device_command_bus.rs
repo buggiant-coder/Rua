@@ -1672,7 +1672,11 @@ impl DeviceCommandHandler {
                 response: self.read_authorized_file(&request, max_text_bytes).await,
             },
             DeviceCommandEnvelope::ReadCheck(request) => DeviceCommandResponse::ReadCheck {
-                response: self.check_read_metadata(&request).await,
+                response: self
+                    .check_read_policy(&request)
+                    .await
+                    .err()
+                    .unwrap_or(DeviceReadCheckReply::Checked),
             },
             DeviceCommandEnvelope::Project(command) => self.handle_project(command).await,
             DeviceCommandEnvelope::Collaboration(command) => {
@@ -1689,53 +1693,63 @@ impl DeviceCommandHandler {
         if !(1..=rua_core::tool::MAX_SHARED_READ_TEXT_BYTES).contains(&max_text_bytes) {
             return DeviceFileReadReply::Policy(DeviceReadCheckReply::Denied);
         }
-        let policy = self.check_read_metadata(request).await;
-        if policy != DeviceReadCheckReply::Checked {
-            return DeviceFileReadReply::Policy(policy);
-        }
+        let confirmed_invocation = match self.check_read_policy(request).await {
+            Ok(confirmed) => confirmed,
+            Err(policy) => return DeviceFileReadReply::Policy(policy),
+        };
         let Some(context) = &self.read_check_context else {
             return DeviceFileReadReply::Policy(DeviceReadCheckReply::Unavailable);
         };
         match context
-            .read_previously_allowed(&request.as_target_read(), max_text_bytes)
+            .read_previously_allowed(
+                &request.as_target_read(),
+                max_text_bytes,
+                confirmed_invocation,
+            )
             .await
         {
             Ok(Some(page)) => DeviceFileReadReply::Page(page),
-            Ok(None) => DeviceFileReadReply::Policy(policy),
+            Ok(None) => DeviceFileReadReply::Policy(DeviceReadCheckReply::Checked),
             Err(TargetReadRejection::FileUnavailable) => DeviceFileReadReply::FileUnavailable,
             Err(rejection) => DeviceFileReadReply::Policy(rejection.into()),
         }
     }
 
-    async fn check_read_metadata(&self, request: &DeviceReadCheckRequest) -> DeviceReadCheckReply {
+    /// On admission, report whether the authority actually consumed this invocation's
+    /// confirmation. The receiver checks its own file grant separately before reading.
+    async fn check_read_policy(
+        &self,
+        request: &DeviceReadCheckRequest,
+    ) -> Result<bool, DeviceReadCheckReply> {
         let Some(context) = &self.read_check_context else {
-            return DeviceReadCheckReply::Unavailable;
+            return Err(DeviceReadCheckReply::Unavailable);
         };
         let read = request.as_target_read();
         if let Err(rejection) = context.check_authority(&read).await {
-            return rejection.into();
+            return Err(rejection.into());
         }
-        if let Some(confirmation) = &request.confirmation {
+        let confirmed = if let Some(confirmation) = &request.confirmation {
             let manager = self
                 .sync_transfer_session_manager
                 .as_ref()
                 .and_then(|cell| cell.read().ok().and_then(|manager| manager.clone()));
             let Some(manager) = manager else {
-                return DeviceReadCheckReply::Unavailable;
+                return Err(DeviceReadCheckReply::Unavailable);
             };
             if !request.verify_at_origin(&manager, confirmation).await {
-                return DeviceReadCheckReply::Unavailable;
+                return Err(DeviceReadCheckReply::Unavailable);
             }
-        }
+            true
+        } else {
+            false
+        };
         match context.check_metadata(&read).await {
-            Ok(FileReadAdmission::Allowed) => DeviceReadCheckReply::Checked,
-            Ok(FileReadAdmission::RequiresUserConfirmation) if request.confirmation.is_some() => {
-                DeviceReadCheckReply::Checked
-            }
+            Ok(FileReadAdmission::Allowed) => Ok(confirmed),
+            Ok(FileReadAdmission::RequiresUserConfirmation) if confirmed => Ok(true),
             Ok(FileReadAdmission::RequiresUserConfirmation) => {
-                DeviceReadCheckReply::ConfirmationRequired
+                Err(DeviceReadCheckReply::ConfirmationRequired)
             }
-            Err(rejection) => rejection.into(),
+            Err(rejection) => Err(rejection.into()),
         }
     }
 

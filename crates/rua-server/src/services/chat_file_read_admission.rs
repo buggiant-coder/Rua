@@ -103,7 +103,7 @@ impl TargetFileReadContext {
             .map_err(|_| TargetReadRejection::Denied)?;
         rua_tool::fs::WorkspaceFs::check_secret_dir(Path::new(path))
             .map_err(|_| TargetReadRejection::Denied)?;
-        self.inspect_policy(request, &[path])
+        self.inspect_policy(request, &[path], false)
             .await
             .map_err(Into::into)
     }
@@ -127,7 +127,7 @@ impl TargetFileReadContext {
                 local_names.push(name);
             }
         }
-        self.inspect_policy(request, &local_names)
+        self.inspect_policy(request, &local_names, false)
             .await
             .map_err(|e| e.to_string())
     }
@@ -138,6 +138,7 @@ impl TargetFileReadContext {
         &self,
         request: &TargetChatRead<'_>,
         max_text_bytes: usize,
+        confirmed_invocation: bool,
     ) -> Result<Option<rua_core::tool::SharedReadPage>, TargetReadRejection> {
         let ctx = self.tool_call_context(request);
         let local_approval = || {
@@ -151,12 +152,19 @@ impl TargetFileReadContext {
         else {
             return Ok(None);
         };
-        if self.requested_path(request).ok() != Some(path.as_str())
-            || self.check_metadata(request).await? != FileReadAdmission::Allowed
-        {
+        if self.requested_path(request).ok() != Some(path.as_str()) {
             return Err(TargetReadRejection::Denied);
         }
         let approved = Path::new(&path);
+        rua_tool::fs::WorkspaceFs::check_secret_dir(approved)
+            .map_err(|_| TargetReadRejection::Denied)?;
+        if self
+            .inspect_policy(request, &[path.as_str()], confirmed_invocation)
+            .await?
+            != FileReadAdmission::Allowed
+        {
+            return Err(TargetReadRejection::Denied);
+        }
         let tool = rua_tool::ReadFileTool;
         let file = tool
             .open_regular_file(approved, &self.rua_root)
@@ -181,7 +189,7 @@ impl TargetFileReadContext {
                 names.push(name);
             }
         }
-        let permitted = || self.inspect_policy(request, &names);
+        let permitted = || self.inspect_policy(request, &names, confirmed_invocation);
         if permitted().await? != FileReadAdmission::Allowed {
             return Err(TargetReadRejection::Denied);
         }
@@ -324,6 +332,7 @@ impl TargetFileReadContext {
         &self,
         request: &TargetChatRead<'_>,
         local_names: &[&str],
+        confirmed_invocation: bool,
     ) -> Result<FileReadAdmission, FileReadPolicyError> {
         let captured = self.checked_chat_configuration(request).await?;
         let capabilities = captured
@@ -351,13 +360,21 @@ impl TargetFileReadContext {
                 "The read tool is disabled for this Chat or target Agent".into(),
             ));
         }
-        self.security
-            .inspect_chat_file_read(
-                &self.tool_call_context(request),
-                &captured.security_config,
-                local_names,
-            )
-            .await
+        let ctx = self.tool_call_context(request);
+        if confirmed_invocation {
+            self.security
+                .inspect_preapproved_chat_file_read(
+                    &ctx,
+                    &captured.security_config,
+                    local_names,
+                    true,
+                )
+                .await
+        } else {
+            self.security
+                .inspect_chat_file_read(&ctx, &captured.security_config, local_names)
+                .await
+        }
     }
 
     fn tool_call_context(&self, request: &TargetChatRead<'_>) -> ToolCallContext {

@@ -111,6 +111,41 @@ impl SecurityModule {
         &self.approval_authority
     }
 
+    /// Inspect a file already allowed by an authenticated user on this Device. The caller
+    /// verifies any invocation confirmation against the exact active Chat call. It can satisfy
+    /// the approval mode, while every path-specific guard still checks the opened file's names.
+    pub async fn inspect_preapproved_chat_file_read(
+        &self,
+        ctx: &ToolCallContext,
+        captured: &SecurityConfig,
+        local_names: &[&str],
+        confirmed_invocation: bool,
+    ) -> Result<FileReadAdmission, FileReadPolicyError> {
+        use FileReadPolicyError::{Denied, Unavailable};
+
+        let admission = self
+            .inspect_file_read_policy(ctx, captured, local_names, confirmed_invocation)
+            .await?;
+        let device = ctx
+            .local_device_id
+            .as_deref()
+            .ok_or_else(|| Denied("No local Device for the approved read".into()))?;
+        let approved = self
+            .approval_authority
+            .locally_approved_chat_read(ctx, device)
+            .await
+            .map_err(Unavailable)?;
+        if approved
+            .as_deref()
+            .is_none_or(|path| Some(path) != local_names.first().copied())
+        {
+            return Err(Denied(
+                "No current local approval for this file read".into(),
+            ));
+        }
+        Ok(admission)
+    }
+
     /// Evaluate the captured and current policies against the supplied local names of the file.
     /// This records no approval and consumes no decision, including during Ask First.
     pub async fn inspect_chat_file_read(
@@ -118,6 +153,17 @@ impl SecurityModule {
         ctx: &ToolCallContext,
         captured: &SecurityConfig,
         local_names: &[&str],
+    ) -> Result<FileReadAdmission, FileReadPolicyError> {
+        self.inspect_file_read_policy(ctx, captured, local_names, false)
+            .await
+    }
+
+    async fn inspect_file_read_policy(
+        &self,
+        ctx: &ToolCallContext,
+        captured: &SecurityConfig,
+        local_names: &[&str],
+        confirmed_invocation: bool,
     ) -> Result<FileReadAdmission, FileReadPolicyError> {
         use FileReadPolicyError::{Denied, Unavailable};
 
@@ -159,7 +205,10 @@ impl SecurityModule {
             let requested_allowed = allows(&ctx.tool_input);
             let engine = ToolGuardEngine::new(config, self.paths.as_deref());
             let mode = canonical_approval_mode_preset(&config.tool_guard.approval_mode);
-            if !requested_allowed && mode.requires_approval_for_tool(&ctx.tool_name) {
+            if !confirmed_invocation
+                && !requested_allowed
+                && mode.requires_approval_for_tool(&ctx.tool_name)
+            {
                 admission = FileReadAdmission::RequiresUserConfirmation;
             }
             for path in local_names {
