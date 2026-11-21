@@ -2217,7 +2217,10 @@ async fn execute_approved_tool(
     let call_for_exec = call.clone();
     let manages_wait = !already_task_owned
         && !transfer_eligible
-        && matches!(call.name.as_str(), "read" | "edit" | "grep" | "glob")
+        && matches!(
+            call.name.as_str(),
+            "read" | "edit" | "grep" | "glob" | "sync_send"
+        )
         && enriched_ctx
             .device_read_access
             .as_ref()

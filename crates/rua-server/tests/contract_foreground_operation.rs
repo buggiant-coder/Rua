@@ -289,6 +289,7 @@ fn transfer_job_terminal_states_release_their_foreground_lease_once() {
     jobs.succeed(
         &succeeded.job_id,
         TransferExecutionOutcome {
+            files: Vec::new(),
             files_written: 1,
             bytes_written: 100,
         },
@@ -372,6 +373,7 @@ fn remote_source_operation_holds_and_releases_its_own_transfer_lease() {
     operations.succeed(
         "remote-source",
         TransferExecutionOutcome {
+            files: Vec::new(),
             files_written: 1,
             bytes_written: 100,
         },

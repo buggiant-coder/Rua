@@ -485,6 +485,27 @@ async fn device_file_deadline_counts_network_time_on_both_sides_of_user_confirma
         after: Duration,
     }
 
+    struct TimedTransfer;
+
+    #[async_trait]
+    impl rua_tool::extended::sync_transfer::SyncTransferRuntime for TimedTransfer {
+        async fn execute(
+            &self,
+            request: rua_tool::extended::sync_transfer::SyncTransferRequest,
+            ctx: &ToolContext,
+        ) -> Result<Value, String> {
+            let rua_tool::extended::sync_transfer::SyncTransferRequest::Send { arguments, .. } =
+                request;
+            ctx.device_read_access
+                .as_ref()
+                .unwrap()
+                .check_operation("sync_send", ctx, &arguments)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({"checked":true}))
+        }
+    }
+
     #[async_trait]
     impl DeviceReadAccess for TimedRead {
         fn manages_confirmation_wait(&self, _ctx: &ToolContext, _args: &Value) -> bool {
@@ -541,18 +562,26 @@ async fn device_file_deadline_counts_network_time_on_both_sides_of_user_confirma
         rua_tool::extended::search::GlobSearchTool::spec().to_tool_definition(),
         Arc::new(rua_tool::extended::search::GlobSearchTool),
     );
+    let mut registry = rua_tool::ToolRegistry::new();
+    rua_tool::extended::sync_transfer::register_sync_transfer_tools(&mut registry).unwrap();
+    toolkit.register_contract_tool(
+        registry.get_spec("sync_send").unwrap().to_tool_definition(),
+        registry.get("sync_send").unwrap(),
+    );
     let hook: Arc<dyn react_agent::AgentHook> = Arc::new(NoopHook);
     let (events, _stream) = tokio::sync::mpsc::channel(32);
     for (before, human_wait, after, timeout_expected) in
         [(1, 20, 1, false), (6, 0, 0, true), (3, 20, 3, true)]
     {
-        for tool in ["read", "edit", "grep", "glob"] {
+        for tool in ["read", "edit", "grep", "glob", "sync_send"] {
             let call = ToolCall::new(
                 format!("{tool}-phone"),
                 tool,
                 serde_json::json!({
                     "device_id": "phone", "file_path": "/photos/note.txt",
                     "path": "/photos", "pattern": "note",
+                    "source_device_id":"phone", "source_paths":["/photos/note.txt"],
+                    "target_device_id":"desktop", "target_dir":"/incoming",
                     "patch": "*** Begin Patch\n*** Add File: /photos/note.txt\n+note\n*** End Patch"
                 }),
             );
@@ -563,6 +592,11 @@ async fn device_file_deadline_counts_network_time_on_both_sides_of_user_confirma
                     human_wait: Duration::from_secs(human_wait),
                     after: Duration::from_secs(after),
                 })),
+                sync_transfer_runtime: Some(Arc::new(
+                    rua_tool::extended::sync_transfer::SyncTransferRuntimeHandle::new(Arc::new(
+                        TimedTransfer,
+                    )),
+                )),
                 ..Default::default()
             };
             let result = execute_single_tool(
@@ -582,6 +616,11 @@ async fn device_file_deadline_counts_network_time_on_both_sides_of_user_confirma
                 assert!(
                     result.text_content().contains("timed out after 5s"),
                     "{result:?}"
+                );
+            } else if tool == "sync_send" {
+                assert_eq!(
+                    serde_json::from_str::<Value>(&result.text_content()).unwrap()["checked"],
+                    true
                 );
             } else {
                 assert_eq!(

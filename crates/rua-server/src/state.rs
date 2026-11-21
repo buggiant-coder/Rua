@@ -231,6 +231,8 @@ pub struct AppState {
     pub sync_transfer_session_manager:
         Arc<std::sync::RwLock<Option<rua_device_network::DeviceSessionManager>>>,
     pub chat_media_transfers: Arc<crate::services::chat_media_transfer::ChatMediaTransferRegistry>,
+    pub sync_transfer_bulk_handler: Arc<crate::services::sync_transfer::SyncTransferBulkHandler>,
+    pub chat_transfer: Arc<crate::services::chat_transfer::ChatTransferService>,
 
     pub sync_trigger: Arc<tokio::sync::RwLock<Option<rua_sync::trigger::SyncTriggerHandle>>>,
 
@@ -1172,6 +1174,23 @@ impl AppState {
             ),
         );
         let _ = instruction_reader.set(Arc::clone(&target_file_context));
+        let sync_transfer_bulk_handler = Arc::new(
+            crate::services::sync_transfer::SyncTransferBulkHandler::new(local_device_id.clone())
+                .with_foreground_operations(Arc::clone(&foreground_operations))
+                .with_media_transfers(Arc::clone(&chat_media_transfers))
+                .with_chat_media_root(data_dir.clone())
+                .with_chat_authorization(Arc::new(
+                    crate::services::chat_transfer::RuntimeChatTransferAuthorization {
+                        rua_root: data_dir.clone(),
+                        target: Arc::clone(&target_file_context),
+                    },
+                )),
+        );
+        let chat_transfer = Arc::new(crate::services::chat_transfer::ChatTransferService::new(
+            data_dir.clone(), local_device_id.clone(), Arc::clone(&target_file_context), Arc::clone(&sync_transfer_bulk_handler),
+            Arc::new(crate::services::sync_transfer::SourceTransferOperationStore::with_foreground_operations(Arc::clone(&foreground_operations))),
+            Arc::clone(&sync_transfer_session_manager_cell), Arc::clone(&conversation_authority), Arc::clone(security_module.approval_authority()),
+        ));
         conversation_authority.set_chat_completion_notifier(Arc::new(
             crate::services::chat_completion_notification::ChatCompletionNotifier::new(
                 local_device_id.clone(),
@@ -1295,6 +1314,7 @@ impl AppState {
                         local_device_id.clone(),
                     )
                     .with_read_check_context(Arc::clone(&target_file_context))
+                    .with_chat_transfer(Arc::clone(&chat_transfer))
                     .with_remote_history_sync(remote_history_sync_tx.clone())
                     .with_acp_chat_registry(
                         Arc::clone(&acp_chat_registry),
@@ -1326,8 +1346,7 @@ impl AppState {
                 let sync_transfer_session_manager_for_node =
                     Arc::clone(&sync_transfer_session_manager_cell);
                 let foreground_operations_for_node = Arc::clone(&foreground_operations);
-                let chat_media_transfers_for_node = Arc::clone(&chat_media_transfers);
-                let chat_media_root_for_node = data_dir.clone();
+                let bulk_for_node = Arc::clone(&sync_transfer_bulk_handler);
                 let sync_node_init = std::thread::spawn(move || {
                     block_on_with_optional_handle(rt_handle, async move {
                         let sync_blob_store =
@@ -1363,14 +1382,7 @@ impl AppState {
                                 node.network_runtime()
                                     .session_manager()
                                     .set_bulk_transfer_handler(Arc::new(
-                                        crate::services::sync_transfer::SyncTransferBulkHandler::new(
-                                            hex::encode(device.device_id_short()),
-                                        )
-                                        .with_foreground_operations(Arc::clone(
-                                            &foreground_operations_for_node,
-                                        ))
-                                        .with_media_transfers(chat_media_transfers_for_node)
-                                        .with_chat_media_root(chat_media_root_for_node)
+                                        bulk_for_node.as_ref().clone()
                                         .with_sync_blobs(node.blobs_store().clone()),
                                     ));
                                 crate::services::chat_activity_wake::spawn_chat_activity_gossip_listener(
@@ -1650,7 +1662,9 @@ impl AppState {
                 Arc::clone(&sync_enabled),
                 Arc::clone(&sync_device_cell),
                 Arc::clone(&device_network_cell),
-                Arc::clone(&sync_transfer_jobs),
+                Arc::clone(&chat_transfer),
+                Arc::clone(&conversation_authority),
+                Arc::clone(security_module.approval_authority()),
             ),
         );
         let _ = sync_transfer_binding.set(sync_transfer_tool_service);
@@ -1788,6 +1802,8 @@ impl AppState {
             sync_node: sync_node_cell,
             sync_transfer_session_manager: sync_transfer_session_manager_cell,
             chat_media_transfers,
+            sync_transfer_bulk_handler,
+            chat_transfer,
             sync_trigger,
             sync_runtime,
             sync_enabled,
@@ -2184,6 +2200,7 @@ impl AppState {
                 &self.sync_transfer_session_manager,
             ))
             .with_chat_media_transfers(Arc::clone(&self.chat_media_transfers))
+            .with_chat_transfer(Arc::clone(&self.chat_transfer))
             .with_project_runtime(Arc::clone(&self.project_catalog))
             .with_task_runtime(Arc::clone(&self.task_runtime))
             .with_user_notifications(Arc::clone(&self.user_notifications))
@@ -2228,14 +2245,13 @@ impl AppState {
         runtime
             .session_manager()
             .set_live_activity_handler(Arc::new(live_handler));
-        if let Some(local_device_id) = local_device_id {
+        if local_device_id.is_some() {
             runtime
                 .session_manager()
                 .set_bulk_transfer_handler(Arc::new(
-                    crate::services::sync_transfer::SyncTransferBulkHandler::new(local_device_id)
-                        .with_foreground_operations(Arc::clone(&self.foreground_operations))
-                        .with_media_transfers(Arc::clone(&self.chat_media_transfers))
-                        .with_chat_media_root(self.rua_root.clone())
+                    self.sync_transfer_bulk_handler
+                        .as_ref()
+                        .clone()
                         .with_sync_blobs(node.blobs_store().clone()),
                 ));
         }

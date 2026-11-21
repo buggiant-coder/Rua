@@ -104,6 +104,9 @@ mod remote_file_operations;
 #[path = "device_session_control_view/agents_instructions.rs"]
 mod agents_instructions;
 
+#[path = "device_session_control_view/transfer_confirmation.rs"]
+mod transfer_confirmation;
+
 fn epoch(wall_ms: u64) -> ConversationAuthorityEpoch {
     ConversationAuthorityEpoch::from_parts(wall_ms, 0, [0; 8])
 }
@@ -829,6 +832,7 @@ fn v8_chat_command_variants_round_trip() {
     });
     assert_json_round_trip(SyncTransferDeviceResponse::ChatGapTransferOperation {
         operation: SourceTransferOperationSnapshot {
+            files: Vec::new(),
             operation_id: "gap-1".to_string(),
             status: TransferJobStatus::Running,
             files_written: 0,

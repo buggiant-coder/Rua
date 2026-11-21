@@ -2,7 +2,16 @@ use agent_types::ToolCall;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
+use crate::agents_instruction_discovery::AgentsInstructionTargetKind;
 use crate::tool::ToolContext;
+
+/// An explicit operation path, resolved on the Device that owns it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentsInstructionTarget {
+    pub device_id: String,
+    pub path: String,
+    pub kind: AgentsInstructionTargetKind,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentsInstructionDecision {
@@ -22,6 +31,15 @@ pub trait AgentsInstructions: Send + Sync {
     async fn before_tool(
         &self,
         call: &ToolCall,
+        ctx: &ToolContext,
+        cancellation: CancellationToken,
+    ) -> crate::Result<AgentsInstructionDecision>;
+
+    /// Discover concrete paths produced by read-only operation planning, before
+    /// any affected write or transfer starts. Uses this same Turn's captured sources.
+    async fn before_targets(
+        &self,
+        targets: &[AgentsInstructionTarget],
         ctx: &ToolContext,
         cancellation: CancellationToken,
     ) -> crate::Result<AgentsInstructionDecision>;

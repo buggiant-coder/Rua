@@ -20,6 +20,15 @@ use super::support::{build_app, create_agent, seed_materialized_chat, TestApp};
 #[path = "target_file_read/agents_instructions.rs"]
 mod agents_instructions;
 
+#[path = "target_file_read/transfer_admission.rs"]
+mod transfer_admission;
+
+#[path = "target_file_read/transfer_origin.rs"]
+mod transfer_origin;
+
+#[path = "target_file_read/transfer_participant.rs"]
+mod transfer_participant;
+
 const AGENT: &str = "target-reader";
 const AUTHORITY: &str = "0123456789abcdef";
 

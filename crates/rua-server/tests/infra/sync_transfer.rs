@@ -32,6 +32,9 @@ use std::sync::{Arc, Barrier, Mutex, RwLock};
 use std::time::Duration;
 use tempfile::TempDir;
 
+#[path = "sync_transfer/integrity.rs"]
+mod integrity;
+
 struct TestPeer {
     _dir: TempDir,
     runtime: DeviceNetworkRuntime,
@@ -518,8 +521,11 @@ fn receive_plan_rejects_relative_path_traversal() {
             relative_path: PathBuf::from("../escape.txt"),
             kind: TransferManifestEntryKind::File,
             size: 6,
+            sha256: String::new(),
+            extra: Default::default(),
         }],
         total_bytes: 6,
+        extra: Default::default(),
     };
 
     let error = plan_receive(&target, &manifest, ReceiveConflictPolicy::Rename)
@@ -688,6 +694,7 @@ async fn bulk_transfer_sends_manifest_files_over_one_shared_session() {
     let outcome = send_transfer_stream(
         source.runtime.session_manager(),
         TransferStreamSendRequest {
+            chat_context: None,
             operation_id: "direct-transfer".to_string(),
             source_device_id: source.device_id.clone(),
             target_device_id: target_peer.device_id.clone(),
@@ -1005,16 +1012,24 @@ async fn chat_media_upload_rechecks_epoch_and_digest_after_prepare() {
         let result = send_transfer_stream(
             controller.runtime.session_manager(),
             TransferStreamSendRequest {
+                chat_context: None,
                 operation_id,
                 source_device_id: controller.device_id.clone(),
                 target_device_id: authority.device_id.clone(),
                 manifest: TransferManifest {
                     total_bytes: payload.len() as u64,
+                    extra: Default::default(),
                     entries: vec![TransferManifestEntry {
-                        source_path: source_file.clone(),
+                        source_path: source_file.canonicalize().unwrap(),
                         relative_path: PathBuf::from(id.to_string()),
                         kind: TransferManifestEntryKind::File,
                         size: payload.len() as u64,
+                        extra: Default::default(),
+                        sha256: build_transfer_manifest(std::slice::from_ref(&source_file))
+                            .unwrap()
+                            .entries[0]
+                            .sha256
+                            .clone(),
                     }],
                 },
                 target_dir: tmp.path().join("untrusted"),
@@ -1323,6 +1338,7 @@ async fn cancelled_bulk_transfer_removes_partial_temp_and_never_exposes_final_fi
     let error = send_transfer_stream(
         source.runtime.session_manager(),
         TransferStreamSendRequest {
+            chat_context: None,
             operation_id: "cancel-transfer".to_string(),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
@@ -1391,6 +1407,7 @@ async fn repeated_bulk_stream_failure_exhausts_the_current_operation_without_red
     let error = send_transfer_stream(
         source.runtime.session_manager(),
         TransferStreamSendRequest {
+            chat_context: None,
             operation_id: "bounded-failure".to_string(),
             source_device_id: source.device_id.clone(),
             target_device_id: target.device_id.clone(),
@@ -1461,6 +1478,7 @@ async fn brief_disconnect_resumes_multi_file_transfer_from_acknowledged_cursor()
         send_transfer_stream(
             &source_manager,
             TransferStreamSendRequest {
+                chat_context: None,
                 operation_id: "resume-transfer".to_string(),
                 source_device_id,
                 target_device_id,

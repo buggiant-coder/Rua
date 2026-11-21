@@ -9,7 +9,9 @@ use rua_core::agents_instruction_discovery::{
     AgentsInstructionDiscovery, AgentsInstructionDiscoveryRequest, AgentsInstructionLoader,
     AgentsInstructionSource, AgentsInstructionTargetKind, AGENTS_INSTRUCTIONS_MAX_BYTES,
 };
-use rua_core::agents_instructions::{AgentsInstructionDecision, AgentsInstructions};
+use rua_core::agents_instructions::{
+    AgentsInstructionDecision, AgentsInstructionTarget, AgentsInstructions,
+};
 use rua_core::tool::ToolContext;
 use rua_core::{Result, RuaError};
 use rua_session::{
@@ -153,6 +155,159 @@ fn reconsider(decision: AgentsInstructionDecision) {
         decision,
         AgentsInstructionDecision::Reconsider { .. }
     ));
+}
+
+#[tokio::test]
+async fn transfer_discovers_each_source_and_destination_only_on_its_own_device() {
+    let f = Fixture::new();
+    let source_file = f.child("source/a.jpg");
+    let source_directory = f.child("other-source");
+    let destination = f.child("source");
+    f.loader.set("phone", &destination, "PHONE_SOURCE_RULE");
+    f.loader
+        .set("phone", &source_directory, "PHONE_OTHER_SOURCE_RULE");
+    f.loader
+        .set("laptop", &destination, "LAPTOP_DESTINATION_RULE");
+    f.loader.set("desktop", &destination, "WRONG_DEVICE_RULE");
+    f.loader
+        .set("phone", &f.child("unselected"), "UNSELECTED_RESOURCE_RULE");
+    let c = f.prepare().await;
+    c.snapshot_for_model();
+    let transfer = ToolCall::new(
+        "copy",
+        "sync_send",
+        json!({
+            "source_device_id":"phone", "source_paths":[source_file,source_directory],
+            "target_device_id":"laptop", "target_dir":destination
+        }),
+    );
+    reconsider(f.before(&c, &transfer).await);
+    let snapshot = c.snapshot_for_model().unwrap();
+    for expected in [
+        "PHONE_SOURCE_RULE",
+        "PHONE_OTHER_SOURCE_RULE",
+        "LAPTOP_DESTINATION_RULE",
+    ] {
+        assert!(snapshot.contains(expected));
+    }
+    assert!(!snapshot.contains("WRONG_DEVICE_RULE"));
+    assert!(!snapshot.contains("UNSELECTED_RESOURCE_RULE"));
+    let requests = f.loader.requests.lock().unwrap().clone();
+    for source in [&source_file, &source_directory] {
+        assert!(requests.iter().any(|request| request.device_id == "phone"
+            && request.target_path == source.to_str().unwrap()
+            && request.target_kind == AgentsInstructionTargetKind::Auto));
+    }
+    assert!(requests.iter().any(|request| request.device_id == "laptop"
+        && request.target_path == destination.to_str().unwrap()
+        && request.target_kind == AgentsInstructionTargetKind::Directory));
+    assert_eq!(
+        f.before(&c, &transfer).await,
+        AgentsInstructionDecision::Continue
+    );
+    assert_eq!(f.loader.requests.lock().unwrap().len(), requests.len());
+}
+
+#[tokio::test]
+async fn transfer_plan_subpaths_use_the_same_turn_snapshot_and_require_model_visibility() {
+    let f = Fixture::new();
+    let source = f.child("source");
+    let destination = f.child("destination");
+    f.loader.set("phone", &source, "SOURCE_ROOT_RULE");
+    f.loader
+        .set("laptop", &destination, "DESTINATION_ROOT_RULE");
+    f.loader
+        .set("phone", &source.join("album"), "SOURCE_ALBUM_RULE");
+    f.loader.set(
+        "laptop",
+        &destination.join("album"),
+        "DESTINATION_ALBUM_RULE",
+    );
+    let c = f.prepare().await;
+    c.snapshot_for_model();
+    let transfer = ToolCall::new(
+        "copy",
+        "sync_send",
+        json!({
+            "source_device_id":"phone", "source_paths":[source],
+            "target_device_id":"laptop", "target_dir":destination
+        }),
+    );
+    reconsider(f.before(&c, &transfer).await);
+    let initial = c.snapshot_for_model().unwrap();
+    assert!(!initial.contains("SOURCE_ALBUM_RULE"));
+    assert!(!initial.contains("DESTINATION_ALBUM_RULE"));
+    f.loader.set("phone", &source, "CHANGED_SOURCE_ROOT_RULE");
+    let targets = [
+        AgentsInstructionTarget {
+            device_id: "phone".into(),
+            path: source.join("album/a.jpg").to_str().unwrap().into(),
+            kind: AgentsInstructionTargetKind::File,
+        },
+        AgentsInstructionTarget {
+            device_id: "laptop".into(),
+            path: destination.join("album/a (1).jpg").to_str().unwrap().into(),
+            kind: AgentsInstructionTargetKind::File,
+        },
+    ];
+    for _ in 0..2 {
+        reconsider(
+            c.before_targets(&targets, &f.ctx, CancellationToken::new())
+                .await
+                .unwrap(),
+        );
+    }
+    let snapshot = c.snapshot_for_model().unwrap();
+    for expected in [
+        "SOURCE_ROOT_RULE",
+        "DESTINATION_ROOT_RULE",
+        "SOURCE_ALBUM_RULE",
+        "DESTINATION_ALBUM_RULE",
+    ] {
+        assert!(snapshot.contains(expected));
+    }
+    assert!(!snapshot.contains("CHANGED_SOURCE_ROOT_RULE"));
+    assert_eq!(
+        c.before_targets(&targets, &f.ctx, CancellationToken::new())
+            .await
+            .unwrap(),
+        AgentsInstructionDecision::Continue
+    );
+    assert_eq!(
+        f.loader
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.target_kind == AgentsInstructionTargetKind::File)
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn invalid_transfer_addresses_do_not_fall_back_to_the_execution_device_or_directory() {
+    let f = Fixture::new();
+    let c = f.prepare().await;
+    c.snapshot_for_model();
+    let requests = f.loader.requests.lock().unwrap().len();
+    let valid = json!({"source_device_id":"phone", "source_paths":["/photos/a.jpg"], "target_device_id":"laptop", "target_dir":"/photos"});
+    for (field, value) in [
+        ("source_device_id", json!(null)),
+        ("target_device_id", json!("")),
+        ("source_paths", json!([])),
+        ("source_paths", json!(["relative/a.jpg"])),
+        ("target_dir", json!("relative/photos")),
+    ] {
+        let mut args = valid.clone();
+        args[field] = value;
+        assert_eq!(
+            f.before(&c, &ToolCall::new("invalid", "sync_send", args))
+                .await,
+            AgentsInstructionDecision::Continue
+        );
+    }
+    assert_eq!(f.loader.requests.lock().unwrap().len(), requests);
 }
 
 #[tokio::test]

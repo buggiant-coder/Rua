@@ -121,7 +121,6 @@ fn builtin_agent_seed_materializes_catalog_entries_and_records_manifest() {
         "chat_send",
         "chat_read",
         "chat_stop",
-        "sync_ls",
         "sync_send",
     ] {
         assert!(

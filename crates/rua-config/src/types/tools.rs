@@ -338,7 +338,6 @@ pub fn default_builtin_tools() -> serde_json::Map<String, serde_json::Value> {
             "Request the target collaboration chat to stop its running turn",
             "chat",
         ),
-        ("sync_ls", "List sync-transfer inbox entries", "sync"),
         ("sync_send", "Send data through the sync-transfer channel", "sync"),
     ];
 

@@ -35,3 +35,6 @@ mod tool_guard_reload;
 
 #[path = "all/file_operations.rs"]
 mod file_operations;
+
+#[path = "all/transfer_permissions.rs"]
+mod transfer_permissions;

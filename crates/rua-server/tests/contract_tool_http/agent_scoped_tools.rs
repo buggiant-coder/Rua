@@ -69,13 +69,7 @@ async fn agent_scoped_list_and_toggle_include_collaboration_tools() {
     assert_eq!(list.status(), StatusCode::OK);
     let tools = read_json(list).await;
     let tools = tools.as_array().expect("tools array");
-    for name in [
-        "chat_send",
-        "chat_read",
-        "chat_stop",
-        "sync_ls",
-        "sync_send",
-    ] {
+    for name in ["chat_send", "chat_read", "chat_stop", "sync_send"] {
         assert_eq!(tool_by_name(tools, name)["enabled"], true);
     }
 

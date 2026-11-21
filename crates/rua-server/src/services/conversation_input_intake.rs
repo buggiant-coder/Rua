@@ -2111,21 +2111,32 @@ impl ConversationInputIntake {
                 ctx.metadata.insert("turn_id".into(), turn_id.into());
                 ctx.metadata
                     .insert("tool_call_id".into(), tool_call_id.into());
-                let approval_id = approvals
-                    .consume_authenticated_file_confirmation_if(
-                        &ctx,
-                        &command.source_device_id,
-                        |id| {
-                            id == approval_id
-                                && authority.claim_read_dispatch(
-                                    dispatch_token,
-                                    id,
-                                    &command.source_device_id,
-                                )
-                        },
-                    )
-                    .await
-                    .ok_or_else(unavailable)?;
+                let claim = |id: &str| {
+                    id == approval_id
+                        && authority.claim_read_dispatch(
+                            dispatch_token,
+                            id,
+                            &command.source_device_id,
+                        )
+                };
+                let approval_id = if tool_name == "sync_send" {
+                    approvals
+                        .consume_authenticated_transfer_confirmation_if(
+                            &ctx,
+                            &command.source_device_id,
+                            claim,
+                        )
+                        .await
+                } else {
+                    approvals
+                        .consume_authenticated_file_confirmation_if(
+                            &ctx,
+                            &command.source_device_id,
+                            claim,
+                        )
+                        .await
+                }
+                .ok_or_else(unavailable)?;
                 Ok(ConversationControlDeviceResponse::ReadApprovalClaimed { approval_id })
             }
             ConversationControlDeviceAction::ApprovalSnapshot => {

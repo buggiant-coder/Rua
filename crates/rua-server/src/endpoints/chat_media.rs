@@ -302,17 +302,23 @@ async fn upload_remote_media(
             .map_err(|e| ApiError::Internal(e.to_string()))?;
         let manifest = TransferManifest {
             entries: vec![TransferManifestEntry {
-                source_path,
+                source_path: tokio::fs::canonicalize(&source_path)
+                    .await
+                    .map_err(|error| ApiError::Internal(error.to_string()))?,
                 relative_path: PathBuf::from(media_id.to_string()),
                 kind: TransferManifestEntryKind::File,
                 size: bytes.len() as u64,
+                sha256: format!("sha256:{}", command.sha256),
+                extra: Default::default(),
             }],
             total_bytes: bytes.len() as u64,
+            extra: Default::default(),
         };
         let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(RunControl::Running);
         send_transfer_stream(
             &session_manager,
             TransferStreamSendRequest {
+                chat_context: None,
                 operation_id,
                 source_device_id: local_device_id,
                 target_device_id: placement.device_id.clone(),

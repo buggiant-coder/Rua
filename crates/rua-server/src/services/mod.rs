@@ -15,6 +15,7 @@ pub(crate) mod chat_media_loader;
 pub mod chat_media_transfer;
 pub mod chat_metadata_store;
 pub mod chat_storage;
+pub mod chat_transfer;
 pub mod context_projection;
 pub mod conversation_authority;
 pub mod conversation_authority_placement;

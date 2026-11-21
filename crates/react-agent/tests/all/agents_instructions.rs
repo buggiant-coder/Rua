@@ -19,7 +19,9 @@ use react_agent::{
     ToolBeforeBoundary, ToolBeforeFailure, ToolBeforeInvocation, ToolBeforeOutcome, ToolDecision,
     ToolDisclosureConfig,
 };
-use rua_core::agents_instructions::{AgentsInstructionDecision, AgentsInstructions};
+use rua_core::agents_instructions::{
+    AgentsInstructionDecision, AgentsInstructionTarget, AgentsInstructions,
+};
 use rua_core::tool::ToolContext;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
@@ -39,6 +41,15 @@ struct Instructions {
 
 #[async_trait]
 impl AgentsInstructions for Instructions {
+    async fn before_targets(
+        &self,
+        _targets: &[AgentsInstructionTarget],
+        _ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> rua_core::Result<AgentsInstructionDecision> {
+        unreachable!("this fixture exercises explicit ToolCalls")
+    }
+
     fn snapshot_for_model(&self) -> Option<String> {
         let mut state = self.state.lock().unwrap();
         if !state.discovered {
@@ -451,6 +462,15 @@ struct PendingInstructions(tokio::sync::Notify);
 
 #[async_trait]
 impl AgentsInstructions for PendingInstructions {
+    async fn before_targets(
+        &self,
+        _targets: &[AgentsInstructionTarget],
+        _ctx: &ToolContext,
+        _cancel: CancellationToken,
+    ) -> rua_core::Result<AgentsInstructionDecision> {
+        unreachable!("this fixture exercises explicit ToolCalls")
+    }
+
     fn snapshot_for_model(&self) -> Option<String> {
         None
     }

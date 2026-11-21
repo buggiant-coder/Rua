@@ -24,6 +24,8 @@ mod runtime_environment_contract;
 mod send_file_contract;
 #[path = "contract_tools/shell_contract.rs"]
 mod shell_contract;
+#[path = "contract_tools/sync_transfer_contract.rs"]
+mod sync_transfer_contract;
 #[path = "contract_tools/time_tool_contract.rs"]
 mod time_tool_contract;
 #[path = "contract_tools/token_usage_tool_contract.rs"]

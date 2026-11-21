@@ -1,132 +1,464 @@
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
-use serde::Deserialize;
+use rua_core::agents_instruction_discovery::AgentsInstructionTargetKind;
+use rua_core::agents_instructions::{AgentsInstructionDecision, AgentsInstructionTarget};
+use rua_core::tool::{DeviceReadCheck, ToolContext};
+use rua_security::approval_authority::{ApprovalStatus, AuthenticatedApprovalDecision};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use tokio_util::sync::CancellationToken;
 
-use crate::services::device_context::current_sync_device_id;
-use crate::services::sync_transfer::{
-    build_transfer_manifest, command_remote_source_send_to, execute_local_transfer_plan,
-    plan_receive, send_transfer_stream, ReceiveConflictPolicy, SyncTransferListClient,
-    TransferExecutionOptions, TransferJobSnapshot, TransferJobStore, TransferStreamSendRequest,
+use super::chat_transfer::{
+    ChatTransferAction, ChatTransferCommand, ChatTransferContext, ChatTransferResponse,
+    ChatTransferService, PreparedChatReceive,
 };
+use super::conversation_authority::{
+    ConversationActiveTurnPhase, ConversationAuthority, ConversationDriverKind,
+};
+use super::device_command_bus::deliver_chat_transfer_via_session;
+use super::device_context::current_sync_device_id;
+use super::device_read_check::{
+    DeviceReadCheckReply, DeviceReadCheckRequest, DeviceReadConfirmation,
+};
+use super::device_session_access::{current_session_manager, DeviceNetworkAccess};
+use super::sync_transfer::{SourceTransferOperationSnapshot, TransferJobStatus};
 
 #[derive(Clone)]
 pub struct SyncTransferToolService {
     sync_enabled: Arc<AtomicBool>,
     sync_device: Arc<std::sync::RwLock<Option<Arc<rua_sync::identity::DeviceIdentity>>>>,
-    device_network: Arc<crate::services::device_session_access::DeviceNetworkAccess>,
-    jobs: Arc<TransferJobStore>,
+    device_network: Arc<DeviceNetworkAccess>,
+    participant: Arc<ChatTransferService>,
+    authority: Arc<ConversationAuthority>,
+    approvals: Arc<rua_security::ApprovalAuthority>,
 }
 
 impl SyncTransferToolService {
     pub fn new(
         sync_enabled: Arc<AtomicBool>,
         sync_device: Arc<std::sync::RwLock<Option<Arc<rua_sync::identity::DeviceIdentity>>>>,
-        device_network: Arc<crate::services::device_session_access::DeviceNetworkAccess>,
-        jobs: Arc<TransferJobStore>,
+        device_network: Arc<DeviceNetworkAccess>,
+        participant: Arc<ChatTransferService>,
+        authority: Arc<ConversationAuthority>,
+        approvals: Arc<rua_security::ApprovalAuthority>,
     ) -> Self {
         Self {
             sync_enabled,
             sync_device,
             device_network,
-            jobs,
+            participant,
+            authority,
+            approvals,
         }
     }
 
-    fn ensure_sync_enabled(&self) -> rua_core::Result<String> {
-        if !self.sync_enabled.load(Ordering::SeqCst) {
-            return Err(tool_error("multi-device sync is disabled"));
-        }
-        current_sync_device_id(&self.sync_device)
-            .ok_or_else(|| tool_error("local sync device is not initialized"))
-    }
-
-    async fn list_directory(
-        &self,
-        target_device_id: &str,
-        path: &str,
-    ) -> rua_core::Result<serde_json::Value> {
-        let local_device_id = self.ensure_sync_enabled()?;
-        let client = SyncTransferListClient::new(Arc::clone(&self.device_network));
-        let listing = client
-            .list_directory(&local_device_id, target_device_id, path)
-            .await
-            .map_err(tool_error)?;
-        Ok(serde_json::json!({
-            "device_id": target_device_id,
-            "path": listing.path,
-            "entries": listing.entries,
-        }))
-    }
-
-    async fn send(&self, request: SyncSendArgs) -> rua_core::Result<TransferJobSnapshot> {
-        let local_device_id = self.ensure_sync_enabled()?;
-        if request.source_paths.is_empty() {
-            return Err(tool_error("source_paths must not be empty"));
-        }
-        if request.source_device_id.trim().is_empty()
-            || request.target_device_id.trim().is_empty()
-            || request.target_dir.trim().is_empty()
+    async fn dispatch(&self, command: ChatTransferCommand) -> Result<ChatTransferResponse, String> {
+        if current_sync_device_id(&self.sync_device).as_deref()
+            == Some(command.context.call.target_device_id.as_str())
         {
-            return Err(tool_error(
-                "source_device_id, target_device_id, and target_dir must not be empty",
-            ));
+            return self.participant.handle(command).await;
         }
-        let conflict = parse_conflict_policy(request.conflict.as_deref())?;
-        let target_dir = PathBuf::from(&request.target_dir);
-        let local_source_manifest = if request.source_device_id == local_device_id {
-            let source_paths = request
-                .source_paths
-                .iter()
-                .map(PathBuf::from)
-                .collect::<Vec<_>>();
-            Some(
-                build_transfer_manifest(&source_paths)
-                    .map_err(|error| tool_error(error.to_string()))?,
-            )
-        } else {
-            None
-        };
-        let (snapshot, cancel_rx) = self.jobs.start(
-            request.source_device_id.clone(),
-            request.target_device_id.clone(),
-            target_dir.clone(),
-            local_source_manifest
-                .as_ref()
-                .map(|manifest| manifest.total_bytes)
-                .unwrap_or(0),
-        );
-        let job_id = snapshot.job_id.clone();
-        let jobs = Arc::clone(&self.jobs);
-        let device_network = Arc::clone(&self.device_network);
-        let source_paths = request.source_paths.clone();
-        let source_device_id = request.source_device_id.clone();
-        let target_device_id = request.target_device_id.clone();
-        tokio::spawn(async move {
-            let result = run_transfer_job(
-                jobs.clone(),
-                job_id.clone(),
-                device_network,
-                local_device_id,
-                source_device_id,
-                source_paths,
-                target_device_id,
-                target_dir,
-                conflict,
-                local_source_manifest,
-                cancel_rx,
-            )
-            .await;
-            match result {
-                Ok(outcome) => jobs.succeed(&job_id, outcome),
-                Err(error) => jobs.fail(&job_id, error.to_string()),
-            }
-        });
-        Ok(snapshot)
+        let manager = current_session_manager(&self.device_network).await?;
+        deliver_chat_transfer_via_session(&manager, &command, Duration::from_secs(20))
+            .await
+            .map_err(|error| error.to_string())
     }
+
+    async fn send(&self, arguments: Value, ctx: &ToolContext) -> Result<Value, String> {
+        let source = arguments["source_device_id"]
+            .as_str()
+            .ok_or("Missing source Device")?;
+        let target = arguments["target_device_id"]
+            .as_str()
+            .ok_or("Missing target Device")?;
+        let local = current_sync_device_id(&self.sync_device).ok_or("Local Device unavailable")?;
+        if (source != local || target != local) && !self.sync_enabled.load(Ordering::SeqCst) {
+            return Err("Multi-device sync is disabled".into());
+        }
+        let field = |name: &str| ctx.metadata.get(name).and_then(Value::as_str);
+        let turn = field("turn_id").ok_or("No active Chat Turn")?;
+        let call = field("tool_call_id").ok_or("No active tool call")?;
+        let epoch = field("chat_configuration_epoch").ok_or("No Chat configuration")?;
+        let address: rua_core::ChatAddress = serde_json::from_value(
+            ctx.metadata
+                .get(rua_agent::hooks::SECURITY_CHAT_ADDRESS_METADATA_KEY)
+                .cloned()
+                .ok_or("No originating Chat")?,
+        )
+        .map_err(|error| error.to_string())?;
+        if ctx.metadata.contains_key("task_id") || ctx.local_device_id.as_deref() != Some(&local) {
+            return Err("File transfer requires the originating active Chat".into());
+        }
+        let active = self
+            .authority
+            .active_turn(&address)
+            .await
+            .filter(|active| {
+                active.authority_device_id == local
+                    && active.turn_id == turn
+                    && active.driver == ConversationDriverKind::Rua
+                    && matches!(
+                        active.phase,
+                        ConversationActiveTurnPhase::RunningTool
+                            | ConversationActiveTurnPhase::Streaming
+                            | ConversationActiveTurnPhase::WaitingApproval
+                    )
+            })
+            .ok_or("The originating Chat invocation is no longer active")?;
+        let operation_id = format!(
+            "chat-transfer-{}",
+            hex::encode(Sha256::digest(
+                serde_json::to_vec(&(&local, &address, turn, call))
+                    .map_err(|error| error.to_string())?
+            ))
+        );
+        let base = ChatTransferContext {
+            operation_id,
+            extra: Default::default(),
+            call: DeviceReadCheckRequest {
+                tool_name: "sync_send".into(),
+                source_device_id: local,
+                target_device_id: source.into(),
+                agent_id: ctx.agent_id.clone(),
+                address,
+                authority_epoch: active.authority_epoch,
+                configuration_epoch: epoch.into(),
+                turn_id: turn.into(),
+                tool_call_id: call.into(),
+                confirmation: None,
+                arguments: arguments.clone(),
+            },
+        };
+        let mut destination = base.clone();
+        destination.call.target_device_id = target.into();
+        let ended = CancellationToken::new();
+        let guard = ended.clone().drop_guard();
+        let finished = CancellationToken::new();
+        let cleanup = {
+            let service = self.clone();
+            let source = base.clone();
+            let target = destination.clone();
+            let finished = finished.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    biased;
+                    _ = finished.cancelled() => {},
+                    _ = ended.cancelled() => {
+                        // Cancel also records an operation that has not reached Start yet.
+                        let _ = tokio::join!(
+                            service.dispatch(ChatTransferCommand { extra: Default::default(), context: source, action: ChatTransferAction::Cancel }),
+                            service.dispatch(ChatTransferCommand { extra: Default::default(), context: target, action: ChatTransferAction::CancelReceive }),
+                        );
+                    }
+                }
+            })
+        };
+        let cancel = CancellationToken::new();
+        let started = AtomicBool::new(false);
+        let result = tokio::select! {
+            biased;
+            _ = cancelled(ctx) => {
+                cancel.cancel();
+                Ok(json!({"operation_id":base.operation_id,
+                    "status":if started.load(Ordering::SeqCst) { "unknown" } else { "cancelled" },
+                    "detail":"Transfer was stopped; a started transfer may already have committed files. It was not replayed."}))
+            },
+            result = self.run(&base, &destination, ctx, &cancel, &started) => result,
+        };
+        // A confirmed terminal receipt needs no cancellation. Other exits, including
+        // instruction discovery and dropped calls, release the prepared destination.
+        if result
+            .as_ref()
+            .is_ok_and(|value| matches!(value["status"].as_str(), Some("succeeded")))
+        {
+            finished.cancel();
+        }
+        drop(guard);
+        // Cleanup is bounded by the existing Device command deadlines; do not await
+        // network cleanup on the cancelled model/tool future.
+        drop(cleanup);
+        result
+    }
+
+    async fn run(
+        &self,
+        base: &ChatTransferContext,
+        destination: &ChatTransferContext,
+        ctx: &ToolContext,
+        cancel: &CancellationToken,
+        started: &AtomicBool,
+    ) -> Result<Value, String> {
+        let records = self.approvals.snapshot_at(&base.call.address).await;
+        let matching = records
+            .pending
+            .iter()
+            .chain(&records.resolved)
+            .filter(|record| {
+                record.agent_id == base.call.agent_id
+                    && record.turn_id == base.call.turn_id
+                    && record.tool_call_id == base.call.tool_call_id
+            })
+            .collect::<Vec<_>>();
+        if matching.len() > 1
+            || matching.first().is_some_and(|record| {
+                record.status != ApprovalStatus::Approved
+                    || record.tool_name != "sync_send"
+                    || record.tool_call.args != base.call.arguments
+                    || record.trigger.source == rua_security::ApprovalTriggerSource::TargetDevice
+            })
+        {
+            return Err("The approval does not match this active transfer".into());
+        }
+        let mut approval = matching
+            .first()
+            .filter(|record| {
+                record
+                    .authenticated_user_decision
+                    .as_ref()
+                    .is_some_and(|user| {
+                        matches!(
+                            user.decision,
+                            AuthenticatedApprovalDecision::RunOnce
+                                | AuthenticatedApprovalDecision::AllowChat
+                                | AuthenticatedApprovalDecision::AllowAgent
+                        )
+                    })
+            })
+            .map(|record| record.id.clone());
+        loop {
+            // Allocate the phases of this exact invocation before consuming its Run Once.
+            let permits = approval.as_ref().map(|id| {
+                [
+                    self.authority
+                        .begin_read_dispatch(id, &base.call.target_device_id),
+                    self.authority
+                        .begin_read_dispatch(id, &destination.call.target_device_id),
+                    self.authority
+                        .begin_read_dispatch(id, &base.call.target_device_id),
+                ]
+            });
+            let with_confirmation = |context: &ChatTransferContext, index: usize| {
+                let mut context = context.clone();
+                context.call.confirmation =
+                    approval
+                        .as_ref()
+                        .zip(permits.as_ref())
+                        .map(|(id, permits)| DeviceReadConfirmation {
+                            approval_id: id.clone(),
+                            dispatch_token: permits[index].token(),
+                        });
+                context
+            };
+            let source = with_confirmation(base, 0);
+            let target = with_confirmation(destination, 1);
+            let start = with_confirmation(base, 2);
+            let planned = self
+                .dispatch(ChatTransferCommand {
+                    extra: Default::default(),
+                    context: source,
+                    action: ChatTransferAction::SourcePlan,
+                })
+                .await?;
+            let (manifest, paths) = match planned {
+                ChatTransferResponse::SourcePlan { manifest, paths } => (manifest, paths),
+                ChatTransferResponse::Policy {
+                    response: DeviceReadCheckReply::ConfirmationRequired,
+                } if approval.is_none() => {
+                    approval = Some(self.confirm(base, ctx).await?);
+                    continue;
+                }
+                response => {
+                    return Err(format!("Source planning was not authorized: {response:?}"))
+                }
+            };
+            let prepared = self
+                .dispatch(ChatTransferCommand {
+                    extra: Default::default(),
+                    context: target,
+                    action: ChatTransferAction::PrepareReceive {
+                        manifest: manifest.clone(),
+                    },
+                })
+                .await?;
+            let prepared = match prepared {
+                ChatTransferResponse::Prepared { prepared } => prepared,
+                ChatTransferResponse::Policy {
+                    response: DeviceReadCheckReply::ConfirmationRequired,
+                } if approval.is_none() => {
+                    approval = Some(self.confirm(destination, ctx).await?);
+                    continue;
+                }
+                response => {
+                    return Err(format!(
+                        "Destination preparation was not authorized: {response:?}"
+                    ))
+                }
+            };
+            if let Some(instructions) = &ctx.agents_instructions {
+                let targets = paths
+                    .into_iter()
+                    .map(|path| AgentsInstructionTarget {
+                        device_id: base.call.target_device_id.clone(),
+                        path,
+                        kind: AgentsInstructionTargetKind::File,
+                    })
+                    .chain(
+                        prepared
+                            .paths
+                            .iter()
+                            .cloned()
+                            .map(|path| AgentsInstructionTarget {
+                                device_id: destination.call.target_device_id.clone(),
+                                path,
+                                kind: AgentsInstructionTargetKind::File,
+                            }),
+                    )
+                    .collect::<Vec<_>>();
+                if let AgentsInstructionDecision::Reconsider { reason } = instructions
+                    .before_targets(&targets, ctx, cancel.clone())
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    return Ok(
+                        json!({"status":"not_executed","agents_instructions":"reconsider","reason":reason}),
+                    );
+                }
+            }
+            started.store(true, Ordering::SeqCst);
+            let initial = self
+                .dispatch(ChatTransferCommand {
+                    extra: Default::default(),
+                    context: start,
+                    action: ChatTransferAction::Start {
+                        manifest,
+                        destination: prepared.clone(),
+                    },
+                })
+                .await;
+            // Delivery can fail after Start was accepted. Query only; never resend Start.
+            let mut response = initial;
+            let mut failed_polls = 0;
+            loop {
+                match response {
+                    Ok(ChatTransferResponse::Operation { operation }) => {
+                        if operation.operation_id != base.operation_id {
+                            return Ok(unknown_result(
+                                base,
+                                destination,
+                                "The transfer receipt identifies a different operation",
+                            ));
+                        }
+                        failed_polls = 0;
+                        if operation.status != TransferJobStatus::Running {
+                            return Ok(transfer_result(base, destination, &prepared, operation)
+                                .unwrap_or_else(|detail| {
+                                    unknown_result(base, destination, &detail)
+                                }));
+                        }
+                    }
+                    Ok(other) => {
+                        return Ok(unknown_result(
+                            base,
+                            destination,
+                            &format!("Transfer completion could not be confirmed: {other:?}"),
+                        ))
+                    }
+                    Err(ref error) => {
+                        failed_polls += 1;
+                        if failed_polls >= 3 {
+                            return Ok(unknown_result(base, destination, error));
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                response = self
+                    .dispatch(ChatTransferCommand {
+                        extra: Default::default(),
+                        context: base.clone(),
+                        action: ChatTransferAction::Status,
+                    })
+                    .await;
+            }
+        }
+    }
+
+    async fn confirm(
+        &self,
+        request: &ChatTransferContext,
+        ctx: &ToolContext,
+    ) -> Result<String, String> {
+        match request
+            .call
+            .wait_for_confirmation(ctx, &self.approvals, &self.authority)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            Ok((id, _)) => Ok(id),
+            Err(DeviceReadCheck::Denied(detail) | DeviceReadCheck::Unavailable(detail)) => {
+                Err(detail)
+            }
+            Err(_) => Err("The user did not approve this transfer".into()),
+        }
+    }
+}
+
+fn transfer_result(
+    source: &ChatTransferContext,
+    target: &ChatTransferContext,
+    prepared: &PreparedChatReceive,
+    mut operation: SourceTransferOperationSnapshot,
+) -> Result<Value, String> {
+    // Receipts follow the manifest order and are translated to the destination's
+    // public filesystem, never an Android backing/rootfs path.
+    if operation.files.len() > prepared.paths.len() {
+        return Err("Invalid target transfer receipt".into());
+    }
+    for (file, path) in operation.files.iter_mut().zip(&prepared.paths) {
+        file.target_path = path.into();
+        if let Some(digest) = file.sha256.strip_prefix("sha256:") {
+            file.sha256 = digest.to_owned();
+        }
+    }
+    if operation.status == TransferJobStatus::Succeeded
+        && (operation.files.len() != prepared.paths.len()
+            || operation.files.len() != operation.files_written
+            || operation.bytes_written != operation.total_bytes
+            || operation.files.iter().any(|file| {
+                file.sha256.len() != 64 || !file.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+            || operation.files.iter().map(|file| file.bytes).sum::<u64>()
+                != operation.bytes_written)
+    {
+        return Err("The target did not confirm all selected files".into());
+    }
+    let mut value = serde_json::to_value(operation).map_err(|error| error.to_string())?;
+    value["source_device_id"] = source.call.target_device_id.clone().into();
+    value["target_device_id"] = target.call.target_device_id.clone().into();
+    value["target_dir"] = target.call.arguments["target_dir"].clone();
+    value["source_deleted"] = false.into();
+    Ok(value)
+}
+
+fn unknown_result(
+    source: &ChatTransferContext,
+    target: &ChatTransferContext,
+    detail: &str,
+) -> Value {
+    json!({"operation_id":source.operation_id,"status":"unknown",
+        "source_device_id":source.call.target_device_id,"target_device_id":target.call.target_device_id,
+        "detail":detail,"replayed":false})
+}
+
+async fn cancelled(ctx: &ToolContext) {
+    if let Some(mut receiver) = ctx.cancel.clone() {
+        if receiver.wait_for(|stopped| *stopped).await.is_ok() {
+            return;
+        }
+    }
+    std::future::pending().await
 }
 
 pub struct SyncTransferRuntimeAdapter {
@@ -137,13 +469,6 @@ impl SyncTransferRuntimeAdapter {
     pub fn new(service: Arc<OnceLock<Arc<SyncTransferToolService>>>) -> Self {
         Self { service }
     }
-
-    fn service(&self) -> Result<Arc<SyncTransferToolService>, String> {
-        self.service
-            .get()
-            .cloned()
-            .ok_or_else(|| "Sync Transfer service unavailable".to_string())
-    }
 }
 
 #[async_trait]
@@ -151,175 +476,14 @@ impl rua_tool::extended::sync_transfer::SyncTransferRuntime for SyncTransferRunt
     async fn execute(
         &self,
         request: rua_tool::extended::sync_transfer::SyncTransferRequest,
-    ) -> Result<serde_json::Value, String> {
-        let service = self.service()?;
-        match request {
-            rua_tool::extended::sync_transfer::SyncTransferRequest::List {
-                target_device_id,
-                path,
-            } => service
-                .list_directory(&target_device_id, &path)
-                .await
-                .map_err(|error| error.to_string()),
-            rua_tool::extended::sync_transfer::SyncTransferRequest::Send {
-                source_device_id,
-                source_paths,
-                target_device_id,
-                target_dir,
-                conflict,
-            } => serde_json::to_value(
-                service
-                    .send(SyncSendArgs {
-                        source_device_id,
-                        source_paths,
-                        target_device_id,
-                        target_dir,
-                        conflict,
-                    })
-                    .await
-                    .map_err(|error| error.to_string())?,
-            )
-            .map_err(|error| error.to_string()),
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_transfer_job(
-    jobs: Arc<TransferJobStore>,
-    job_id: String,
-    device_network: Arc<crate::services::device_session_access::DeviceNetworkAccess>,
-    local_device_id: String,
-    source_device_id: String,
-    source_paths: Vec<String>,
-    target_device_id: String,
-    target_dir: PathBuf,
-    conflict: ReceiveConflictPolicy,
-    local_source_manifest: Option<crate::services::sync_transfer::TransferManifest>,
-    cancel_rx: tokio::sync::watch::Receiver<rua_core::RunControl>,
-) -> Result<
-    crate::services::sync_transfer::TransferExecutionOutcome,
-    crate::services::sync_transfer::SyncTransferPlanError,
-> {
-    if let Some(manifest) = local_source_manifest {
-        if target_device_id == local_device_id {
-            let plan = plan_receive(&target_dir, &manifest, conflict)?;
-            let jobs_for_progress = Arc::clone(&jobs);
-            let progress_job_id = job_id.clone();
-            return execute_local_transfer_plan(
-                &manifest,
-                &plan,
-                TransferExecutionOptions::default(),
-                cancel_rx,
-                move |progress| {
-                    jobs_for_progress.update_progress(&progress_job_id, progress.bytes_transferred);
-                },
-            )
-            .await;
-        }
-        let session_manager =
-            crate::services::device_session_access::current_session_manager(&device_network)
-                .await
-                .map_err(|error| {
-                    crate::services::sync_transfer::SyncTransferPlanError::Io(
-                        std::io::Error::other(error),
-                    )
-                })?;
-        let jobs_for_progress = Arc::clone(&jobs);
-        let progress_job_id = job_id.clone();
-        return send_transfer_stream(
-            &session_manager,
-            TransferStreamSendRequest {
-                operation_id: job_id,
-                source_device_id: local_device_id,
-                target_device_id,
-                manifest,
-                target_dir,
-                conflict_policy: conflict,
-                options: TransferExecutionOptions::default(),
-            },
-            cancel_rx,
-            move |progress| {
-                jobs_for_progress.update_progress(&progress_job_id, progress.bytes_transferred);
-            },
-        )
-        .await;
-    }
-
-    let session_manager =
-        crate::services::device_session_access::current_session_manager(&device_network)
-            .await
-            .map_err(|error| {
-                crate::services::sync_transfer::SyncTransferPlanError::Io(std::io::Error::other(
-                    error,
-                ))
-            })?;
-    let source_command = crate::services::device_command_bus::SyncTransferDeviceCommand {
-        command_id: format!("sync-transfer-send-{}", uuid::Uuid::new_v4()),
-        source_device_id: local_device_id.clone(),
-        target_device_id: source_device_id.clone(),
-        action: crate::services::device_command_bus::SyncTransferDeviceAction::StartSend {
-            operation_id: job_id.clone(),
-            source_paths,
-            transfer_target_device_id: target_device_id.clone(),
-            target_dir: target_dir.to_string_lossy().to_string(),
-            conflict: sync_transfer_conflict_for_command(conflict),
-        },
-    };
-    let jobs_for_manifest = Arc::clone(&jobs);
-    let manifest_job_id = job_id.clone();
-    let jobs_for_progress = Arc::clone(&jobs);
-    let progress_job_id = job_id.clone();
-    command_remote_source_send_to(
-        &session_manager,
-        source_command,
-        cancel_rx,
-        move |total_bytes| jobs_for_manifest.update_total_bytes(&manifest_job_id, total_bytes),
-        move |progress| {
-            jobs_for_progress.update_progress(&progress_job_id, progress.bytes_transferred);
-        },
-    )
-    .await
-}
-
-#[derive(Deserialize)]
-struct SyncSendArgs {
-    source_device_id: String,
-    source_paths: Vec<String>,
-    target_device_id: String,
-    target_dir: String,
-    #[serde(default)]
-    conflict: Option<String>,
-}
-
-fn parse_conflict_policy(value: Option<&str>) -> rua_core::Result<ReceiveConflictPolicy> {
-    match value.unwrap_or("rename") {
-        "rename" => Ok(ReceiveConflictPolicy::Rename),
-        "fail" => Ok(ReceiveConflictPolicy::Fail),
-        "overwrite" => Ok(ReceiveConflictPolicy::Overwrite),
-        other => Err(tool_error(format!("unsupported conflict policy: {other}"))),
-    }
-}
-
-fn sync_transfer_conflict_for_command(
-    value: ReceiveConflictPolicy,
-) -> crate::services::device_command_bus::SyncTransferConflictPolicy {
-    match value {
-        ReceiveConflictPolicy::Rename => {
-            crate::services::device_command_bus::SyncTransferConflictPolicy::Rename
-        }
-        ReceiveConflictPolicy::Fail => {
-            crate::services::device_command_bus::SyncTransferConflictPolicy::Fail
-        }
-        ReceiveConflictPolicy::Overwrite => {
-            crate::services::device_command_bus::SyncTransferConflictPolicy::Overwrite
-        }
-    }
-}
-
-fn tool_error(message: impl Into<String>) -> rua_core::RuaError {
-    rua_core::RuaError::Tool {
-        tool: "sync_transfer".into(),
-        message: message.into(),
+        context: &ToolContext,
+    ) -> Result<Value, String> {
+        let service = self
+            .service
+            .get()
+            .ok_or("Sync Transfer service unavailable")?;
+        let rua_tool::extended::sync_transfer::SyncTransferRequest::Send { arguments, .. } =
+            request;
+        service.send(arguments, context).await
     }
 }

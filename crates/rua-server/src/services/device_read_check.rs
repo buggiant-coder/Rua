@@ -85,16 +85,22 @@ impl DeviceReadAccess for ForegroundReadAccess {
     ) -> bool {
         let local = ctx.local_device_id.as_deref();
         let target = args["device_id"].as_str();
+        let targets_operation = if tool == "sync_send" {
+            ["source_device_id", "target_device_id"]
+                .iter()
+                .all(|key| args[key].as_str().is_some_and(|id| !id.trim().is_empty()))
+        } else {
+            target.is_some_and(|id| !id.trim().is_empty()) && target != local
+        };
         local.is_some_and(|id| !id.trim().is_empty())
-            && target.is_some_and(|id| !id.trim().is_empty())
-            && target != local
+            && targets_operation
             && !ctx.metadata.contains_key("task_id")
             && ctx
                 .metadata
                 .contains_key(rua_agent::hooks::SECURITY_CHAT_ADDRESS_METADATA_KEY)
             && ctx.metadata.contains_key("turn_id")
             && ctx.metadata.contains_key("chat_configuration_epoch")
-            && matches!(tool, "read" | "edit" | "grep" | "glob")
+            && matches!(tool, "read" | "edit" | "grep" | "glob" | "sync_send")
     }
 
     async fn check(&self, ctx: &ToolContext, args: &Value) -> rua_core::Result<DeviceReadCheck> {
@@ -366,7 +372,7 @@ pub(super) fn other_pending_target_read(
             && request.tool_call_id != call
             && matches!(
                 request.tool_name.as_str(),
-                "read" | "edit" | "grep" | "glob"
+                "read" | "edit" | "grep" | "glob" | "sync_send"
             )
             && request.trigger.source == rua_security::ApprovalTriggerSource::TargetDevice
             && request.status == ApprovalStatus::Pending
@@ -449,7 +455,7 @@ impl DeviceReadCheckRequest {
         outcome
     }
 
-    async fn wait_for_confirmation(
+    pub(super) async fn wait_for_confirmation(
         &self,
         ctx: &ToolContext,
         approvals: &Arc<rua_security::ApprovalAuthority>,

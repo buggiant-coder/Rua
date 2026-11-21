@@ -86,7 +86,7 @@ impl WorkspaceFs {
         self.root.join(expand_tilde(path))
     }
 
-    pub(crate) fn public_path_from_host(&self, path: &Path) -> Option<PathBuf> {
+    pub fn public_path_from_host(&self, path: &Path) -> Option<PathBuf> {
         match &self.execution {
             Some((layout, _)) => layout.linux_compat.as_ref()?.map_host_path(path),
             None => {

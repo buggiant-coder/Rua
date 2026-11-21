@@ -139,18 +139,16 @@ fn model_task_surface_contains_only_the_six_tool_contract() {
 fn collaboration_and_sync_tools_share_the_standard_registry() {
     let registry = full_registry();
     let names: HashSet<_> = registry.list_enabled().into_iter().collect();
-    for name in [
-        "chat_send",
-        "chat_read",
-        "chat_stop",
-        "sync_ls",
-        "sync_send",
-    ] {
+    for name in ["chat_send", "chat_read", "chat_stop", "sync_send"] {
         assert!(
             names.contains(name),
             "missing standard Registry tool: {name}"
         );
     }
+    assert!(
+        !names.contains("sync_ls"),
+        "directory listing uses the read tool"
+    );
 }
 
 #[test]

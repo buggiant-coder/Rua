@@ -18,13 +18,19 @@ export interface SyncTransferListResponse {
 
 export interface SyncTransferJob {
   job_id: string;
-  status: "running" | "succeeded" | "failed" | "cancelled";
+  status: "running" | "succeeded" | "failed" | "cancelled" | "unknown";
   source_device_id: string;
   target_device_id: string;
   target_dir: string;
   files_written: number;
   bytes_written: number;
   total_bytes: number;
+  files: {
+    target_path: string;
+    bytes: number;
+    sha256: string;
+    overwritten: boolean;
+  }[];
   error?: string;
 }
 

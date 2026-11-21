@@ -173,11 +173,7 @@ impl SecurityModule {
         operations: &[ToolCallContext],
         confirmed_invocation: bool,
     ) -> Result<FileReadAdmission, FileReadPolicyError> {
-        use FileReadPolicyError::{Denied, Unavailable};
-        let address = ctx
-            .approval_owner
-            .as_chat_address()
-            .ok_or_else(|| Denied("File operation requires a Chat".into()))?;
+        use FileReadPolicyError::Denied;
         if !matches!(ctx.tool_name.as_str(), "read" | "grep" | "glob" | "edit")
             || operations.iter().any(|operation| {
                 operation.agent_id != ctx.agent_id
@@ -190,6 +186,68 @@ impl SecurityModule {
                 "Resolved file operation does not match the original call".into(),
             ));
         }
+        self.inspect_file_operation_policy(ctx, captured, operations, confirmed_invocation)
+            .await
+    }
+
+    /// Evaluate a real transfer and its local read/write paths using the same rules
+    /// as file tools. Projections never create ToolCalls or approval requests.
+    pub async fn inspect_chat_transfer_operation(
+        &self,
+        original: &ToolCallContext,
+        captured: &SecurityConfig,
+        local_operations: &[ToolCallContext],
+        confirmed_invocation: bool,
+    ) -> Result<FileReadAdmission, FileReadPolicyError> {
+        let denied = || FileReadPolicyError::Denied("Invalid local transfer operation".into());
+        let (source, target) =
+            crate::approval_authority::transfer_devices(&original.tool_input).ok_or_else(denied)?;
+        let local = original.local_device_id.as_deref().ok_or_else(denied)?;
+        if original.tool_name != "sync_send"
+            || original.approval_owner.as_chat_address().is_none()
+            || local_operations.is_empty()
+            || local_operations.iter().any(|operation| {
+                let path_key = match operation.tool_name.as_str() {
+                    "read" if local == source => "file_path",
+                    "edit" if local == target => "path",
+                    _ => return true,
+                };
+                operation.agent_id != original.agent_id
+                    || operation.approval_owner != original.approval_owner
+                    || operation.local_device_id != original.local_device_id
+                    || ["turn_id", "tool_call_id"]
+                        .iter()
+                        .any(|key| operation.metadata.get(*key) != original.metadata.get(*key))
+                    || operation.tool_input["device_id"].as_str() != Some(local)
+                    || !operation.tool_input[path_key]
+                        .as_str()
+                        .is_some_and(rua_core::execution_directory::is_device_absolute_path)
+            })
+        {
+            return Err(denied());
+        }
+        self.inspect_file_operation_policy(
+            original,
+            captured,
+            local_operations,
+            confirmed_invocation,
+        )
+        .await
+    }
+
+    async fn inspect_file_operation_policy(
+        &self,
+        ctx: &ToolCallContext,
+        captured: &SecurityConfig,
+        operations: &[ToolCallContext],
+        confirmed_invocation: bool,
+    ) -> Result<FileReadAdmission, FileReadPolicyError> {
+        use FileReadPolicyError::{Denied, Unavailable};
+        let address = ctx
+            .approval_owner
+            .as_chat_address()
+            .ok_or_else(|| Denied("File operation requires a Chat".into()))?;
+        let transfer = ctx.tool_name == "sync_send";
         let current = self
             .config_store
             .load(&ctx.agent_id)
@@ -228,7 +286,12 @@ impl SecurityModule {
             {
                 admission = FileReadAdmission::RequiresUserConfirmation;
             }
-            for operation in std::iter::once(ctx).chain(operations) {
+            // Transfer parameters name both Devices. Check the whole-call rule, but
+            // apply filesystem guards only to paths projected on this owning Device.
+            if transfer {
+                check_file_operation_denials(ctx, &rules).map_err(Denied)?;
+            }
+            for operation in (!transfer).then_some(ctx).into_iter().chain(operations) {
                 check_file_operation_denials(operation, &rules).map_err(Denied)?;
                 let guard = engine.evaluate(operation);
                 if guard.decision == GuardDecision::Deny {
@@ -246,6 +309,7 @@ impl SecurityModule {
                 // evaluate guards on each resolved name against the matching rule.
                 if guard.decision == GuardDecision::RequiresApproval
                     && !confirmed_invocation
+                    && !(transfer && (requested_allowed || allows(operation)))
                     && (!requested_allowed || (ctx.tool_name != "edit" && !allows(operation)))
                 {
                     admission = FileReadAdmission::RequiresUserConfirmation;

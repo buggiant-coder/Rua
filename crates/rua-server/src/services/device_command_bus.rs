@@ -1034,6 +1034,7 @@ pub(crate) enum DeviceCommandEnvelope {
     ConversationAuthoritySupersede(ConversationAuthoritySupersedeDeviceCommand),
     Terminal(TerminalDeviceCommand),
     SyncTransfer(SyncTransferDeviceCommand),
+    ChatTransfer(Box<super::chat_transfer::ChatTransferCommand>),
     ChatMediaPrepare(ChatMediaPrepareCommand),
     AgentsInstructions(AgentsInstructionCommand),
     ReadCheck(DeviceReadCheckRequest),
@@ -1091,7 +1092,8 @@ impl DeviceCommandEnvelope {
                         .map_or("policy", |c| c.approval_id.as_str())
                 ));
             }
-            Self::ReadCheck(_)
+            Self::ChatTransfer(_)
+            | Self::ReadCheck(_)
             | Self::ReadAllowedFile { .. }
             | Self::CancelFileOperation(_)
             | Self::AgentsInstructions(_) => return None,
@@ -1132,6 +1134,9 @@ pub enum DeviceCommandResponse {
     },
     SyncTransfer {
         response: SyncTransferDeviceResponse,
+    },
+    ChatTransfer {
+        response: super::chat_transfer::ChatTransferResponse,
     },
     ChatMediaPrepared {
         response: ChatMediaPreparedResponse,
@@ -1339,6 +1344,7 @@ pub struct DeviceCommandHandler {
     chat_media_transfers:
         Option<Arc<crate::services::chat_media_transfer::ChatMediaTransferRegistry>>,
     read_check_context: Option<Arc<TargetFileReadContext>>,
+    chat_transfer: Option<Arc<super::chat_transfer::ChatTransferService>>,
     file_operations: Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
     sync_transfer_operations: Arc<crate::services::sync_transfer::SourceTransferOperationStore>,
     project_catalog: Option<Arc<rua_project::ProjectCatalog>>,
@@ -1421,6 +1427,7 @@ impl DeviceCommandHandler {
             sync_transfer_session_manager: None,
             chat_media_transfers: None,
             read_check_context: None,
+            chat_transfer: None,
             file_operations: Arc::default(),
             sync_transfer_operations: Arc::new(
                 crate::services::sync_transfer::SourceTransferOperationStore::new(),
@@ -1496,6 +1503,14 @@ impl DeviceCommandHandler {
 
     pub fn with_read_check_context(mut self, context: Arc<TargetFileReadContext>) -> Self {
         self.read_check_context = Some(context);
+        self
+    }
+
+    pub fn with_chat_transfer(
+        mut self,
+        service: Arc<super::chat_transfer::ChatTransferService>,
+    ) -> Self {
+        self.chat_transfer = Some(service);
         self
     }
 
@@ -1624,6 +1639,18 @@ impl DeviceCommandHandler {
                     },
                 };
             }
+            DeviceCommandEnvelope::ChatTransfer(command)
+                if validate_session_source(peer, &command.context.call.source_device_id)
+                    .is_err()
+                    || command.context.call.target_device_id != self.local_device_id
+                    || command.context.call.source_device_id == self.local_device_id =>
+            {
+                return DeviceCommandResponse::Rejected {
+                    reason: "invalid_chat_transfer_route".into(),
+                    detail: "Transfer invocation does not match the authenticated Device route"
+                        .into(),
+                };
+            }
             DeviceCommandEnvelope::Project(command) => command
                 .validate_session_route(peer, &self.local_device_id)
                 .map_err(|error| ("invalid_project_route", error)),
@@ -1704,6 +1731,21 @@ impl DeviceCommandHandler {
             DeviceCommandEnvelope::Terminal(command) => self.handle_terminal(command).await,
             DeviceCommandEnvelope::SyncTransfer(command) => {
                 self.handle_sync_transfer(command).await
+            }
+            DeviceCommandEnvelope::ChatTransfer(command) => {
+                let Some(service) = &self.chat_transfer else {
+                    return DeviceCommandResponse::Rejected {
+                        reason: "chat_transfer_unavailable".into(),
+                        detail: "Chat file transfer is unavailable on this Device".into(),
+                    };
+                };
+                match service.handle(*command).await {
+                    Ok(response) => DeviceCommandResponse::ChatTransfer { response },
+                    Err(detail) => DeviceCommandResponse::Rejected {
+                        reason: "chat_transfer_rejected".into(),
+                        detail,
+                    },
+                }
             }
             DeviceCommandEnvelope::ChatMediaPrepare(command) => {
                 self.handle_chat_media_prepare(command).await
@@ -2872,6 +2914,7 @@ impl DeviceCommandHandler {
                 let result = crate::services::sync_transfer::send_transfer_stream(
                     &session_manager,
                     crate::services::sync_transfer::TransferStreamSendRequest {
+                        chat_context: None,
                         operation_id: operation_id.clone(),
                         source_device_id,
                         target_device_id: transfer_target_device_id,
@@ -2886,7 +2929,7 @@ impl DeviceCommandHandler {
                         let operations = Arc::clone(&operations);
                         let operation_id = operation_id.clone();
                         move |progress| {
-                            operations.update_progress(&operation_id, progress.bytes_transferred);
+                            operations.update_progress_with_files(&operation_id, &progress);
                         }
                     },
                 )
@@ -2894,7 +2937,10 @@ impl DeviceCommandHandler {
                 match result {
                     Ok(outcome) => operations.succeed(&operation_id, outcome),
                     Err(crate::services::sync_transfer::SyncTransferPlanError::Cancelled) => {
-                        let _ = operations.cancel(&operation_id);
+                        operations.mark_cancelled(&operation_id);
+                    }
+                    Err(error @ crate::services::sync_transfer::SyncTransferPlanError::OutcomeUnknown { .. }) => {
+                        operations.mark_unknown(&operation_id, error.to_string());
                     }
                     Err(error) => operations.fail(&operation_id, error.to_string()),
                 }
@@ -5544,6 +5590,24 @@ pub async fn deliver_sync_transfer_device_command_via_session(
     }
 }
 
+pub async fn deliver_chat_transfer_via_session(
+    session_manager: &rua_device_network::DeviceSessionManager,
+    command: &super::chat_transfer::ChatTransferCommand,
+    timeout: Duration,
+) -> Result<super::chat_transfer::ChatTransferResponse, DeviceCommandDeliveryError> {
+    match deliver_envelope_via_session(
+        session_manager,
+        &command.context.call.target_device_id,
+        DeviceCommandEnvelope::ChatTransfer(Box::new(command.clone())),
+        timeout,
+    )
+    .await?
+    {
+        DeviceCommandResponse::ChatTransfer { response } => Ok(response),
+        response => unexpected_response(response, "Chat file transfer"),
+    }
+}
+
 pub async fn deliver_chat_media_prepare_via_session(
     session_manager: &rua_device_network::DeviceSessionManager,
     command: &ChatMediaPrepareCommand,
@@ -5725,6 +5789,7 @@ fn device_command_response_kind(response: &DeviceCommandResponse) -> &'static st
         DeviceCommandResponse::AuthorityRedirect { .. } => "Conversation Authority Redirect",
         DeviceCommandResponse::Terminal { .. } => "Terminal",
         DeviceCommandResponse::SyncTransfer { .. } => "Sync Transfer",
+        DeviceCommandResponse::ChatTransfer { .. } => "Chat file transfer",
         DeviceCommandResponse::ChatMediaPrepared { .. } => "Chat Media Prepared",
         DeviceCommandResponse::AgentsInstructions { .. } => "AGENTS.md discovery",
         DeviceCommandResponse::FileRead { .. } => "Previously allowed file read",

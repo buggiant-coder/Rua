@@ -39,6 +39,11 @@ pub enum TargetReadRejection {
     FileUnavailable,
 }
 
+enum TransferPathRole {
+    Source,
+    Target,
+}
+
 impl From<FileReadPolicyError> for TargetReadRejection {
     fn from(error: FileReadPolicyError) -> Self {
         match error {
@@ -151,6 +156,123 @@ impl TargetFileReadContext {
         self.checked_chat_configuration(request)
             .await
             .map(|_| ())
+            .map_err(Into::into)
+    }
+
+    pub async fn inspect_transfer_source(
+        &self,
+        request: &TargetChatRead<'_>,
+        requested_path: &str,
+        resolved_path: &str,
+        confirmed_invocation: bool,
+    ) -> Result<FileReadAdmission, TargetReadRejection> {
+        self.inspect_transfer_path(
+            request,
+            requested_path,
+            resolved_path,
+            confirmed_invocation,
+            TransferPathRole::Source,
+        )
+        .await
+    }
+
+    pub async fn inspect_transfer_target(
+        &self,
+        request: &TargetChatRead<'_>,
+        requested_path: &str,
+        resolved_path: &str,
+        confirmed_invocation: bool,
+    ) -> Result<FileReadAdmission, TargetReadRejection> {
+        self.inspect_transfer_path(
+            request,
+            requested_path,
+            resolved_path,
+            confirmed_invocation,
+            TransferPathRole::Target,
+        )
+        .await
+    }
+
+    async fn inspect_transfer_path(
+        &self,
+        request: &TargetChatRead<'_>,
+        requested_path: &str,
+        resolved_path: &str,
+        confirmed_invocation: bool,
+        role: TransferPathRole,
+    ) -> Result<FileReadAdmission, TargetReadRejection> {
+        let (device_field, scopes, tool, path_field) = match role {
+            TransferPathRole::Source => (
+                "source_device_id",
+                request.args["source_paths"]
+                    .as_array()
+                    .and_then(|paths| paths.iter().map(Value::as_str).collect::<Option<Vec<_>>>())
+                    .ok_or(TargetReadRejection::Denied)?,
+                "read",
+                "file_path",
+            ),
+            TransferPathRole::Target => (
+                "target_device_id",
+                vec![request.args["target_dir"]
+                    .as_str()
+                    .ok_or(TargetReadRejection::Denied)?],
+                "edit",
+                "path",
+            ),
+        };
+        if request.tool_name != "sync_send"
+            || request.turn_id.trim().is_empty()
+            || request.tool_call_id.trim().is_empty()
+            || request.args[device_field].as_str() != Some(self.local_device_id.as_str())
+            || ![requested_path, resolved_path].iter().all(|path| {
+                Path::new(path).is_absolute()
+                    && rua_core::execution_directory::is_device_absolute_path(path)
+            })
+        {
+            return Err(TargetReadRejection::Denied);
+        }
+        let captured = self.checked_tool_configuration(request).await?;
+        let fs = rua_tool::WorkspaceFs::for_execution(
+            &self.rua_root,
+            rua_core::runtime_layout::RuntimeLayout::from_current_process(None),
+        )
+        .map_err(|_| TargetReadRejection::Unavailable)?;
+        let resolve = |path: &str| {
+            fs.resolve_for_create(path).map_err(|error| match error {
+                rua_tool::ToolError::SecretDirDenied { .. }
+                | rua_tool::ToolError::PathSecurity { .. } => TargetReadRejection::Denied,
+                _ => TargetReadRejection::FileUnavailable,
+            })
+        };
+        let requested = resolve(requested_path)?;
+        let resolved = resolve(resolved_path)?;
+        if requested != resolved
+            || !scopes.iter().any(|scope| {
+                Path::new(scope).is_absolute()
+                    && resolve(scope).is_ok_and(|root| resolved.starts_with(root))
+            })
+        {
+            return Err(TargetReadRejection::Denied);
+        }
+        let original = self.tool_call_context(request);
+        let operations = [requested_path, resolved_path]
+            .into_iter()
+            .map(|path| {
+                let mut operation = original.clone();
+                operation.tool_name = tool.into();
+                operation.tool_input =
+                    serde_json::json!({"device_id": self.local_device_id, path_field: path});
+                operation
+            })
+            .collect::<Vec<_>>();
+        self.security
+            .inspect_chat_transfer_operation(
+                &original,
+                &captured.security_config,
+                &operations,
+                confirmed_invocation,
+            )
+            .await
             .map_err(Into::into)
     }
 
@@ -544,7 +666,7 @@ impl TargetFileReadContext {
         Ok(path)
     }
 
-    async fn checked_chat_configuration(
+    pub(super) async fn checked_chat_configuration(
         &self,
         request: &TargetChatRead<'_>,
     ) -> Result<ChatHookConfiguration, FileReadPolicyError> {
@@ -615,36 +737,7 @@ impl TargetFileReadContext {
         local_names: &[&str],
         confirmed_invocation: bool,
     ) -> Result<FileReadAdmission, FileReadPolicyError> {
-        let captured = self.checked_chat_configuration(request).await?;
-        let capabilities = captured
-            .capability_configuration
-            .ok_or_else(|| Unavailable("Captured Chat tool selection is unavailable".into()))?;
-        let read = ToolIdentity::builtin(request.tool_name);
-        let definition = self.tool_catalog.get(request.tool_name).ok_or_else(|| {
-            Unavailable("The requested file tool is unavailable on this Device".into())
-        })?;
-        let capability = definition.get("capability").and_then(Value::as_str);
-        let selected = self
-            .tool_config_store
-            .selection_policy(Some(request.agent_id))
-            .await
-            .map_err(|e| Unavailable(e.to_string()))?;
-        if captured
-            .agent_assignment
-            .as_ref()
-            .is_some_and(|assignment| {
-                assignment
-                    .disabled_tools
-                    .iter()
-                    .any(|name| name == request.tool_name)
-            })
-            || !capabilities.selection_policy.selects(&read, capability)
-            || !selected.selects(&read, capability)
-        {
-            return Err(Denied(
-                "The requested file tool is disabled for this Chat or target Agent".into(),
-            ));
-        }
+        let captured = self.checked_tool_configuration(request).await?;
         let ctx = self.tool_call_context(request);
         if request.tool_name == "read" {
             return self
@@ -680,6 +773,44 @@ impl TargetFileReadContext {
                 confirmed_invocation,
             )
             .await
+    }
+
+    async fn checked_tool_configuration(
+        &self,
+        request: &TargetChatRead<'_>,
+    ) -> Result<ChatHookConfiguration, FileReadPolicyError> {
+        let captured = self.checked_chat_configuration(request).await?;
+        let capabilities = captured
+            .capability_configuration
+            .as_ref()
+            .ok_or_else(|| Unavailable("Captured Chat tool selection is unavailable".into()))?;
+        let read = ToolIdentity::builtin(request.tool_name);
+        let definition = self.tool_catalog.get(request.tool_name).ok_or_else(|| {
+            Unavailable("The requested file tool is unavailable on this Device".into())
+        })?;
+        let capability = definition.get("capability").and_then(Value::as_str);
+        let selected = self
+            .tool_config_store
+            .selection_policy(Some(request.agent_id))
+            .await
+            .map_err(|e| Unavailable(e.to_string()))?;
+        if captured
+            .agent_assignment
+            .as_ref()
+            .is_some_and(|assignment| {
+                assignment
+                    .disabled_tools
+                    .iter()
+                    .any(|name| name == request.tool_name)
+            })
+            || !capabilities.selection_policy.selects(&read, capability)
+            || !selected.selects(&read, capability)
+        {
+            return Err(Denied(
+                "The requested file tool is disabled for this Chat or target Agent".into(),
+            ));
+        }
+        Ok(captured)
     }
 
     fn tool_call_context(&self, request: &TargetChatRead<'_>) -> ToolCallContext {

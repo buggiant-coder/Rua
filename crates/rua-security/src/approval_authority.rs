@@ -576,9 +576,10 @@ impl ApprovalAuthority {
         let args = &input.tool_call.args;
         let reuse_options = if !target_confirmation
             || (input.owner.as_chat_address().is_some()
-                && args["device_id"]
+                && (args["device_id"]
                     .as_str()
-                    .is_some_and(|device| device_file_operation(&input.tool_name, args, device)))
+                    .is_some_and(|device| device_file_operation(&input.tool_name, args, device))
+                    || input.tool_name == "sync_send" && transfer_devices(args).is_some()))
         {
             reuse_options_for(
                 &input.owner,
@@ -1175,7 +1176,7 @@ impl ApprovalAuthority {
         if ctx.tool_name != "read" || ctx.tool_input["file_path"].as_str() != Some(file_path) {
             return None;
         }
-        self.claim_authenticated_file(ctx, target_device_id, false, |_| true)
+        self.claim_authenticated_file(ctx, target_device_id, false, false, |_| true)
             .await
     }
 
@@ -1201,7 +1202,26 @@ impl ApprovalAuthority {
         target_device_id: &str,
         claim_dispatch: impl FnOnce(&str) -> bool,
     ) -> Option<String> {
-        self.claim_authenticated_file(ctx, target_device_id, true, claim_dispatch)
+        if ctx.tool_name == "sync_send" {
+            return None;
+        }
+        self.claim_authenticated_file(ctx, target_device_id, true, false, claim_dispatch)
+            .await
+    }
+
+    /// Each participant claims its pre-existing, single-use dispatch permit for one
+    /// approved transfer. The caller verifies the active authority/configuration and
+    /// drops all remaining permits when that invocation ends or is cancelled.
+    pub async fn consume_authenticated_transfer_confirmation_if(
+        &self,
+        ctx: &crate::ToolCallContext,
+        target_device_id: &str,
+        claim_dispatch: impl FnOnce(&str) -> bool,
+    ) -> Option<String> {
+        if ctx.tool_name != "sync_send" {
+            return None;
+        }
+        self.claim_authenticated_file(ctx, target_device_id, true, true, claim_dispatch)
             .await
     }
 
@@ -1210,6 +1230,7 @@ impl ApprovalAuthority {
         ctx: &crate::ToolCallContext,
         target_device_id: &str,
         allow_persistent: bool,
+        transfer_participant: bool,
         claim_dispatch: impl FnOnce(&str) -> bool,
     ) -> Option<String> {
         let address = ctx.approval_owner.as_chat_address()?;
@@ -1250,7 +1271,8 @@ impl ApprovalAuthority {
         });
         let request = matches.next()?;
         if matches.next().is_some()
-            || request.status != ApprovalStatus::Approved
+            || !(request.status == ApprovalStatus::Approved
+                || transfer_participant && request.status == ApprovalStatus::Consumed)
             || request.tool_name != ctx.tool_name
             || request.tool_call.args != ctx.tool_input
         {
@@ -1280,7 +1302,14 @@ impl ApprovalAuthority {
         {
             return None;
         }
-        if decision == AuthenticatedApprovalDecision::RunOnce {
+        if request.status == ApprovalStatus::Consumed
+            && decision != AuthenticatedApprovalDecision::RunOnce
+        {
+            return None;
+        }
+        if decision == AuthenticatedApprovalDecision::RunOnce
+            && request.status == ApprovalStatus::Approved
+        {
             request.status = ApprovalStatus::Consumed;
             let _ = self.tx.send(ApprovalEvent {
                 event: "approval.updated".into(),
@@ -1708,6 +1737,9 @@ pub(crate) struct PermissionToolCall<'a> {
 }
 
 fn is_file_operation(tool_name: &str, args: &serde_json::Value) -> bool {
+    if tool_name == "sync_send" {
+        return transfer_devices(args).is_some();
+    }
     if !args.get("device_id").is_none_or(|device| {
         device
             .as_str()
@@ -1740,6 +1772,32 @@ fn absolute_file_path(path: &str) -> bool {
         && !path.chars().any(char::is_control)
 }
 
+pub(crate) fn transfer_devices(args: &serde_json::Value) -> Option<(&str, &str)> {
+    let valid_device = |field| {
+        args.get(field)?
+            .as_str()
+            .filter(|id| !id.is_empty() && id.trim() == *id)
+    };
+    let source = valid_device("source_device_id")?;
+    let target = valid_device("target_device_id")?;
+    let paths = args.get("source_paths")?.as_array()?;
+    if paths.is_empty()
+        || !paths
+            .iter()
+            .all(|path| path.as_str().is_some_and(absolute_file_path))
+        || !args
+            .get("target_dir")?
+            .as_str()
+            .is_some_and(absolute_file_path)
+        || args.get("conflict").is_some_and(|value| {
+            !value.is_null() && !matches!(value.as_str(), Some("rename" | "overwrite" | "fail"))
+        })
+    {
+        return None;
+    }
+    Some((source, target))
+}
+
 impl<'a> PermissionToolCall<'a> {
     pub(crate) fn new(
         tool_name: &'a str,
@@ -1753,6 +1811,12 @@ impl<'a> PermissionToolCall<'a> {
             bound_file: None,
             unqualified_local_file: None,
         };
+        if tool_name == "sync_send" && transfer_devices(args).is_some() {
+            // Both Devices are already explicit; do not add a third device_id or
+            // reinterpret this transfer as an unqualified local file operation.
+            call.bound_file = Some(Cow::Borrowed(args));
+            return call;
+        }
         let Some(local) = local_device_id.filter(|id| !id.is_empty() && id.trim() == *id) else {
             return call;
         };
@@ -1864,7 +1928,7 @@ impl ApprovalReuseMatcher {
 
     fn file_args_with_asterisk(&self) -> bool {
         matches!(self, Self::ToolCall { tool_name, input_params: Some(params) }
-            if matches!(tool_name.as_str(), "read" | "grep" | "glob" | "edit") && params.contains('*'))
+            if matches!(tool_name.as_str(), "read" | "grep" | "glob" | "edit" | "sync_send") && params.contains('*'))
     }
 
     fn pattern(
@@ -1958,6 +2022,10 @@ fn looks_like_path(token: &str) -> bool {
 }
 
 fn device_file_operation(tool: &str, args: &serde_json::Value, target: &str) -> bool {
+    if tool == "sync_send" {
+        return transfer_devices(args)
+            .is_some_and(|(source, destination)| target == source || target == destination);
+    }
     if args["device_id"].as_str() != Some(target) || !is_file_operation(tool, args) {
         return false;
     }

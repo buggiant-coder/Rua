@@ -10,11 +10,8 @@ use crate::schema::ToolSpec;
 
 #[derive(Debug, Clone)]
 pub enum SyncTransferRequest {
-    List {
-        target_device_id: String,
-        path: String,
-    },
     Send {
+        arguments: serde_json::Value,
         source_device_id: String,
         source_paths: Vec<String>,
         target_device_id: String,
@@ -25,7 +22,11 @@ pub enum SyncTransferRequest {
 
 #[async_trait]
 pub trait SyncTransferRuntime: Send + Sync {
-    async fn execute(&self, request: SyncTransferRequest) -> Result<serde_json::Value, String>;
+    async fn execute(
+        &self,
+        request: SyncTransferRequest,
+        context: &ToolContext,
+    ) -> Result<serde_json::Value, String>;
 }
 
 pub struct SyncTransferRuntimeHandle {
@@ -38,21 +39,7 @@ impl SyncTransferRuntimeHandle {
     }
 }
 
-#[derive(Clone, Copy)]
-enum Operation {
-    List,
-    Send,
-}
-
-pub struct SyncTransferTool {
-    operation: Operation,
-}
-
-#[derive(Deserialize)]
-struct ListArgs {
-    target_device_id: String,
-    path: String,
-}
+pub struct SyncTransferTool;
 
 #[derive(Deserialize)]
 struct SendArgs {
@@ -65,44 +52,23 @@ struct SendArgs {
 }
 
 impl SyncTransferTool {
-    fn spec(operation: Operation) -> ToolSpec {
-        let (name, description, parameters, read_only) = match operation {
-            Operation::List => (
-                "sync_ls",
-                "List files and directories on a paired device.",
-                serde_json::json!({
+    fn spec() -> ToolSpec {
+        ToolSpec {
+            name: "sync_send".into(),
+            description: "Explicitly copy selected files or directories between devices. Both endpoints use their owning device's absolute filesystem paths. Waits for completion evidence and returns actual destination paths; never deletes the source.".into(),
+            parameters: serde_json::json!({
                     "type":"object",
                     "properties":{
-                        "target_device_id":{"type":"string"},
-                        "path":{"type":"string"}
-                    },
-                    "required":["target_device_id","path"]
-                }),
-                true,
-            ),
-            Operation::Send => (
-                "sync_send",
-                "Transfer files or directories between paired devices.",
-                serde_json::json!({
-                    "type":"object",
-                    "properties":{
-                        "source_device_id":{"type":"string"},
-                        "source_paths":{"type":"array","items":{"type":"string"}},
-                        "target_device_id":{"type":"string"},
-                        "target_dir":{"type":"string"},
-                        "conflict":{"type":"string","enum":["rename","overwrite","fail"]}
+                        "source_device_id":{"type":"string","description":"Persistent ID of the device owning the source paths."},
+                        "source_paths":{"type":"array","minItems":1,"items":{"type":"string"},"description":"Absolute real filesystem paths on source_device_id; only these selected files or directories are copied."},
+                        "target_device_id":{"type":"string","description":"Persistent ID of the device receiving the files."},
+                        "target_dir":{"type":"string","description":"Absolute real path of the destination directory on target_device_id."},
+                        "conflict":{"type":"string","enum":["rename","overwrite","fail"],"default":"rename","description":"How to handle existing destinations. Defaults to rename; overwrite must be explicit."}
                     },
                     "required":["source_device_id","source_paths","target_device_id","target_dir"]
-                }),
-                false,
-            ),
-        };
-        ToolSpec {
-            name: name.into(),
-            description: description.into(),
-            parameters,
+            }),
             annotations: ExtendedToolAnnotations {
-                read_only,
+                read_only: false,
                 requires_approval: ApprovalPolicy::ToolGuardDecides,
                 ..Default::default()
             },
@@ -123,14 +89,11 @@ impl SyncTransferTool {
 #[async_trait]
 impl Tool for SyncTransferTool {
     fn name(&self) -> &str {
-        match self.operation {
-            Operation::List => "sync_ls",
-            Operation::Send => "sync_send",
-        }
+        "sync_send"
     }
 
     fn schema(&self) -> ToolSchema {
-        let spec = Self::spec(self.operation);
+        let spec = Self::spec();
         ToolSchema {
             name: spec.name,
             description: spec.description,
@@ -143,50 +106,78 @@ impl Tool for SyncTransferTool {
         args: serde_json::Value,
         context: ToolContext,
     ) -> rua_core::Result<ToolResult> {
+        if context
+            .cancel
+            .as_ref()
+            .is_some_and(|cancel| *cancel.borrow())
+        {
+            return Err(rua_core::RuaError::Cancelled);
+        }
         let tool_name = self.name().to_string();
         let error = |message: String| rua_core::RuaError::Tool {
             tool: tool_name.clone(),
             message,
         };
-        let request = match self.operation {
-            Operation::List => {
-                let args: ListArgs =
-                    serde_json::from_value(args).map_err(|e| error(e.to_string()))?;
-                SyncTransferRequest::List {
-                    target_device_id: args.target_device_id,
-                    path: args.path,
-                }
+        let arguments = args;
+        let args: SendArgs =
+            serde_json::from_value(arguments.clone()).map_err(|e| error(e.to_string()))?;
+        for device in [&args.source_device_id, &args.target_device_id] {
+            if device.trim().is_empty() || device.trim() != device {
+                return Err(error(
+                    "source_device_id and target_device_id must be nonempty Device IDs".into(),
+                ));
             }
-            Operation::Send => {
-                let args: SendArgs =
-                    serde_json::from_value(args).map_err(|e| error(e.to_string()))?;
-                SyncTransferRequest::Send {
-                    source_device_id: args.source_device_id,
-                    source_paths: args.source_paths,
-                    target_device_id: args.target_device_id,
-                    target_dir: args.target_dir,
-                    conflict: args.conflict,
-                }
-            }
+        }
+        if args.source_paths.is_empty() {
+            return Err(error("source_paths must not be empty".into()));
+        }
+        if args
+            .source_paths
+            .iter()
+            .chain(std::iter::once(&args.target_dir))
+            .any(|path| !rua_core::execution_directory::is_device_absolute_path(path))
+        {
+            return Err(error("source_paths and target_dir must be absolute filesystem paths on their owning devices".into()));
+        }
+        if args
+            .conflict
+            .as_deref()
+            .is_some_and(|policy| !matches!(policy, "rename" | "overwrite" | "fail"))
+        {
+            return Err(error("conflict must be rename, overwrite, or fail".into()));
+        }
+        let request = SyncTransferRequest::Send {
+            arguments,
+            source_device_id: args.source_device_id,
+            source_paths: args.source_paths,
+            target_device_id: args.target_device_id,
+            target_dir: args.target_dir,
+            conflict: args.conflict,
         };
         let value = Self::runtime(&context)
             .map_err(error)?
-            .execute(request)
+            .execute(request, &context)
             .await
             .map_err(error)?;
-        Ok(ToolResult::text(&tool_name, value.to_string()))
+        let mut result = ToolResult::text(&tool_name, value.to_string());
+        if value["status"] == "not_executed" && value["agents_instructions"] == "reconsider" {
+            result
+                .metadata
+                .insert("execution_status".into(), "not_executed".into());
+            result
+                .metadata
+                .insert("agents_instructions".into(), "reconsider".into());
+        }
+        Ok(result)
     }
 }
 
 pub fn register_sync_transfer_tools(
     registry: &mut crate::ToolRegistry,
 ) -> Result<(), crate::ToolError> {
-    for operation in [Operation::List, Operation::Send] {
-        registry.register(
-            Arc::new(SyncTransferTool { operation }),
-            SyncTransferTool::spec(operation),
-            crate::ToolNamespace::Builtin,
-        )?;
-    }
-    Ok(())
+    registry.register(
+        Arc::new(SyncTransferTool),
+        SyncTransferTool::spec(),
+        crate::ToolNamespace::Builtin,
+    )
 }

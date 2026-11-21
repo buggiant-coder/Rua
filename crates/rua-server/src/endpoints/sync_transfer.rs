@@ -142,7 +142,7 @@ async fn send_transfer(
                             cancel_rx,
                             move |progress| {
                                 jobs_for_progress
-                                    .update_progress(&progress_job_id, progress.bytes_transferred);
+                                    .update_progress_with_files(&progress_job_id, &progress);
                             },
                         )
                         .await
@@ -161,6 +161,7 @@ async fn send_transfer(
                         send_transfer_stream(
                             &session_manager,
                             TransferStreamSendRequest {
+                                chat_context: None,
                                 operation_id: job_id.clone(),
                                 source_device_id: local_device_id_for_task.clone(),
                                 target_device_id: target_device_id.clone(),
@@ -172,7 +173,7 @@ async fn send_transfer(
                             cancel_rx,
                             move |progress| {
                                 jobs_for_progress
-                                    .update_progress(&progress_job_id, progress.bytes_transferred);
+                                    .update_progress_with_files(&progress_job_id, &progress);
                             },
                         )
                         .await
@@ -213,7 +214,7 @@ async fn send_transfer(
                         },
                         move |progress| {
                             jobs_for_progress
-                                .update_progress(&progress_job_id, progress.bytes_transferred);
+                                .update_progress_with_files(&progress_job_id, &progress);
                         },
                     )
                     .await
@@ -226,6 +227,11 @@ async fn send_transfer(
 
         match result {
             Ok(outcome) => jobs.succeed(&job_id, outcome),
+            Err(
+                error @ crate::services::sync_transfer::SyncTransferPlanError::OutcomeUnknown {
+                    ..
+                },
+            ) => jobs.mark_unknown(&job_id, error.to_string()),
             Err(error) => jobs.fail(&job_id, error.to_string()),
         }
     });

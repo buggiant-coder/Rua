@@ -9,7 +9,9 @@ use rua_core::agents_instruction_discovery::{
     AgentsInstructionDiscovery, AgentsInstructionDiscoveryRequest, AgentsInstructionLoader,
     AgentsInstructionSource, AgentsInstructionTargetKind, AGENTS_INSTRUCTIONS_MAX_BYTES,
 };
-use rua_core::agents_instructions::{AgentsInstructionDecision, AgentsInstructions};
+use rua_core::agents_instructions::{
+    AgentsInstructionDecision, AgentsInstructionTarget, AgentsInstructions,
+};
 use rua_core::tool::ToolContext;
 use rua_core::{Result, RuaError};
 use rua_session::{
@@ -310,17 +312,37 @@ impl AgentsInstructions for TurnAgentsInstructions {
         ctx: &ToolContext,
         cancellation: CancellationToken,
     ) -> Result<AgentsInstructionDecision> {
+        self.before_targets(&explicit_targets(call, ctx), ctx, cancellation)
+            .await
+    }
+
+    async fn before_targets(
+        &self,
+        targets: &[AgentsInstructionTarget],
+        ctx: &ToolContext,
+        cancellation: CancellationToken,
+    ) -> Result<AgentsInstructionDecision> {
         if cancellation.is_cancelled() {
             return Err(RuaError::Cancelled);
         }
-        let targets = explicit_targets(call, ctx);
         let mut scopes = Vec::new();
-        for (device, path, kind) in targets {
+        for target in targets {
+            if target.device_id.trim().is_empty()
+                || !rua_core::execution_directory::is_device_absolute_path(&target.path)
+            {
+                continue;
+            }
             if let Some(directory) = self
-                .discover(&device, &path, kind, ctx, cancellation.clone())
+                .discover(
+                    &target.device_id,
+                    &target.path,
+                    target.kind,
+                    ctx,
+                    cancellation.clone(),
+                )
                 .await?
             {
-                scopes.push((device, directory));
+                scopes.push((target.device_id.clone(), directory));
             }
         }
         if cancellation.is_cancelled() {
@@ -384,11 +406,11 @@ fn truncate_utf8(text: &mut String, max_bytes: usize) {
     text.truncate(end);
 }
 
-fn explicit_targets(
-    call: &ToolCall,
-    ctx: &ToolContext,
-) -> Vec<(String, String, AgentsInstructionTargetKind)> {
+fn explicit_targets(call: &ToolCall, ctx: &ToolContext) -> Vec<AgentsInstructionTarget> {
     let args = &call.arguments;
+    if call.name == "sync_send" {
+        return transfer_targets(args);
+    }
     let local_device = ctx.local_device_id.as_deref();
     let device = if call.name == "bash" {
         local_device
@@ -452,7 +474,61 @@ fn explicit_targets(
             } else {
                 return None;
             };
-            Some((device.to_owned(), path.to_str()?.to_owned(), kind))
+            Some(AgentsInstructionTarget {
+                device_id: device.to_owned(),
+                path: path.to_str()?.to_owned(),
+                kind,
+            })
         })
+        .collect()
+}
+
+fn transfer_targets(args: &serde_json::Value) -> Vec<AgentsInstructionTarget> {
+    let Some(source_device) = args["source_device_id"]
+        .as_str()
+        .filter(|id| !id.trim().is_empty())
+    else {
+        return Vec::new();
+    };
+    let Some(target_device) = args["target_device_id"]
+        .as_str()
+        .filter(|id| !id.trim().is_empty())
+    else {
+        return Vec::new();
+    };
+    let Some(target_dir) = args["target_dir"]
+        .as_str()
+        .filter(|path| rua_core::execution_directory::is_device_absolute_path(path))
+    else {
+        return Vec::new();
+    };
+    let Some(paths) = args["source_paths"].as_array() else {
+        return Vec::new();
+    };
+    let Some(paths) = paths
+        .iter()
+        .map(|path| {
+            path.as_str()
+                .filter(|path| rua_core::execution_directory::is_device_absolute_path(path))
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Vec::new();
+    };
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    paths
+        .into_iter()
+        .map(|path| AgentsInstructionTarget {
+            device_id: source_device.into(),
+            path: path.into(),
+            kind: AgentsInstructionTargetKind::Auto,
+        })
+        .chain(std::iter::once(AgentsInstructionTarget {
+            device_id: target_device.into(),
+            path: target_dir.into(),
+            kind: AgentsInstructionTargetKind::Directory,
+        }))
         .collect()
 }
