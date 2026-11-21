@@ -386,6 +386,7 @@
       "clean": "Нет изменений",
       "latestCommit": "Последний коммит",
       "history": "История коммитов",
+      "incompleteGitHistory": "Не удалось загрузить оставшуюся историю коммитов. {{detail}}",
       "loadMore": "Загрузить ещё",
       "notGitRepository": "Корень Project не является репозиторием Git",
       "detachedHead": "Отделённый HEAD",

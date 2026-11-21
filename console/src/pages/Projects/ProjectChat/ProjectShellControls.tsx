@@ -293,7 +293,7 @@ function ProjectShellDrawerContent({
       gitRead.current = request;
       setGitLoading(!offset);
       setGitLoadingMore(Boolean(offset));
-      setGitError(null);
+      if (!offset) setGitError(null);
       try {
         const [status, history] = await Promise.all([
           offset
@@ -311,6 +311,7 @@ function ProjectShellDrawerContent({
           ),
         ]);
         if (request.signal.aborted) return;
+        setGitError(null);
         if (status) setGitStatus(status);
         setGitHistory((current) => {
           if (!offset) return history.items;
@@ -443,7 +444,7 @@ function ProjectShellDrawerContent({
           />
         </Tooltip>
       </div>
-      {gitError ? (
+      {gitError && !gitStatus ? (
         <WorkspaceState icon={<TriangleAlert size={15} />} text={gitError} />
       ) : gitLoading && !gitStatus ? (
         <WorkspaceState
@@ -496,6 +497,13 @@ function ProjectShellDrawerContent({
               </div>
               <div className={styles.gitHistoryList}>
                 <GitHistoryGraph commits={gitHistory} />
+                {gitError && (
+                  <div className={styles.workspaceEmpty} role="alert">
+                    {t("projects.workspace.incompleteGitHistory", {
+                      detail: gitError,
+                    })}
+                  </div>
+                )}
                 {hasMoreGitHistory ? (
                   <button
                     type="button"

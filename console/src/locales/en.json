@@ -487,6 +487,7 @@
       "clean": "No changes",
       "latestCommit": "Latest commit",
       "history": "Commit history",
+      "incompleteGitHistory": "Could not load the rest of the commit history. {{detail}}",
       "loadMore": "Load more",
       "notGitRepository": "This Project root is not a Git repository",
       "detachedHead": "Detached HEAD",

@@ -426,8 +426,21 @@ test("resource browsing, Git, and folder creation follow the selected Device and
   ).toHaveLength(2);
   await dialog.getByRole("tab", { name: "Git", exact: true }).click();
   await expect(dialog.getByText("phone commit 1")).toBeVisible();
-  await dialog.getByRole("button", { name: "Load more" }).click();
+  const moreCommits = dialog.getByRole("button", { name: "Load more" });
+  online = false;
+  await moreCommits.click();
+  await expect(dialog.getByText(/Phone offline/)).toBeVisible();
+  await expect(dialog.getByText("phone commit 1")).toBeVisible();
+  await expect(dialog.getByText("phone-branch")).toBeVisible();
+  await expect(dialog.getByRole("alert")).toContainText(/commit history/i);
+  online = true;
+  await moreCommits.click();
   await expect(dialog.getByText("phone commit 2")).toBeVisible();
+  await expect(dialog.getByText("phone commit 1")).toHaveCount(1);
+  await expect(dialog.getByText(/Phone offline/)).toHaveCount(0);
+  expect(
+    workspace.filter((v) => v === "phone git/history /shared/repo 1"),
+  ).toHaveLength(2);
   expect(workspace.filter((v) => v.startsWith("phone git "))).toHaveLength(1);
   online = false;
   await dialog.getByRole("button", { name: "Refresh Git status" }).click();

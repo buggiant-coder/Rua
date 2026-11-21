@@ -486,6 +486,7 @@
       "clean": "没有更改",
       "latestCommit": "最近提交",
       "history": "提交历史",
+      "incompleteGitHistory": "未能加载剩余的提交记录。{{detail}}",
       "loadMore": "加载更多",
       "notGitRepository": "项目根目录不是 Git 仓库",
       "detachedHead": "分离 HEAD",
