@@ -179,7 +179,7 @@ export type ActivityUpdate = {
   completedDeliveries: string[];
   refreshHistory: boolean;
   hydrationDevices: Set<string>;
-  refreshApproval: boolean;
+  refreshApproval: false | "request" | "turn_terminal";
   event?: ConversationStreamEvent;
   fold?: ConversationStreamFold;
   compaction?: CompactionStatus | null;
@@ -366,6 +366,7 @@ class ConversationActivity {
           break;
         case "turn_terminal":
           update.refreshHistory = true;
+          update.refreshApproval ||= "turn_terminal";
           if (frame.deviceDeliveryId)
             update.completedDeliveries.push(frame.deviceDeliveryId);
           break;
@@ -374,7 +375,7 @@ class ConversationActivity {
         frame.kind === "message_updated" &&
         frame.message.type === "tool_approval_request"
       )
-        update.refreshApproval = true;
+        update.refreshApproval = "request";
       if (frame.kind === "context_compaction") {
         update.compaction =
           frame.status === "started"

@@ -2096,7 +2096,7 @@ export function useConversationViewRuntime({
               } else worker.requestHistory();
             }
             if (decision.refreshApproval) {
-              sawApprovalRequest = true;
+              sawApprovalRequest ||= decision.refreshApproval === "request";
               worker.requestApproval();
             }
           };

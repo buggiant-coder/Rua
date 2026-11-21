@@ -1882,6 +1882,10 @@ describe("OwnedConversationSurface", () => {
           tool_call_id: "read-call",
           tool_name: "read",
           status: "pending",
+          trigger: {
+            source: "target_device",
+            message: `Device phone-id requires your confirmation for this read of ${path}.`,
+          },
           tool_call: {
             display: "read …",
             args: { device_id: "phone-id", file_path: path, limit: 4 },
@@ -1918,6 +1922,9 @@ describe("OwnedConversationSurface", () => {
       </MemoryRouter>,
     );
     const tray = within(await screen.findByLabelText("Approval queue"));
+    expect(
+      tray.getByText("read", { exact: true }).nextElementSibling,
+    ).toHaveTextContent(/^Target device$/);
     expect(tray.getByText("phone-id").parentElement).toHaveTextContent(
       "My phone · phone-id",
     );

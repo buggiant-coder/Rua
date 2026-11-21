@@ -1321,6 +1321,8 @@ function approvalTriggerSourceLabel(t: Translate, source: string): string {
     });
   if (source === "file_guard")
     return t("chat.approval.source.fileGuard", { defaultValue: "File Guard" });
+  if (source === "target_device")
+    return t("chat.approval.targetDevice", { defaultValue: "Target device" });
   return source;
 }
 

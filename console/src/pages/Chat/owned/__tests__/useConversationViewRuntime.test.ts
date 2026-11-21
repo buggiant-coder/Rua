@@ -8364,7 +8364,7 @@ describe("useConversationViewRuntime", () => {
     },
   );
 
-  it("does not fabricate resolved approvals on stop before server confirmation", async () => {
+  it("keeps a stopped read pending until the authoritative snapshot supersedes it", async () => {
     chatApiMock.getChat.mockResolvedValue({
       status: "running",
       messages: [],
@@ -8376,30 +8376,43 @@ describe("useConversationViewRuntime", () => {
         driver: "rua",
       },
     });
-    consoleApiMock.getApprovalSnapshot.mockResolvedValueOnce({
-      pending: [
-        {
-          id: "approval-stop",
-          agent_id: "agent-a",
-          chat_id: "chat-1",
-          turn_id: "turn-1",
-          tool_call_id: "call-1",
-          tool_name: "Bash",
-          status: "pending",
-          trigger: {
-            source: "approval_mode",
-            message: "Bash requires approval",
-          },
-          tool_call: {
-            display: "Bash(git status)",
-            args: { command: "git status" },
-          },
-          created_at: "2026-06-23T00:00:00Z",
-          reuse_options: [],
-        },
-      ],
-      resolved: [],
-    });
+    const request = {
+      id: "approval-stop",
+      agent_id: "agent-a",
+      owner: { kind: "chat", address: { chat_id: "chat-1" } },
+      turn_id: "turn-1",
+      tool_call_id: "call-1",
+      tool_name: "read",
+      status: "pending",
+      trigger: { source: "approval_mode", message: "read requires approval" },
+      tool_call: {
+        display: "read marker.txt",
+        args: { file_path: "marker.txt" },
+      },
+      created_at: "2026-06-23T00:00:00Z",
+      reuse_options: [],
+    };
+    const live = controlledSseResponse();
+    let superseded = false;
+    vi.stubGlobal(
+      "fetch",
+      routeFetch((url) => {
+        if (url.endsWith("/chats/chat-1/approvals/snapshot")) {
+          return jsonResponse(
+            superseded
+              ? {
+                  pending: [],
+                  resolved: [{ ...request, status: "superseded" }],
+                }
+              : { pending: [request], resolved: [] },
+          );
+        }
+        if (url.endsWith("/console/live")) return live.response;
+      }),
+    );
+    consoleApiMock.getApprovalSnapshot.mockImplementation(
+      consoleApi.getApprovalSnapshot,
+    );
     const { result } = renderHook(() =>
       useConversationViewRuntime({
         address: { chatId: "chat-1" },
@@ -8416,6 +8429,20 @@ describe("useConversationViewRuntime", () => {
 
     expect(result.current.approvalSnapshot.pending).toHaveLength(1);
     expect(result.current.approvalSnapshot.resolved).toHaveLength(0);
+    superseded = true;
+    await act(async () => {
+      live.send({
+        type: "turn_terminal",
+        turn_id: "turn-1",
+        status: "interrupted",
+      });
+    });
+    await waitFor(() =>
+      expect(result.current.approvalSnapshot.pending).toHaveLength(0),
+    );
+    expect(result.current.approvalSnapshot.resolved).toMatchObject([
+      { id: "approval-stop", status: "superseded" },
+    ]);
   });
 
   it.each(["agent", "project"] as const)(

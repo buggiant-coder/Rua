@@ -34,6 +34,8 @@ describe("HistoryReconciliationWorker", () => {
     worker.requestHistory();
     worker.requestHistory();
     worker.requestApproval();
+    worker.requestApproval();
+    worker.requestApproval();
     const consumedFrames: string[] = [];
     consumedFrames.push("text-after-refresh-request", "terminal-after-request");
     await flush();
@@ -48,6 +50,7 @@ describe("HistoryReconciliationWorker", () => {
     firstApproval.resolve();
     await flush();
     expect(refreshHistory).toHaveBeenCalledTimes(2);
+    expect(refreshApproval).toHaveBeenCalledTimes(2);
   });
 
   it("does not start queued work after cancellation", async () => {

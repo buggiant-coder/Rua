@@ -289,7 +289,10 @@ function approvalReason(request: ApprovalRequest): string {
   return message.trim() || request.tool_call.display || request.tool_name;
 }
 
-function approvalSource(request: ApprovalRequest): string {
+function approvalSource(
+  request: ApprovalRequest,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
   const trigger =
     request.trigger && typeof request.trigger === "object"
       ? (request.trigger as Record<string, unknown>)
@@ -298,6 +301,8 @@ function approvalSource(request: ApprovalRequest): string {
   if (source === "approval_mode") return "Approval Mode";
   if (source === "tool_guard") return "Safety Rule";
   if (source === "file_guard") return "File Guard";
+  if (source === "target_device")
+    return t("chat.approval.targetDevice", { defaultValue: "Target device" });
   return source || "Approval";
 }
 
@@ -400,7 +405,7 @@ function ApprovalTray({
                     request.acp_task.task_id,
                   )} · #${request.acp_task.attempt_no}`
                 : `ACP · ${request.runner || "runner"}`
-              : approvalSource(request)}
+              : approvalSource(request, t)}
           </span>
         </div>
         <div className="rua-approval-tray-count">
