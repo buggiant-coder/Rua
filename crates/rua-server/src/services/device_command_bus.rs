@@ -226,6 +226,8 @@ pub enum ConversationControlDeviceAction {
     },
     ApprovalSnapshot,
     ClaimReadApproval {
+        #[serde(default = "super::device_read_check::read_tool_name")]
+        tool_name: String,
         dispatch_token: uuid::Uuid,
         approval_id: String,
         turn_id: String,
@@ -1028,6 +1030,7 @@ pub(crate) enum DeviceCommandEnvelope {
     SyncTransfer(SyncTransferDeviceCommand),
     ChatMediaPrepare(ChatMediaPrepareCommand),
     ReadCheck(DeviceReadCheckRequest),
+    CancelFileOperation(DeviceReadCheckRequest),
     ReadAllowedFile {
         request: DeviceReadCheckRequest,
         max_text_bytes: usize,
@@ -1071,7 +1074,19 @@ impl DeviceCommandEnvelope {
             Self::Terminal(command) => ("terminal", command.command_id.as_str()),
             Self::SyncTransfer(command) => ("sync_transfer", command.command_id.as_str()),
             Self::ChatMediaPrepare(command) => ("chat_media_prepare", command.command_id.as_str()),
-            Self::ReadCheck(_) | Self::ReadAllowedFile { .. } => return None,
+            Self::ReadAllowedFile { request, .. } if request.tool_name == "edit" => {
+                return Some(format!(
+                    "file_edit:{}:{}",
+                    request.operation_key(),
+                    request
+                        .confirmation
+                        .as_ref()
+                        .map_or("policy", |c| c.approval_id.as_str())
+                ));
+            }
+            Self::ReadCheck(_) | Self::ReadAllowedFile { .. } | Self::CancelFileOperation(_) => {
+                return None
+            }
             Self::Project(command) => ("project", command.command_id.as_str()),
             Self::Collaboration(command) => ("collaboration", command.command_id.as_str()),
         };
@@ -1313,6 +1328,7 @@ pub struct DeviceCommandHandler {
     chat_media_transfers:
         Option<Arc<crate::services::chat_media_transfer::ChatMediaTransferRegistry>>,
     read_check_context: Option<Arc<TargetFileReadContext>>,
+    file_operations: Arc<tokio::sync::Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
     sync_transfer_operations: Arc<crate::services::sync_transfer::SourceTransferOperationStore>,
     project_catalog: Option<Arc<rua_project::ProjectCatalog>>,
     task_runtime: Option<Arc<rua_task::TaskRuntime>>,
@@ -1394,6 +1410,7 @@ impl DeviceCommandHandler {
             sync_transfer_session_manager: None,
             chat_media_transfers: None,
             read_check_context: None,
+            file_operations: Arc::default(),
             sync_transfer_operations: Arc::new(
                 crate::services::sync_transfer::SourceTransferOperationStore::new(),
             ),
@@ -1559,6 +1576,7 @@ impl DeviceCommandHandler {
         };
         let route = match &envelope {
             DeviceCommandEnvelope::ReadCheck(request)
+            | DeviceCommandEnvelope::CancelFileOperation(request)
             | DeviceCommandEnvelope::ReadAllowedFile { request, .. }
                 if validate_session_source(peer, &request.source_device_id).is_err()
                     || request.source_device_id.trim().is_empty()
@@ -1665,6 +1683,32 @@ impl DeviceCommandHandler {
             DeviceCommandEnvelope::ChatMediaPrepare(command) => {
                 self.handle_chat_media_prepare(command).await
             }
+            DeviceCommandEnvelope::CancelFileOperation(request) => {
+                let reply = if let Some(context) = &self.read_check_context {
+                    match context.check_authority(&request.as_target_read()).await {
+                        Ok(()) => {
+                            let key = request.operation_key();
+                            // Retain a bounded cancellation receipt if Stop arrives before execution.
+                            let mut results = self.command_results.lock().await;
+                            results.insert(
+                                format!("file_cancel:{key}"),
+                                serde_json::to_vec(&request.arguments).unwrap_or_default(),
+                                DeviceCommandResponse::ReadCheck {
+                                    response: DeviceReadCheckReply::Unavailable,
+                                },
+                            );
+                            if let Some(cancel) = self.file_operations.lock().await.get(&key) {
+                                cancel.send_replace(true);
+                            }
+                            DeviceReadCheckReply::Checked
+                        }
+                        Err(error) => error.into(),
+                    }
+                } else {
+                    DeviceReadCheckReply::Unavailable
+                };
+                DeviceCommandResponse::ReadCheck { response: reply }
+            }
             DeviceCommandEnvelope::ReadAllowedFile {
                 request,
                 max_text_bytes,
@@ -1693,25 +1737,49 @@ impl DeviceCommandHandler {
         if !(1..=rua_core::tool::MAX_SHARED_READ_TEXT_BYTES).contains(&max_text_bytes) {
             return DeviceFileReadReply::Policy(DeviceReadCheckReply::Denied);
         }
-        let confirmed_invocation = match self.check_read_policy(request).await {
-            Ok(confirmed) => confirmed,
-            Err(policy) => return DeviceFileReadReply::Policy(policy),
-        };
-        let Some(context) = &self.read_check_context else {
-            return DeviceFileReadReply::Policy(DeviceReadCheckReply::Unavailable);
-        };
-        match context
-            .read_authorized(
-                &request.as_target_read(),
-                max_text_bytes,
-                confirmed_invocation,
-            )
-            .await
+        let key = request.operation_key();
+        let (cancel, receiver) = tokio::sync::watch::channel(false);
         {
-            Ok(page) => DeviceFileReadReply::Page(page),
-            Err(TargetReadRejection::FileUnavailable) => DeviceFileReadReply::FileUnavailable,
-            Err(rejection) => DeviceFileReadReply::Policy(rejection.into()),
+            let results = self.command_results.lock().await;
+            if !matches!(
+                results.get(
+                    &format!("file_cancel:{key}"),
+                    &serde_json::to_vec(&request.arguments).unwrap_or_default()
+                ),
+                Ok(None)
+            ) {
+                return DeviceFileReadReply::Policy(DeviceReadCheckReply::Unavailable);
+            }
+            self.file_operations
+                .lock()
+                .await
+                .insert(key.clone(), cancel);
         }
+        let result = async {
+            let confirmed_invocation = match self.check_read_policy(request).await {
+                Ok(confirmed) => confirmed,
+                Err(policy) => return DeviceFileReadReply::Policy(policy),
+            };
+            let Some(context) = &self.read_check_context else {
+                return DeviceFileReadReply::Policy(DeviceReadCheckReply::Unavailable);
+            };
+            match context
+                .execute_authorized(
+                    &request.as_target_read(),
+                    max_text_bytes,
+                    confirmed_invocation,
+                    Some(receiver),
+                )
+                .await
+            {
+                Ok(reply) => reply,
+                Err(TargetReadRejection::FileUnavailable) => DeviceFileReadReply::FileUnavailable,
+                Err(rejection) => DeviceFileReadReply::Policy(rejection.into()),
+            }
+        }
+        .await;
+        self.file_operations.lock().await.remove(&key);
+        result
     }
 
     /// On admission, report whether the authority actually consumed this invocation's
@@ -5172,7 +5240,7 @@ pub async fn deliver_allowed_file_read_via_session(
     max_text_bytes: usize,
     timeout: Duration,
 ) -> Result<DeviceFileReadReply, DeviceCommandDeliveryError> {
-    match deliver_envelope_via_session(
+    let delivered = deliver_envelope_via_session(
         session_manager,
         &request.target_device_id,
         DeviceCommandEnvelope::ReadAllowedFile {
@@ -5181,11 +5249,50 @@ pub async fn deliver_allowed_file_read_via_session(
         },
         timeout,
     )
-    .await?
-    {
+    .await;
+    let delivered = delivered.map_err(|error| {
+        use rua_device_network::DeviceSessionError as Session;
+        let uncertain = matches!(
+            &error,
+            DeviceCommandDeliveryError::Json(_)
+                | DeviceCommandDeliveryError::Session(
+                    Session::Timeout {
+                        stage: "command exchange",
+                        ..
+                    } | Session::Io(_)
+                        | Session::Closed(_)
+                        | Session::CommandRejected(_)
+                        | Session::FrameTooLarge { .. }
+                )
+        );
+        if request.tool_name == "edit" && uncertain {
+            DeviceCommandDeliveryError::OutcomeUnconfirmed(error.to_string())
+        } else {
+            error
+        }
+    })?;
+    match delivered {
         DeviceCommandResponse::FileRead { response } => Ok(response),
-        response => unexpected_response(response, "Previously allowed file read"),
+        response if request.tool_name == "edit" => {
+            Err(DeviceCommandDeliveryError::OutcomeUnconfirmed(format!(
+                "Unexpected edit reply: {response:?}"
+            )))
+        }
+        response => unexpected_response(response, "File operation"),
     }
+}
+
+pub(super) async fn cancel_file_operation_via_session(
+    manager: &rua_device_network::DeviceSessionManager,
+    request: &DeviceReadCheckRequest,
+) {
+    let _ = deliver_envelope_via_session(
+        manager,
+        &request.target_device_id,
+        DeviceCommandEnvelope::CancelFileOperation(request.clone()),
+        Duration::from_secs(3),
+    )
+    .await;
 }
 
 pub async fn deliver_conversation_control_via_session(
@@ -5473,6 +5580,7 @@ async fn deliver_envelope_via_session(
     // Neither half of a one-time approval check can be repeated after a lost reply.
     let response_bytes = match envelope {
         DeviceCommandEnvelope::ReadCheck(_)
+        | DeviceCommandEnvelope::CancelFileOperation(_)
         | DeviceCommandEnvelope::ReadAllowedFile { .. }
         | DeviceCommandEnvelope::ConversationControl(ConversationControlDeviceCommand {
             action: ConversationControlDeviceAction::ClaimReadApproval { .. },

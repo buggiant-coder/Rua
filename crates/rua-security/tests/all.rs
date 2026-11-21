@@ -32,3 +32,6 @@ mod security_module_write_through;
 mod structured_rules;
 #[path = "all/tool_guard_reload.rs"]
 mod tool_guard_reload;
+
+#[path = "all/file_operations.rs"]
+mod file_operations;

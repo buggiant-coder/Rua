@@ -63,16 +63,13 @@ impl SharedReadPage {
         match (&self.byte_range, &self.continuation) {
             (None, None) => true,
             (None, Some(ReadPageContinuation::Lines { start_line, limit })) => {
-                !self.text.is_empty()
-                    && (2..=MAX_SHARED_READ_TEXT_BYTES as u64).contains(start_line)
-                    && *limit > 0
+                !self.text.is_empty() && *start_line >= 2 && *limit > 0
             }
             (Some(range), next)
                 if range.start <= range.end_exclusive
                     && range.end_exclusive <= range.total_bytes
                     && range.end_exclusive - range.start == self.text.len() as u64
-                    && (!self.text.is_empty() || range.total_bytes == 0)
-                    && range.total_bytes <= MAX_SHARED_READ_TEXT_BYTES as u64 =>
+                    && (!self.text.is_empty() || range.total_bytes == 0) =>
             {
                 if range.end_exclusive == range.total_bytes {
                     next.is_none()
@@ -98,6 +95,8 @@ pub enum DeviceReadCheck {
     /// The target attempted an authorized read and could not return a text page.
     FileUnavailable,
     Shared(SharedReadPage),
+    Executed(Box<ToolResult>),
+    OutcomeUnconfirmed(String),
 }
 
 /// Per-call timer notifications for the period spent waiting on a visible target approval.
@@ -155,6 +154,30 @@ pub trait DeviceReadAccess: Send + Sync {
         _arguments: &serde_json::Value,
     ) -> bool {
         false
+    }
+
+    fn manages_operation_confirmation_wait(
+        &self,
+        tool: &str,
+        ctx: &ToolContext,
+        arguments: &serde_json::Value,
+    ) -> bool {
+        tool == "read" && self.manages_confirmation_wait(ctx, arguments)
+    }
+
+    async fn check_operation(
+        &self,
+        tool: &str,
+        ctx: &ToolContext,
+        arguments: &serde_json::Value,
+    ) -> crate::Result<DeviceReadCheck> {
+        if tool == "read" {
+            self.check(ctx, arguments).await
+        } else {
+            Ok(DeviceReadCheck::Unavailable(format!(
+                "{tool} is unavailable on this device"
+            )))
+        }
     }
 
     /// Ask the file's Device to check this foreground Chat's requested read.

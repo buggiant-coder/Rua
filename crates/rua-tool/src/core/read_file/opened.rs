@@ -19,7 +19,7 @@ pub struct OpenedRegularFile {
     resolved_public_path: PathBuf,
     pub(super) backing_path: PathBuf,
     pub(super) file: tokio::fs::File,
-    pub(super) bounded_text: Option<Vec<u8>>,
+    pub(super) bounded_page: bool,
 }
 
 impl OpenedRegularFile {
@@ -120,7 +120,7 @@ impl ReadFileTool {
                 resolved_public_path,
                 backing_path,
                 file: tokio::fs::File::from_std(file),
-                bounded_text: None,
+                bounded_page: false,
             })
         })
         .await

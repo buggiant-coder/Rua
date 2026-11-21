@@ -349,7 +349,6 @@ async fn only_current_live_chat_and_matching_authority_can_use_the_target_policy
         json!({"device_id":AUTHORITY}),
         json!({"file_path":path.with_extension("other")}),
         json!({"start_line":0}),
-        json!({"after":"a-directory-entry"}),
     ] {
         let mut other = args.clone();
         other
@@ -540,7 +539,7 @@ async fn disabling_the_agent_or_a_captured_assignment_disables_its_target_read()
         .inspect_opened(&updated, &file)
         .await
         .unwrap_err()
-        .contains("read tool is disabled"));
+        .contains("file tool is disabled"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -577,4 +576,358 @@ async fn an_explicit_deny_in_the_captured_chat_survives_a_more_permissive_target
         .unwrap_err()
         .contains("Captured read restriction"));
     assert!(authority.snapshot_at(&f.address).await.pending.is_empty());
+}
+
+async fn operation(
+    fixture: &Fixture,
+    tool: &str,
+    args: &Value,
+    confirmed: bool,
+) -> Result<rua_core::tool::ToolResult, TargetReadRejection> {
+    let mut request = fixture.request(args);
+    request.tool_name = tool;
+    match fixture
+        .context
+        .execute_authorized(&request, 64 * 1024, confirmed, None)
+        .await?
+    {
+        rua_server::services::device_read_check::DeviceFileReadReply::Result(result) => Ok(*result),
+        other => panic!("expected an ordinary file-tool result, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn small_remote_pages_keep_every_directory_and_search_entry() {
+    let f = Fixture::materialize(build_agent().await).await;
+    let folder = f.app.state.rua_root.join("small-pages");
+    std::fs::create_dir(&folder).unwrap();
+    let expected: std::collections::BTreeSet<_> = (0..12)
+        .map(|index| format!("{index:02}-{}.txt", "photo".repeat(16)))
+        .collect();
+    for name in &expected {
+        std::fs::write(folder.join(name), "phone marker\n").unwrap();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let unreadable_name = std::ffi::OsString::from_vec(b"!\xff.txt".to_vec());
+        std::fs::write(folder.join(unreadable_name), "phone marker\n").unwrap();
+    }
+    for tool in ["read", "grep", "glob"] {
+        let mut args = match tool {
+            "read" => json!({"device_id":f.device,"file_path":folder,"limit":12}),
+            "grep" => {
+                json!({"device_id":f.device,"path":folder,"pattern":"phone marker","max_results":12})
+            }
+            _ => json!({"device_id":f.device,"path":folder,"pattern":"*.txt","max_results":12}),
+        };
+        let mut found = std::collections::BTreeSet::new();
+        for _ in 0..20 {
+            let mut request = f.request(&args);
+            request.tool_name = tool;
+            let reply = f
+                .context
+                .execute_authorized(&request, 900, false, None)
+                .await
+                .unwrap();
+            let rua_server::services::device_read_check::DeviceFileReadReply::Result(result) =
+                reply
+            else {
+                panic!("expected an ordinary file-tool result");
+            };
+            let body = result.text_content();
+            assert!(
+                !result.is_error
+                    || result.metadata["omitted_entries"]
+                        .as_u64()
+                        .is_some_and(|n| n > 0),
+                "{tool}: {body}"
+            );
+            assert!(
+                body.len() <= 900,
+                "{tool} exceeded the requested page budget"
+            );
+            assert_ne!(result.metadata.get("output_truncated"), Some(&json!(true)));
+            let shown = expected
+                .iter()
+                .filter(|name| {
+                    body.lines()
+                        .any(|line| line.contains(name.as_str()) && !line.starts_with("Location "))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            assert!(
+                !shown.is_empty(),
+                "{tool} returned no complete entries: {body}"
+            );
+            for name in shown {
+                assert!(found.insert(name), "{tool} repeated an entry");
+            }
+            let Some(next) = result.metadata.get("continuation") else {
+                break;
+            };
+            assert_eq!(next["device_id"], f.device);
+            args = next.clone();
+        }
+        assert_eq!(
+            found, expected,
+            "{tool} skipped entries between bounded pages"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_remote_page_that_cannot_fit_one_entry_has_no_skipping_cursor() {
+    let f = Fixture::materialize(build_agent().await).await;
+    let folder = f.app.state.rua_root.join("too-small-page");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("a-long-photo-name.txt"), "phone marker\n").unwrap();
+    for tool in ["read", "grep", "glob"] {
+        let args = match tool {
+            "read" => json!({"device_id":f.device,"file_path":folder,"limit":1}),
+            "grep" => {
+                json!({"device_id":f.device,"path":folder,"pattern":"phone marker","max_results":1})
+            }
+            _ => json!({"device_id":f.device,"path":folder,"pattern":"*.txt","max_results":1}),
+        };
+        let mut request = f.request(&args);
+        request.tool_name = tool;
+        let reply = f
+            .context
+            .execute_authorized(&request, 8, false, None)
+            .await
+            .unwrap();
+        let rua_server::services::device_read_check::DeviceFileReadReply::Result(result) = reply
+        else {
+            panic!("expected an ordinary file-tool result");
+        };
+        assert!(
+            result.is_error,
+            "{tool} must not claim a truncated entry is complete"
+        );
+        assert_eq!(result.metadata["output_error"], "page_budget_too_small");
+        assert_eq!(result.metadata["file_location"]["coverage"], "unavailable");
+        assert!(result.metadata.get("continuation").is_none());
+        assert!(result.metadata.get("next_offset").is_none());
+        assert!(result.text_content().len() <= 8);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn directory_and_search_pages_execute_on_the_selected_device_with_continuations() {
+    let f = Fixture::materialize(build_agent().await).await;
+    let folder = f.app.state.rua_root.join("photo-index");
+    std::fs::create_dir(&folder).unwrap();
+    for name in ["alpha.txt", "beta.txt", "gamma.txt"] {
+        std::fs::write(
+            folder.join(name),
+            format!(
+                "phone marker {name}
+"
+            ),
+        )
+        .unwrap();
+    }
+    let first = operation(
+        &f,
+        "read",
+        &json!({"device_id":f.device,"file_path":folder,"limit":1}),
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(!first.is_error, "{}", first.text_content());
+    assert_eq!(first.metadata["directory_entries"][0]["name"], "alpha.txt");
+    assert_eq!(first.metadata["file_location"]["device_id"], f.device);
+    assert_eq!(first.metadata["file_location"]["coverage"], "partial");
+    let continuation = first.metadata["continuation"].clone();
+    assert_eq!(continuation["device_id"], f.device);
+    assert_eq!(continuation["file_path"], json!(folder));
+    let second = operation(&f, "read", &continuation, false).await.unwrap();
+    assert_eq!(second.metadata["directory_entries"][0]["name"], "beta.txt");
+
+    for (tool, pattern) in [("grep", "phone marker"), ("glob", "*.txt")] {
+        let query = json!({"device_id":f.device,"path":folder,"pattern":pattern,"max_results":1});
+        let first = operation(&f, tool, &query, false).await.unwrap();
+        assert!(!first.is_error, "{tool}: {}", first.text_content());
+        assert!(first.text_content().contains("alpha.txt"));
+        assert_eq!(first.metadata["more_results"], true);
+        let next = first.metadata["continuation"].clone();
+        assert_eq!(next["device_id"], f.device);
+        assert_eq!(next["path"], json!(folder));
+        let second = operation(&f, tool, &next, false).await.unwrap();
+        assert!(!second.is_error, "{tool}: {}", second.text_content());
+        assert!(second.text_content().contains("beta.txt"));
+        assert!(!second.text_content().contains("alpha.txt"));
+    }
+    assert!(f
+        .app
+        .state
+        .security
+        .approval_authority()
+        .snapshot_at(&f.address)
+        .await
+        .pending
+        .is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_edit_verifies_all_paths_before_writing_and_reuses_the_local_patch_tool() {
+    let f = Fixture::materialize(build_agent().await).await;
+    let folder = f.app.state.rua_root.join("photo-index");
+    std::fs::create_dir(&folder).unwrap();
+    let existing = folder.join("existing.txt");
+    let added = folder.join("new.txt");
+    std::fs::write(
+        &existing, "before
+",
+    )
+    .unwrap();
+    let args = json!({
+        "device_id":f.device,
+        "patch":format!("*** Begin Patch
+*** Update File: {}
+@@
+-before
++after
+*** Add File: {}
++new photo
+*** End Patch",
+            existing.display(), added.display()),
+    });
+    let security = &f.app.state.security;
+    let deny = security
+        .approval_authority()
+        .create_agent_rule(
+            AGENT,
+            PermissionRuleInput {
+                effect: PermissionRuleEffect::Deny,
+                enabled: true,
+                label: "Deny this target file".into(),
+                matcher: ApprovalReuseMatcher::ToolCall {
+                    tool_name: "edit".into(),
+                    input_params: Some(json!({"device_id":f.device,"path":added}).to_string()),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        operation(&f, "edit", &args, true).await,
+        Err(TargetReadRejection::Denied)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&existing).unwrap(),
+        "before
+"
+    );
+    assert!(!added.exists());
+    security
+        .approval_authority()
+        .delete_agent_rule(AGENT, &deny.id)
+        .await
+        .unwrap();
+    let result = operation(&f, "edit", &args, true).await.unwrap();
+    assert!(!result.is_error, "{}", result.text_content());
+    assert_eq!(
+        std::fs::read_to_string(&existing).unwrap(),
+        "after
+"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&added).unwrap(),
+        "new photo
+"
+    );
+    assert_eq!(result.metadata["file_location"]["device_id"], f.device);
+    assert!(security
+        .approval_authority()
+        .snapshot_at(&f.address)
+        .await
+        .pending
+        .is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn target_search_requires_the_actual_tool_and_absolute_target_paths() {
+    let f = Fixture::materialize(build_agent().await).await;
+    let query = json!({"device_id":f.device,"path":f.app.state.rua_root,"pattern":"*.txt"});
+    let mut policy = ToolSelectionPolicy::default_enabled();
+    policy.set_tool_enabled(ToolIdentity::builtin("glob"), false);
+    let preview = f
+        .app
+        .state
+        .tool_config_store
+        .preview_selection_policy(Some(AGENT), policy.clone())
+        .await
+        .unwrap();
+    f.app
+        .state
+        .tool_config_store
+        .set_selection_policy(Some(AGENT), preview.expected, policy)
+        .await
+        .unwrap();
+    assert_eq!(
+        operation(&f, "glob", &query, true).await,
+        Err(TargetReadRejection::Denied)
+    );
+    let relative = json!({"device_id":f.device,"path":"relative","pattern":"marker"});
+    assert_eq!(
+        operation(&f, "grep", &relative, true).await,
+        Err(TargetReadRejection::Denied)
+    );
+    let another_device =
+        json!({"device_id":"another-device","path":f.app.state.rua_root,"pattern":"marker"});
+    assert_eq!(
+        operation(&f, "grep", &another_device, true).await,
+        Err(TargetReadRejection::Denied)
+    );
+    let relative_edit = json!({"device_id":f.device,"patch":"*** Begin Patch
+*** Add File: relative.txt
++contents
+*** End Patch"});
+    assert_eq!(
+        operation(&f, "edit", &relative_edit, true).await,
+        Err(TargetReadRejection::Denied)
+    );
+    assert!(!f.app.state.rua_root.join("relative.txt").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellation_keeps_an_unstarted_remote_edit_unchanged() {
+    let f = Fixture::materialize(build_agent().await).await;
+    let file = f.app.state.rua_root.join("cancelled.txt");
+    let args = json!({"device_id":f.device, "patch":format!("*** Begin Patch
+*** Add File: {}
++contents
+*** End Patch", file.display())});
+    let mut request = f.request(&args);
+    request.tool_name = "edit";
+    let (_, cancel) = tokio::sync::watch::channel(true);
+    let result = f
+        .context
+        .execute_authorized(&request, 1024, true, Some(cancel))
+        .await
+        .unwrap();
+    let rua_server::services::device_read_check::DeviceFileReadReply::Result(result) = result
+    else {
+        panic!("expected edit result");
+    };
+    assert!(result.is_error);
+    assert!(!file.exists());
+    assert!(result.text_content().contains("cancelled"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn invalid_search_arguments_return_a_tool_error_with_the_target_location() {
+    let f = Fixture::materialize(build_agent().await).await;
+    let folder = f.app.state.rua_root.join("photo-index");
+    std::fs::create_dir(&folder).unwrap();
+    let args = json!({"device_id": f.device, "path": folder, "pattern": 42});
+    let result = operation(&f, "grep", &args, false).await.unwrap();
+    assert!(result.is_error, "{}", result.text_content());
+    assert!(!result.text_content().is_empty());
+    assert_eq!(result.metadata["file_location"]["device_id"], f.device);
+    assert_eq!(result.metadata["file_location"]["path"], json!(folder));
+    assert_eq!(result.metadata["file_location"]["dispatched"], true);
 }

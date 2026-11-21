@@ -590,9 +590,9 @@ async fn remembered_read_claim_uses_current_scoped_permission_and_single_dispatc
 }
 
 #[tokio::test]
-async fn authenticated_read_claim_excludes_directory_paging_media_and_nonlocal_paths() {
+async fn authenticated_read_claim_excludes_invalid_paging_media_and_nonlocal_paths() {
     for (path, extras) in [
-        ("/folder", json!({"after":"a.txt"})),
+        ("/folder", json!({"after":1})),
         ("media/704d76eb-dee7-47d7-bef3-915891f200db", json!({})),
         ("relative.txt", json!({})),
         (r"\\server\share\note.txt", json!({})),

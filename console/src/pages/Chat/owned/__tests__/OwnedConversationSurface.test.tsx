@@ -275,7 +275,9 @@ function routeFetch(handler?: FetchRouteHandler) {
     }
     if (url.endsWith("/sync/devices")) {
       return Promise.resolve(
-        jsonResponse({ devices: [{ device_id: "device-local", is_self: true }] }),
+        jsonResponse({
+          devices: [{ device_id: "device-local", is_self: true }],
+        }),
       );
     }
     if (url.includes("/sync/cycle/target")) {
@@ -1855,28 +1857,34 @@ describe("OwnedConversationSurface", () => {
     fireEvent.click(within(tray).getByRole("button", { name: "Run once" }));
 
     await waitFor(() =>
-      expect(mockDecideApproval).toHaveBeenCalledWith(
-        "chat-1",
-        "approval-1",
-        {
-          decision: "run_once",
-          decided_by: "webui",
-        },
-      ),
+      expect(mockDecideApproval).toHaveBeenCalledWith("chat-1", "approval-1", {
+        decision: "run_once",
+        decided_by: "webui",
+      }),
     );
     expect(mockGetChat).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["chat", "agent"] as const)(
-    "shows the full target read and submits its %s permission from the approval card",
-    async (scope) => {
+  it.each(
+    ["chat", "agent"].flatMap((scope) =>
+      ["read", "grep", "glob", "edit"].map((tool) => ({ scope, tool })),
+    ),
+  )(
+    "shows the full target $tool and submits its $scope permission from the approval card",
+    async ({ scope, tool }) => {
       const path = `/storage/emulated/0/DCIM/${"summer album/".repeat(
         12,
       )}last-photo.jpg`;
-      const args = { device_id: "phone-id", file_path: path, limit: 4 };
+      const patch = `*** Begin Patch\n*** Add File: ${path}\n+photo description\n*** End Patch`;
+      const args =
+        tool === "edit"
+          ? { device_id: "phone-id", patch }
+          : tool === "read"
+          ? { device_id: "phone-id", file_path: path, limit: 4 }
+          : { device_id: "phone-id", path, pattern: "summer", max_results: 4 };
       const matcher = {
         type: "tool_call",
-        tool_name: "read",
+        tool_name: tool,
         input_params: JSON.stringify(args),
       };
       mockGetChat.mockResolvedValue(idleHistory());
@@ -1888,14 +1896,14 @@ describe("OwnedConversationSurface", () => {
             chat_id: "chat-1",
             turn_id: "turn-1",
             tool_call_id: "read-call",
-            tool_name: "read",
+            tool_name: tool,
             status: "pending",
             trigger: {
               source: "target_device",
               message: `Device phone-id requires your confirmation for this read of ${path}.`,
             },
             tool_call: {
-              display: "read …",
+              display: `${tool} …`,
               args,
             },
             created_at: "2026-06-21T00:00:00Z",
@@ -1942,13 +1950,25 @@ describe("OwnedConversationSurface", () => {
       );
       const tray = within(await screen.findByLabelText("Approval queue"));
       expect(
-        tray.getByText("read", { exact: true }).nextElementSibling,
+        tray.getByText(tool, { exact: true }).nextElementSibling,
       ).toHaveTextContent(/^Target device$/);
       expect(tray.getByText("phone-id").parentElement).toHaveTextContent(
         "My phone · phone-id",
       );
-      expect(tray.getByText(path)).toBeVisible();
-      expect(tray.getByText("limit").nextElementSibling).toHaveTextContent("4");
+      if (tool === "edit") {
+        expect(tray.getByText("patch").nextElementSibling).toHaveTextContent(
+          path,
+        );
+        expect(tray.getByText("patch").nextElementSibling).toHaveTextContent(
+          "+photo description",
+        );
+      } else {
+        expect(tray.getByText(path)).toBeVisible();
+        expect(
+          tray.getByText(tool === "read" ? "limit" : "max_results")
+            .nextElementSibling,
+        ).toHaveTextContent("4");
+      }
       expect(tray.getByRole("button", { name: "Run once" })).toBeEnabled();
       expect(tray.getByRole("button", { name: "Reject" })).toBeEnabled();
       fireEvent.click(
@@ -2129,19 +2149,15 @@ describe("OwnedConversationSurface", () => {
     );
 
     await waitFor(() =>
-      expect(mockDecideApproval).toHaveBeenCalledWith(
-        "chat-1",
-        "approval-1",
-        {
-          decision: "allow_chat",
-          decided_by: "webui",
-          matcher: {
-            type: "tool_call",
-            tool_name: "bash",
-            input_params: "du -sh /Users/example/projects/rua",
-          },
+      expect(mockDecideApproval).toHaveBeenCalledWith("chat-1", "approval-1", {
+        decision: "allow_chat",
+        decided_by: "webui",
+        matcher: {
+          type: "tool_call",
+          tool_name: "bash",
+          input_params: "du -sh /Users/example/projects/rua",
         },
-      ),
+      }),
     );
   });
 
@@ -2202,14 +2218,10 @@ describe("OwnedConversationSurface", () => {
     fireEvent.click(within(tray).getByRole("button", { name: "Run once" }));
 
     await waitFor(() =>
-      expect(mockDecideApproval).toHaveBeenCalledWith(
-        "chat-1",
-        "approval-1",
-        {
-          decision: "run_once",
-          decided_by: "webui",
-        },
-      ),
+      expect(mockDecideApproval).toHaveBeenCalledWith("chat-1", "approval-1", {
+        decision: "run_once",
+        decided_by: "webui",
+      }),
     );
     tray = await screen.findByLabelText("Approval queue");
     expect(within(tray).getByText("1 / 1")).toBeInTheDocument();

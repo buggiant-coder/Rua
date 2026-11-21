@@ -312,24 +312,25 @@ function shortApprovalTaskId(taskId: string): string {
     : taskId;
 }
 
-function approvalReadLocation(request: ApprovalRequest) {
+function approvalFileLocation(request: ApprovalRequest) {
   const args = request.tool_call.args;
   if (
     request.origin === "acp" ||
-    request.tool_name !== "read" ||
+    !["read", "grep", "glob", "edit"].includes(request.tool_name) ||
     !args ||
     typeof args !== "object"
   )
     return null;
-  const { device_id, file_path, ...options } = args as Record<string, unknown>;
-  if (
-    typeof device_id !== "string" ||
-    !device_id ||
-    typeof file_path !== "string" ||
-    !file_path
-  )
-    return null;
-  return { deviceId: device_id, path: file_path, options };
+  const { device_id, ...options } = args as Record<string, unknown>;
+  const pathKey = request.tool_name === "read" ? "file_path" : "path";
+  const path = options[pathKey];
+  if (typeof device_id !== "string" || !device_id) return null;
+  if (typeof path === "string") delete options[pathKey];
+  return {
+    deviceId: device_id,
+    path: typeof path === "string" ? path : null,
+    options,
+  };
 }
 
 function ApprovalTray({
@@ -358,9 +359,9 @@ function ApprovalTray({
   if (pending.length === 0) return null;
 
   const request = pending[activeIndex] || pending[0];
-  const readLocation = approvalReadLocation(request);
+  const fileLocation = approvalFileLocation(request);
   const device = devices?.find(
-    (item) => item.device_id === readLocation?.deviceId,
+    (item) => item.device_id === fileLocation?.deviceId,
   );
   const deviceName = device?.friendly_name || device?.label;
   const reuseOptions = request.reuse_options || [];
@@ -442,7 +443,7 @@ function ApprovalTray({
         <div className="rua-approval-tray-reason">
           {approvalReason(request)}
         </div>
-        {readLocation ? (
+        {fileLocation ? (
           <dl className="rua-approval-file-location">
             <dt>
               {t("chat.approval.targetDevice", {
@@ -451,18 +452,24 @@ function ApprovalTray({
             </dt>
             <dd>
               {deviceName &&
-                deviceName !== readLocation.deviceId &&
+                deviceName !== fileLocation.deviceId &&
                 `${deviceName} · `}
-              <bdi>{readLocation.deviceId}</bdi>
+              <bdi>{fileLocation.deviceId}</bdi>
             </dd>
-            <dt>{t("chat.approval.path", { defaultValue: "Path" })}</dt>
-            <dd>
-              <bdi>{readLocation.path}</bdi>
-            </dd>
-            {Object.entries(readLocation.options).map(([key, value]) => (
+            {fileLocation.path && (
+              <>
+                <dt>{t("chat.approval.path", { defaultValue: "Path" })}</dt>
+                <dd>
+                  <bdi>{fileLocation.path}</bdi>
+                </dd>
+              </>
+            )}
+            {Object.entries(fileLocation.options).map(([key, value]) => (
               <Fragment key={key}>
                 <dt>{key}</dt>
-                <dd>{JSON.stringify(value)}</dd>
+                <dd>
+                  {typeof value === "string" ? value : JSON.stringify(value)}
+                </dd>
               </Fragment>
             ))}
           </dl>

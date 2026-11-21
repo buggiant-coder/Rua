@@ -2034,6 +2034,7 @@ impl ConversationInputIntake {
                 })
             }
             ConversationControlDeviceAction::ClaimReadApproval {
+                tool_name,
                 dispatch_token,
                 approval_id,
                 turn_id,
@@ -2070,7 +2071,7 @@ impl ConversationInputIntake {
                     || request.owner.as_chat_address() != Some(&target.address)
                     || request.turn_id != turn_id
                     || request.tool_call_id != tool_call_id
-                    || request.tool_name != "read"
+                    || request.tool_name != tool_name
                     || request.tool_call.args != arguments
                 {
                     return Err(unavailable());
@@ -2100,14 +2101,10 @@ impl ConversationInputIntake {
                         return Err(unavailable());
                     }
                 }
-                let path = arguments
-                    .get("file_path")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(unavailable)?;
                 let mut ctx = rua_security::ToolCallContext::new(
                     &target.execution_agent_id,
                     target.address.chat_id().as_str(),
-                    "read",
+                    &tool_name,
                     request.tool_call.args,
                 )
                 .with_chat_address(target.address);
@@ -2115,10 +2112,9 @@ impl ConversationInputIntake {
                 ctx.metadata
                     .insert("tool_call_id".into(), tool_call_id.into());
                 let approval_id = approvals
-                    .consume_authenticated_read_confirmation_if(
+                    .consume_authenticated_file_confirmation_if(
                         &ctx,
                         &command.source_device_id,
-                        path,
                         |id| {
                             id == approval_id
                                 && authority.claim_read_dispatch(

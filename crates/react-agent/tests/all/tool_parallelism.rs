@@ -475,7 +475,7 @@ async fn foreground_only_timeout_signals_tool_context_cancellation() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn device_read_deadline_counts_network_time_on_both_sides_of_user_confirmation() {
+async fn device_file_deadline_counts_network_time_on_both_sides_of_user_confirmation() {
     use rua_core::tool::{DeviceReadAccess, DeviceReadCheck, ToolContext};
     use serde_json::Value;
 
@@ -489,6 +489,24 @@ async fn device_read_deadline_counts_network_time_on_both_sides_of_user_confirma
     impl DeviceReadAccess for TimedRead {
         fn manages_confirmation_wait(&self, _ctx: &ToolContext, _args: &Value) -> bool {
             true
+        }
+
+        fn manages_operation_confirmation_wait(
+            &self,
+            _tool: &str,
+            _ctx: &ToolContext,
+            _args: &Value,
+        ) -> bool {
+            true
+        }
+
+        async fn check_operation(
+            &self,
+            _tool: &str,
+            ctx: &ToolContext,
+            args: &Value,
+        ) -> rua_core::Result<DeviceReadCheck> {
+            self.check(ctx, args).await
         }
 
         async fn check(
@@ -511,50 +529,66 @@ async fn device_read_deadline_counts_network_time_on_both_sides_of_user_confirma
         rua_tool::ReadFileTool::spec().to_tool_definition(),
         Arc::new(rua_tool::ReadFileTool),
     );
-    let call = ToolCall::new(
-        "read-phone",
-        "read",
-        serde_json::json!({
-            "device_id": "phone", "file_path": "/photos/note.txt"
-        }),
+    toolkit.register_contract_tool(
+        rua_tool::EditFileTool::spec().to_tool_definition(),
+        Arc::new(rua_tool::EditFileTool),
+    );
+    toolkit.register_contract_tool(
+        rua_tool::extended::search::GrepSearchTool::spec().to_tool_definition(),
+        Arc::new(rua_tool::extended::search::GrepSearchTool),
+    );
+    toolkit.register_contract_tool(
+        rua_tool::extended::search::GlobSearchTool::spec().to_tool_definition(),
+        Arc::new(rua_tool::extended::search::GlobSearchTool),
     );
     let hook: Arc<dyn react_agent::AgentHook> = Arc::new(NoopHook);
     let (events, _stream) = tokio::sync::mpsc::channel(32);
     for (before, human_wait, after, timeout_expected) in
         [(1, 20, 1, false), (6, 0, 0, true), (3, 20, 3, true)]
     {
-        let ctx = ToolContext {
-            local_device_id: Some("desktop".into()),
-            device_read_access: Some(Arc::new(TimedRead {
-                before: Duration::from_secs(before),
-                human_wait: Duration::from_secs(human_wait),
-                after: Duration::from_secs(after),
-            })),
-            ..Default::default()
-        };
-        let result = execute_single_tool(
-            &call,
-            &toolkit,
-            &hook,
-            &ctx,
-            &Default::default(),
-            0,
-            &CancellationToken::new(),
-            Duration::from_secs(5),
-            &events,
-        )
-        .await
-        .unwrap();
-        if timeout_expected {
-            assert!(
-                result.text_content().contains("timed out after 5s"),
-                "{result:?}"
+        for tool in ["read", "edit", "grep", "glob"] {
+            let call = ToolCall::new(
+                format!("{tool}-phone"),
+                tool,
+                serde_json::json!({
+                    "device_id": "phone", "file_path": "/photos/note.txt",
+                    "path": "/photos", "pattern": "note",
+                    "patch": "*** Begin Patch\n*** Add File: /photos/note.txt\n+note\n*** End Patch"
+                }),
             );
-        } else {
-            assert_eq!(
-                result.metadata["file_location"]["target_permission_check"],
-                "checked"
-            );
+            let ctx = ToolContext {
+                local_device_id: Some("desktop".into()),
+                device_read_access: Some(Arc::new(TimedRead {
+                    before: Duration::from_secs(before),
+                    human_wait: Duration::from_secs(human_wait),
+                    after: Duration::from_secs(after),
+                })),
+                ..Default::default()
+            };
+            let result = execute_single_tool(
+                &call,
+                &toolkit,
+                &hook,
+                &ctx,
+                &Default::default(),
+                0,
+                &CancellationToken::new(),
+                Duration::from_secs(5),
+                &events,
+            )
+            .await
+            .unwrap();
+            if timeout_expected {
+                assert!(
+                    result.text_content().contains("timed out after 5s"),
+                    "{result:?}"
+                );
+            } else {
+                assert_eq!(
+                    result.metadata["file_location"]["target_permission_check"],
+                    "checked"
+                );
+            }
         }
     }
 }

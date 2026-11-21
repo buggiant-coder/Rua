@@ -7,7 +7,6 @@ use rua_core::tool::{
 };
 use rua_core::{Result, RuaError};
 use serde_json::Value;
-use tokio::io::AsyncReadExt;
 
 use super::{OpenedRegularFile, ReadFileTool};
 
@@ -79,7 +78,7 @@ impl OpenedRegularFile {
 
 impl ReadFileTool {
     /// Project the normal reader's text window for a file explicitly authorized on this Device.
-    /// Only the complete bounded UTF-8 input from this handle is eligible for this projection.
+    /// Read only the requested window, bounded independently of the file size.
     pub async fn read_opened_page(
         &self,
         mut file: OpenedRegularFile,
@@ -93,26 +92,10 @@ impl ReadFileTool {
         let approved_path = Path::new(args["file_path"].as_str().ok_or_else(invalid)?);
         if ctx.cancel.as_ref().is_some_and(|cancel| *cancel.borrow())
             || !(file.matches_approved_path(approved_path).await?)
-            || file.file.metadata().await?.len() > MAX_SHARED_READ_TEXT_BYTES as u64
         {
             return Err(invalid());
         }
-        let mut bytes = Vec::new();
-        (&mut file.file)
-            .take(MAX_SHARED_READ_TEXT_BYTES as u64 + 1)
-            .read_to_end(&mut bytes)
-            .await?;
-        let text = std::str::from_utf8(&bytes).map_err(|_| invalid())?;
-        if bytes.len() > MAX_SHARED_READ_TEXT_BYTES
-            || bytes.contains(&0)
-            || args["byte_offset"].as_u64().is_some_and(|offset| {
-                usize::try_from(offset).map_or(true, |offset| !text.is_char_boundary(offset))
-            })
-            || !(file.matches_approved_path(approved_path).await?)
-        {
-            return Err(invalid());
-        }
-        file.bounded_text = Some(bytes);
+        file.bounded_page = true;
         ctx.raw_capture_max_bytes = ctx
             .raw_capture_max_bytes
             .clamp(1, MAX_SHARED_READ_TEXT_BYTES);

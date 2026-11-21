@@ -244,6 +244,7 @@ fn read_check_request(
         device_read_check::DeviceReadCheckRequest,
     };
     DeviceReadCheckRequest {
+        tool_name: "read".into(),
         source_device_id: source.into(),
         target_device_id: target.into(),
         address: rua_core::ChatAddress::new(uuid::Uuid::new_v4().to_string()),

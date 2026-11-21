@@ -1,7 +1,7 @@
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use rua_core::tool::{DeviceReadAccess, DeviceReadCheck, SharedReadPage, ToolContext};
+use rua_core::tool::{DeviceReadAccess, DeviceReadCheck, SharedReadPage, ToolContext, ToolResult};
 use rua_core::ChatAddress;
 use rua_security::approval_authority::{ApprovalStatus, AuthenticatedApprovalDecision};
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,8 @@ use super::device_session_access::DeviceNetworkAccess;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceReadCheckRequest {
+    #[serde(default = "read_tool_name")]
+    pub tool_name: String,
     pub source_device_id: String,
     pub target_device_id: String,
     pub agent_id: String,
@@ -49,13 +51,18 @@ pub enum DeviceReadCheckReply {
     Checked,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum DeviceFileReadReply {
+    Result(Box<ToolResult>),
     Policy(DeviceReadCheckReply),
     FileNotAuthorized,
     FileUnavailable,
     Page(SharedReadPage),
+}
+
+pub(crate) fn read_tool_name() -> String {
+    "read".into()
 }
 
 pub struct ForegroundReadAccess {
@@ -67,6 +74,15 @@ pub struct ForegroundReadAccess {
 #[async_trait::async_trait]
 impl DeviceReadAccess for ForegroundReadAccess {
     fn manages_confirmation_wait(&self, ctx: &ToolContext, args: &Value) -> bool {
+        self.manages_operation_confirmation_wait("read", ctx, args)
+    }
+
+    fn manages_operation_confirmation_wait(
+        &self,
+        tool: &str,
+        ctx: &ToolContext,
+        args: &Value,
+    ) -> bool {
         let local = ctx.local_device_id.as_deref();
         let target = args["device_id"].as_str();
         local.is_some_and(|id| !id.trim().is_empty())
@@ -78,10 +94,19 @@ impl DeviceReadAccess for ForegroundReadAccess {
                 .contains_key(rua_agent::hooks::SECURITY_CHAT_ADDRESS_METADATA_KEY)
             && ctx.metadata.contains_key("turn_id")
             && ctx.metadata.contains_key("chat_configuration_epoch")
-            && is_named_file_check(args)
+            && matches!(tool, "read" | "edit" | "grep" | "glob")
     }
 
     async fn check(&self, ctx: &ToolContext, args: &Value) -> rua_core::Result<DeviceReadCheck> {
+        self.check_operation("read", ctx, args).await
+    }
+
+    async fn check_operation(
+        &self,
+        tool: &str,
+        ctx: &ToolContext,
+        args: &Value,
+    ) -> rua_core::Result<DeviceReadCheck> {
         let unavailable = |detail: &str| DeviceReadCheck::Unavailable(detail.to_owned());
         let (Some(authority), Some(approvals), Some(network)) = (
             self.authority.upgrade(),
@@ -100,9 +125,9 @@ impl DeviceReadAccess for ForegroundReadAccess {
         ) else {
             return Ok(unavailable("no active Chat invocation was identified"));
         };
-        if !self.manages_confirmation_wait(ctx, args) {
+        if !self.manages_operation_confirmation_wait(tool, ctx, args) {
             return Ok(unavailable(
-                "this check supports a named regular file with an absolute path",
+                "this operation requires an active Chat and an explicit target device",
             ));
         }
         let Some(address) = ctx
@@ -140,7 +165,7 @@ impl DeviceReadAccess for ForegroundReadAccess {
                 // invocation cannot pick it up if the original was cancelled.
                 r.trigger.source == rua_security::ApprovalTriggerSource::TargetDevice
                     || r.status != ApprovalStatus::Approved
-                    || r.tool_name != "read"
+                    || r.tool_name != tool
                     || r.tool_call.args != *args
             })
         {
@@ -175,6 +200,7 @@ impl DeviceReadAccess for ForegroundReadAccess {
         };
         let permit = confirmed.map(|r| authority.begin_read_dispatch(&r.id, device));
         let mut request = DeviceReadCheckRequest {
+            tool_name: tool.into(),
             source_device_id: local.into(),
             target_device_id: device.into(),
             agent_id: ctx.agent_id.clone(),
@@ -223,6 +249,41 @@ impl DeviceReadAccess for ForegroundReadAccess {
             drop(permit);
         }
         Ok(match response {
+            Ok(DeviceFileReadReply::Result(result)) => {
+                if result.call_id != call
+                    || result.attachments.is_some()
+                    || result
+                        .content
+                        .iter()
+                        .any(|part| !matches!(part, agent_types::ContentPart::Text { .. }))
+                    || result.text_content().len() > rua_core::tool::MAX_SHARED_READ_TEXT_BYTES
+                    || !authority
+                        .active_turn(&request.address)
+                        .await
+                        .is_some_and(|current| {
+                            current.authority_device_id == local
+                                && current.authority_epoch == request.authority_epoch
+                                && current.turn_id == turn
+                                && current.driver == ConversationDriverKind::Rua
+                                && matches!(
+                                    current.phase,
+                                    ConversationActiveTurnPhase::Streaming
+                                        | ConversationActiveTurnPhase::RunningTool
+                                        | ConversationActiveTurnPhase::WaitingApproval
+                                )
+                        })
+                {
+                    if tool == "edit" {
+                        return Ok(DeviceReadCheck::OutcomeUnconfirmed(
+                            "the target edit reply could not be accepted by the original active call".into(),
+                        ));
+                    }
+                    return Ok(unavailable(
+                        "the target returned an invalid or stale tool result",
+                    ));
+                }
+                DeviceReadCheck::Executed(result)
+            }
             Ok(DeviceFileReadReply::FileNotAuthorized) => DeviceReadCheck::FileNotAuthorized,
             Ok(DeviceFileReadReply::FileUnavailable) => DeviceReadCheck::FileUnavailable,
             Ok(DeviceFileReadReply::Page(page)) => {
@@ -257,12 +318,15 @@ impl DeviceReadAccess for ForegroundReadAccess {
             }
             Ok(DeviceFileReadReply::Policy(DeviceReadCheckReply::Denied)) => {
                 DeviceReadCheck::Denied(
-                    "the target device denied this read under its current policy".into(),
+                    "the target device denied this file operation under its current policy".into(),
                 )
             }
             Ok(DeviceFileReadReply::Policy(DeviceReadCheckReply::Unavailable)) => {
-                unavailable("the target could not verify this Chat's read request")
+                unavailable("the target could not verify this Chat's file operation")
             }
+            Err(super::device_command_bus::DeviceCommandDeliveryError::OutcomeUnconfirmed(
+                detail,
+            )) => DeviceReadCheck::OutcomeUnconfirmed(detail),
             Err(error) => error.into(),
         })
     }
@@ -290,21 +354,6 @@ impl From<super::device_command_bus::DeviceCommandDeliveryError> for DeviceReadC
     }
 }
 
-fn is_named_file_check(args: &Value) -> bool {
-    args["file_path"].as_str().is_some_and(|path| {
-        rua_core::execution_directory::is_device_absolute_path(path)
-            && !path.starts_with("//")
-            && !path.starts_with(r"\\")
-    }) && args.as_object().is_some_and(|fields| {
-        fields.keys().all(|key| {
-            matches!(
-                key.as_str(),
-                "device_id" | "file_path" | "start_line" | "limit" | "byte_offset"
-            )
-        })
-    })
-}
-
 pub(super) fn other_pending_target_read(
     pending: &[rua_security::ApprovalRequest],
     agent: &str,
@@ -315,7 +364,10 @@ pub(super) fn other_pending_target_read(
         request.agent_id == agent
             && request.turn_id == turn
             && request.tool_call_id != call
-            && request.tool_name == "read"
+            && matches!(
+                request.tool_name.as_str(),
+                "read" | "edit" | "grep" | "glob"
+            )
             && request.trigger.source == rua_security::ApprovalTriggerSource::TargetDevice
             && request.status == ApprovalStatus::Pending
     })
@@ -331,6 +383,17 @@ async fn read_cancelled(ctx: &ToolContext) {
 }
 
 impl DeviceReadCheckRequest {
+    pub(super) fn operation_key(&self) -> String {
+        format!(
+            "{}:{}:{}:{}:{}",
+            self.source_device_id,
+            self.address.chat_id(),
+            self.turn_id,
+            self.tool_call_id,
+            self.tool_name
+        )
+    }
+
     pub(super) fn as_target_read(&self) -> super::chat_file_read_admission::TargetChatRead<'_> {
         super::chat_file_read_admission::TargetChatRead {
             address: &self.address,
@@ -340,7 +403,7 @@ impl DeviceReadCheckRequest {
             configuration_epoch: &self.configuration_epoch,
             turn_id: &self.turn_id,
             tool_call_id: &self.tool_call_id,
-            tool_name: "read",
+            tool_name: &self.tool_name,
             args: &self.arguments,
         }
     }
@@ -352,7 +415,24 @@ impl DeviceReadCheckRequest {
     ) -> rua_core::Result<
         Result<DeviceFileReadReply, super::device_command_bus::DeviceCommandDeliveryError>,
     > {
-        tokio::select! {
+        let stopped = tokio_util::sync::CancellationToken::new();
+        let guard = stopped.clone().drop_guard();
+        let finished = tokio_util::sync::CancellationToken::new();
+        let cleanup = {
+            let manager = manager.clone();
+            let request = self.clone();
+            let finished = finished.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    biased;
+                    _ = finished.cancelled() => {},
+                    _ = stopped.cancelled() => {
+                        super::device_command_bus::cancel_file_operation_via_session(&manager, &request).await;
+                    }
+                }
+            })
+        };
+        let outcome = tokio::select! {
             biased;
             _ = read_cancelled(ctx) => Err(rua_core::RuaError::Cancelled),
             reply = deliver_allowed_file_read_via_session(
@@ -360,7 +440,13 @@ impl DeviceReadCheckRequest {
                 ctx.raw_capture_max_bytes.clamp(1, rua_core::tool::MAX_SHARED_READ_TEXT_BYTES),
                 Duration::from_secs(20),
             ) => Ok(reply),
+        };
+        if matches!(&outcome, Ok(Ok(_))) {
+            finished.cancel();
         }
+        drop(guard);
+        let _ = cleanup.await;
+        outcome
     }
 
     async fn wait_for_confirmation(
@@ -374,20 +460,19 @@ impl DeviceReadCheckRequest {
         };
         use ConversationActiveTurnPhase::{RunningTool, Streaming, WaitingApproval};
         let prompt = format!(
-            "Device {} requires your confirmation for this read of {}.",
-            self.target_device_id,
-            self.arguments["file_path"].as_str().unwrap_or_default()
+            "Confirm {} on Device {} with arguments {}.",
+            self.tool_name, self.target_device_id, self.arguments
         );
         let Some(request) = approvals
-            .create_target_read_confirmation(ApprovalRequestInput {
+            .create_target_file_confirmation(ApprovalRequestInput {
                 agent_id: self.agent_id.clone(),
                 owner: ApprovalOwner::chat(self.address.clone()),
                 turn_id: self.turn_id.clone(),
                 tool_call_id: self.tool_call_id.clone(),
-                tool_name: "read".into(),
+                tool_name: self.tool_name.clone(),
                 trigger: ApprovalTrigger::approval_mode(prompt.clone()),
                 tool_call: ToolCallSnapshot {
-                    display: format!("read {}", self.arguments),
+                    display: format!("{} {}", self.tool_name, self.arguments),
                     args: self.arguments.clone(),
                 },
             })
@@ -450,7 +535,7 @@ impl DeviceReadCheckRequest {
                 events
                     .send(agent_types::AgentEvent::ToolApprovalPending {
                         call_id: self.tool_call_id.clone(),
-                        tool_name: "read".into(),
+                        tool_name: self.tool_name.clone(),
                         request_id: Some(request.id.clone()),
                         metadata: serde_json::json!({ "prompt": prompt }),
                     })
@@ -515,6 +600,7 @@ impl DeviceReadCheckRequest {
             source_device_id: self.target_device_id.clone(),
             target_device_id: self.source_device_id.clone(),
             action: ConversationControlDeviceAction::ClaimReadApproval {
+                tool_name: self.tool_name.clone(),
                 approval_id: confirmation.approval_id.clone(),
                 dispatch_token: confirmation.dispatch_token,
                 turn_id: self.turn_id.clone(),

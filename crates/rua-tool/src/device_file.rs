@@ -104,17 +104,35 @@ async fn call_local(
                 "paths": paths, "path": paths.first(), "coverage": "unavailable", "dispatched": false,
             });
             let mut reason = problem.to_owned();
-            if tool == "read"
-                && opened.is_none()
+            if opened.is_none()
                 && requested.is_some()
                 && execution.is_some()
                 && requested != execution
             {
                 if let Some(access) = &ctx.device_read_access {
                     use rua_core::tool::DeviceReadCheck;
-                    let (status, detail) = match access.check(&ctx, &args).await? {
+                    let (status, detail) = match access.check_operation(tool, &ctx, &args).await? {
                         DeviceReadCheck::Shared(page) => {
                             return Ok(shared_read_result(&call_id, &args, &ctx, location, page));
+                        }
+                        DeviceReadCheck::Executed(mut result) => {
+                            result.call_id = call_id.clone();
+                            result.name = Some(tool.into());
+                            let actual = result.metadata.entry("file_location")
+                                .or_insert_with(|| location.clone());
+                            actual["device_id"] = json!(requested);
+                            actual["execution_device_id"] = json!(execution);
+                            actual["dispatched"] = json!(true);
+                            return Ok(*result);
+                        }
+                        DeviceReadCheck::OutcomeUnconfirmed(detail) => {
+                            location["outcome"] = json!("unconfirmed");
+                            location["dispatched"] = json!(true);
+                            let mut result = ToolResult::error(&call_id, format!(
+                                "{tool} on the target device has an unconfirmed outcome. {detail} Check the target files before retrying. Location {location}."
+                            ));
+                            result.metadata.insert("file_location".into(), location);
+                            return Ok(result);
                         }
                         DeviceReadCheck::FileNotAuthorized => {
                             location["file_delivery"] = json!("not_authorized");
@@ -123,7 +141,7 @@ async fn call_local(
                         DeviceReadCheck::FileUnavailable => {
                             location["dispatched"] = json!(true);
                             let mut result = ToolResult::error(&call_id, format!(
-                                "The target device attempted this read but returned no readable text. Location {location}."
+                                "The target device could not complete {tool} for the requested path. Location {location}."
                             ));
                             result.metadata.insert("file_location".into(), location);
                             return Ok(result);

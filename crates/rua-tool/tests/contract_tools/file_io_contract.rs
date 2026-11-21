@@ -199,7 +199,7 @@ async fn approved_file_page_uses_normal_windows_and_only_exports_text_and_numeri
 
 #[cfg(unix)]
 #[tokio::test]
-async fn approved_file_page_bounds_input_and_output_and_rejects_nontext() {
+async fn approved_file_page_bounds_output_and_rejects_nontext() {
     use rua_core::tool::MAX_SHARED_READ_TEXT_BYTES;
     let root = tempfile::tempdir().unwrap();
     let cwd = root.path().canonicalize().unwrap();
@@ -218,11 +218,29 @@ async fn approved_file_page_bounds_input_and_output_and_rejects_nontext() {
     assert_eq!(page.text, exact);
     assert!(page.continuation.is_none());
 
-    for data in [
-        vec![b'a'; MAX_SHARED_READ_TEXT_BYTES + 1],
-        vec![0],
-        vec![0xff],
-    ] {
+    std::fs::write(&path, vec![b'a'; MAX_SHARED_READ_TEXT_BYTES + 1]).unwrap();
+    let first = ReadFileTool
+        .read_opened_page(open().await.unwrap(), args.clone(), ctx.clone())
+        .await
+        .unwrap();
+    assert_eq!(first.text.len(), MAX_SHARED_READ_TEXT_BYTES);
+    let Some(rua_core::tool::ReadPageContinuation::Bytes { byte_offset }) = first.continuation
+    else {
+        panic!("a large text file should provide a bounded continuation");
+    };
+    assert_eq!(byte_offset, MAX_SHARED_READ_TEXT_BYTES as u64);
+    let tail = ReadFileTool
+        .read_opened_page(
+            open().await.unwrap(),
+            json!({"device_id":"phone","file_path":path,"byte_offset":byte_offset}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tail.text, "a");
+    assert!(tail.continuation.is_none());
+
+    for data in [vec![0], vec![0xff]] {
         std::fs::write(&path, data).unwrap();
         assert!(ReadFileTool
             .read_opened_page(open().await.unwrap(), args.clone(), ctx.clone())
@@ -241,6 +259,76 @@ async fn approved_file_page_bounds_input_and_output_and_rejects_nontext() {
         .await
         .unwrap();
     assert!(page.text.is_empty() && page.continuation.is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn approved_large_text_pages_preserve_unicode_and_distant_line_numbers() {
+    use rua_core::tool::{ReadPageContinuation, MAX_SHARED_READ_TEXT_BYTES};
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().canonicalize().unwrap();
+    let path = cwd.join("large.txt");
+    let mut ctx = make_ctx(&root);
+    ctx.local_device_id = Some("phone".into());
+    ctx.raw_capture_max_bytes = 17;
+    let content = "风🌅尾".repeat(MAX_SHARED_READ_TEXT_BYTES / 10 + 100);
+    std::fs::write(&path, &content).unwrap();
+    let mut offset = MAX_SHARED_READ_TEXT_BYTES as u64 / 10 * 10;
+    let initial = offset;
+    let mut received = String::new();
+    loop {
+        let opened = ReadFileTool.open_regular_file(&path, &cwd).await.unwrap();
+        let page = ReadFileTool
+            .read_opened_page(
+                opened,
+                json!({"device_id":"phone","file_path":path,"byte_offset":offset}),
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(page.is_valid());
+        assert!(page.text.len() <= ctx.raw_capture_max_bytes);
+        let range = page.byte_range.as_ref().unwrap();
+        assert_eq!(range.start, offset);
+        assert_eq!(range.total_bytes, content.len() as u64);
+        received.push_str(&page.text);
+        match page.continuation {
+            Some(ReadPageContinuation::Bytes { byte_offset }) => {
+                assert!(byte_offset > offset);
+                offset = byte_offset;
+            }
+            None => break,
+            _ => panic!("expected a byte continuation"),
+        }
+    }
+    assert_eq!(received, content[initial as usize..]);
+    std::fs::write(&path, "x\n".repeat(MAX_SHARED_READ_TEXT_BYTES + 3)).unwrap();
+    let line = MAX_SHARED_READ_TEXT_BYTES as u64 + 1;
+    ctx.raw_capture_max_bytes = 64;
+    let opened = ReadFileTool.open_regular_file(&path, &cwd).await.unwrap();
+    let page = ReadFileTool
+        .read_opened_page(
+            opened,
+            json!({"device_id":"phone","file_path":path,"start_line":line,"limit":1}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.text, format!("{line:>6} | x\n"));
+    assert_eq!(
+        page.continuation,
+        Some(ReadPageContinuation::Lines {
+            start_line: line + 1,
+            limit: 1
+        })
+    );
+    assert!(page.is_valid());
+    ctx.cancel = Some(tokio::sync::watch::channel(true).1);
+    let opened = ReadFileTool.open_regular_file(&path, &cwd).await.unwrap();
+    assert!(ReadFileTool
+        .read_opened_page(opened, json!({"device_id":"phone","file_path":path}), ctx)
+        .await
+        .is_err());
 }
 
 #[cfg(unix)]

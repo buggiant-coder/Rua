@@ -143,21 +143,52 @@ impl SecurityModule {
         local_names: &[&str],
         confirmed_invocation: bool,
     ) -> Result<FileReadAdmission, FileReadPolicyError> {
-        use FileReadPolicyError::{Denied, Unavailable};
+        use FileReadPolicyError::Denied;
 
+        if ctx.tool_name != "read"
+            || ctx.tool_input["file_path"].as_str().is_none()
+            || ctx.tool_input["file_path"].as_str() != local_names.first().copied()
+        {
+            return Err(Denied("File read must match the requested path".into()));
+        }
+        let operations: Vec<_> = local_names
+            .iter()
+            .skip(1)
+            .map(|path| {
+                let mut operation = ctx.clone();
+                operation.tool_input["file_path"] = serde_json::json!(path);
+                operation
+            })
+            .collect();
+        self.inspect_chat_file_operation(ctx, captured, &operations, confirmed_invocation)
+            .await
+    }
+
+    /// Inspect the original file operation and the target's resolved paths without
+    /// creating another approval. A confirmation must be verified for the original call.
+    pub async fn inspect_chat_file_operation(
+        &self,
+        ctx: &ToolCallContext,
+        captured: &SecurityConfig,
+        operations: &[ToolCallContext],
+        confirmed_invocation: bool,
+    ) -> Result<FileReadAdmission, FileReadPolicyError> {
+        use FileReadPolicyError::{Denied, Unavailable};
         let address = ctx
             .approval_owner
             .as_chat_address()
-            .ok_or_else(|| Denied("File read requires a Chat".into()))?;
-        let requested_name = ctx
-            .tool_input
-            .get("file_path")
-            .and_then(serde_json::Value::as_str);
-        if ctx.tool_name != "read"
-            || requested_name.is_none()
-            || requested_name != local_names.first().copied()
+            .ok_or_else(|| Denied("File operation requires a Chat".into()))?;
+        if !matches!(ctx.tool_name.as_str(), "read" | "grep" | "glob" | "edit")
+            || operations.iter().any(|operation| {
+                operation.agent_id != ctx.agent_id
+                    || operation.approval_owner != ctx.approval_owner
+                    || operation.tool_name != ctx.tool_name
+                    || operation.local_device_id != ctx.local_device_id
+            })
         {
-            return Err(Denied("File read must match the requested path".into()));
+            return Err(Denied(
+                "Resolved file operation does not match the original call".into(),
+            ));
         }
         let current = self
             .config_store
@@ -172,15 +203,19 @@ impl SecurityModule {
         // keeps its guard configuration, while permission changes take effect immediately.
         let mut current_rules = snapshot_permission_rules(&current).map_err(Unavailable)?;
         current_rules.extend(chat_rules.iter().map(ApprovalReuseRule::to_stored));
-        let allows = |args: &serde_json::Value| {
-            let call = PermissionToolCall::new("read", args, ctx.local_device_id.as_deref());
+        let allows = |operation: &ToolCallContext| {
+            let call = PermissionToolCall::new(
+                &operation.tool_name,
+                &operation.tool_input,
+                operation.local_device_id.as_deref(),
+            );
             current_rules.iter().any(|rule| {
                 rule.enabled
                     && rule.effect == crate::PermissionRuleEffect::Allow
                     && rule.pattern().matches(&call)
             })
         };
-        let requested_allowed = allows(&ctx.tool_input);
+        let requested_allowed = allows(ctx);
         let mut admission = FileReadAdmission::Allowed;
         for config in std::iter::once(captured).chain((captured != &current).then_some(&current)) {
             let mut rules = snapshot_permission_rules(config).map_err(Unavailable)?;
@@ -193,14 +228,12 @@ impl SecurityModule {
             {
                 admission = FileReadAdmission::RequiresUserConfirmation;
             }
-            for path in local_names {
-                let mut operation = ctx.clone();
-                operation.tool_input["file_path"] = serde_json::json!(path);
-                check_file_read_denials(&operation, &rules).map_err(Denied)?;
-                let guard = engine.evaluate(&operation);
+            for operation in std::iter::once(ctx).chain(operations) {
+                check_file_operation_denials(operation, &rules).map_err(Denied)?;
+                let guard = engine.evaluate(operation);
                 if guard.decision == GuardDecision::Deny {
                     return Err(Denied(format!(
-                        "File read denied by security rules: {}",
+                        "File operation denied by security rules: {}",
                         guard
                             .findings
                             .iter()
@@ -209,10 +242,11 @@ impl SecurityModule {
                             .join(", ")
                     )));
                 }
-                // A guard on a resolved or backing name requires an allow that covers that name too.
+                // An approved patch covers its declared file paths. Other operations
+                // evaluate guards on each resolved name against the matching rule.
                 if guard.decision == GuardDecision::RequiresApproval
                     && !confirmed_invocation
-                    && (!requested_allowed || !allows(&operation.tool_input))
+                    && (!requested_allowed || (ctx.tool_name != "edit" && !allows(operation)))
                 {
                     admission = FileReadAdmission::RequiresUserConfirmation;
                 }
@@ -659,14 +693,17 @@ fn snapshot_permission_rules(
         .map_err(|error| format!("Invalid security snapshot permission rules: {error}"))
 }
 
-fn check_file_read_denials(
+fn check_file_operation_denials(
     ctx: &ToolCallContext,
     rules: &[StoredApprovalReuseRule],
 ) -> Result<(), String> {
     use crate::PermissionRuleEffect;
 
-    let call =
-        PermissionToolCall::target_read_for_denial(&ctx.tool_input, ctx.local_device_id.as_deref());
+    let call = PermissionToolCall::target_file_for_denial(
+        &ctx.tool_name,
+        &ctx.tool_input,
+        ctx.local_device_id.as_deref(),
+    );
     if let Some(rule) = rules.iter().find(|rule| {
         rule.enabled && rule.effect == PermissionRuleEffect::Deny && rule.pattern().matches(&call)
     }) {

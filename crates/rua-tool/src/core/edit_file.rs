@@ -39,6 +39,18 @@ impl EditFileTool {
         }
     }
 
+    /// Parse the same patch used by execution and return every affected path.
+    pub fn affected_paths(patch: &str) -> std::result::Result<Vec<String>, String> {
+        parse_patch(patch).map(|hunks| {
+            hunks
+                .into_iter()
+                .map(|hunk| match hunk {
+                    PatchHunk::Add { path, .. } | PatchHunk::Update { path, .. } => path,
+                })
+                .collect()
+        })
+    }
+
     pub async fn execute_with_context(
         &self,
         args: serde_json::Value,

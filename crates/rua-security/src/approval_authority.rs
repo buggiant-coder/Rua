@@ -547,6 +547,13 @@ impl ApprovalAuthority {
     /// Open the target's confirmation only when this invocation has no earlier card.
     pub async fn create_target_read_confirmation(
         &self,
+        input: ApprovalRequestInput,
+    ) -> Option<ApprovalRequest> {
+        self.create_target_file_confirmation(input).await
+    }
+
+    pub async fn create_target_file_confirmation(
+        &self,
         mut input: ApprovalRequestInput,
     ) -> Option<ApprovalRequest> {
         input.trigger.source = ApprovalTriggerSource::TargetDevice;
@@ -569,15 +576,14 @@ impl ApprovalAuthority {
         let args = &input.tool_call.args;
         let reuse_options = if !target_confirmation
             || (input.owner.as_chat_address().is_some()
-                && is_file_read(&input.tool_name, args)
                 && args["device_id"]
                     .as_str()
-                    .is_some_and(|device| single_device_read(args, device)))
+                    .is_some_and(|device| device_file_operation(&input.tool_name, args, device)))
         {
             reuse_options_for(
                 &input.owner,
                 &input.tool_name,
-                call.bound_read.as_deref().unwrap_or(args),
+                call.bound_file.as_deref().unwrap_or(args),
             )
         } else {
             Vec::new()
@@ -918,7 +924,7 @@ impl ApprovalAuthority {
                     owner: Some(request.owner.clone()),
                     scope: ApprovalReuseScope::Chat,
                     label: option.label,
-                    exact_read_args: matcher.read_args_with_asterisk().then_some(true),
+                    exact_read_args: matcher.file_args_with_asterisk().then_some(true),
                     matcher,
                     source_approval_id: request.id.clone(),
                     created_at: Utc::now(),
@@ -966,7 +972,7 @@ impl ApprovalAuthority {
                     owner: Some(request.owner.clone()),
                     scope: ApprovalReuseScope::RuntimeSession,
                     label: option.label,
-                    exact_read_args: matcher.read_args_with_asterisk().then_some(true),
+                    exact_read_args: matcher.file_args_with_asterisk().then_some(true),
                     matcher,
                     source_approval_id: request.id.clone(),
                     created_at: Utc::now(),
@@ -1006,7 +1012,7 @@ impl ApprovalAuthority {
                     owner: None,
                     scope: ApprovalReuseScope::Agent,
                     label: option.label,
-                    exact_read_args: matcher.read_args_with_asterisk().then_some(true),
+                    exact_read_args: matcher.file_args_with_asterisk().then_some(true),
                     matcher,
                     source_approval_id: request.id.clone(),
                     created_at: Utc::now(),
@@ -1166,7 +1172,10 @@ impl ApprovalAuthority {
         target_device_id: &str,
         file_path: &str,
     ) -> Option<String> {
-        self.claim_authenticated_read(ctx, target_device_id, file_path, false, |_| true)
+        if ctx.tool_name != "read" || ctx.tool_input["file_path"].as_str() != Some(file_path) {
+            return None;
+        }
+        self.claim_authenticated_file(ctx, target_device_id, false, |_| true)
             .await
     }
 
@@ -1179,43 +1188,43 @@ impl ApprovalAuthority {
         file_path: &str,
         claim_dispatch: impl FnOnce(&str) -> bool,
     ) -> Option<String> {
-        self.claim_authenticated_read(ctx, target_device_id, file_path, true, claim_dispatch)
+        if ctx.tool_name != "read" || ctx.tool_input["file_path"].as_str() != Some(file_path) {
+            return None;
+        }
+        self.consume_authenticated_file_confirmation_if(ctx, target_device_id, claim_dispatch)
             .await
     }
 
-    async fn claim_authenticated_read(
+    pub async fn consume_authenticated_file_confirmation_if(
         &self,
         ctx: &crate::ToolCallContext,
         target_device_id: &str,
-        file_path: &str,
+        claim_dispatch: impl FnOnce(&str) -> bool,
+    ) -> Option<String> {
+        self.claim_authenticated_file(ctx, target_device_id, true, claim_dispatch)
+            .await
+    }
+
+    async fn claim_authenticated_file(
+        &self,
+        ctx: &crate::ToolCallContext,
+        target_device_id: &str,
         allow_persistent: bool,
         claim_dispatch: impl FnOnce(&str) -> bool,
     ) -> Option<String> {
         let address = ctx.approval_owner.as_chat_address()?;
         let turn_id = ctx.metadata.get("turn_id")?.as_str()?;
         let tool_call_id = ctx.metadata.get("tool_call_id")?.as_str()?;
-        let args = ctx.tool_input.as_object()?;
-        if ctx.tool_name != "read"
-            || [
-                ctx.agent_id.as_str(),
-                address.chat_id().as_str(),
-                turn_id,
-                tool_call_id,
-                target_device_id,
-            ]
-            .iter()
-            .any(|id| id.trim().is_empty())
-            || args.get("device_id")?.as_str()? != target_device_id
-            || args.get("file_path")?.as_str()? != file_path
-            || !rua_core::execution_directory::is_device_absolute_path(file_path)
-            || file_path.starts_with("//")
-            || file_path.starts_with(r"\\")
-            || args.keys().any(|key| {
-                !matches!(
-                    key.as_str(),
-                    "device_id" | "file_path" | "start_line" | "limit" | "byte_offset"
-                )
-            })
+        if [
+            ctx.agent_id.as_str(),
+            address.chat_id().as_str(),
+            turn_id,
+            tool_call_id,
+            target_device_id,
+        ]
+        .iter()
+        .any(|id| id.trim().is_empty())
+            || !device_file_operation(&ctx.tool_name, &ctx.tool_input, target_device_id)
         {
             return None;
         }
@@ -1359,7 +1368,7 @@ impl ApprovalAuthority {
     ) -> Option<ApprovalReuseRule> {
         let mut rules = self.reuse_rules.write().await;
         let inspect_stored_read =
-            self.agent_rule_store.is_some() && is_file_read(call.tool_name, call.args);
+            self.agent_rule_store.is_some() && is_file_operation(call.tool_name, call.args);
         if let Some(owner) = owner {
             if let Some(rule) = self
                 .match_owner_rule(owner, effect, call, &mut rules)
@@ -1551,7 +1560,7 @@ impl ApprovalAuthority {
             owner: None,
             scope: ApprovalReuseScope::Agent,
             label: input.label,
-            exact_read_args: input.matcher.read_args_with_asterisk().then_some(false),
+            exact_read_args: input.matcher.file_args_with_asterisk().then_some(false),
             matcher: input.matcher,
             source_approval_id: String::new(),
             created_at: now,
@@ -1581,11 +1590,11 @@ impl ApprovalAuthority {
             return Ok(None);
         };
         if existing.matcher != input.matcher {
-            existing.exact_read_args = (input.matcher.read_args_with_asterisk()
+            existing.exact_read_args = (input.matcher.file_args_with_asterisk()
                 || (existing.source == PermissionRuleSource::Approval
-                    && input.matcher.file_read_args().is_some()))
+                    && input.matcher.file_operation_args().is_some()))
             .then_some(false);
-        } else if existing.exact_read_args.is_none() && input.matcher.read_args_with_asterisk() {
+        } else if existing.exact_read_args.is_none() && input.matcher.file_args_with_asterisk() {
             existing.exact_read_args = Some(existing.pattern().exact_read_args);
         }
         existing.effect = input.effect;
@@ -1694,21 +1703,41 @@ fn reuse_options_for(
 pub(crate) struct PermissionToolCall<'a> {
     tool_name: &'a str,
     args: &'a serde_json::Value,
-    bound_read: Option<std::borrow::Cow<'a, serde_json::Value>>,
-    unqualified_local_read: Option<serde_json::Value>,
+    bound_file: Option<std::borrow::Cow<'a, serde_json::Value>>,
+    unqualified_local_file: Option<serde_json::Value>,
 }
 
-fn is_file_read(tool_name: &str, args: &serde_json::Value) -> bool {
-    tool_name == "read"
-        && args.get("device_id").is_none_or(|device| {
-            device
-                .as_str()
-                .is_some_and(|id| !id.is_empty() && id.trim() == id)
-        })
-        && args["file_path"].as_str().is_some_and(|path| {
-            rua_core::execution_directory::is_device_absolute_path(path)
-                && rua_core::chat_media::reference_id(path).is_none()
-        })
+fn is_file_operation(tool_name: &str, args: &serde_json::Value) -> bool {
+    if !args.get("device_id").is_none_or(|device| {
+        device
+            .as_str()
+            .is_some_and(|id| !id.is_empty() && id.trim() == id)
+    }) {
+        return false;
+    }
+    match tool_name {
+        "read" => args["file_path"].as_str().is_some_and(absolute_file_path),
+        "grep" | "glob" => args["path"].as_str().is_some_and(absolute_file_path),
+        "edit" => args["patch"].as_str().is_some_and(|patch| {
+            let paths: Vec<_> = patch
+                .lines()
+                .filter_map(|line| {
+                    line.strip_prefix("*** Add File: ")
+                        .or_else(|| line.strip_prefix("*** Update File: "))
+                })
+                .collect();
+            !paths.is_empty() && paths.iter().all(|path| absolute_file_path(path))
+        }),
+        _ => false,
+    }
+}
+
+fn absolute_file_path(path: &str) -> bool {
+    rua_core::execution_directory::is_device_absolute_path(path)
+        && rua_core::chat_media::reference_id(path).is_none()
+        && !path.starts_with("//")
+        && !path.starts_with(r"\\")
+        && !path.chars().any(char::is_control)
 }
 
 impl<'a> PermissionToolCall<'a> {
@@ -1721,25 +1750,25 @@ impl<'a> PermissionToolCall<'a> {
         let mut call = Self {
             tool_name,
             args,
-            bound_read: None,
-            unqualified_local_read: None,
+            bound_file: None,
+            unqualified_local_file: None,
         };
         let Some(local) = local_device_id.filter(|id| !id.is_empty() && id.trim() == *id) else {
             return call;
         };
-        if !is_file_read(tool_name, args) {
+        if !is_file_operation(tool_name, args) {
             return call;
         }
         match args["device_id"].as_str() {
             None => {
                 let mut bound = args.clone();
                 bound["device_id"] = local.into();
-                call.bound_read = Some(Cow::Owned(bound));
+                call.bound_file = Some(Cow::Owned(bound));
             }
             Some(id) => {
-                call.bound_read = Some(Cow::Borrowed(args));
+                call.bound_file = Some(Cow::Borrowed(args));
                 if id == local {
-                    call.unqualified_local_read = Self::without_device_id(args);
+                    call.unqualified_local_file = Self::without_device_id(args);
                 }
             }
         }
@@ -1752,22 +1781,24 @@ impl<'a> PermissionToolCall<'a> {
         Some(fields.into())
     }
 
-    pub(crate) fn target_read_for_denial(
+    pub(crate) fn target_file_for_denial(
+        tool_name: &'a str,
         args: &'a serde_json::Value,
         local_device_id: Option<&str>,
     ) -> Self {
-        let mut call = Self::new("read", args, local_device_id);
-        // Older target-side callers already checked the destination but supplied it only in args.
-        if local_device_id.is_none() {
-            call.unqualified_local_read = Self::without_device_id(args);
+        let mut call = Self::new(tool_name, args, local_device_id);
+        // Target callers already checked the destination. Include path-only derived
+        // operations when comparing a local deny against an explicitly named Device.
+        if local_device_id.is_none() || args["device_id"].as_str() == local_device_id {
+            call.unqualified_local_file = Self::without_device_id(args);
         }
         call
     }
 
     fn alternate_local_args(&self) -> Option<&serde_json::Value> {
-        self.unqualified_local_read
+        self.unqualified_local_file
             .as_ref()
-            .or(match &self.bound_read {
+            .or(match &self.bound_file {
                 Some(std::borrow::Cow::Owned(qualified)) => Some(qualified),
                 _ => None,
             })
@@ -1790,10 +1821,11 @@ impl PermissionRulePattern<'_> {
 
     pub(crate) fn matches(&self, call: &PermissionToolCall<'_>) -> bool {
         if let (Some(approved), Some(bound)) =
-            (&self.approved_file_args, call.bound_read.as_deref())
+            (&self.approved_file_args, call.bound_file.as_deref())
         {
             // A legacy file approval without a Device cannot name this destination.
-            return approved == bound;
+            let ApprovalReuseMatcher::ToolCall { tool_name, .. } = self.matcher;
+            return tool_name == call.tool_name && approved == bound;
         }
         self.matches_args(call.tool_name, call.args)
             || self.effect == PermissionRuleEffect::Deny
@@ -1821,21 +1853,18 @@ impl PermissionRulePattern<'_> {
 }
 
 impl ApprovalReuseMatcher {
-    fn file_read_args(&self) -> Option<serde_json::Value> {
+    fn file_operation_args(&self) -> Option<serde_json::Value> {
         let Self::ToolCall {
             tool_name,
             input_params,
         } = self;
-        if tool_name != "read" {
-            return None;
-        }
         let args = serde_json::from_str(input_params.as_deref()?).ok()?;
-        is_file_read(tool_name, &args).then_some(args)
+        is_file_operation(tool_name, &args).then_some(args)
     }
 
-    fn read_args_with_asterisk(&self) -> bool {
+    fn file_args_with_asterisk(&self) -> bool {
         matches!(self, Self::ToolCall { tool_name, input_params: Some(params) }
-            if tool_name == "read" && params.contains('*'))
+            if matches!(tool_name.as_str(), "read" | "grep" | "glob" | "edit") && params.contains('*'))
     }
 
     fn pattern(
@@ -1852,10 +1881,10 @@ impl ApprovalReuseMatcher {
             && effect == PermissionRuleEffect::Allow;
         PermissionRulePattern {
             matcher: self,
-            exact_read_args: self.read_args_with_asterisk()
+            exact_read_args: self.file_args_with_asterisk()
                 && exact_read_args.unwrap_or(approved_read),
             approved_file_args: if approved_read && exact_read_args != Some(false) {
-                self.file_read_args()
+                self.file_operation_args()
             } else {
                 None
             },
@@ -1928,27 +1957,29 @@ fn looks_like_path(token: &str) -> bool {
         || token.starts_with("~/")
 }
 
-fn single_device_read(args: &serde_json::Value, local_device_id: &str) -> bool {
+fn device_file_operation(tool: &str, args: &serde_json::Value, target: &str) -> bool {
+    if args["device_id"].as_str() != Some(target) || !is_file_operation(tool, args) {
+        return false;
+    }
     let Some(fields) = args.as_object() else {
         return false;
     };
-    let Some(path) = args["file_path"].as_str() else {
-        return false;
-    };
-    args["device_id"].as_str() == Some(local_device_id)
-        && !path.starts_with("//")
-        && !path.starts_with(r"\\")
-        && !path.ends_with(['/', '\\'])
-        && !path
-            .split(['/', '\\'])
-            .any(|part| part == "." || part == "..")
-        && !path.chars().any(char::is_control)
-        && !(fields.contains_key("byte_offset")
-            && (fields.contains_key("start_line") || fields.contains_key("limit")))
-        && fields.iter().all(|(key, value)| match key.as_str() {
-            "device_id" | "file_path" => true,
-            "byte_offset" => value.as_u64().is_some(),
-            "start_line" | "limit" => value.as_u64().is_some_and(|n| n > 0),
-            _ => false,
-        })
+    match tool {
+        "read" => {
+            !(fields.contains_key("byte_offset")
+                && (fields.contains_key("start_line") || fields.contains_key("limit")))
+                && fields.iter().all(|(key, value)| match key.as_str() {
+                    "device_id" | "file_path" => true,
+                    "after" => value.is_string(),
+                    "byte_offset" => value.as_u64().is_some(),
+                    "start_line" | "limit" => value.as_u64().is_some_and(|n| n > 0),
+                    _ => false,
+                })
+        }
+        "edit" => fields
+            .keys()
+            .all(|key| matches!(key.as_str(), "device_id" | "patch")),
+        "grep" | "glob" => args["pattern"].is_string(),
+        _ => false,
+    }
 }

@@ -2148,11 +2148,17 @@ async fn execute_approved_tool(
     let call_for_exec = call.clone();
     let manages_wait = !already_task_owned
         && !transfer_eligible
-        && call.name == "read"
+        && matches!(call.name.as_str(), "read" | "edit" | "grep" | "glob")
         && enriched_ctx
             .device_read_access
             .as_ref()
-            .is_some_and(|access| access.manages_confirmation_wait(&enriched_ctx, &call.arguments));
+            .is_some_and(|access| {
+                access.manages_operation_confirmation_wait(
+                    &call.name,
+                    &enriched_ctx,
+                    &call.arguments,
+                )
+            });
     let mut tool_future: RunningToolFuture = Box::pin(async move {
         if transfer_eligible || timeout.is_zero() {
             return Ok(executor_for_exec

@@ -98,6 +98,9 @@ use tower::ServiceExt;
 #[path = "device_session_control_view/approved_phone_file.rs"]
 mod approved_phone_file;
 
+#[path = "device_session_control_view/remote_file_operations.rs"]
+mod remote_file_operations;
+
 fn epoch(wall_ms: u64) -> ConversationAuthorityEpoch {
     ConversationAuthorityEpoch::from_parts(wall_ms, 0, [0; 8])
 }
@@ -11002,6 +11005,16 @@ impl DeviceSessionCommandHandler for InputConfirmationHandler {
 struct FileReadRecorder {
     inner: Arc<DeviceCommandHandler>,
     requests: Mutex<Vec<rua_server::services::device_read_check::DeviceReadCheckRequest>>,
+    drop_next_edit_reply: std::sync::atomic::AtomicBool,
+    hold_next_edit_reply: std::sync::atomic::AtomicBool,
+    edit_reply_ready: Notify,
+    release_edit_reply: Notify,
+    committed_edits: AtomicUsize,
+    hold_next_edit: std::sync::atomic::AtomicBool,
+    edit_arrived: Notify,
+    release_edit: Notify,
+    edit_processed: Notify,
+    cancellation_processed: Notify,
 }
 
 #[async_trait]
@@ -11018,7 +11031,40 @@ impl DeviceSessionCommandHandler for FileReadRecorder {
                 .map_err(|error| error.to_string())?;
             self.requests.lock().unwrap().push(request);
         }
-        self.inner.handle_command_from(peer, payload).await
+        let held_edit = envelope["command"] == "read_allowed_file"
+            && envelope["payload"]["request"]["tool_name"] == "edit"
+            && !envelope["payload"]["request"]["confirmation"].is_null()
+            && self.hold_next_edit.swap(false, Ordering::SeqCst);
+        if held_edit {
+            self.edit_arrived.notify_one();
+            self.release_edit.notified().await;
+        }
+        let response = self.inner.handle_command_from(peer, payload).await?;
+        if held_edit {
+            self.edit_processed.notify_one();
+        }
+        if envelope["command"] == "cancel_file_operation" {
+            self.cancellation_processed.notify_one();
+        }
+        if envelope["command"] == "read_allowed_file"
+            && envelope["payload"]["request"]["tool_name"] == "edit"
+            && matches!(
+                serde_json::from_slice::<DeviceCommandResponse>(&response),
+                Ok(DeviceCommandResponse::FileRead {
+                    response: rua_server::services::device_read_check::DeviceFileReadReply::Result(result)
+                }) if !result.is_error
+            )
+        {
+            self.committed_edits.fetch_add(1, Ordering::SeqCst);
+            if self.hold_next_edit_reply.swap(false, Ordering::SeqCst) {
+                self.edit_reply_ready.notify_one();
+                self.release_edit_reply.notified().await;
+            }
+            if self.drop_next_edit_reply.swap(false, Ordering::SeqCst) {
+                return Err("fixture dropped the receipt after the edit committed".into());
+            }
+        }
+        Ok(response)
     }
 }
 
@@ -11071,6 +11117,16 @@ impl RemoteInputConfirmationFixture {
         let file_reads = Arc::new(FileReadRecorder {
             inner: source_state.device_command_handler().unwrap(),
             requests: Mutex::default(),
+            drop_next_edit_reply: std::sync::atomic::AtomicBool::new(false),
+            hold_next_edit_reply: std::sync::atomic::AtomicBool::new(false),
+            edit_reply_ready: Notify::new(),
+            release_edit_reply: Notify::new(),
+            committed_edits: AtomicUsize::new(0),
+            hold_next_edit: std::sync::atomic::AtomicBool::new(false),
+            edit_arrived: Notify::new(),
+            release_edit: Notify::new(),
+            edit_processed: Notify::new(),
+            cancellation_processed: Notify::new(),
         });
         let source = build_runtime(
             171,
@@ -11740,6 +11796,7 @@ async fn read_approval_claim_is_bound_to_the_running_turn_requesting_device_and_
     let (address, turn, epoch, _) = prepare_running_file_calls(&fixture, &calls, &release).await;
     let replica = &fixture.source_state;
     let mut check = DeviceReadCheckRequest {
+        tool_name: "read".into(),
         source_device_id: fixture.target.device_id.clone(),
         target_device_id: fixture.source.device_id.clone(),
         address: address.clone(),
@@ -11824,6 +11881,7 @@ async fn read_approval_claim_is_bound_to_the_running_turn_requesting_device_and_
             target_device_id: fixture.target.device_id.clone(),
             authority_epoch: turn.authority_epoch,
             action: ConversationControlDeviceAction::ClaimReadApproval {
+                tool_name: "read".into(),
                 dispatch_token: uuid::Uuid::nil(),
                 approval_id: pending.id,
                 turn_id: turn.turn_id.clone(),

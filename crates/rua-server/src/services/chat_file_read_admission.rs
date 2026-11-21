@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rua_config::types::tools::ToolIdentity;
+use rua_contract::Tool;
+use rua_core::tool::{ToolContext, ToolResult};
 use rua_core::ChatAddress;
 pub use rua_security::security_module::FileReadAdmission;
 use rua_security::security_module::FileReadPolicyError;
@@ -14,6 +16,7 @@ use super::agent_manager::AgentManager;
 use super::conversation_authority_placement::{
     parse_conversation_authority_placement, ConversationAuthorityEpoch,
 };
+use super::device_read_check::DeviceFileReadReply;
 use super::product_hooks::ChatHookConfiguration;
 
 pub struct TargetChatRead<'a> {
@@ -83,7 +86,7 @@ impl TargetFileReadContext {
         &self,
         request: &TargetChatRead<'_>,
     ) -> Result<(), TargetReadRejection> {
-        self.requested_path(request)
+        self.requested_paths(request)
             .map_err(|_| TargetReadRejection::Denied)?;
         self.checked_chat_configuration(request)
             .await
@@ -97,14 +100,213 @@ impl TargetFileReadContext {
         &self,
         request: &TargetChatRead<'_>,
     ) -> Result<FileReadAdmission, TargetReadRejection> {
-        let path = self
-            .requested_path(request)
+        let paths = self
+            .requested_paths(request)
             .map_err(|_| TargetReadRejection::Denied)?;
-        rua_tool::fs::WorkspaceFs::check_secret_dir(Path::new(path))
-            .map_err(|_| TargetReadRejection::Denied)?;
-        self.inspect_policy(request, &[path], false)
+        for path in &paths {
+            rua_tool::fs::WorkspaceFs::check_secret_dir(Path::new(path))
+                .map_err(|_| TargetReadRejection::Denied)?;
+        }
+        let names = paths.iter().map(String::as_str).collect::<Vec<_>>();
+        self.inspect_policy(request, &names, false)
             .await
             .map_err(Into::into)
+    }
+
+    /// Run the existing local file tool after evaluating the requested and resolved paths.
+    pub async fn execute_authorized(
+        &self,
+        request: &TargetChatRead<'_>,
+        max_text_bytes: usize,
+        confirmed_invocation: bool,
+        cancel: Option<tokio::sync::watch::Receiver<bool>>,
+    ) -> Result<DeviceFileReadReply, TargetReadRejection> {
+        let paths = self
+            .requested_paths(request)
+            .map_err(|_| TargetReadRejection::Denied)?;
+        let fs = rua_tool::WorkspaceFs::for_execution(
+            &self.rua_root,
+            rua_core::runtime_layout::RuntimeLayout::from_current_process(None),
+        )
+        .map_err(|_| TargetReadRejection::Unavailable)?;
+        let requested_names = paths.iter().map(String::as_str).collect::<Vec<_>>();
+        if self
+            .inspect_policy(request, &requested_names, confirmed_invocation)
+            .await?
+            != FileReadAdmission::Allowed
+        {
+            return Err(TargetReadRejection::Denied);
+        }
+        let mut names = paths.clone();
+        let mut resolved_paths = Vec::with_capacity(paths.len());
+        for path in &paths {
+            let resolved = if request.tool_name == "edit" {
+                fs.resolve_for_create(path)
+            } else {
+                fs.resolve(path)
+            }
+            .map_err(|error| match error {
+                rua_tool::ToolError::SecretDirDenied { .. }
+                | rua_tool::ToolError::PathSecurity { .. } => TargetReadRejection::Denied,
+                _ => TargetReadRejection::FileUnavailable,
+            })?;
+            let name = resolved
+                .to_str()
+                .ok_or(TargetReadRejection::Unavailable)?
+                .to_owned();
+            if !names.contains(&name) {
+                names.push(name);
+            }
+            resolved_paths.push(resolved);
+        }
+        let names = names.iter().map(String::as_str).collect::<Vec<_>>();
+        if self
+            .inspect_policy(request, &names, confirmed_invocation)
+            .await?
+            != FileReadAdmission::Allowed
+        {
+            return Err(TargetReadRejection::Denied);
+        }
+        if request.tool_name == "read"
+            && tokio::fs::metadata(&resolved_paths[0])
+                .await
+                .map_err(|_| TargetReadRejection::FileUnavailable)?
+                .is_file()
+        {
+            return self
+                .read_authorized(request, max_text_bytes, confirmed_invocation, cancel)
+                .await
+                .map(DeviceFileReadReply::Page);
+        }
+
+        let store = rua_core::ChatStore::resolve(&self.rua_root, request.address.clone());
+        let context = ToolContext {
+            agent_id: request.agent_id.to_owned(),
+            session_id: request.address.chat_id().to_string(),
+            local_device_id: Some(self.local_device_id.clone()),
+            working_dir: self.rua_root.clone(),
+            conversation_store_dir: Some(store.root().to_owned()),
+            tool_result_store_dir: Some(store.root().join("tool_call_logs")),
+            raw_capture_max_bytes: max_text_bytes,
+            metadata: self.tool_call_context(request).metadata,
+            cancel,
+            ..Default::default()
+        };
+        let mut args = request.args.clone();
+        let (limit_key, default_limit, max_limit) = if request.tool_name == "read" {
+            ("limit", 100, 200)
+        } else {
+            ("max_results", 200, 2000)
+        };
+        let mut page_limit = args[limit_key]
+            .as_u64()
+            .unwrap_or(default_limit)
+            .clamp(1, max_limit);
+        let result = loop {
+            if context
+                .cancel
+                .as_ref()
+                .is_some_and(|cancel| *cancel.borrow())
+            {
+                break Ok(ToolResult::error(
+                    request.tool_call_id,
+                    "File operation cancelled",
+                ));
+            }
+            let result = match request.tool_name {
+                "read" => {
+                    rua_tool::ReadFileTool
+                        .call(args.clone(), context.clone())
+                        .await
+                }
+                "edit" => {
+                    rua_tool::EditFileTool
+                        .call(args.clone(), context.clone())
+                        .await
+                }
+                "grep" => {
+                    rua_tool::extended::search::GrepSearchTool
+                        .call(args.clone(), context.clone())
+                        .await
+                }
+                "glob" => {
+                    rua_tool::extended::search::GlobSearchTool
+                        .call(args.clone(), context.clone())
+                        .await
+                }
+                _ => return Err(TargetReadRejection::Denied),
+            };
+            if request.tool_name == "edit"
+                || result.as_ref().map_or(true, |result| {
+                    (result.is_error && !result.metadata.contains_key("omitted_entries"))
+                        || result.text_content().len() <= max_text_bytes
+                })
+            {
+                break result;
+            }
+            // Regenerate a smaller complete page from the same starting point. Trimming
+            // its text would leave a continuation that skips entries never delivered.
+            if page_limit == 1 {
+                let mut error = ToolResult::error(
+                    request.tool_call_id,
+                    "One result exceeds the output byte budget. Narrow the query or increase the output limit.",
+                );
+                error
+                    .metadata
+                    .insert("output_error".into(), "page_budget_too_small".into());
+                break Ok(error);
+            }
+            page_limit /= 2;
+            args[limit_key] = page_limit.into();
+        };
+        let mut result = match result {
+            Ok(result) => result,
+            Err(error) => ToolResult::error(request.tool_call_id, error.to_string()),
+        };
+        // A completed edit may already have effects, even if permissions change meanwhile.
+        if request.tool_name != "edit"
+            && self
+                .inspect_policy(request, &names, confirmed_invocation)
+                .await?
+                != FileReadAdmission::Allowed
+        {
+            return Err(TargetReadRejection::Denied);
+        }
+        if let Some(meta) = result.truncation.as_mut() {
+            meta.recall_key = None;
+        }
+        let mut remaining = max_text_bytes;
+        let mut truncated = false;
+        for part in &mut result.content {
+            if let agent_types::ContentPart::Text { text } = part {
+                let mut end = text.len().min(remaining);
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                truncated |= end < text.len();
+                text.truncate(end);
+                remaining -= end;
+            }
+        }
+        let is_error = result.is_error;
+        let location = result.metadata.entry("file_location").or_insert_with(|| {
+            serde_json::json!({
+                "device_id": self.local_device_id,
+                "paths": paths,
+                "path": paths.first(),
+                "coverage": if is_error { "unavailable" } else { "complete" },
+            })
+        });
+        location["dispatched"] = true.into();
+        if truncated {
+            if location["coverage"] != "unavailable" {
+                location["coverage"] = "partial".into();
+            }
+            result
+                .metadata
+                .insert("output_truncated".into(), true.into());
+        }
+        Ok(DeviceFileReadReply::Result(Box::new(result)))
     }
 
     /// Inspect a file already opened under this Device's own file-access authorization.
@@ -138,6 +340,7 @@ impl TargetFileReadContext {
         request: &TargetChatRead<'_>,
         max_text_bytes: usize,
         confirmed_invocation: bool,
+        cancel: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<rua_core::tool::SharedReadPage, TargetReadRejection> {
         let ctx = self.tool_call_context(request);
         let path = self
@@ -191,6 +394,7 @@ impl TargetFileReadContext {
             tool_result_store_dir: Some(store.root().join("tool_call_logs")),
             raw_capture_max_bytes: max_text_bytes,
             metadata: ctx.metadata.clone(),
+            cancel,
             ..Default::default()
         };
         let page = tool
@@ -201,6 +405,41 @@ impl TargetFileReadContext {
             return Err(TargetReadRejection::Denied);
         }
         Ok(page)
+    }
+
+    fn requested_paths(&self, request: &TargetChatRead<'_>) -> Result<Vec<String>, String> {
+        if self.local_device_id.is_empty()
+            || request.turn_id.is_empty()
+            || request.tool_call_id.is_empty()
+            || request.args["device_id"].as_str() != Some(&self.local_device_id)
+        {
+            return Err("Expected a Chat file operation on this Device".into());
+        }
+        let paths = match request.tool_name {
+            "read" => vec![self.requested_path(request)?.to_owned()],
+            "grep" | "glob" => vec![request.args["path"]
+                .as_str()
+                .ok_or("A remote search requires an absolute path")?
+                .to_owned()],
+            "edit" => rua_tool::EditFileTool::affected_paths(
+                request.args["patch"]
+                    .as_str()
+                    .ok_or("An edit patch is required")?,
+            )?,
+            _ => return Err("Unsupported file operation".into()),
+        };
+        if paths.iter().any(|path| {
+            !Path::new(path).is_absolute()
+                || !rua_core::execution_directory::is_device_absolute_path(path)
+                || path.starts_with("//")
+                || path.starts_with(r"\")
+                || path.chars().any(char::is_control)
+        }) {
+            return Err(
+                "File operations require actual absolute paths on the target Device".into(),
+            );
+        }
+        Ok(paths)
     }
 
     fn requested_path<'a>(&self, request: &TargetChatRead<'a>) -> Result<&'a str, String> {
@@ -229,7 +468,7 @@ impl TargetFileReadContext {
             || args.keys().any(|key| {
                 !matches!(
                     key.as_str(),
-                    "device_id" | "file_path" | "start_line" | "limit" | "byte_offset"
+                    "device_id" | "file_path" | "start_line" | "limit" | "byte_offset" | "after"
                 )
             })
             || ["start_line", "limit", "byte_offset"].iter().any(|&key| {
@@ -320,11 +559,10 @@ impl TargetFileReadContext {
         let capabilities = captured
             .capability_configuration
             .ok_or_else(|| Unavailable("Captured Chat tool selection is unavailable".into()))?;
-        let read = ToolIdentity::builtin("read");
-        let definition = self
-            .tool_catalog
-            .get("read")
-            .ok_or_else(|| Unavailable("The read tool is unavailable on this Device".into()))?;
+        let read = ToolIdentity::builtin(request.tool_name);
+        let definition = self.tool_catalog.get(request.tool_name).ok_or_else(|| {
+            Unavailable("The requested file tool is unavailable on this Device".into())
+        })?;
         let capability = definition.get("capability").and_then(Value::as_str);
         let selected = self
             .tool_config_store
@@ -334,36 +572,61 @@ impl TargetFileReadContext {
         if captured
             .agent_assignment
             .as_ref()
-            .is_some_and(|assignment| assignment.disabled_tools.iter().any(|name| name == "read"))
+            .is_some_and(|assignment| {
+                assignment
+                    .disabled_tools
+                    .iter()
+                    .any(|name| name == request.tool_name)
+            })
             || !capabilities.selection_policy.selects(&read, capability)
             || !selected.selects(&read, capability)
         {
             return Err(Denied(
-                "The read tool is disabled for this Chat or target Agent".into(),
+                "The requested file tool is disabled for this Chat or target Agent".into(),
             ));
         }
         let ctx = self.tool_call_context(request);
-        if confirmed_invocation {
-            self.security
+        if request.tool_name == "read" {
+            return self
+                .security
                 .inspect_confirmed_chat_file_read(
                     &ctx,
                     &captured.security_config,
                     local_names,
-                    true,
+                    confirmed_invocation,
                 )
-                .await
-        } else {
-            self.security
-                .inspect_chat_file_read(&ctx, &captured.security_config, local_names)
-                .await
+                .await;
         }
+        let operations = local_names
+            .iter()
+            .map(|path| {
+                let mut operation = ctx.clone();
+                if request.tool_name == "edit" {
+                    operation.tool_input = serde_json::json!({
+                        "device_id": self.local_device_id,
+                        "path": path,
+                    });
+                } else {
+                    operation.tool_input["path"] = (*path).into();
+                }
+                operation
+            })
+            .collect::<Vec<_>>();
+        self.security
+            .inspect_chat_file_operation(
+                &ctx,
+                &captured.security_config,
+                &operations,
+                confirmed_invocation,
+            )
+            .await
     }
 
     fn tool_call_context(&self, request: &TargetChatRead<'_>) -> ToolCallContext {
         let mut ctx = ToolCallContext::new(
             request.agent_id,
             request.address.chat_id().as_str(),
-            "read",
+            request.tool_name,
             request.args.clone(),
         )
         .with_chat_address(request.address.clone());
