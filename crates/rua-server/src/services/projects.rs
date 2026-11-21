@@ -50,6 +50,21 @@ impl BrowseDirectoryResponse {
 }
 
 const PROJECT_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const DIRECTORY_CREATION_UNCONFIRMED: &str = "directory_creation_unconfirmed";
+
+pub(crate) fn directory_creation_notice(
+    device_id: &str,
+    error: &rua_project::ProjectError,
+) -> Option<String> {
+    let rua_project::ProjectError::DirectoryCreatedUnconfirmed { path, source } = error else {
+        return None;
+    };
+    tracing::warn!(device_id, path = %path.display(), error = %source, "Could not confirm the created directory");
+    Some(format!(
+        "Directory '{}' was created on Device '{device_id}', but its final state is unconfirmed. Refresh the parent directory before trying again.",
+        path.display()
+    ))
+}
 
 #[derive(Debug, Error)]
 pub enum ProjectPlacementError {
@@ -206,7 +221,12 @@ impl ProjectPlacementService {
         name: &str,
     ) -> Result<ProjectDirectoryListing, ProjectPlacementError> {
         if resource_device_id == self.local_device_id {
-            return rua_project::create_project_directory(parent, name).map_err(map_project_error);
+            return rua_project::create_project_directory(parent, name).map_err(|error| {
+                match directory_creation_notice(resource_device_id, &error) {
+                    Some(detail) => ProjectPlacementError::OutcomeUnconfirmed(detail),
+                    None => map_project_error(error),
+                }
+            });
         }
         match self
             .deliver(
@@ -541,6 +561,12 @@ impl ProjectPlacementService {
             crate::services::device_command_bus::DeviceCommandDeliveryError::OutcomeUnconfirmed(
                 detail,
             ) => ProjectPlacementError::OutcomeUnconfirmed(detail),
+            crate::services::device_command_bus::DeviceCommandDeliveryError::Rejected {
+                reason,
+                detail,
+            } if reason == DIRECTORY_CREATION_UNCONFIRMED => {
+                ProjectPlacementError::OutcomeUnconfirmed(detail)
+            }
             crate::services::device_command_bus::DeviceCommandDeliveryError::Rejected {
                 detail,
                 ..

@@ -314,6 +314,8 @@ test("resource browsing, Git, and folder creation follow the selected Device and
         mkdir.push(body);
         if (body.name === "receipt-lost")
           return send({ detail: unconfirmed }, 503);
+        if (body.name === "connection-lost")
+          return route.abort("connectionclosed");
         return send(
           listing(body.device_id, body.parent + "/" + body.name, "nested"),
         );
@@ -476,11 +478,23 @@ test("resource browsing, Git, and folder creation follow the selected Device and
   await dialog.getByRole("button", { name: "New folder", exact: true }).click();
   await expect(dialog.getByRole("alert")).toHaveText(unconfirmed);
   await dialog
+    .getByRole("textbox", { name: "Folder name" })
+    .fill("connection-lost");
+  await dialog.getByRole("button", { name: "New folder", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "Could not confirm whether “connection-lost” was created on phone. Refresh /shared/repo/phone-write before trying again.",
+  );
+  await dialog
     .getByRole("button", { name: "Cancel", exact: true })
     .first()
     .click();
   expect(mkdir).toEqual([
     { device_id: "phone", parent: root, name: "phone-write" },
     { device_id: "phone", parent: root + "/phone-write", name: "receipt-lost" },
+    {
+      device_id: "phone",
+      parent: root + "/phone-write",
+      name: "connection-lost",
+    },
   ]);
 });

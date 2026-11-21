@@ -421,6 +421,97 @@ async fn console_directory_create_reports_lost_receipt_without_repeating_the_wri
     target.runtime.shutdown().await.unwrap();
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn directory_created_but_not_confirmed_reports_the_existing_path_on_either_device() {
+    use axum::http::{Method, StatusCode};
+    use serde_json::json;
+    use std::os::unix::fs::PermissionsExt;
+
+    // Umask affects the process; keep the permission fault exclusive to this test.
+    const CHILD: &str = "RUA_TEST_PROJECT_DIRECTORY_CREATE_UMASK";
+    if std::env::var_os(CHILD).is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "project_device_command::directory_created_but_not_confirmed_reports_the_existing_path_on_either_device", "--nocapture"])
+            .env(CHILD, "1")
+            .env("TMPDIR", "/tmp")
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    // Root bypasses directory permissions. A root-launched test drops this child's
+    // privileges before creating any of the test files or starting the services.
+    if unsafe { libc::geteuid() } == 0 {
+        assert_eq!(unsafe { libc::setuid(65534) }, 0);
+    }
+    let temp = TempDir::new().unwrap();
+    let source = build_peer(1, [44; 32], Vec::new(), None).await;
+    let target_id = hex::encode(peer_entry(2).device_id);
+    let handler = Arc::new(DeviceCommandHandler::new(
+        temp.path().join("commands"),
+        target_id.clone(),
+    ));
+    let target = build_peer(2, [44; 32], vec![peer_entry(1)], Some(handler)).await;
+    install_connectable_peer(&source, &target);
+    let state = rua_server::AppState::from_tempdir(
+        source.dir.path().join("controller"),
+        rua_server::ServerProfile::Test,
+    );
+    state.wait_platform_initialization().await.unwrap();
+    *state.sync_device.write().unwrap() = Some(Arc::new(
+        serde_json::from_value(json!({"secret_bytes":vec![1u8;32]})).unwrap(),
+    ));
+    *state.device_network.lock().await = Some(source.runtime.clone());
+    let app = rua_server::router::build_app(state, None);
+    for (device, name) in [(&source.device_id, "local"), (&target_id, "remote")] {
+        let path = temp.path().join(name);
+        // mkdir succeeds. Opening the new directory to fsync/read it must fail.
+        let previous = unsafe { libc::umask(0o444) };
+        let (status, response) = project_http(
+            &app,
+            Method::POST,
+            "/api/projects/directory/create",
+            json!({"device_id":device,"parent":temp.path(),"name":name}),
+        )
+        .await;
+        unsafe {
+            libc::umask(previous);
+        }
+        assert!(path.is_dir(), "mkdir did not create {}", path.display());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{response}");
+        let detail = response["detail"].as_str().unwrap();
+        for expected in [
+            device.as_str(),
+            path.to_str().unwrap(),
+            "was created",
+            "unconfirmed",
+            "Refresh",
+        ] {
+            assert!(detail.contains(expected), "{detail}");
+        }
+        assert!(!detail.contains("os error"), "{detail}");
+        let (status, _) = project_http(
+            &app,
+            Method::POST,
+            "/api/projects/directory/create",
+            json!({"device_id":device,"parent":temp.path(),"name":name}),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "pre-existing folder is a definite rejection"
+        );
+    }
+    source.runtime.shutdown().await.unwrap();
+    target.runtime.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_resource_validation_and_inspection_use_device_sessions_and_only_creator_commits() {
     let network_secret = [44; 32];

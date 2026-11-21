@@ -162,12 +162,18 @@ pub fn create_project_directory(
         path: path.clone(),
         detail: error.to_string(),
     })?;
-    #[cfg(unix)]
-    {
-        std::fs::File::open(&path)?.sync_all()?;
-        std::fs::File::open(&parent)?.sync_all()?;
-    }
-    list_project_directory(&path.to_string_lossy())
+    let confirm_creation = || {
+        #[cfg(unix)]
+        {
+            std::fs::File::open(&path)?.sync_all()?;
+            std::fs::File::open(&parent)?.sync_all()?;
+        }
+        list_project_directory(&path.to_string_lossy())
+    };
+    confirm_creation().map_err(|source| ProjectError::DirectoryCreatedUnconfirmed {
+        path,
+        source: Box::new(source),
+    })
 }
 
 pub fn propose_project_display_name(path: &Path) -> String {

@@ -123,6 +123,26 @@ export default function ProjectResourcePicker({
     withStorageAccess(destination, () =>
       projectsApi.browseDirectory(deviceId, destination),
     );
+  async function createDirectory(parent: string, name: string) {
+    setError("");
+    try {
+      const created = await withStorageAccess(parent, () =>
+        projectsApi.createDirectory(deviceId, parent, name),
+      );
+      return listing(created);
+    } catch (cause) {
+      if (cause instanceof TypeError || cause instanceof SyntaxError) {
+        throw new Error(
+          t("projects.folderCreationUnconfirmed", {
+            name,
+            parent,
+            device: projectResourceDeviceLabel(deviceId, devices),
+          }),
+        );
+      }
+      throw cause;
+    }
+  }
   const listing = (value: ProjectDirectoryListing) => ({
     path: value.path,
     parent: value.parent_path,
@@ -213,13 +233,7 @@ export default function ProjectResourcePicker({
           browseRequest={browseRequest}
           onLoadingChange={setBrowsing}
           browse={async (destination) => listing(await browse(destination))}
-          createDirectory={async (parent, name) =>
-            listing(
-              await withStorageAccess(parent, () =>
-                projectsApi.createDirectory(deviceId, parent, name),
-              ),
-            )
-          }
+          createDirectory={createDirectory}
           rootsLabel={t("projects.storageLocations")}
           createLabel={t("projects.newFolder")}
           folderNameLabel={t("projects.folderName")}

@@ -34,6 +34,12 @@ pub enum ProjectError {
     InvalidPath(String),
     #[error("project directory is unavailable at {path}: {detail}")]
     DirectoryUnavailable { path: PathBuf, detail: String },
+    #[error("could not confirm the created directory at {path}")]
+    DirectoryCreatedUnconfirmed {
+        path: PathBuf,
+        #[source]
+        source: Box<ProjectError>,
+    },
     #[error("resource Device id must not be empty")]
     InvalidResourceDevice,
     #[error("invalid Project execution default: {0}")]

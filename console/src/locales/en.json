@@ -314,6 +314,7 @@
     "create": "Create Project",
     "created": "Project created",
     "resourceDevice": "Resource Device",
+    "folderCreationUnconfirmed": "Could not confirm whether “{{name}}” was created on {{device}}. Refresh {{parent}} before trying again.",
     "selectDevice": "Select a Device",
     "offline": "Offline",
     "directory": "Directory",

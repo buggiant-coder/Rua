@@ -235,6 +235,7 @@
     "create": "プロジェクトを作成",
     "created": "プロジェクトを作成しました",
     "resourceDevice": "リソースデバイス",
+    "folderCreationUnconfirmed": "{{device}} で「{{name}}」が作成されたか確認できません。再試行する前に {{parent}} を更新してください。",
     "selectDevice": "デバイスを選択",
     "offline": "オフライン",
     "directory": "ディレクトリ",

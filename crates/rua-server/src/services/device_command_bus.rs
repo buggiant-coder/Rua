@@ -2076,10 +2076,23 @@ impl DeviceCommandHandler {
                             next_offset: None,
                         },
                     },
-                    Err(error) => DeviceCommandResponse::Rejected {
-                        reason: "project_directory_unavailable".to_string(),
-                        detail: error.to_string(),
-                    },
+                    Err(error) => {
+                        let (reason, detail) =
+                            match crate::services::projects::directory_creation_notice(
+                                &self.local_device_id,
+                                &error,
+                            ) {
+                                Some(detail) => (
+                                    crate::services::projects::DIRECTORY_CREATION_UNCONFIRMED,
+                                    detail,
+                                ),
+                                None => ("project_directory_unavailable", error.to_string()),
+                            };
+                        DeviceCommandResponse::Rejected {
+                            reason: reason.into(),
+                            detail,
+                        }
+                    }
                 }
             }
             ProjectDeviceAction::BrowseExecutionDirectory { path } => {

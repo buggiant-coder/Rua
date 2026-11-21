@@ -313,6 +313,7 @@
     "create": "创建项目",
     "created": "项目已创建",
     "resourceDevice": "资源设备",
+    "folderCreationUnconfirmed": "无法确认是否已在 {{device}} 上创建“{{name}}”。请先刷新 {{parent}}，再决定是否重试。",
     "selectDevice": "选择设备",
     "offline": "离线",
     "directory": "目录",
