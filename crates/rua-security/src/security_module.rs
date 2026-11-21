@@ -151,11 +151,7 @@ impl SecurityModule {
             let allowed = rules.iter().any(|rule| {
                 rule.enabled
                     && rule.effect == crate::PermissionRuleEffect::Allow
-                    && crate::approval_authority::matcher_matches_tool_call(
-                        &rule.matcher,
-                        "read",
-                        &ctx.tool_input,
-                    )
+                    && rule.pattern().matches("read", &ctx.tool_input)
             });
             let engine = ToolGuardEngine::new(config, self.paths.as_deref());
             let mode = canonical_approval_mode_preset(&config.tool_guard.approval_mode);
@@ -646,7 +642,6 @@ fn check_file_read_denials(
     args: &serde_json::Value,
     rules: &[StoredApprovalReuseRule],
 ) -> Result<(), String> {
-    use crate::approval_authority::matcher_matches_tool_call;
     use crate::PermissionRuleEffect;
 
     // A read invoked on its own Device may omit the routing argument. Its exact
@@ -658,8 +653,7 @@ fn check_file_read_denials(
     if let Some(rule) = rules.iter().find(|rule| {
         rule.enabled
             && rule.effect == PermissionRuleEffect::Deny
-            && (matcher_matches_tool_call(&rule.matcher, "read", args)
-                || matcher_matches_tool_call(&rule.matcher, "read", &local_args))
+            && (rule.pattern().matches("read", args) || rule.pattern().matches("read", &local_args))
     }) {
         return Err(format!(
             "File read denied by permission rule '{}'",
@@ -695,7 +689,7 @@ impl AgentScopeRuleStore for ConfigBackedAgentScopeRuleStore {
             .load(agent_id)
             .map_err(|error| error.to_string())?;
         let mut rules = read_stored_permission_rules_from_security_config(&config);
-        rules.retain(|existing| existing.id != rule.id && existing.matcher != rule.matcher);
+        rules.retain(|existing| existing.id != rule.id && existing.pattern() != rule.pattern());
         rules.push(rule.to_stored());
         write_stored_permission_rules_to_security_config(&mut config, &rules)?;
         self.config_store
@@ -762,7 +756,7 @@ impl ChatScopeRuleStore for FileBackedChatScopeRuleStore {
         }
         let path = self.permission_rules_path(address);
         let mut rules = read_stored_permission_rules_from_path(&path)?;
-        rules.retain(|existing| existing.id != rule.id && existing.matcher != rule.matcher);
+        rules.retain(|existing| existing.id != rule.id && existing.pattern() != rule.pattern());
         rules.push(rule.to_stored());
         write_stored_permission_rules_to_path(&path, &rules)
     }

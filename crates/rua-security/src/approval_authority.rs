@@ -172,6 +172,8 @@ pub struct ApprovalReuseRule {
     pub scope: ApprovalReuseScope,
     pub label: String,
     pub matcher: ApprovalReuseMatcher,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_read_args: Option<bool>,
     pub source_approval_id: String,
     pub created_at: DateTime<Utc>,
     #[serde(default)]
@@ -190,6 +192,8 @@ pub struct StoredApprovalReuseRule {
     pub id: String,
     pub label: String,
     pub matcher: ApprovalReuseMatcher,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_read_args: Option<bool>,
     pub source_approval_id: String,
     pub created_at: DateTime<Utc>,
     #[serde(default)]
@@ -204,11 +208,21 @@ pub struct StoredApprovalReuseRule {
 }
 
 impl ApprovalReuseRule {
+    pub(crate) fn pattern(&self) -> PermissionRulePattern<'_> {
+        self.matcher.pattern(
+            self.exact_read_args,
+            self.effect,
+            self.source,
+            &self.source_approval_id,
+        )
+    }
+
     pub fn to_stored(&self) -> StoredApprovalReuseRule {
         StoredApprovalReuseRule {
             id: self.id.clone(),
             label: self.label.clone(),
             matcher: self.matcher.clone(),
+            exact_read_args: self.exact_read_args,
             source_approval_id: self.source_approval_id.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -221,6 +235,15 @@ impl ApprovalReuseRule {
 }
 
 impl StoredApprovalReuseRule {
+    pub(crate) fn pattern(&self) -> PermissionRulePattern<'_> {
+        self.matcher.pattern(
+            self.exact_read_args,
+            self.effect,
+            self.source,
+            &self.source_approval_id,
+        )
+    }
+
     pub fn into_runtime(
         self,
         agent_id: impl Into<String>,
@@ -234,6 +257,7 @@ impl StoredApprovalReuseRule {
             scope,
             label: self.label,
             matcher: self.matcher,
+            exact_read_args: self.exact_read_args,
             source_approval_id: self.source_approval_id,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -797,6 +821,7 @@ impl ApprovalAuthority {
                     owner: Some(request.owner.clone()),
                     scope: ApprovalReuseScope::Chat,
                     label: option.label,
+                    exact_read_args: matcher.read_args_with_asterisk().then_some(true),
                     matcher,
                     source_approval_id: request.id.clone(),
                     created_at: Utc::now(),
@@ -844,6 +869,7 @@ impl ApprovalAuthority {
                     owner: Some(request.owner.clone()),
                     scope: ApprovalReuseScope::RuntimeSession,
                     label: option.label,
+                    exact_read_args: matcher.read_args_with_asterisk().then_some(true),
                     matcher,
                     source_approval_id: request.id.clone(),
                     created_at: Utc::now(),
@@ -883,6 +909,7 @@ impl ApprovalAuthority {
                     owner: None,
                     scope: ApprovalReuseScope::Agent,
                     label: option.label,
+                    exact_read_args: matcher.read_args_with_asterisk().then_some(true),
                     matcher,
                     source_approval_id: request.id.clone(),
                     created_at: Utc::now(),
@@ -1150,7 +1177,7 @@ impl ApprovalAuthority {
                 ) && rule.owner.as_ref() == Some(owner)
                     && rule.effect == effect
                     && rule.enabled
-                    && matcher_matches_tool_call(&rule.matcher, tool_name, args)
+                    && rule.pattern().matches(tool_name, args)
             }) {
                 rule.hit_count += 1;
                 return Ok(Some(rule.clone()));
@@ -1159,9 +1186,7 @@ impl ApprovalAuthority {
         if let Some(address) = owner.as_chat_address() {
             if let Some(store) = &self.chat_rule_store {
                 if let Some(mut rule) = stored_chat_rules.into_iter().find(|rule| {
-                    rule.enabled
-                        && rule.effect == effect
-                        && matcher_matches_tool_call(&rule.matcher, tool_name, args)
+                    rule.enabled && rule.effect == effect && rule.pattern().matches(tool_name, args)
                 }) {
                     rule.hit_count += 1;
                     let _ = store.upsert_chat_rule(address, &rule);
@@ -1173,9 +1198,7 @@ impl ApprovalAuthority {
         Ok(snapshot_rules
             .iter()
             .find(|rule| {
-                rule.enabled
-                    && rule.effect == effect
-                    && matcher_matches_tool_call(&rule.matcher, tool_name, args)
+                rule.enabled && rule.effect == effect && rule.pattern().matches(tool_name, args)
             })
             .cloned()
             .map(|rule| rule.into_runtime(agent_id.to_string(), None, ApprovalReuseScope::Agent)))
@@ -1206,7 +1229,7 @@ impl ApprovalAuthority {
                     && rule.owner.as_ref() == owner
                     && rule.effect == effect
                     && rule.enabled
-                    && matcher_matches_tool_call(&rule.matcher, tool_name, args)
+                    && rule.pattern().matches(tool_name, args)
             }) {
                 rule.hit_count += 1;
                 return Some(rule.clone());
@@ -1217,7 +1240,7 @@ impl ApprovalAuthority {
                     && rule.scope == ApprovalReuseScope::Agent
                     && rule.effect == effect
                     && rule.enabled
-                    && matcher_matches_tool_call(&rule.matcher, tool_name, args)
+                    && rule.pattern().matches(tool_name, args)
             }) {
                 rule.hit_count += 1;
                 if let Some(store) = &self.agent_rule_store {
@@ -1238,7 +1261,7 @@ impl ApprovalAuthority {
                         && rule.owner.as_ref() == owner
                         && rule.effect == effect
                         && rule.enabled
-                        && matcher_matches_tool_call(&rule.matcher, tool_name, args)
+                        && rule.pattern().matches(tool_name, args)
                 })
             {
                 rule.hit_count += 1;
@@ -1258,7 +1281,7 @@ impl ApprovalAuthority {
                     && rule.scope == ApprovalReuseScope::Agent
                     && rule.effect == effect
                     && rule.enabled
-                    && matcher_matches_tool_call(&rule.matcher, tool_name, args)
+                    && rule.pattern().matches(tool_name, args)
             })?;
         rule.hit_count += 1;
         let _ = store.upsert_agent_rule(agent_id, &rule);
@@ -1350,6 +1373,7 @@ impl ApprovalAuthority {
             owner: None,
             scope: ApprovalReuseScope::Agent,
             label: input.label,
+            exact_read_args: input.matcher.read_args_with_asterisk().then_some(false),
             matcher: input.matcher,
             source_approval_id: String::new(),
             created_at: now,
@@ -1376,6 +1400,10 @@ impl ApprovalAuthority {
         let Some(existing) = rules.iter_mut().find(|rule| rule.id == rule_id) else {
             return Ok(None);
         };
+        existing.exact_read_args = input
+            .matcher
+            .read_args_with_asterisk()
+            .then(|| existing.matcher == input.matcher && existing.pattern().exact_read_args);
         existing.effect = input.effect;
         existing.enabled = input.enabled;
         existing.label = input.label;
@@ -1421,7 +1449,7 @@ fn same_permission_rule_key(left: &ApprovalReuseRule, right: &ApprovalReuseRule)
         ApprovalReuseScope::Agent => left.agent_id == right.agent_id,
         ApprovalReuseScope::Chat | ApprovalReuseScope::RuntimeSession => left.owner == right.owner,
     };
-    same_owner && left.scope == right.scope && left.matcher == right.matcher
+    same_owner && left.scope == right.scope && left.pattern() == right.pattern()
 }
 
 fn reuse_options_for(
@@ -1478,26 +1506,56 @@ fn reuse_options_for(
         .collect()
 }
 
-pub(crate) fn matcher_matches_tool_call(
-    matcher: &ApprovalReuseMatcher,
-    tool_name: &str,
-    args: &serde_json::Value,
-) -> bool {
-    match matcher {
-        ApprovalReuseMatcher::ToolCall {
+#[derive(PartialEq)]
+pub(crate) struct PermissionRulePattern<'a> {
+    matcher: &'a ApprovalReuseMatcher,
+    exact_read_args: bool,
+}
+
+impl PermissionRulePattern<'_> {
+    pub(crate) fn matches(&self, tool_name: &str, args: &serde_json::Value) -> bool {
+        let ApprovalReuseMatcher::ToolCall {
             tool_name: tool_pattern,
             input_params,
-        } => {
-            glob_match(tool_pattern, tool_name)
-                && input_params.as_ref().is_none_or(|pattern| {
-                    input_params_for_tool_call(tool_name, args)
-                        .is_some_and(|params| glob_match(pattern, &params))
+        } = self.matcher;
+        glob_match(tool_pattern, tool_name)
+            && input_params.as_ref().is_none_or(|pattern| {
+                input_params_for_tool_call(tool_name, args).is_some_and(|params| {
+                    if self.exact_read_args {
+                        pattern == &params
+                    } else {
+                        glob_match(pattern, &params)
+                    }
                 })
-        }
+            })
     }
 }
 
 impl ApprovalReuseMatcher {
+    fn read_args_with_asterisk(&self) -> bool {
+        matches!(self, Self::ToolCall { tool_name, input_params: Some(params) }
+            if tool_name == "read" && params.contains('*'))
+    }
+
+    fn pattern(
+        &self,
+        exact_read_args: Option<bool>,
+        effect: PermissionRuleEffect,
+        source: PermissionRuleSource,
+        source_approval_id: &str,
+    ) -> PermissionRulePattern<'_> {
+        // Older rules recorded who created them but did not distinguish a literal '*' from
+        // a wildcard. Narrow only approval-origin allows. Existing denies retain their reach.
+        let approved_read = source == PermissionRuleSource::Approval
+            && !source_approval_id.is_empty()
+            && effect == PermissionRuleEffect::Allow;
+        PermissionRulePattern {
+            matcher: self,
+            exact_read_args: self.read_args_with_asterisk()
+                && exact_read_args.unwrap_or(approved_read),
+        }
+    }
+
     fn display_pattern(&self) -> String {
         match self {
             ApprovalReuseMatcher::ToolCall {

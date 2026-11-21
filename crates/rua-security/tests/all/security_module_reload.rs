@@ -297,6 +297,75 @@ async fn snapshot_permission_rules_do_not_follow_agent_rule_updates() {
     ));
 }
 
+fn write_legacy_approval_deny(dir: &std::path::Path) {
+    let mut config = SecurityConfig::default();
+    config.extra.insert(
+        "permission_rules".into(),
+        serde_json::json!([{
+            "id": "rule", "label": "Reports", "source": "approval", "source_approval_id": "original",
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
+            "effect": "deny", "hit_count": 0, "matcher": {
+                "type": "tool_call", "tool_name": "read",
+                "input_params": serde_json::json!({"file_path": "/fixture/report-*.txt"}).to_string()
+            }
+        }]),
+    );
+    write_agent_security(dir, "agent", config);
+}
+
+#[tokio::test]
+async fn legacy_approval_deny_keeps_its_file_pattern_after_reload() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_legacy_approval_deny(tmp.path());
+    let module = make_module(tmp.path());
+    for (path, expected) in [
+        ("/fixture/report-1.txt", Some("rule")),
+        ("/fixture/note.txt", None),
+    ] {
+        let args = serde_json::json!({"file_path": path});
+        let denied = module
+            .approval_authority()
+            .find_deny_rule("agent", "read", &args)
+            .await;
+        assert_eq!(
+            denied.as_ref().map(|rule| rule.id.as_str()),
+            expected,
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn legacy_approval_origin_survives_a_matcher_edit_and_reload() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_legacy_approval_deny(tmp.path());
+    let module = make_module(tmp.path());
+    let args = serde_json::json!({"file_path": "/fixture/one.txt"});
+    let input = rua_security::PermissionRuleInput {
+        effect: rua_security::PermissionRuleEffect::Deny,
+        enabled: true,
+        label: "One report".into(),
+        matcher: rua_security::ApprovalReuseMatcher::ToolCall {
+            tool_name: "read".into(),
+            input_params: Some(args.to_string()),
+        },
+    };
+    module
+        .approval_authority()
+        .update_agent_rule("agent", "rule", input)
+        .await
+        .unwrap()
+        .unwrap();
+    let reopened = make_module(tmp.path());
+    let rule = reopened
+        .approval_authority()
+        .find_deny_rule("agent", "read", &args)
+        .await
+        .expect("edited matcher persisted");
+    assert_eq!(rule.source, rua_security::PermissionRuleSource::Approval);
+    assert_eq!(rule.source_approval_id, "original");
+}
+
 #[tokio::test]
 async fn ask_first_mode_requires_approval_for_any_tool_call() {
     let tmp = tempfile::tempdir().unwrap();
