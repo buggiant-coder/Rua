@@ -661,6 +661,35 @@ pub async fn build_publication_changes(
             ));
             changes
         }
+        SyncPublicationFact::HandoffSettingsSnapshot {
+            scope_root,
+            address,
+            agent_id,
+        } => {
+            // Snapshot timestamps retain ordinary LWW provenance. Preparing a handoff
+            // is not a fresh settings edit and must not override a newer peer value.
+            let rules = EvergreenChatSyncAdapter::permission_rules_snapshot(
+                &scope_root,
+                &address,
+                &sync_meta.device_id,
+            )
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                "handoff requires the current Authority's persisted permission snapshot".to_string()
+            })?;
+            let agent =
+                AgentSecuritySyncAdapter::new(context.data_dir.to_path_buf(), &sync_meta.device_id)
+                    .snapshot_for_agent(&agent_id)
+                    .map_err(|error| error.to_string())?;
+            let root = RootConfigSyncAdapter::new(
+                context.data_dir.to_path_buf(),
+                context.data_dir.join("secret"),
+                &sync_meta.device_id,
+            )
+            .security_snapshot()
+            .map_err(|error| error.to_string())?;
+            std::iter::once(rules).chain(agent).chain(root).collect()
+        }
         SyncPublicationFact::StableConversationState {
             scope_root,
             address,

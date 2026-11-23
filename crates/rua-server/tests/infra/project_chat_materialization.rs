@@ -835,7 +835,8 @@ async fn agent_switch_is_chat_local_and_preserves_historical_turn_assignment() {
             authority_epoch: placement.authority_epoch,
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
 
     let running_scope = ChatStore::resolve(temp.path(), running.clone());
     let blocked = ChatAgentSwitch::begin(
@@ -1201,7 +1202,8 @@ async fn agent_switch_boundary_reports_every_chat_local_blocker() {
             authority_epoch: placement.authority_epoch,
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     authority
         .enqueue_input(
             &address,
@@ -1302,7 +1304,8 @@ async fn concurrent_project_chats_keep_turn_queue_and_approval_state_isolated() 
                 authority_epoch: placement.authority_epoch,
                 driver_detail: None,
             })
-            .await;
+            .await
+            .unwrap();
     }
     authority
         .enqueue_input(

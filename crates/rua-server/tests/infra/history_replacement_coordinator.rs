@@ -527,7 +527,7 @@ async fn enabling_feature_backfills_existing_authority_owned_history() {
         .as_ref()
         .map(|device| hex::encode(device.device_id_short()))
         .expect("local device");
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let mut header = rua_session::ChatSessionHeader::new(rua_session::ChatMetadata {
         chat_id: "chat-backfill".to_string(),
         agent_id: "default".to_string(),
@@ -665,7 +665,7 @@ async fn enabling_feature_backfills_existing_authority_owned_history() {
         .update_authority_chat_running_config(
             &rua_core::ChatAddress::new("chat-backfill"),
             "default",
-            &runtime.workspace_dir(),
+            &runtime.chat_workspace_dir(),
             serde_json::to_value(rua_config::ChatRunningConfig::from_agent_defaults(
                 &running(),
             ))

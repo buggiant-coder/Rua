@@ -16,6 +16,8 @@ pub mod task_refs;
 pub mod tool_loop;
 pub mod turn_writer;
 
+pub use store::handoff as chat_handoff;
+
 pub use active_work_plan::{
     ActiveWorkPlanContent, ActiveWorkPlanSnapshot, ActiveWorkPlanStep, ActiveWorkPlanStepStatus,
     ACTIVE_WORK_PLAN_FORMAT_VERSION,

@@ -90,7 +90,7 @@ impl TaskAuthorityResolver for ServerTaskAuthorityResolver {
             .ok_or_else(|| {
                 TaskAuthorityError::Rejected("Task owning Chat does not exist".into())
             })?;
-        if header.metadata.archived || header.agent_id != authorization.agent_id {
+        if header.metadata.archived {
             return Err(TaskAuthorityError::Rejected(
                 "Task owning Chat or selected Agent changed".into(),
             ));
@@ -112,10 +112,18 @@ impl TaskAuthorityResolver for ServerTaskAuthorityResolver {
         let configuration = header.extra.get("hook_configuration").ok_or_else(|| {
             TaskAuthorityError::Unavailable("Task Chat configuration is unavailable".into())
         })?;
-        if authorization.configuration_epoch.as_deref()
-            != configuration
-                .get("epoch")
-                .and_then(serde_json::Value::as_str)
+        // An authorization that names a configuration epoch must still be the
+        // Chat's current one. Without a claimed epoch the Attempt relies on the
+        // captured directory alone, which is all a direct Task creation has.
+        if authorization
+            .configuration_epoch
+            .as_deref()
+            .is_some_and(|claimed| {
+                Some(claimed)
+                    != configuration
+                        .get("epoch")
+                        .and_then(serde_json::Value::as_str)
+            })
         {
             return Err(TaskAuthorityError::Rejected(
                 "Task Attempt authorization configuration is stale".into(),
@@ -200,12 +208,42 @@ impl TaskAuthorityResolver for ServerTaskAuthorityResolver {
                 "Task execution directory is not available".into(),
             ));
         }
-        let public_cwd = fs
-            .public_path_from_host(&host)
-            .and_then(|path| path.to_str().map(str::to_owned))
-            .ok_or_else(|| {
-                TaskAuthorityError::Unavailable("Task directory has no public path".into())
-            })?;
+        // Report the directory the Chat captured verbatim when that is what was
+        // accepted: resolving it again would rewrite the user's own spelling
+        // (for example through a `/var` -> `/private/var` symlink) and lose the
+        // fact that Rua manages the directory.
+        let captured_verbatim = prior.is_none()
+            && captured.device_id == local_device_id
+            && requested == captured.path;
+        let public_cwd = if captured_verbatim {
+            captured
+                .path
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    TaskAuthorityError::Unavailable("Task directory has no public path".into())
+                })?
+        } else {
+            // An Attempt that already recorded its directory keeps that exact
+            // spelling as long as it still names this directory: retrying a Task
+            // must not rewrite the original path into a different form.
+            let prior_cwd = prior.and_then(|prior| prior.public_cwd.clone());
+            match prior_cwd {
+                Some(prior_cwd)
+                    if fs
+                        .resolve(std::path::Path::new(&prior_cwd))
+                        .is_ok_and(|prior_host| prior_host == host) =>
+                {
+                    prior_cwd
+                }
+                _ => fs
+                    .public_path_from_host(&host)
+                    .and_then(|path| path.to_str().map(str::to_owned))
+                    .ok_or_else(|| {
+                        TaskAuthorityError::Unavailable("Task directory has no public path".into())
+                    })?,
+            }
+        };
         if prior.is_some_and(|prior| prior.public_cwd.as_deref() != Some(public_cwd.as_str())) {
             return Err(TaskAuthorityError::Rejected(
                 "Original Task directory now resolves elsewhere".into(),
@@ -221,6 +259,13 @@ impl TaskAuthorityResolver for ServerTaskAuthorityResolver {
         Ok(TaskDeviceContext {
             device_id: Some(local_device_id),
             public_cwd: Some(public_cwd),
+            // A fresh Attempt reports what the Chat captured; a retry reports what
+            // the original Attempt recorded, so the managed flag survives Retry.
+            cwd_managed: Some(
+                prior
+                    .and_then(|prior| prior.cwd_managed)
+                    .unwrap_or(captured_verbatim && captured.managed),
+            ),
             device_name,
             host_profile: Some(self.host_profile.clone()),
             authority_epoch: Some(placement.authority_epoch.to_string()),

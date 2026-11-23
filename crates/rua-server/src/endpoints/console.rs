@@ -362,6 +362,8 @@ async fn prepare_agent_console_request(
                 body.extra
                     .get("expected_authority_epoch")
                     .and_then(serde_json::Value::as_str),
+                crate::services::device_context::current_sync_device_id(&state.sync_device)
+                    .as_deref(),
             )
             .await
             .map_err(ApiError::Conflict)?;

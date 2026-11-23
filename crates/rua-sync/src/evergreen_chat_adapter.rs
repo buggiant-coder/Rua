@@ -86,6 +86,14 @@ impl EvergreenChatSyncAdapter {
         hex::encode(bytes)
     }
 
+    pub fn permission_rules_snapshot(
+        scope_root: &Path,
+        address: &ChatAddress,
+        device_id: &str,
+    ) -> SyncResult<Option<SyncChange>> {
+        chat_permissions::snapshot(scope_root, address, device_id)
+    }
+
     pub fn snapshot_changes_for_chat(
         scope_root: &Path,
         address: &ChatAddress,

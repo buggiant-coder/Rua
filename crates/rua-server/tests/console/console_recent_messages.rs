@@ -17,7 +17,9 @@ use serde_json::json;
 
 fn build_state() -> (AppState, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
-    std::fs::create_dir_all(tmp.path().join("workspaces/default")).expect("seed workspace dir");
+    // `do_recent_messages` resolves the Chat store from `<rua_root>/chats`,
+    // so fixtures must seed the same root or nothing is ever found.
+    std::fs::create_dir_all(tmp.path().join("chats")).expect("seed chat root");
     let state = AppState::from_tempdir(tmp.path().to_path_buf(), rua_server::ServerProfile::Test);
     (state, tmp)
 }
@@ -87,7 +89,7 @@ async fn seed_evergreen_session_with_messages(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recent_messages_returns_three_stored_messages() {
     let (state, tmp) = build_state();
-    let ws_dir = tmp.path().join("workspaces/default");
+    let ws_dir = tmp.path().join("chats");
     let session_id = "test-session-001";
     seed_evergreen_session_with_messages(&ws_dir, "default", session_id, 3).await;
 
@@ -127,7 +129,7 @@ async fn recent_messages_returns_three_stored_messages() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recent_messages_limit_parameter() {
     let (state, tmp) = build_state();
-    let ws_dir = tmp.path().join("workspaces/default");
+    let ws_dir = tmp.path().join("chats");
     let session_id = "test-session-limit";
     seed_evergreen_session_with_messages(&ws_dir, "default", session_id, 10).await;
 
@@ -162,7 +164,7 @@ async fn recent_messages_limit_parameter() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recent_messages_reads_evergreen_message_log_without_legacy_session() {
     let (state, tmp) = build_state();
-    let ws_dir = tmp.path().join("workspaces/default");
+    let ws_dir = tmp.path().join("chats");
     let session_id = "evergreen-recent-session";
     seed_evergreen_session_with_messages(&ws_dir, "default", session_id, 6).await;
 
@@ -226,7 +228,7 @@ async fn recent_messages_empty_when_no_session() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recent_messages_path_agent_overrides_header() {
     let (state, tmp) = build_state();
-    let ws_dir = tmp.path().join("workspaces/default");
+    let ws_dir = tmp.path().join("chats");
     let session_id = "test-root-session";
     seed_evergreen_session_with_messages(&ws_dir, "default", session_id, 3).await;
 

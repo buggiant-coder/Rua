@@ -841,7 +841,10 @@ impl AgentManager {
         self.save_config(&config)?;
 
         if ws_dir.is_dir() {
-            std::fs::remove_dir_all(&ws_dir).map_err(|e| RuaError::Io {
+            rua_config::with_commit_barrier(&[ws_dir.join("security.json")], || {
+                std::fs::remove_dir_all(&ws_dir)
+            })
+            .map_err(|e| RuaError::Io {
                 message: format!("Failed to delete agent workspace: {e}"),
             })?;
         }

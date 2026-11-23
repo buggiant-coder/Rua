@@ -28,6 +28,7 @@ enum Publication<'a> {
     Model(&'a Value),
     RunningConfig(&'a ChatRunningConfig),
     Complete(&'a ChatHookConfiguration),
+    Handoff,
 }
 
 impl<'a> ChatConfigurationUpdate<'a> {
@@ -41,6 +42,9 @@ impl<'a> ChatConfigurationUpdate<'a> {
             Some(authority) => Some(authority.transition_gate(address).lock_owned().await),
             None => None,
         };
+        if let Some(authority) = intake.conversation_authority.as_ref() {
+            authority.ensure_handoff_admission_locked(address).await?;
+        }
         let current = intake
             .load_chat_configuration_locked(address, agent_id, scope_root)
             .await?;
@@ -174,7 +178,7 @@ impl<'a> ChatConfigurationUpdate<'a> {
                         .publish_running_config_snapshot(self.address, &meta, running)
                         .await;
                 }
-                Publication::Complete(_) => {
+                Publication::Complete(_) | Publication::Handoff => {
                     authority
                         .publish_control_snapshot(self.address, "configuration_updated", &meta)
                         .await;
@@ -188,4 +192,52 @@ impl<'a> ChatConfigurationUpdate<'a> {
         );
         Ok(())
     }
+}
+
+/// The coordinator already owns transition_gate and has durably activated the
+/// saved candidate. Re-adopt it after restart, then use the existing Control View
+/// and synchronization publication paths without reacquiring that gate.
+pub(super) async fn publish_handoff_configuration_locked(
+    intake: &ConversationInputIntake,
+    address: &ChatAddress,
+    scope_root: &Path,
+    candidate: &ChatHookConfiguration,
+) -> Result<(), String> {
+    let header = WorkspaceSessionStore::new(scope_root)
+        .load_chat_header(address.chat_id().as_str())
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or("Chat not found")?;
+    let persisted: ChatHookConfiguration = serde_json::from_value(
+        header
+            .extra
+            .get(CHAT_HOOK_CONFIGURATION_META_KEY)
+            .cloned()
+            .ok_or("Chat configuration is unavailable")?,
+    )
+    .map_err(|error| error.to_string())?;
+    // An Activated receipt can be replayed after a later ordinary configuration
+    // update. Repair runtime projections from disk, never revive that old epoch.
+    let current = if persisted.epoch == candidate.epoch {
+        candidate
+    } else {
+        &persisted
+    };
+    if let Some(hooks) = intake.product_hooks.as_ref() {
+        hooks
+            .adopt_chat_configuration(address, current.clone())
+            .await;
+    }
+    let update = ChatConfigurationUpdate {
+        intake,
+        address,
+        scope_root,
+        current: Some(current.clone()),
+        _transition: None,
+    };
+    // A handoff changes only this Chat's execution location, never child Chats.
+    update
+        .publish(Publication::Handoff)
+        .await
+        .map_err(|error| error.to_string())
 }

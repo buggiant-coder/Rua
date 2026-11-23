@@ -2927,7 +2927,13 @@ impl AgentRuntime for ReactAgentRuntime {
                 .cloned()
                 .and_then(|value| serde_json::from_value(value).ok())
             {
-                hook = hook.with_project_resource_roots(roots);
+                hook = hook.with_project_resource_roots(
+                    roots,
+                    req.metadata
+                        .get("project_resource_device_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                );
             }
             if let Some(config) = security_snapshot.as_ref() {
                 hook = hook.with_security_snapshot(Arc::clone(config));

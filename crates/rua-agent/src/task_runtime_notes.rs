@@ -57,7 +57,7 @@ pub async fn task_terminal_note(
             Some(Box::new(rua_session::ChatExecutionDirectory {
                 device_id: attempt.device.device_id.clone()?,
                 path: PathBuf::from(attempt.device.public_cwd.as_ref()?),
-                managed: false,
+                managed: attempt.device.cwd_managed.unwrap_or(false),
                 extra: Default::default(),
             }))
         });

@@ -129,6 +129,48 @@ async fn remote_task_chat_permission_commits_at_authority_before_target_release(
         }).await.unwrap_err();
         assert!(error.contains("current Chat Authority"), "{error}");
     }
+    // A late Task card must not create a reusable Chat permission while the
+    // canonical writer is frozen, even when the decision entered through B.
+    let frozen = rua_session::chat_handoff::ChatHandoffRecord {
+        handoff_id: "approval-handoff-fence".into(),
+        chat_id: f.fixture.chat_id.clone(),
+        old_placement: header.extra["authority_placement"].clone(),
+        new_placement: json!({
+            "device_id": f.fixture.source.device_id,
+            "authority_epoch": rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::next_for_device(&f.fixture.source.device_id, Some(epoch)),
+            "base_manifest_hash": header.extra["authority_placement"]["base_manifest_hash"],
+        }),
+        expected_configuration_epoch: header.extra["hook_configuration"]["epoch"]
+            .as_str()
+            .unwrap()
+            .into(),
+        candidate_configuration_epoch: "approval-handoff-candidate".into(),
+        requirements: json!({}),
+        phase: rua_session::chat_handoff::ChatHandoffPhase::Prepared,
+        extra: Default::default(),
+    };
+    canonical_store
+        .prepare_chat_handoff(&frozen, None)
+        .await
+        .unwrap();
+    let error = entry
+        .decide_task_approval(&owner, id, 1, &card.id, decision.clone(), "logged-in-user")
+        .await
+        .unwrap_err();
+    assert!(error.contains("handoff"), "{error}");
+    assert!(canonical
+        .list_chat_rules(&owner.chat_address)
+        .await
+        .is_empty());
+    assert_eq!(
+        target_approvals.request(&card.id).await.unwrap().status,
+        ApprovalStatus::Pending
+    );
+    assert!(!cwd.join("starts").exists());
+    canonical_store
+        .abort_chat_handoff(&f.fixture.chat_id, &frozen.handoff_id)
+        .await
+        .unwrap();
     std::fs::create_dir(&rules_path).unwrap();
     let store_error = std::fs::read_to_string(&rules_path)
         .unwrap_err()

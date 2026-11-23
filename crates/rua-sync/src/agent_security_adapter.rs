@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
@@ -70,6 +70,31 @@ impl AgentSecuritySyncAdapter {
         hex::encode(bytes)
     }
 
+    /// The persisted portable record, retaining its ordinary snapshot timestamp.
+    pub fn snapshot_for_agent(&self, agent_id: &str) -> SyncResult<Option<SyncChange>> {
+        let path = self.security_path(agent_id)?;
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let config = strip_device_local_security(serde_json::from_reader(&file)?);
+        if !config.is_object() {
+            return Err(SyncError::InvalidPayload(
+                "Agent security must be an object".into(),
+            ));
+        }
+        Ok(Some(SyncChange::new(
+            Self::new_op_id(),
+            AGENT_SECURITY_DOMAIN,
+            agent_id,
+            AGENT_SECURITY_KIND_SNAPSHOT,
+            self.device_id.clone(),
+            Self::export_hlc(&file, &self.device_id),
+            config,
+        )))
+    }
+
     fn workspaces_dir(&self) -> PathBuf {
         self.data_dir.join("workspaces")
     }
@@ -79,8 +104,8 @@ impl AgentSecuritySyncAdapter {
         Ok(self.workspaces_dir().join(agent_id).join("security.json"))
     }
 
-    fn export_hlc(path: &Path, device_id: &str) -> HlcTimestamp {
-        let wall_ms = path
+    fn export_hlc(file: &std::fs::File, device_id: &str) -> HlcTimestamp {
+        let wall_ms = file
             .metadata()
             .and_then(|meta| meta.modified())
             .ok()
@@ -119,18 +144,9 @@ impl DomainSyncAdapter for AgentSecuritySyncAdapter {
             let Some(agent_id) = entry.file_name().to_str().map(ToOwned::to_owned) else {
                 continue;
             };
-            let config: serde_json::Value = strip_device_local_security(serde_json::from_str(
-                &std::fs::read_to_string(&path)?,
-            )?);
-            changes.push(SyncChange::new(
-                Self::new_op_id(),
-                AGENT_SECURITY_DOMAIN,
-                agent_id,
-                AGENT_SECURITY_KIND_SNAPSHOT,
-                self.device_id.clone(),
-                Self::export_hlc(&path, &self.device_id),
-                config,
-            ));
+            if let Some(change) = self.snapshot_for_agent(&agent_id)? {
+                changes.push(change);
+            }
         }
         changes.sort_by(|a, b| a.record_id.cmp(&b.record_id));
         Ok(changes)
@@ -158,7 +174,7 @@ impl DomainSyncAdapter for AgentSecuritySyncAdapter {
 
         let path = self.security_path(&change.record_id)?;
         if is_delete {
-            match std::fs::remove_file(&path) {
+            match rua_config::remove_file_committed(&path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e.into()),

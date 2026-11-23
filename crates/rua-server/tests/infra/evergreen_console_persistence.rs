@@ -855,7 +855,7 @@ async fn console_chat_persists_clean_attachment_content_but_keeps_model_path_hin
     let chat_id = "00000000-0000-0000-0000-000000000320";
     materialize_local_chat(
         &state,
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         "default",
         chat_id,
         "Attachment persistence",
@@ -917,7 +917,7 @@ async fn console_chat_persists_clean_attachment_content_but_keeps_model_path_hin
         |part| matches!(part, ContentPart::Text { text } if text == "用户上传图片 `photo.png`，已经下载到 /tmp/photo.png")
     ));
 
-    let stored = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir())
+    let stored = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir())
         .read_message_range(chat_id, 1, 20)
         .await
         .expect("stored messages");
@@ -968,7 +968,7 @@ async fn console_chat_contributes_execution_environment_without_persisting_runti
     let chat_id = "00000000-0000-0000-0000-000000000321";
     materialize_local_chat(
         &state,
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         "default",
         chat_id,
         "Execution environment",
@@ -1013,7 +1013,7 @@ async fn console_chat_contributes_execution_environment_without_persisting_runti
     assert!(environment_prompt.contains("Host profile: `test`"));
     assert!(environment_prompt.contains(&runtime.workspace_dir().display().to_string()));
 
-    let header = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir())
+    let header = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir())
         .load_chat_header(chat_id)
         .await
         .unwrap()
@@ -1047,13 +1047,13 @@ async fn console_chat_turn_mode_override_does_not_replace_chat_default() {
     let chat_id = "00000000-0000-0000-0000-000000000322";
     materialize_local_chat(
         &state,
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         "default",
         chat_id,
         "Collaboration mode",
     )
     .await;
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let mut header = store
         .load_chat_header(chat_id)
         .await
@@ -1302,6 +1302,27 @@ fn conversation_message(
     }
 }
 
+fn source_pending_marker_payload(
+    chat_id: &str,
+    device_delivery_id: &str,
+    device_delivery_sequence: u64,
+    target_device_id: &str,
+) -> serde_json::Value {
+    json!({
+        "agent_id": "default",
+        "authority_epoch": "0000000000000001000000000000000000000000",
+        "base_manifest_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "address": rua_core::ChatAddress::new(chat_id),
+        "submission_id": device_delivery_id,
+        "input_id": format!("input-{device_delivery_id}"),
+        "mode": "started",
+        "device_delivery_id": device_delivery_id,
+        "device_delivery_sequence": device_delivery_sequence,
+        "target_device_id": target_device_id,
+        "accepted_at": "2026-06-27T00:00:03Z",
+    })
+}
+
 fn write_source_pending_remote_marker(
     data_dir: &std::path::Path,
     chat_id: &str,
@@ -1313,16 +1334,12 @@ fn write_source_pending_remote_marker(
     std::fs::create_dir_all(path.parent().expect("marker parent")).expect("marker dir");
     rua_config::atomic_write_json(
         &path,
-        &json!({
-            "address": rua_core::ChatAddress::new(chat_id),
-            "submission_id": device_delivery_id,
-            "input_id": format!("input-{device_delivery_id}"),
-            "mode": "started",
-            "device_delivery_id": device_delivery_id,
-            "device_delivery_sequence": device_delivery_sequence,
-            "target_device_id": target_device_id,
-            "accepted_at": "2026-06-27T00:00:03Z",
-        }),
+        &source_pending_marker_payload(
+            chat_id,
+            device_delivery_id,
+            device_delivery_sequence,
+            target_device_id,
+        ),
     )
     .expect("write pending remote marker");
 }
@@ -1337,22 +1354,15 @@ fn write_source_pending_terminal_remote_marker(
 ) {
     let path = source_pending_remote_marker_path(data_dir, chat_id);
     std::fs::create_dir_all(path.parent().expect("marker parent")).expect("marker dir");
-    rua_config::atomic_write_json(
-        &path,
-        &json!({
-            "address": rua_core::ChatAddress::new(chat_id),
-            "submission_id": device_delivery_id,
-            "input_id": format!("input-{device_delivery_id}"),
-            "mode": "started",
-            "device_delivery_id": device_delivery_id,
-            "device_delivery_sequence": device_delivery_sequence,
-            "target_device_id": target_device_id,
-            "accepted_at": "2026-06-27T00:00:03Z",
-            "terminal_status": terminal_status,
-            "terminal_seen_at": "2026-06-27T00:00:09Z",
-        }),
-    )
-    .expect("write pending terminal remote marker");
+    let mut payload = source_pending_marker_payload(
+        chat_id,
+        device_delivery_id,
+        device_delivery_sequence,
+        target_device_id,
+    );
+    payload["terminal_status"] = json!(terminal_status);
+    payload["terminal_seen_at"] = json!("2026-06-27T00:00:09Z");
+    rua_config::atomic_write_json(&path, &payload).expect("write pending terminal remote marker");
 }
 
 fn source_pending_remote_marker_path(
@@ -1601,7 +1611,7 @@ async fn tool_approval_pending_renders_but_does_not_persist_or_snapshot() {
     let chat_id = "00000000-0000-0000-0000-000000000777";
     materialize_local_chat(
         &state,
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         "default",
         chat_id,
         "Tool approval pending",
@@ -1639,7 +1649,7 @@ async fn tool_approval_pending_renders_but_does_not_persist_or_snapshot() {
         "approval pending must still render as a live UI event: {events:?}"
     );
 
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let header = store
         .load_chat_header(chat_id)
         .await
@@ -1662,7 +1672,7 @@ async fn tool_approval_pending_renders_but_does_not_persist_or_snapshot() {
     );
 
     let snapshots =
-        collect_evergreen_chat_file_snapshots(&runtime.workspace_dir(), chat_id, "device-a");
+        collect_evergreen_chat_file_snapshots(&runtime.chat_workspace_dir(), chat_id, "device-a");
     let serialized = serde_json::to_string(
         &snapshots
             .iter()
@@ -1702,7 +1712,7 @@ async fn device_delivery_chat_stream_materializes_targeted_chat_and_metadata() {
     let source_device_id = "source-device-1";
     let device_delivery_id = "device-delivery-1";
     materialize_targeted_chat(
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         "default",
         chat_id,
         "Device delivery",
@@ -1712,7 +1722,7 @@ async fn device_delivery_chat_stream_materializes_targeted_chat_and_metadata() {
     .expect("materialize targeted Chat Index placement");
 
     let mut extra = serde_json::Map::new();
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let mut header = store.load_chat_header(chat_id).await.unwrap().unwrap();
     seed_runtime_configuration(&state, "default", &mut header).await;
     store.save_chat_header(&header).await.unwrap();
@@ -1754,7 +1764,7 @@ async fn device_delivery_chat_stream_materializes_targeted_chat_and_metadata() {
         "remote targeted chat stream should complete without errors: {events:?}"
     );
 
-    let workspace = runtime.workspace_dir();
+    let workspace = runtime.chat_workspace_dir();
     let indexed = chat_index::get(&workspace, chat_id)
         .await
         .expect("read chat index")
@@ -1806,7 +1816,7 @@ async fn remote_targeted_chat_submit_does_not_call_local_agent_runtime() {
         .await;
     let chat_id = "00000000-0000-0000-0000-000000009002";
     let target_device_id = "target-device-1";
-    let workspace = runtime.workspace_dir();
+    let workspace = runtime.chat_workspace_dir();
     materialize_targeted_chat(
         &workspace,
         "default",
@@ -1891,7 +1901,7 @@ async fn remote_targeted_chat_does_not_block_on_previous_source_pending_marker()
 
     let chat_id = "00000000-0000-0000-0000-000000009012";
     let target_device_id = "target-device-1";
-    let workspace = runtime.workspace_dir();
+    let workspace = runtime.chat_workspace_dir();
     materialize_targeted_chat(
         &workspace,
         "default",
@@ -1968,7 +1978,7 @@ async fn remote_targeted_chat_clears_pending_marker_after_completed_turn_syncs_l
 
     let chat_id = "00000000-0000-0000-0000-000000009013";
     let target_device_id = "target-device-1";
-    let workspace = runtime.workspace_dir();
+    let workspace = runtime.chat_workspace_dir();
     materialize_targeted_chat(
         &workspace,
         "default",
@@ -2076,7 +2086,7 @@ async fn remote_targeted_chat_unblocks_after_terminal_seen_before_turn_syncs_loc
 
     let chat_id = "00000000-0000-0000-0000-000000009014";
     let target_device_id = "target-device-1";
-    let workspace = runtime.workspace_dir();
+    let workspace = runtime.chat_workspace_dir();
     materialize_targeted_chat(
         &workspace,
         "default",
@@ -2157,7 +2167,7 @@ async fn remote_targeted_chat_with_attachments_requires_source_device_without_lo
         .await;
     let chat_id = "00000000-0000-0000-0000-000000009005";
     let target_device_id = "target-device-1";
-    let workspace = runtime.workspace_dir();
+    let workspace = runtime.chat_workspace_dir();
     materialize_targeted_chat(
         &workspace,
         "default",
@@ -2279,9 +2289,9 @@ async fn authority_placement_request_cannot_override_existing_history_authority(
         .await;
 
     let chat_id = "00000000-0000-0000-0000-000000009004";
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let header = targeted_chat_header(
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         "test-authority-device",
         rua_session::ChatMetadata {
             chat_id: chat_id.to_string(),
@@ -2396,7 +2406,7 @@ async fn console_chat_persists_failed_runtime_as_closed_evergreen_turn() {
     let chat_id = "00000000-0000-0000-0000-000000000321";
     materialize_local_chat(
         &state,
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         "default",
         chat_id,
         "Failed runtime",
@@ -2434,7 +2444,7 @@ async fn console_chat_persists_failed_runtime_as_closed_evergreen_turn() {
         "events: {events:?}"
     );
 
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let turns = store.read_turn_range(chat_id, 1, 10).await.unwrap();
     assert_eq!(turns.len(), 1);
     assert_eq!(
@@ -2471,7 +2481,7 @@ async fn console_chat_keeps_partial_assistant_output_when_runtime_fails() {
     let chat_id = "00000000-0000-0000-0000-000000000654";
     materialize_local_chat(
         &state,
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         "default",
         chat_id,
         "Partial runtime failure",
@@ -2509,7 +2519,7 @@ async fn console_chat_keeps_partial_assistant_output_when_runtime_fails() {
         "events: {events:?}"
     );
 
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let turns = store.read_turn_range(chat_id, 1, 10).await.unwrap();
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].lifecycle.status, "failed");
@@ -2557,7 +2567,7 @@ async fn failed_runtime_fact_is_injected_as_system_context_on_next_turn() {
     let chat_id = "00000000-0000-0000-0000-000000000322";
     materialize_local_chat(
         &state,
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         "default",
         chat_id,
         "Runtime failure continuation",
@@ -2680,11 +2690,11 @@ async fn console_chat_foreground_input_uses_evergreen_checkpoint_projection() {
         }))
         .await;
 
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let chat_id = "00000000-0000-0000-0000-000000000123";
     let header = materialized_chat_header(
         &state,
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         rua_session::ChatMetadata {
             chat_id: chat_id.to_string(),
             agent_id: "default".to_string(),
@@ -2815,11 +2825,11 @@ async fn console_chat_hides_conversation_recall_tools_before_compaction() {
         }))
         .await;
 
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let chat_id = "00000000-0000-0000-0000-000000000125";
     let header = materialized_chat_header(
         &state,
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         rua_session::ChatMetadata {
             chat_id: chat_id.to_string(),
             agent_id: "default".to_string(),
@@ -2894,11 +2904,11 @@ async fn console_chat_applies_selected_variant_before_building_llm_input() {
         }))
         .await;
 
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let chat_id = "00000000-0000-0000-0000-000000000124";
     let header = materialized_chat_header(
         &state,
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         rua_session::ChatMetadata {
             chat_id: chat_id.to_string(),
             agent_id: "default".to_string(),
@@ -3010,11 +3020,11 @@ async fn console_chat_projects_durable_runtime_notes_from_message_log() {
         }))
         .await;
 
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let chat_id = "00000000-0000-0000-0000-000000000789";
     let header = materialized_chat_header(
         &state,
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         rua_session::ChatMetadata {
             chat_id: chat_id.to_string(),
             agent_id: "default".to_string(),
@@ -3131,11 +3141,11 @@ async fn console_chat_persists_memory_signal_as_typed_runtime_note() {
         }))
         .await;
 
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let chat_id = "00000000-0000-0000-0000-000000000790";
     let header = materialized_chat_header(
         &state,
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         rua_session::ChatMetadata {
             chat_id: chat_id.to_string(),
             agent_id: "default".to_string(),
@@ -3315,11 +3325,11 @@ async fn assert_memory_signal_disabled(policy: serde_json::Value, capture_policy
         }))
         .await;
 
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let chat_id = "00000000-0000-0000-0000-000000000791";
     let mut header = materialized_chat_header(
         &state,
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         rua_session::ChatMetadata {
             chat_id: chat_id.to_string(),
             agent_id: "default".to_string(),
@@ -3429,11 +3439,11 @@ async fn console_chat_recalls_and_searches_typed_memory_signal_without_polluting
         }))
         .await;
 
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let chat_id = "00000000-0000-0000-0000-000000000792";
     let header = materialized_chat_header(
         &state,
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         rua_session::ChatMetadata {
             chat_id: chat_id.to_string(),
             agent_id: "default".to_string(),
@@ -3557,11 +3567,11 @@ async fn console_chat_defers_projection_fit_decisions_to_the_model_call_runtime(
         }))
         .await;
 
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let chat_id = "00000000-0000-0000-0000-000000000456";
     let mut header = materialized_chat_header(
         &state,
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         rua_session::ChatMetadata {
             chat_id: chat_id.to_string(),
             agent_id: "default".to_string(),

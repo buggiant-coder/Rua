@@ -2506,10 +2506,12 @@
       "blocking": "Compacting context..."
     },
     "authorityPlacement": {
+      "busy": "Finish active work, queued input and pending approvals before switching devices.",
+      "acpLocked": "Exit ACP before changing execution devices.",
       "menu": "Choose authority device",
       "title": "Choose chat authority device",
       "current": "Current selection: {{target}}",
-      "hint": "Queued messages use the selected device when they are sent.",
+      "hint": "Choose the working directory on the target device. Existing files stay on their original devices.",
       "lockedHint": "Future messages in this chat can be moved to another authority device.",
       "menuStatusLabel": "Current setting",
       "unspecified": "No specified device",
@@ -2518,7 +2520,7 @@
       "noDevices": "No paired devices",
       "thisDevice": "This device",
       "saveFailed": "Failed to update authority device",
-      "firstUseNotice": "Remote commands are asynchronous messages. Accepted device deliveries cannot be cancelled from this device in this version.",
+      "firstUseNotice": "The current execution device must be online to hand off this chat.",
       "cacheInvalidatedNotice": "Switching execution devices invalidates the current conversation cache.",
       "cacheInvalidatedDontRemind": "Do not remind me again"
     },

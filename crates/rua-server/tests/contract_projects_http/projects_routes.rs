@@ -1024,7 +1024,8 @@ async fn local_project_chat_first_submit_materializes_history_by_chat_id() {
                 driver_detail: None,
             },
         )
-        .await;
+        .await
+        .unwrap();
     let blocked_history = request(
         &test.app,
         Method::GET,
@@ -1635,7 +1636,8 @@ async fn project_chat_list_update_delete_and_busy_isolation_contract() {
                     driver_detail: None,
                 },
             )
-            .await;
+            .await
+            .unwrap();
     }
     assert!(test
         .state
@@ -1987,7 +1989,8 @@ async fn project_chat_control_routes_share_fixed_chat_authority() {
             authority_epoch: placement.authority_epoch,
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     let first = test
         .state
         .conversation_authority
@@ -2545,7 +2548,8 @@ async fn project_archive_and_reopen_ordered_hard_stop_contract() {
             authority_epoch: placement.authority_epoch,
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     test.state
         .conversation_authority
         .enqueue_input(
@@ -4131,7 +4135,8 @@ async fn bulk_archive_includes_collaboration_skips_busy_and_retries_only_selecte
             authority_epoch: placement.authority_epoch,
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     test.state
         .conversation_authority
         .enqueue_input(
@@ -4470,7 +4475,8 @@ async fn resource_edits_leave_active_acp_and_queued_work_untouched() {
             authority_epoch: placement.authority_epoch,
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     let unlinked = request(
         &test.app,
         Method::PATCH,

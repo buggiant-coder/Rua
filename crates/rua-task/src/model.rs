@@ -218,6 +218,11 @@ pub struct TaskDeviceContext {
     pub device_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_cwd: Option<String>,
+    /// Whether `public_cwd` is a directory Rua manages for the Chat rather than
+    /// one the user selected. Kept so a result reports the original directory
+    /// exactly as it was captured instead of re-deriving it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd_managed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

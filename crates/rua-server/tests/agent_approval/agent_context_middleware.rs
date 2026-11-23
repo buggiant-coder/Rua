@@ -113,8 +113,11 @@ async fn session_id_from_path_does_not_override_active_agent() {
     let (state, _guard) = build_state();
     let app = build_test_app(state);
 
+    // `/api/chats/*` deliberately bypasses this middleware so Chat handlers can
+    // resolve their own executor; `/api/sessions/*` still exercises the
+    // path-derived session id here without tripping that bypass.
     let req = Request::builder()
-        .uri("/api/chats/sess-abc")
+        .uri("/api/sessions/sess-abc")
         .body(Body::empty())
         .unwrap();
     let resp = app.oneshot(req).await.expect("oneshot");

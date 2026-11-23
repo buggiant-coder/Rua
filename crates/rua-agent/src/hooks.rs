@@ -23,6 +23,7 @@ pub struct SecurityAgentHook {
     turn_id: Option<String>,
     working_dir: Option<String>,
     project_resource_roots: Option<Vec<std::path::PathBuf>>,
+    project_resource_device_id: Option<String>,
     approval_bypass: bool,
     security_snapshot: Option<Arc<rua_config::types::security::SecurityConfig>>,
 }
@@ -40,6 +41,7 @@ impl SecurityAgentHook {
             turn_id: None,
             working_dir: None,
             project_resource_roots: None,
+            project_resource_device_id: None,
             approval_bypass: false,
             security_snapshot: None,
         }
@@ -80,8 +82,13 @@ impl SecurityAgentHook {
         self
     }
 
-    pub fn with_project_resource_roots(mut self, roots: Vec<std::path::PathBuf>) -> Self {
+    pub fn with_project_resource_roots(
+        mut self,
+        roots: Vec<std::path::PathBuf>,
+        source_device_id: Option<String>,
+    ) -> Self {
         self.project_resource_roots = Some(roots);
+        self.project_resource_device_id = source_device_id;
         self
     }
 
@@ -138,6 +145,12 @@ impl AgentHook for SecurityAgentHook {
         if let Some(roots) = &self.project_resource_roots {
             ctx.metadata
                 .insert("project_resource_roots".into(), serde_json::json!(roots));
+            if let Some(device_id) = &self.project_resource_device_id {
+                ctx.metadata.insert(
+                    "project_resource_device_id".into(),
+                    serde_json::json!(device_id),
+                );
+            }
         }
         let verdict = self.security.enforce(&ctx, &self.approval_required).await;
         if self.approval_bypass

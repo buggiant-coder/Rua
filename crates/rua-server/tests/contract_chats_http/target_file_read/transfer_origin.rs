@@ -44,7 +44,8 @@ impl Origin {
                 authority_epoch: placement.authority_epoch,
                 driver_detail: None,
             })
-            .await;
+            .await
+            .unwrap();
         app.state
             .conversation_authority
             .transition_active_turn_phase(

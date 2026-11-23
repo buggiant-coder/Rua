@@ -82,7 +82,8 @@ async fn real_authority_turns_update_the_snapshot_without_a_subscriber_or_networ
             authority_epoch: epoch(),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     assert_eq!(snapshot(&hub)["activities"][0]["running"], true);
     stream_hub
         .publish_conversation_event(
@@ -195,14 +196,17 @@ fn distinct_chat_scopes_and_atomic_snapshot_subscription() {
     let hub = ChatActivityWakeHub::new();
     hub.publish(control(1, active("agent")));
     let (initial, mut updates) = hub.navigation.subscribe();
+    // A distinct scope, not another frame for the scope already observed:
+    // reusing the same address would be an update, not a new entry.
+    let other = ChatAddress::new("two");
     let mut project = control(1, active("project"));
-    project.address = ChatAddress::new("one");
+    project.address = other.clone();
     hub.publish(project);
     assert!(
         matches!(initial, ConversationNavigationEvent::Snapshot { activities } if activities.len() == 1)
     );
     assert!(
-        matches!(updates.try_recv().unwrap(), ConversationNavigationEvent::Activity { activity } if activity.address == ChatAddress::new("one"))
+        matches!(updates.try_recv().unwrap(), ConversationNavigationEvent::Activity { activity } if activity.address == other)
     );
     assert_eq!(snapshot(&hub)["activities"].as_array().unwrap().len(), 2);
 }

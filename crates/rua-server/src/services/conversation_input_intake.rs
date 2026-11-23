@@ -49,6 +49,9 @@ use crate::services::remote_conversation_input::{
 use crate::streaming::{ActiveStreamRegistry, Priority, StreamKey};
 
 mod configuration_update;
+pub(crate) mod handoff;
+mod handoff_history;
+mod handoff_settings;
 
 use configuration_update::ChatConfigurationUpdate;
 
@@ -104,6 +107,11 @@ pub struct ConversationInputIntake {
     active_stream_broadcast_hub:
         Option<Arc<crate::services::active_stream_broadcast::ActiveStreamBroadcastHub>>,
     remote_input_delivery: RemoteConversationInputDelivery,
+    history_sync_tx: Option<
+        tokio::sync::mpsc::UnboundedSender<
+            crate::services::conversation_history_readiness::ConversationHistorySyncRequest,
+        >,
+    >,
     conversation_authority: Option<Arc<ConversationAuthority>>,
     project_catalog: Option<Arc<rua_project::ProjectCatalog>>,
     security: Option<Arc<rua_security::SecurityModule>>,
@@ -491,6 +499,7 @@ impl ConversationInputIntake {
             acp_chat_registry,
             active_stream_broadcast_hub,
             remote_input_delivery,
+            history_sync_tx: None,
             conversation_authority: None,
             project_catalog: None,
             security: None,
@@ -527,8 +536,19 @@ impl ConversationInputIntake {
     }
 
     pub fn with_conversation_authority(mut self, authority: Arc<ConversationAuthority>) -> Self {
+        authority.bind_handoff_admission(self.session_sync.rua_root(), self.sync_device.clone());
         self.task_watch_wake_receipts = authority.runtime_observation_receipts();
         self.conversation_authority = Some(authority);
+        self
+    }
+
+    pub fn with_history_sync(
+        mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<
+            crate::services::conversation_history_readiness::ConversationHistorySyncRequest,
+        >,
+    ) -> Self {
+        self.history_sync_tx = Some(tx);
         self
     }
 
@@ -703,6 +723,12 @@ impl ConversationInputIntake {
         }
 
         if notification.projection == rua_task::TaskLiveOutputProjection::ActivityOnly {
+            let authority = self
+                .conversation_authority
+                .as_ref()
+                .ok_or("Conversation Authority is unavailable")?;
+            let gate = authority.transition_gate(&address);
+            let _transition = gate.lock().await;
             let (source, _) = self
                 .runtime_observation_execution(&address, &local_device_id)
                 .await?;
@@ -730,6 +756,24 @@ impl ConversationInputIntake {
                 .read_turn_range(address.chat_id().as_str(), 1, usize::MAX)
                 .await
                 .map_err(|error| error.to_string())?;
+            for turn in &turns {
+                if store
+                    .read_runtime_notes_for_turn(address.chat_id().as_str(), &turn.turn_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .iter()
+                    .any(|saved| saved.runtime_note_id == note.runtime_note_id)
+                {
+                    return Ok(());
+                }
+            }
+            authority.ensure_handoff_admission_locked(&address).await?;
+            let placement = crate::services::conversation_authority_target::load_chat_authority_placement_target(
+                &source.scope_root, address.chat_id().as_str(),
+            ).await?;
+            if placement.device_id != local_device_id {
+                return Err("Task Watch retained: Chat Authority changed".into());
+            }
             let target_turn_id = notification
                 .origin_turn_id
                 .filter(|turn_id| turns.iter().any(|turn| turn.turn_id == *turn_id))
@@ -739,8 +783,9 @@ impl ConversationInputIntake {
                     .append_runtime_note(address.chat_id().as_str(), &turn_id, note)
                     .await
                     .map_err(|error| error.to_string())?;
+                return Ok(());
             }
-            return Ok(());
+            return Err("Task Watch retained: no persisted Turn is available".into());
         }
         let mut extra = serde_json::Map::new();
         let runtime_note = rua_session::RuntimeNote {
@@ -814,6 +859,13 @@ impl ConversationInputIntake {
                 .map_err(|error| error.to_string())?
                 .suppressed
         {
+            let address = &record.spec.owner.chat_address;
+            let authority = self
+                .conversation_authority
+                .as_ref()
+                .ok_or("Conversation Authority is unavailable")?;
+            let gate = authority.transition_gate(address);
+            let _transition = gate.lock().await;
             let turns = store
                 .read_turn_range(record.spec.owner.chat_id(), 1, usize::MAX)
                 .await
@@ -825,10 +877,25 @@ impl ConversationInputIntake {
                 .as_ref()
                 .filter(|id| turns.iter().any(|turn| &turn.turn_id == *id))
             {
-                store
-                    .append_runtime_note(record.spec.owner.chat_id(), turn_id, note)
+                let persisted = store
+                    .read_runtime_notes_for_turn(record.spec.owner.chat_id(), turn_id)
                     .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| error.to_string())?
+                    .iter()
+                    .any(|saved| saved.runtime_note_id == note.runtime_note_id);
+                if !persisted {
+                    authority.ensure_handoff_admission_locked(address).await?;
+                    let placement = crate::services::conversation_authority_target::load_chat_authority_placement_target(
+                        scope.root(), record.spec.owner.chat_id(),
+                    ).await?;
+                    if placement.device_id != local_device_id {
+                        return Err("Task result retained: Chat Authority changed".into());
+                    }
+                    store
+                        .append_runtime_note(record.spec.owner.chat_id(), turn_id, note)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
                 tasks
                     .ack_terminal_delivery(&record.spec.owner, &record.task_id, record.attempt_no)
                     .await
@@ -979,6 +1046,33 @@ impl ConversationInputIntake {
             .ok_or_else(|| "Conversation Authority is unavailable".to_string())?;
         // A Task may outlive its executor's selection. Choose its result Turn's
         // Agent under the same gate that accepts the input and switches the Chat.
+        // Claim this observation before waiting for the Chat's transition gate: the
+        // gate is held for the whole delivery, so a duplicate that registers later
+        // could only observe a stalled Chat.
+        let mut wake_receipt = if wait_for_watch || wait_for_persistence {
+            let receipt = self
+                .task_watch_wake_receipts
+                .register(observation_id.clone(), address.clone());
+            if !receipt.fresh {
+                // The same observation is still being delivered. Report it instead of
+                // waiting, so the sender keeps its durable record and can try again
+                // rather than silently joining a delivery it cannot observe.
+                return Err(format!(
+                    "Runtime observation {observation_id} is already registered"
+                ));
+            }
+            extra.insert(
+                RUNTIME_OBSERVATION_RECEIPT_META_KEY.into(),
+                serde_json::json!(receipt.receipt_id),
+            );
+            extra.insert(
+                SUBMISSION_ID_KEY.into(),
+                serde_json::json!(receipt.receipt_id),
+            );
+            Some(receipt)
+        } else {
+            None
+        };
         let gate = authority.transition_gate(&address);
         let transition = gate.lock().await;
         let (execution, header) = self
@@ -1052,26 +1146,6 @@ impl ConversationInputIntake {
             .map_err(|error| error.to_string())?,
         };
         extra.insert(rua_chat::TURN_AGENT_ASSIGNMENT_META_KEY.into(), assignment);
-        let mut wake_receipt = if wait_for_watch || wait_for_persistence {
-            let receipt = self
-                .task_watch_wake_receipts
-                .register(observation_id.clone(), address.clone());
-            if !receipt.fresh {
-                drop(transition);
-                return receipt.wait().await;
-            }
-            extra.insert(
-                RUNTIME_OBSERVATION_RECEIPT_META_KEY.into(),
-                serde_json::json!(receipt.receipt_id),
-            );
-            extra.insert(
-                SUBMISSION_ID_KEY.into(),
-                serde_json::json!(receipt.receipt_id),
-            );
-            Some(receipt)
-        } else {
-            None
-        };
         let pending = ConversationInputPayload {
             message: String::new(),
             model_override: None,
@@ -1250,6 +1324,9 @@ impl ConversationInputIntake {
             detail,
         };
         let chat_id = command.chat_id();
+        Box::pin(self.recover_released_handoff_before_routing(&command.address))
+            .await
+            .map_err(|detail| reject("chat_handoff_pending", detail))?;
         let (agent_id, project_id) = self
             .chat_selection(&command.address)
             .await
@@ -1447,6 +1524,43 @@ impl ConversationInputIntake {
         command: ConversationControlDeviceCommand,
     ) -> Result<ConversationControlDeviceResponse, DeviceCommandDeliveryError> {
         Box::pin(self.apply_conversation_control_with_local_login(command, None)).await
+    }
+
+    async fn lock_history_mutation(
+        &self,
+        target: &ConversationControlTarget,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, DeviceCommandDeliveryError> {
+        let reject = |detail| DeviceCommandDeliveryError::Rejected {
+            reason: "history_mutation_unavailable".into(),
+            detail,
+        };
+        let authority = self
+            .conversation_authority
+            .as_ref()
+            .ok_or_else(|| reject("Conversation Authority is unavailable".into()))?;
+        let guard = authority
+            .transition_gate(&target.address)
+            .lock_owned()
+            .await;
+        authority
+            .ensure_handoff_admission_locked(&target.address)
+            .await
+            .map_err(reject)?;
+        let placement =
+            crate::services::conversation_authority_target::load_chat_authority_placement_target(
+                &target.scope_root,
+                target.address.chat_id().as_str(),
+            )
+            .await
+            .map_err(reject)?;
+        if placement.device_id != target.placement.device_id
+            || placement.authority_epoch != target.placement.authority_epoch
+        {
+            return Err(reject(
+                "Chat Authority changed before editing history".into(),
+            ));
+        }
+        Ok(guard)
     }
 
     pub(crate) async fn apply_conversation_control_with_local_login(
@@ -1665,6 +1779,11 @@ impl ConversationInputIntake {
                     .as_ref()
                     .map(|capabilities| capabilities.project_write_roots())
                     .unwrap_or_default();
+                let roots = rua_security::project_resource_policy::project_write_roots_for_device(
+                    &roots,
+                    configuration.authority_device_id.as_deref(),
+                    Some(&target.placement.device_id),
+                );
                 let config = configuration.security_config;
                 let policy = config
                     .extra
@@ -1673,7 +1792,7 @@ impl ConversationInputIntake {
                         rua_security::EffectiveProjectResourcePolicy::resolve_with_roots(
                             &config,
                             &target.working_dir,
-                            &roots,
+                            roots,
                         )
                     });
                 let approval_authority = self.approval_authority.as_ref().ok_or_else(|| {
@@ -1752,6 +1871,7 @@ impl ConversationInputIntake {
                 Ok(ConversationControlDeviceResponse::RunningConfigUpdated { running, control })
             }
             ConversationControlDeviceAction::UpdateProjectionExclusions { message_ids } => {
+                let transition = self.lock_history_mutation(&target).await?;
                 let store = rua_session::WorkspaceSessionStore::new(&target.scope_root);
                 let chat_id = target.address.chat_id().as_str();
                 let messages = store
@@ -1804,6 +1924,7 @@ impl ConversationInputIntake {
                     .map_err(|error| {
                         reject("projection_exclusions_update_rejected", error.to_string())
                     })?;
+                drop(transition);
                 self.session_sync
                     .emit_evergreen_chat_snapshot(&target.scope_root, &target.address)
                     .await;
@@ -1832,12 +1953,14 @@ impl ConversationInputIntake {
                 turn_id,
                 selected_variant_id,
             } => {
+                let transition = self.lock_history_mutation(&target).await?;
                 let common_chat = rua_chat::ChatService::from_workspace(
                     rua_core::WorkspaceRoot::new(&target.scope_root),
                 )
                 .select_variant(&target.address, &turn_id, &selected_variant_id)
                 .await
                 .map_err(project_chat_mutation_error)?;
+                drop(transition);
                 let chat = crate::endpoints::chats::chat_spec_from_common_chat(
                     &target.scope_root,
                     &common_chat,
@@ -1876,6 +1999,7 @@ impl ConversationInputIntake {
                 })
             }
             ConversationControlDeviceAction::RollbackBeforeTurn { before_turn_id } => {
+                let transition = self.lock_history_mutation(&target).await?;
                 rua_session::WorkspaceSessionStore::new(&target.scope_root)
                     .set_collaboration_wake_suppressed(target.address.chat_id().as_str(), true)
                     .await
@@ -1905,6 +2029,8 @@ impl ConversationInputIntake {
                     })
                     .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
                     .map(|value| value.with_timezone(&chrono::Utc));
+                // Task cancellation can deliver a result through this same gate.
+                drop(transition);
                 let cancelled_tasks = if let Some(task_runtime) = self.task_runtime.as_ref() {
                     task_runtime
                         .cancel_owner_at_or_after(
@@ -1918,10 +2044,12 @@ impl ConversationInputIntake {
                 } else {
                     0
                 };
+                let transition = self.lock_history_mutation(&target).await?;
                 let common_chat = chat_service
                     .rollback_before(&target.address, &branch_point.before_turn_id)
                     .await
                     .map_err(project_chat_mutation_error)?;
+                drop(transition);
                 let chat = crate::endpoints::chats::chat_spec_from_common_chat(
                     &target.scope_root,
                     &common_chat,
@@ -2229,6 +2357,33 @@ impl ConversationInputIntake {
                         crate::services::conversation_authority::ConversationActiveTurnPhase::RunningTool,
                     ).await;
                 }
+                let handoff_transition = if should_publish_chat {
+                    Some(
+                        authority
+                            .transition_gate(&target.address)
+                            .lock_owned()
+                            .await,
+                    )
+                } else {
+                    None
+                };
+                if should_publish_chat {
+                    authority
+                        .ensure_handoff_admission_locked(&target.address)
+                        .await
+                        .map_err(|detail| reject("chat_handoff_pending", detail))?;
+                    let placement = crate::services::conversation_authority_target::load_chat_authority_placement_target(
+                        &target.scope_root, target.address.chat_id().as_str(),
+                    ).await.map_err(|detail| reject("approval_authority_unavailable", detail))?;
+                    if placement.device_id != command.target_device_id
+                        || placement.authority_epoch != command.authority_epoch
+                    {
+                        return Err(reject(
+                            "approval_authority_changed",
+                            "Chat Authority changed before saving the permission".into(),
+                        ));
+                    }
+                }
                 let outcome = match login_user {
                     Some(user) => {
                         approval_authority
@@ -2246,6 +2401,7 @@ impl ConversationInputIntake {
                             .await
                     }
                 };
+                drop(handoff_transition);
                 if !managed_phase
                     && outcome.is_err()
                     && approval_authority
@@ -2436,9 +2592,19 @@ impl ConversationInputIntake {
                     .map_err(|error| reject("project_unavailable", error))?;
             }
         }
-        let project_cwd = project_id
-            .as_ref()
-            .map(|_| target.working_dir.to_string_lossy().to_string());
+        // A Project Chat works inside the Project's own resource directory on this
+        // Device. Only a Project without a directory here falls back to the Chat's
+        // execution directory, which is what a standalone Chat always uses.
+        let project_cwd = project_id.as_ref().and_then(|project_id| {
+            self.project_resource_directory(project_id, &command.target_device_id)
+                .map(|path| path.to_string_lossy().into_owned())
+        });
+        // ACP reports the directory the Chat actually works in: the Project's
+        // resource directory on this Device, or the Chat's own execution directory.
+        let acp_workspace_dir = project_cwd
+            .as_deref()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| target.working_dir.clone());
 
         match command.action {
             AcpChatDeviceAction::ListRunners => Ok(AcpChatDeviceResponse::Runners {
@@ -2495,7 +2661,7 @@ impl ConversationInputIntake {
                 let status = acp_status_for_target(
                     &handle,
                     &chat_id,
-                    &target.working_dir,
+                    &acp_workspace_dir,
                     &command.target_device_id,
                 )
                 .await;
@@ -2541,7 +2707,7 @@ impl ConversationInputIntake {
                 status: acp_status_for_target(
                     &handle,
                     &chat_id,
-                    &target.working_dir,
+                    &acp_workspace_dir,
                     &command.target_device_id,
                 )
                 .await,
@@ -2786,6 +2952,7 @@ impl ConversationInputIntake {
             approvals,
         )
         .await?;
+        authority.ensure_handoff_admission_locked(address).await?;
         let saved = crate::services::conversation_authority_placement::parse_conversation_authority_placement(&serde_json::Value::Object(operation.header.extra.clone())).map_err(|e| e.to_string())?;
         if placement.device_id != saved.device_id
             || placement.authority_epoch != saved.authority_epoch
@@ -3185,6 +3352,9 @@ impl ConversationInputIntake {
         };
         let configuration_changed = update.collaboration_mode.is_some();
         if configuration_changed {
+            if let Some(authority) = self.conversation_authority.as_ref() {
+                authority.ensure_handoff_admission_locked(&address).await?;
+            }
             let selection =
                 crate::services::project_chat::load_chat_agent_selection(&scope_root, chat_id)
                     .await?;
@@ -4130,6 +4300,17 @@ impl ConversationInputIntake {
                 failure_kind: Some("chat_not_found".into()),
             };
         }
+        if let Err(detail) = Box::pin(
+            self.recover_released_handoff_before_routing(&ChatAddress::new(chat_id.as_str())),
+        )
+        .await
+        {
+            return ConversationInputDeliveryOutcome::Rejected {
+                detail,
+                target_device_id: None,
+                failure_kind: Some("chat_handoff_pending".into()),
+            };
+        }
         let saved = match rua_session::WorkspaceSessionStore::new(workspace_dir)
             .load_chat_header(&raw_request_chat_id)
             .await
@@ -4247,6 +4428,7 @@ impl ConversationInputIntake {
                     .extra
                     .get("expected_authority_epoch")
                     .and_then(serde_json::Value::as_str),
+                local_device_id.as_deref(),
             )
             .await
         {
@@ -5372,6 +5554,21 @@ impl ConversationInputIntake {
         self.publish_authority_chat_metadata_for(scope_root, address, &record)
             .await;
         Ok(record)
+    }
+
+    /// The resource directory a Project contributes to a Chat running on `device_id`.
+    fn project_resource_directory(
+        &self,
+        project_id: &ProjectId,
+        device_id: &str,
+    ) -> Option<std::path::PathBuf> {
+        let project = self.project_catalog.as_ref()?.get(project_id).ok()??;
+        project
+            .resources
+            .directories
+            .iter()
+            .find(|directory| directory.device_id == device_id)
+            .map(|directory| directory.resource_root.clone())
     }
 
     pub(crate) fn require_existing_project(&self, project_id: &ProjectId) -> Result<(), String> {
@@ -7049,6 +7246,7 @@ impl ConversationInputIntake {
         let rua_root = self.session_sync.rua_root();
         crate::services::chat_context::ensure_chat_not_deleted(rua_root, request.chat_id())
             .map_err(|error| error.to_string())?;
+        Box::pin(self.recover_released_handoff_before_routing(&request.address)).await?;
         let header = self.optional_chat_header(&request.address).await?;
         let project_id = match header.as_ref() {
             Some(header) => {

@@ -9,6 +9,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
+#[path = "chat_handoff.rs"]
+pub mod handoff;
+
 use crate::early_background_compaction::early_background_compaction_coordinator;
 use crate::projection::{ProjectionMessageGroupEstimate, ProjectionPlanner};
 use crate::{
@@ -1770,8 +1773,26 @@ impl WorkspaceSessionStore {
         expected_active_checkpoint_id: Option<&str>,
         draft: SummaryCheckpointDraft,
     ) -> Result<SummaryCheckpoint> {
+        self.publish_summary_checkpoint_if(chat_id, expected_active_checkpoint_id, draft, || true)
+            .await?
+            .ok_or(rua_core::RuaError::Cancelled)
+    }
+
+    pub async fn publish_summary_checkpoint_if<F>(
+        &self,
+        chat_id: &str,
+        expected_active_checkpoint_id: Option<&str>,
+        draft: SummaryCheckpointDraft,
+        can_publish: F,
+    ) -> Result<Option<SummaryCheckpoint>>
+    where
+        F: Fn() -> bool,
+    {
         let write_lock = self.chat_write_lock(chat_id);
         let _guard = write_lock.lock().await;
+        if !can_publish() {
+            return Ok(None);
+        }
         let resolved_previous_checkpoint_id = self
             .load_active_summary_checkpoint(chat_id)
             .await?
@@ -1859,7 +1880,7 @@ impl WorkspaceSessionStore {
         header.active_checkpoint_id = Some(validated.checkpoint_id.clone());
         self.save_chat_header(&header).await?;
 
-        Ok(validated)
+        Ok(Some(validated))
     }
 
     pub async fn publish_manual_context_checkpoint(

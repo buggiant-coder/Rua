@@ -925,11 +925,12 @@ async fn store_default_model_with_chat_id_requires_confirmation_when_projection_
         body,
         "default edits must not change existing Chat preflight"
     );
-    let header = WorkspaceSessionStore::new(&workspace)
-        .load_chat_header("chat-preflight")
-        .await
-        .unwrap()
-        .unwrap();
+    let header =
+        WorkspaceSessionStore::new(test.tmp.path().join("chats"))
+            .load_chat_header("chat-preflight")
+            .await
+            .unwrap()
+            .unwrap();
     assert_eq!(
         rua_chat::model_slot_from_header(&header).unwrap()["model"],
         "frozen-model"
@@ -1046,7 +1047,7 @@ async fn confirmed_model_switch_creates_checkpoint_before_applying_target_model(
     );
     assert_eq!(active["default_llm"]["model"], "confirmed-tiny-context");
 
-    let store = WorkspaceSessionStore::new(test.tmp.path().join("workspaces").join("default"));
+    let store = WorkspaceSessionStore::new(test.tmp.path().join("chats"));
     let checkpoint = store
         .load_active_summary_checkpoint("chat-confirmed-preflight")
         .await
@@ -1136,7 +1137,7 @@ async fn confirmed_model_switch_keeps_previous_model_when_checkpoint_fails() {
     );
     assert_eq!(active["default_llm"]["model"], "large-current");
 
-    let store = WorkspaceSessionStore::new(test.tmp.path().join("workspaces").join("default"));
+    let store = WorkspaceSessionStore::new(test.tmp.path().join("chats"));
     assert!(store
         .load_active_summary_checkpoint("chat-failing-preflight")
         .await
@@ -1532,7 +1533,7 @@ impl ContextManager for FailingSummaryContextManager {
 }
 
 async fn seed_long_evergreen_chat(tmp: &tempfile::TempDir, chat_id: &str) {
-    let workspace = tmp.path().join("workspaces").join("default");
+    let workspace = tmp.path().join("chats");
     let store = WorkspaceSessionStore::new(&workspace);
     let mut header = ChatSessionHeader::new(ChatMetadata {
         chat_id: chat_id.to_string(),

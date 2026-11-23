@@ -259,7 +259,9 @@ async fn assert_background_result_behind_active_source(stop_queued: bool) {
                 depends_on: vec![],
                 origin: Default::default(),
             },
-            rua_task::TaskAttemptAuthorization::new("default").unwrap(),
+            rua_task::TaskAttemptAuthorization::new("default")
+                .unwrap()
+                .with_configuration_epoch(source.configuration_epoch.clone()),
         )
         .await
         .unwrap();
@@ -419,7 +421,9 @@ async fn assert_background_task_continuation(stop_before_result: bool) {
                 depends_on: Vec::new(),
                 origin: Default::default(),
             },
-            rua_task::TaskAttemptAuthorization::new("default").unwrap(),
+            rua_task::TaskAttemptAuthorization::new("default")
+                .unwrap()
+                .with_configuration_epoch(source.configuration_epoch.clone()),
         )
         .await
         .unwrap();
@@ -461,7 +465,8 @@ async fn assert_background_task_continuation(stop_before_result: bool) {
                     driver_detail: None,
                 },
             )
-            .await;
+            .await
+            .unwrap();
         let response = request(
             &app,
             Method::POST,
@@ -4276,7 +4281,7 @@ async fn source_user_stop_preserves_late_result_wake_without_stopping_child() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         },
-    ).await;
+    ).await.unwrap();
     test.state
         .conversation_authority
         .request_stop(None, "console", &source.address)

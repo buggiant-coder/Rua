@@ -300,12 +300,21 @@ impl WorkspaceSessionStore {
         chat_id: &str,
         suppressed: bool,
     ) -> Result<CollaborationWakeState> {
-        let path = self.collaboration_wake_state_path(chat_id);
-        let _guard = self.lock_chat_storage(chat_id).await;
         let state = CollaborationWakeState {
             suppressed,
             stopped_at: suppressed.then(|| chrono::Utc::now().to_rfc3339()),
         };
+        self.save_collaboration_wake_state(chat_id, &state).await?;
+        Ok(state)
+    }
+
+    pub async fn save_collaboration_wake_state(
+        &self,
+        chat_id: &str,
+        state: &CollaborationWakeState,
+    ) -> Result<()> {
+        let path = self.collaboration_wake_state_path(chat_id);
+        let _guard = self.lock_chat_storage(chat_id).await;
         let value = state.clone();
         tokio::task::spawn_blocking(move || {
             rua_config::atomic_write_json(&path, &serde_json::to_value(value)?)
@@ -317,7 +326,7 @@ impl WorkspaceSessionStore {
         .map_err(|error| RuaError::Io {
             message: error.to_string(),
         })?;
-        Ok(state)
+        Ok(())
     }
 
     fn collaboration_request_path(&self, chat_id: &str, request_id: &str) -> Result<PathBuf> {

@@ -313,7 +313,7 @@ export const chatApi = {
 
   setAuthorityPlacement: (
     chatId: string,
-    deviceId: string,
+    position: ConversationAuthorityPlacementUpdateRequest,
     _agentId?: string,
     model?: ModelSlot,
   ) =>
@@ -322,7 +322,7 @@ export const chatApi = {
       {
         method: "PUT",
         body: JSON.stringify({
-          device_id: deviceId,
+          ...position,
           model,
         } satisfies ConversationAuthorityPlacementUpdateRequest),
       },

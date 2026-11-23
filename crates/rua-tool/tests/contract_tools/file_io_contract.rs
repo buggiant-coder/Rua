@@ -1271,7 +1271,17 @@ async fn remote_file_page_unavailable_preserves_the_call_and_never_uses_the_loca
         .call(json!({"file_path":path,"device_id":"phone"}), ctx)
         .await
         .unwrap();
-    assert!(result.is_error && result.text_content().contains("returned no readable text"));
+    assert!(
+        result.is_error,
+        "an unavailable target read must surface as an error"
+    );
+    assert!(
+        result
+            .text_content()
+            .contains("could not complete read for the requested path"),
+        "the error must name the failed remote read: {}",
+        result.text_content()
+    );
     assert!(!result.text_content().contains("local-only text"));
     assert_eq!(result.call_id, "unreadable-4");
     assert_eq!(

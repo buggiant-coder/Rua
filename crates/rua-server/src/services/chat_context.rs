@@ -177,14 +177,58 @@ impl ChatContext {
     }
 }
 
+/// Resolve a Chat's saved Project membership on this Device.
+///
+/// `Ok(None)` means this Device knows about no such Chat. The inner `Option` is the
+/// fixed Project membership: `None` for an ordinary Chat.
+///
+/// A controlling Device that holds only the synchronized Chat Index entry (and no
+/// local Chat Header) must still be able to address a Project Chat, so the Index is
+/// consulted as the synchronized discovery surface before reporting the Chat absent.
+pub(crate) async fn saved_project_membership(
+    rua_root: &Path,
+    chat_id: &str,
+) -> Result<Option<Option<String>>, ApiError> {
+    if let Some(header) = load_live_chat_header(rua_root, chat_id).await? {
+        return Ok(Some(header.project_id));
+    }
+    if chat_is_deleted(rua_root, chat_id)? {
+        return Ok(None);
+    }
+    let entry = crate::services::chat_index::get(
+        rua_core::RuaRoot::new(rua_root).chat_workspace().as_path(),
+        chat_id,
+    )
+    .await
+    .map_err(ApiError::Internal)?;
+    Ok(entry.map(|entry| {
+        entry
+            .meta
+            .get("project_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    }))
+}
+
 pub async fn load_chat_context(
     rua_root: &Path,
     chat_id: &str,
 ) -> Result<Option<ChatContext>, ApiError> {
     crate::services::console_chat::resolve_chat_id(chat_id).map_err(ApiError::BadRequest)?;
-    Ok(load_live_chat_header(rua_root, chat_id)
+    if let Some(context) = load_live_chat_header(rua_root, chat_id)
         .await?
-        .map(ChatContext::from))
+        .map(ChatContext::from)
+    {
+        return Ok(Some(context));
+    }
+    if chat_is_deleted(rua_root, chat_id)? {
+        return Ok(None);
+    }
+    // A controlling Device holds only the synchronized Chat Index entry for a Chat
+    // that lives on another Device. Resolving the same saved configuration from that
+    // projection is what lets canonical Chat routes address a remote Chat at all.
+    let workspace = rua_core::RuaRoot::new(rua_root).chat_workspace();
+    load_indexed_context(&workspace, chat_id).await
 }
 
 impl From<rua_session::ChatSessionHeader> for ChatContext {

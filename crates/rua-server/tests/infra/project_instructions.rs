@@ -103,7 +103,8 @@ impl Fixture {
                 authority_epoch: self.epoch,
                 driver_detail: None,
             })
-            .await;
+            .await
+            .unwrap();
         assert_eq!(turn.phase, ConversationActiveTurnPhase::Preparing);
         ToolContext {
             agent_id: AGENT.into(),

@@ -473,6 +473,10 @@ pub trait ChatScopeRuleStore: Send + Sync + std::fmt::Debug {
         rule: &ApprovalReuseRule,
     ) -> Result<(), String>;
     fn delete_chat_rules(&self, address: &ChatAddress) -> Result<(), String>;
+    /// Persist the existing empty state, if needed, so normal Sync can carry it.
+    fn ensure_chat_rules_snapshot(&self, _address: &ChatAddress) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 impl ApprovalAuthority {
@@ -1721,6 +1725,14 @@ impl ApprovalAuthority {
             Some(store) => store.list_chat_rules(address),
             None => Ok(self.list_chat_rules(address).await),
         }
+    }
+
+    pub async fn ensure_chat_rules_snapshot(&self, address: &ChatAddress) -> Result<(), String> {
+        let _rules = self.reuse_rules.write().await;
+        if let Some(store) = &self.chat_rule_store {
+            store.ensure_chat_rules_snapshot(address)?;
+        }
+        Ok(())
     }
 
     pub async fn delete_chat_rules(&self, address: &ChatAddress) -> Result<(), String> {

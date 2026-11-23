@@ -11,6 +11,8 @@ import {
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import ChatHeader from "./ChatHeader";
+import ExecutionDirectoryFields from "./ExecutionDirectoryFields";
+import { validateExecutionPosition } from "@/api/modules/executionDirectory";
 import { ChatConfigurationUpdateButton } from "./ChatConfigurationUpdateButton";
 import { androidRuntimeActions } from "@/utils/androidRuntime";
 import { configurationChanges } from "./configurationDiff";
@@ -61,6 +63,7 @@ import type {
   ChatHistory,
   ChatRunningConfig,
   ConversationListView,
+  ExecutionPosition,
   ModelSlot,
 } from "@/api/types";
 import ChatSearchResults from "./ChatSearchResults";
@@ -118,6 +121,7 @@ import {
 } from "./owned/useConversationViewRuntime";
 import {
   acpStatusFromConversationControl,
+  applyConfirmedAuthorityPlacement,
   removeAcpBindingFromHistory,
   resolveChatPlacement,
 } from "./chatPlacementState";
@@ -205,44 +209,6 @@ function controlAuthorityPlacementLocked(
 ): boolean | undefined {
   const allowed = history?.control?.allowed_controls?.switch_authority;
   return allowed === undefined ? undefined : !allowed;
-}
-
-function applyConfirmedAuthorityPlacement(
-  history: ChatHistory | null,
-  meta: Record<string, unknown>,
-): ChatHistory | null {
-  if (!history) return history;
-  const rawPlacement = meta.authority_placement;
-  if (
-    !history.control ||
-    !rawPlacement ||
-    typeof rawPlacement !== "object" ||
-    Array.isArray(rawPlacement)
-  ) {
-    return { ...history, meta };
-  }
-  const placement = rawPlacement as Record<string, unknown>;
-  const deviceId = placement.device_id;
-  if (typeof deviceId !== "string" || !deviceId) {
-    return { ...history, meta };
-  }
-  const authorityEpoch = placement.authority_epoch;
-  return {
-    ...history,
-    meta,
-    control: {
-      ...history.control,
-      authority_device_id: deviceId,
-      placement: {
-        ...history.control.placement,
-        authority_device_id: deviceId,
-        authority_epoch:
-          typeof authorityEpoch === "string"
-            ? authorityEpoch
-            : history.control.placement.authority_epoch,
-      },
-    },
-  };
 }
 
 function shouldShowRemoteTargetFirstUseNotice(): boolean {
@@ -883,7 +849,10 @@ export function AgentChatPage({
   const optimisticAcpControlBaselineRef = useRef<string | null>(null);
   const [acpHistoryPreview, setAcpHistoryPreview] =
     useState<AcpHistoryPreviewPayload | null>(null);
-  const [authorityPlacementDraft, setAuthorityPlacementDraft] = useState("");
+  const [authorityPlacementDraft, setAuthorityPlacementDraft] =
+    useState<ExecutionPosition | null>(null);
+  const [committedAuthorityPlacement, setCommittedAuthorityPlacement] =
+    useState<ChatSpec["meta"] | null>(null);
   const submittedTitleRef = useRef<Record<string, string>>({});
   const chatTitleHintRef = useRef<Record<string, string>>({});
   const chatHasUserMessagesRef = useRef<Record<string, boolean>>({});
@@ -914,6 +883,15 @@ export function AgentChatPage({
   });
   const activeChatKeyRef = useRef(activeChatKey);
   activeChatKeyRef.current = activeChatKey;
+  useEffect(() => {
+    setAuthorityPlacementModalOpen(false);
+    setAuthorityPlacementPendingDeviceId(null);
+    setCommittedAuthorityPlacement(null);
+    authorityPlacementMutationInFlightRef.current = false;
+    return () => {
+      authorityPlacementMutationSeqRef.current += 1;
+    };
+  }, [activeChatKey]);
   const currentChatHistory =
     activeChatKey && currentChatSnapshot?.key === activeChatKey
       ? currentChatSnapshot.history
@@ -1623,8 +1601,29 @@ export function AgentChatPage({
     : "";
   const authorityPlacementLocked =
     acpActive ||
+    (!conversationLazy &&
+      (fixedExecutor ||
+        Boolean(
+          currentChatHistory?.control?.active_turn ??
+            currentChatHistory?.active_turn,
+        ) ||
+        (!currentChatHistory?.control &&
+          currentChatHistory?.status === "running") ||
+        Boolean(currentChatHistory?.control?.queue?.entries.length) ||
+        Boolean(
+          (
+            currentChatHistory?.control?.chat_agent_state ??
+            currentChatHistory?.meta?.chat_agent_state
+          )?.blockers.length,
+        ))) ||
     (controlAuthorityPlacementLocked(currentChatHistory) ??
       chatPlacement.authorityPlacementLocked);
+  const authorityPlacementBlockedReason = acpActive
+    ? t(
+        "chat.authorityPlacement.acpLocked",
+        "Exit ACP before changing execution devices.",
+      )
+    : selectorProps.switchBlockedReason || t("chat.authorityPlacement.busy");
   const authorityPlacementDevices = useMemo(
     () =>
       [...syncDevices].sort((left, right) => {
@@ -1633,23 +1632,13 @@ export function AgentChatPage({
       }),
     [syncDevices],
   );
-  const selectAuthorityPlacement = async (deviceId: string) => {
+  const selectAuthorityPlacement = async (selection: ExecutionPosition) => {
+    const { device_id: deviceId } = selection;
     if (!effectiveChatId || authorityPlacementMutationInFlightRef.current) {
       return false;
     }
-    if (conversationLazy) {
-      if (creationStarted) return deviceId === draftPosition?.device_id;
-      if (deviceId !== draftPosition?.device_id)
-        setDraftPosition({ device_id: deviceId });
-      return true;
-    }
     if (authorityPlacementLocked) {
-      toast.warning(
-        t(
-          "chat.authorityPlacement.acpLocked",
-          "Current chat is in ACP mode. Exit ACP before changing the authority device.",
-        ),
-      );
+      toast.warning(authorityPlacementBlockedReason);
       return false;
     }
     if (deviceId === authorityPlacementDeviceId) return true;
@@ -1660,13 +1649,23 @@ export function AgentChatPage({
     authorityPlacementMutationInFlightRef.current = true;
     setAuthorityPlacementPendingDeviceId(deviceId);
     try {
+      const position =
+        selection.path === undefined
+          ? selection
+          : await validateExecutionPosition(selection);
+      if (mutationSeq !== authorityPlacementMutationSeqRef.current) return;
+      if (conversationLazy) {
+        if (!creationStarted) setDraftPosition(position);
+        return !creationStarted;
+      }
       const updated = await chatApi.setAuthorityPlacement(
         chatIdForUpdate,
-        deviceId,
+        position,
         selectedAgent,
       );
       if (mutationSeq !== authorityPlacementMutationSeqRef.current) return;
       const nextMeta = updated.meta ?? {};
+      setCommittedAuthorityPlacement(nextMeta);
       setCurrentChatHistory((current) =>
         applyConfirmedAuthorityPlacement(current, nextMeta),
       );
@@ -1681,7 +1680,7 @@ export function AgentChatPage({
         remoteMessage: showRemoteNotice
           ? t(
               "chat.authorityPlacement.firstUseNotice",
-              "Remote commands are asynchronous messages. Accepted device deliveries cannot be cancelled from this device in this version.",
+              "The current execution device must be online to hand off this chat.",
             )
           : undefined,
         dontRemindLabel: t(
@@ -1707,22 +1706,17 @@ export function AgentChatPage({
       }
     }
   };
-  const openAuthorityPlacementModal = () => {
+  const openAuthorityPlacementModal = (deviceId?: string) => {
     if (authorityPlacementLocked) {
-      toast.warning(
-        t(
-          "chat.authorityPlacement.acpLocked",
-          "Current chat is in ACP mode. Exit ACP before changing the authority device.",
-        ),
-      );
+      toast.warning(authorityPlacementBlockedReason);
       return;
     }
-    setAuthorityPlacementDraft(
+    const target =
+      deviceId ||
       authorityPlacementDeviceId ||
-        currentDeviceId ||
-        authorityPlacementDevices[0]?.device_id ||
-        "",
-    );
+      currentDeviceId ||
+      authorityPlacementDevices[0]?.device_id;
+    setAuthorityPlacementDraft(target ? { device_id: target } : null);
     setAuthorityPlacementModalOpen(true);
   };
   const saveAuthorityPlacementSelection = () => {
@@ -1731,7 +1725,7 @@ export function AgentChatPage({
     setAuthorityPlacementModalOpen(false);
   };
   const authorityPlacementDraftUnchanged =
-    authorityPlacementDraft === authorityPlacementDeviceId;
+    authorityPlacementDraft?.device_id === authorityPlacementDeviceId;
   const selectedAuthorityPlacementDevice = authorityPlacementDevices.find(
     (device) => device.device_id === authorityPlacementDeviceId,
   );
@@ -1773,11 +1767,7 @@ export function AgentChatPage({
       label: (
         <Tooltip
           title={
-            acpActive
-              ? t("chat.acpBanner.blockedWhileActive", {
-                  defaultValue: "退出 ACP 模式后可用",
-                })
-              : ""
+            authorityPlacementLocked ? authorityPlacementBlockedReason : ""
           }
           placement="left"
         >
@@ -1798,7 +1788,7 @@ export function AgentChatPage({
         !effectiveChatId ||
         authorityPlacementLocked ||
         authorityPlacementSaving,
-      onClick: openAuthorityPlacementModal,
+      onClick: () => openAuthorityPlacementModal(),
     },
     {
       key: "acp-enter",
@@ -1975,6 +1965,7 @@ export function AgentChatPage({
             onSubmitAccepted={handleSubmitAccepted}
             onHistoryChange={handleConversationHistoryChange}
             authorityPlacementDeviceId={authorityPlacementDeviceId}
+            committedAuthorityPlacement={committedAuthorityPlacement}
             draftExecutionPosition={draftPosition}
             currentDeviceId={currentDeviceId}
             activeAcpRunner={
@@ -2017,7 +2008,7 @@ export function AgentChatPage({
                     (conversationLazy ? currentDeviceId : null)
                   }
                   devices={authorityPlacementDevices}
-                  onSelect={selectAuthorityPlacement}
+                  onSelect={(deviceId) => openAuthorityPlacementModal(deviceId)}
                   disabled={
                     creationStarted ||
                     !effectiveChatId ||
@@ -2136,7 +2127,7 @@ export function AgentChatPage({
         open={authorityPlacementModalOpen}
         onClose={() => setAuthorityPlacementModalOpen(false)}
         title={t("chat.authorityPlacement.title", "Choose authority device")}
-        width={420}
+        width={520}
         footer={
           <>
             <Btn
@@ -2149,6 +2140,9 @@ export function AgentChatPage({
               onClick={saveAuthorityPlacementSelection}
               disabled={
                 !effectiveChatId ||
+                !authorityPlacementDraft ||
+                authorityPlacementDraft.path?.trim() === "" ||
+                authorityPlacementSaving ||
                 authorityPlacementLocked ||
                 authorityPlacementDraftUnchanged
               }
@@ -2168,12 +2162,12 @@ export function AgentChatPage({
           <div className="rua-owned-authority-placement-hint">
             {t(
               "chat.authorityPlacement.hint",
-              "Queued messages use the selected device when they are sent.",
+              "Choose the working directory on the target device. Existing files stay on their original devices.",
             )}
           </div>
           <RadioGroup
-            value={authorityPlacementDraft}
-            onChange={setAuthorityPlacementDraft}
+            value={authorityPlacementDraft?.device_id ?? ""}
+            onChange={(device_id) => setAuthorityPlacementDraft({ device_id })}
             className="rua-owned-authority-placement-options"
           >
             <div className="rua-owned-authority-placement-list-label">
@@ -2210,6 +2204,20 @@ export function AgentChatPage({
               ))
             )}
           </RadioGroup>
+          <ExecutionDirectoryFields
+            hideDevice
+            devices={authorityPlacementDevices}
+            position={authorityPlacementDraft}
+            disabled={
+              authorityPlacementSaving || authorityPlacementDraftUnchanged
+            }
+            onChange={setAuthorityPlacementDraft}
+            onError={(error) =>
+              toast.error(
+                error instanceof Error ? error.message : String(error),
+              )
+            }
+          />
         </div>
       </Modal>
       <ACPEnterDialog

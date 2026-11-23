@@ -203,6 +203,53 @@ fn chat_time(value: Option<&Value>) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
+/// Wait until a cancelled Task leaves the runtime's outstanding set.
+///
+/// Cancellation returns once the Attempt is terminal, but its notification tail
+/// still holds the record as outstanding for one cleanup step. Agent deletion
+/// requires a clean shutdown, so tests must let that tail finish first.
+async fn await_task_settled(state: &rua_server::AppState, task_id: &str) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let outstanding = state
+                .task_runtime
+                .outstanding_attempts()
+                .await
+                .expect("enumerate outstanding Task Attempts");
+            if !outstanding.iter().any(|record| record.task_id == task_id) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cancelled Task settles before Agent cleanup");
+}
+
+/// Build Task Attempt authorization carrying the Chat's current configuration epoch.
+///
+/// A Task Attempt is admitted against the configuration captured when the work was
+/// requested; omitting the epoch fails that admission as stale.
+async fn task_authorization_for_chat(
+    state: &rua_server::AppState,
+    agent_id: &str,
+    chat_id: &str,
+) -> rua_task::TaskAttemptAuthorization {
+    let scope = rua_core::ChatStore::resolve(&state.rua_root, rua_core::ChatAddress::new(chat_id));
+    let header = rua_session::WorkspaceSessionStore::new(scope.root())
+        .load_chat_header(chat_id)
+        .await
+        .unwrap()
+        .expect("Task owning Chat header");
+    let epoch = header.extra["hook_configuration"]["epoch"]
+        .as_str()
+        .expect("Chat configuration epoch")
+        .to_string();
+    rua_task::TaskAttemptAuthorization::new(agent_id)
+        .unwrap()
+        .with_configuration_epoch(epoch)
+}
+
 async fn create_blocking_task(
     state: &rua_server::AppState,
     agent_id: &str,
@@ -228,7 +275,7 @@ async fn create_blocking_task(
                 depends_on: Vec::new(),
                 origin: Default::default(),
             },
-            rua_task::TaskAttemptAuthorization::new(agent_id).unwrap(),
+            task_authorization_for_chat(state, agent_id, chat_id).await,
         )
         .await
         .unwrap();
@@ -1490,7 +1537,7 @@ async fn chat_history_excludes_authority_runtime_state() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
     app.state
         .conversation_authority
         .bind_turn(ConversationTurnBinding {
@@ -1552,7 +1599,7 @@ async fn chat_history_excludes_remote_and_local_runtime_state() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     let history = request(
         &app.app,
@@ -1590,7 +1637,7 @@ async fn queued_input_edit_delete_routes_mutate_conversation_authority() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
     let first = app
         .state
         .conversation_authority
@@ -1721,7 +1768,8 @@ async fn send_now_targets_authority_queue_head_without_redelivering_input() {
             authority_epoch,
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     let first = app
         .state
         .conversation_authority
@@ -1932,7 +1980,7 @@ async fn conversation_authority_placement_endpoint_is_explicit_and_cannot_be_cle
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn manual_authority_switch_advances_hlc_without_requiring_current_authority() {
+async fn manual_authority_switch_requires_cooperation_from_the_current_authority() {
     let app = build_app();
     seed_reasoning_provider(&app).await;
     store_default_model(&app, "dashscope", "qwen3.7-plus").await;
@@ -1977,43 +2025,18 @@ async fn manual_authority_switch_advances_hlc_without_requiring_current_authorit
     )
     .await;
 
-    assert_eq!(switched.status(), StatusCode::OK);
-    let body = read_json(switched).await;
-    assert_eq!(
-        body["meta"]["authority_placement"]["device_id"],
-        local_device_id
-    );
-    let switched_epoch =
-        rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::parse(
-            body["meta"]["authority_placement"]["authority_epoch"]
-                .as_str()
-                .expect("authority Epoch string"),
-        )
-        .expect("parse switched Epoch");
-    assert!(
-        switched_epoch
-            > rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(
-                7,
-                0,
-                [0; 8],
-            )
-    );
-    assert!(body["meta"]["authority_placement"]["base_manifest_hash"]
-        .as_str()
-        .is_some_and(|hash| hash.starts_with("sha256:")));
-
-    let tasks = request(
-        &app.app,
-        Method::GET,
-        &format!("/api/chats/{chat_id}/tasks"),
-        None,
-        Some(agent_id),
+    assert_eq!(switched.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let persisted = rua_server::services::conversation_authority_target::load_optional_chat_authority_placement(
+        &workspace_dir,
+        &chat_id,
     )
-    .await;
-    assert_eq!(tasks.status(), StatusCode::OK);
-    assert!(
-        read_json(tasks).await.as_array().unwrap().is_empty(),
-        "a forced transfer from an unavailable old authority must not adopt its Tasks"
+    .await
+    .expect("read placement")
+    .expect("placement preserved");
+    assert_eq!(persisted.device_id, "previous-authority-device");
+    assert_eq!(
+        persisted.authority_epoch,
+        rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(7, 0, [0; 8]),
     );
 }
 
@@ -2045,7 +2068,7 @@ async fn manual_authority_switch_rejects_non_terminal_history_boundary() {
         &workspace_dir,
         &rua_core::ChatAddress::new(&chat_id),
         ConversationAuthorityPlacement {
-            device_id: "previous-authority-device".to_string(),
+            device_id: local_device_id.clone(),
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(4, 0, [0; 8]),
             base_manifest_hash: format!("sha256:{}", "4".repeat(64)),
         },
@@ -2071,7 +2094,7 @@ async fn manual_authority_switch_rejects_non_terminal_history_boundary() {
         &app.app,
         Method::PUT,
         &format!("/api/chats/{chat_id}/authority-placement"),
-        Some(json!({"device_id": local_device_id})),
+        Some(json!({"device_id": "next-authority-device"})),
         None,
     )
     .await;
@@ -2092,7 +2115,7 @@ async fn manual_authority_switch_rejects_non_terminal_history_boundary() {
     let history = read_json(history).await;
     assert_eq!(
         history["meta"]["authority_placement"]["device_id"],
-        "previous-authority-device"
+        local_device_id
     );
     assert_eq!(
         history["meta"]["authority_placement"]["authority_epoch"],
@@ -2123,7 +2146,8 @@ async fn conversation_authority_placement_update_rejects_while_turn_is_active() 
             authority_epoch,
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
 
     let rejected = request(
         &app.app,
@@ -3658,7 +3682,7 @@ async fn chat_list_does_not_join_conversation_authority_runtime_state() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     let response = request(
         &app.app,
@@ -4321,7 +4345,7 @@ async fn branch_copies_evergreen_selected_prefix_to_new_chat_directory() {
                 depends_on: Vec::new(),
                 origin: Default::default(),
             },
-            rua_task::TaskAttemptAuthorization::new(agent_id).unwrap(),
+            task_authorization_for_chat(&app.state, agent_id, &chat_id).await,
         )
         .await
         .expect("create source live Task");
@@ -4613,6 +4637,7 @@ async fn branch_copies_evergreen_selected_prefix_to_new_chat_directory() {
         .cancel(&source_task_owner, &source_task_id)
         .await
         .expect("clean up source live Task");
+    await_task_settled(&app.state, &source_task_id).await;
     delete_agent(&app.app, agent_id).await;
 }
 

@@ -165,7 +165,8 @@ async fn approval_adapter_reacquires_execution_residency_before_resolving() {
             authority_epoch: ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     conversation_authority
         .transition_active_turn_phase(
             &rua_core::ChatAddress::new("chat-1"),

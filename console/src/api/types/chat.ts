@@ -191,7 +191,9 @@ export interface ChatSpec {
   name?: string;
   created_at: string | null;
   updated_at: string | null;
-  meta?: Record<string, unknown>;
+  meta?: Record<string, unknown> & {
+    execution_directory?: ResolvedExecutionDirectory;
+  };
   model?: ModelSlot | null;
   collaboration_mode?: AgentCollaborationMode;
   status?: ChatStatus;
@@ -264,6 +266,7 @@ export interface ChatUpdateRequest {
 
 export interface ConversationAuthorityPlacementUpdateRequest {
   device_id: string;
+  path?: string;
   model?: ModelSlot;
 }
 

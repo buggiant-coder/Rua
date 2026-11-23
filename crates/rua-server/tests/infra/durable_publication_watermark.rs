@@ -130,7 +130,7 @@ async fn advancement_rejects_wrong_chat_and_same_sequence_divergence() {
         .await
         .expect("first publication");
 
-    let wrong = ChatAddress::new(CHAT_ID);
+    let wrong = ChatAddress::new("00000000-0000-0000-0000-000000009964");
     let error = store
         .advance(&wrong, &manifest(3))
         .await
@@ -198,54 +198,3 @@ async fn stores_watermarks_under_device_local_sync_state() {
     assert!(!path.starts_with(root.path().join("conversation-publication-watermarks")));
 }
 
-#[tokio::test]
-async fn migrates_legacy_watermark_directory_when_current_directory_is_absent() {
-    let root = TempDir::new().expect("temp root");
-    let fixture = TempDir::new().expect("legacy fixture");
-    let fixture_sync_dir = fixture.path().join("sync");
-    let legacy_store = DurablePublicationWatermarkStore::new(&fixture_sync_dir)
-        .expect("open legacy fixture store");
-    legacy_store
-        .advance(&address(), &manifest(3))
-        .await
-        .expect("write legacy watermark");
-    let legacy_dir = root.path().join("conversation-publication-watermarks");
-    std::fs::rename(
-        fixture_sync_dir.join("conversation-publication-watermarks"),
-        &legacy_dir,
-    )
-    .expect("place legacy directory");
-    let sync_dir = root.path().join("sync");
-    let current_dir = sync_dir.join("conversation-publication-watermarks");
-
-    let store = DurablePublicationWatermarkStore::new(&sync_dir).expect("migrate legacy store");
-
-    assert!(!legacy_dir.exists());
-    assert!(current_dir.exists());
-    assert_eq!(
-        store
-            .load(&address())
-            .await
-            .expect("load migrated watermark")
-            .expect("migrated watermark exists")
-            .durable_sequence,
-        3
-    );
-}
-
-#[test]
-fn refuses_to_merge_legacy_and_current_watermark_directories() {
-    let root = TempDir::new().expect("temp root");
-    let legacy_dir = root.path().join("conversation-publication-watermarks");
-    let sync_dir = root.path().join("sync");
-    let current_dir = sync_dir.join("conversation-publication-watermarks");
-    std::fs::create_dir_all(&legacy_dir).expect("create legacy directory");
-    std::fs::create_dir_all(&current_dir).expect("create current directory");
-
-    let error = DurablePublicationWatermarkStore::new(&sync_dir)
-        .expect_err("two watermark directories must be rejected");
-
-    assert!(error.to_string().contains("refusing to merge"), "{error}");
-    assert!(legacy_dir.exists());
-    assert!(current_dir.exists());
-}

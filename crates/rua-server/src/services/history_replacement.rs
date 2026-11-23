@@ -326,6 +326,12 @@ async fn run_one_candidate(
     cancel: CancellationToken,
 ) -> IterationOutcome {
     let store = WorkspaceSessionStore::new(&input.workspace_dir);
+    if !store
+        .chat_handoff_allows_history_write(input.chat_id(), &input.authority_device_id)
+        .unwrap_or(false)
+    {
+        return IterationOutcome::NoCandidate;
+    }
     let divisor = input
         .running_config
         .context_compact
@@ -492,7 +498,15 @@ async fn run_one_candidate(
                         model: input.model.clone(),
                         generated_at: now,
                     },
-                    || coordinator.can_publish(key, generation, &cancel),
+                    || {
+                        coordinator.can_publish(key, generation, &cancel)
+                            && store
+                                .chat_handoff_allows_history_write(
+                                    input.chat_id(),
+                                    &input.authority_device_id,
+                                )
+                                .unwrap_or(false)
+                    },
                 )
                 .await,
             "ready",
@@ -517,7 +531,15 @@ async fn run_one_candidate(
                             saved_token_estimate,
                             rejected_at: now,
                         },
-                        || coordinator.can_publish(key, generation, &cancel),
+                        || {
+                            coordinator.can_publish(key, generation, &cancel)
+                                && store
+                                    .chat_handoff_allows_history_write(
+                                        input.chat_id(),
+                                        &input.authority_device_id,
+                                    )
+                                    .unwrap_or(false)
+                        },
                     )
                     .await,
                 "rejected",

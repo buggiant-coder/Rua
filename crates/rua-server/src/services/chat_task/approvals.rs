@@ -32,6 +32,9 @@ impl ChatTaskService {
             {
                 return Err("Task approval must be decided by the current Chat Authority".into());
             }
+            self.authority
+                .ensure_handoff_admission_locked(&owner.chat_address)
+                .await?;
             let device = self.execution_device(owner, task_id).await?;
             let ConversationApprovalDecision::AllowChat {
                 decided_by,

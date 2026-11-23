@@ -704,13 +704,36 @@ struct ProjectChatPatch {
 async fn update_project_chat(
     State(state): State<AppState>,
     Path(chat_id): Path<String>,
-    context: crate::services::chat_context::ChatContext,
     Json(patch): Json<ProjectChatPatch>,
 ) -> Response {
-    if let Err(error) = context.validate_project_field(patch.extra.get("project_id")) {
+    let requested_chat_id = match crate::services::console_chat::resolve_chat_id(&chat_id) {
+        Ok(chat_id) => chat_id,
+        Err(error) => return ApiError::BadRequest(error).into_response(),
+    };
+    let membership = match crate::services::chat_context::saved_project_membership(
+        &state.rua_root,
+        &requested_chat_id,
+    )
+    .await
+    {
+        Ok(Some(membership)) => membership,
+        Ok(None) => {
+            return ApiError::NotFound(format!("Chat not found: {requested_chat_id}"))
+                .into_response();
+        }
+        Err(error) => return error.into_response(),
+    };
+    let requested =
+        match crate::services::chat_context::requested_project(patch.extra.get("project_id")) {
+            Ok(requested) => requested,
+            Err(error) => return error.into_response(),
+        };
+    if let Err(error) =
+        crate::services::chat_context::check_project_membership(membership.as_deref(), requested)
+    {
         return error.into_response();
     }
-    let Some(project_id) = context.project_id else {
+    let Some(project_id) = membership else {
         return ApiError::BadRequest("Chat has no Project".into()).into_response();
     };
     let mut update = patch.update;

@@ -557,9 +557,12 @@ fn chat_options_publish_agent_config_from_authority_service() {
                 .next()
         })
         .expect("Chat options handler source");
+    // The running-config apply builds `AppliedAgentRunningConfig` with the
+    // serialized Agent and hands it to the Session Sync emitter; assert that
+    // shape rather than a specific local binding name.
     assert!(
         intake.contains("emit_agent_config_committed(")
-            && intake.contains("serde_json::to_value(agent).unwrap_or_default()"),
+            && intake.contains("agent: serde_json::to_value(detail).unwrap_or_default()"),
         "authority-side running config update must publish Agent config"
     );
     assert!(

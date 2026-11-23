@@ -84,6 +84,7 @@ async fn post_chats_mints_one_chat_id_uuid_without_session_id() {
         "/chats",
         serde_json::json!({
             "name": "Chat ID only",
+            "agent_id": "default",
         }),
     );
     let resp = app.oneshot(req).await.expect("oneshot");
@@ -127,11 +128,11 @@ fn build_app_with_agent_scoped(state: AppState) -> Router {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn get_chat_existing_returns_200_with_content() {
+async fn get_chat_draft_is_not_materialized_until_first_turn() {
     let (state, _guard) = build_state();
     let app = build_app(state);
 
-    let create_req = json_post("/chats", serde_json::json!({"name": "existing chat"}));
+    let create_req = json_post("/chats", serde_json::json!({"name": "existing chat", "agent_id": "default"}));
     let create_resp = app.clone().oneshot(create_req).await.expect("create");
     assert_eq!(create_resp.status(), StatusCode::OK);
     let created = read_json(create_resp).await;
@@ -141,19 +142,13 @@ async fn get_chat_existing_returns_200_with_content() {
     let get_resp = app.oneshot(get_req).await.expect("get");
     assert_eq!(
         get_resp.status(),
-        StatusCode::OK,
-        "existing chat must return 200"
+        StatusCode::NOT_FOUND,
+        "a Chat draft has no History until its first Turn is submitted"
     );
-
-    let body = read_json(get_resp).await;
-    assert!(body.get("status").is_none());
-    assert!(body.get("active_turn").is_none());
-    assert!(body.get("control").is_none());
-    assert!(body["messages"].is_array(), "messages must be an array");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn get_chat_unknown_uuid_returns_200_empty() {
+async fn get_chat_unknown_uuid_returns_404() {
     let (state, _guard) = build_state();
     let app = build_app(state);
 
@@ -162,31 +157,17 @@ async fn get_chat_unknown_uuid_returns_200_empty() {
     let resp = app.oneshot(req).await.expect("get unknown");
     assert_eq!(
         resp.status(),
-        StatusCode::OK,
-        "unknown UUID must return 200, not 404"
-    );
-
-    let body = read_json(resp).await;
-    assert!(body.get("status").is_none());
-    assert!(body.get("active_turn").is_none());
-    assert!(body.get("control").is_none());
-    assert!(
-        body["model"].is_null(),
-        "model must be null for unknown chat"
-    );
-    let messages = body["messages"].as_array().expect("messages array");
-    assert!(
-        messages.is_empty(),
-        "messages must be empty for unknown chat"
+        StatusCode::NOT_FOUND,
+        "an unknown Chat ID has no History"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn get_chat_deleted_returns_200_empty() {
+async fn get_chat_deleted_returns_404() {
     let (state, _guard) = build_state();
     let app = build_app(state.clone());
 
-    let create_req = json_post("/chats", serde_json::json!({"name": "to-delete"}));
+    let create_req = json_post("/chats", serde_json::json!({"name": "to-delete", "agent_id": "default"}));
     let create_resp = app.clone().oneshot(create_req).await.expect("create");
     let created = read_json(create_resp).await;
     let chat_id = created["id"].as_str().expect("chat id");
@@ -217,27 +198,13 @@ async fn get_chat_deleted_returns_200_empty() {
     let get_resp = app.oneshot(get_req).await.expect("get deleted");
     assert_eq!(
         get_resp.status(),
-        StatusCode::OK,
-        "deleted chat must return 200, not 404"
-    );
-
-    let body = read_json(get_resp).await;
-    assert!(body.get("status").is_none());
-    assert!(body.get("active_turn").is_none());
-    assert!(body.get("control").is_none());
-    assert!(
-        body["model"].is_null(),
-        "model must be null for deleted chat"
-    );
-    let messages = body["messages"].as_array().expect("messages array");
-    assert!(
-        messages.is_empty(),
-        "messages must be empty for deleted chat"
+        StatusCode::NOT_FOUND,
+        "a deleted Chat has no History"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn get_chat_agent_scoped_unknown_chat_returns_200_empty() {
+async fn get_chat_agent_scoped_unknown_chat_returns_404() {
     let (state, _guard) = build_state();
     let app = build_app_with_agent_scoped(state);
 
@@ -250,17 +217,9 @@ async fn get_chat_agent_scoped_unknown_chat_returns_200_empty() {
     let resp = app.oneshot(req).await.expect("get");
     assert_eq!(
         resp.status(),
-        StatusCode::OK,
-        "agent-scoped GET with unknown chat must return 200"
+        StatusCode::NOT_FOUND,
+        "an agent-scoped GET of an unknown Chat has no History"
     );
-
-    let body = read_json(resp).await;
-    assert!(body.get("status").is_none());
-    assert!(body.get("active_turn").is_none());
-    assert!(body.get("control").is_none());
-    assert!(body["model"].is_null(), "model must be null");
-    let messages = body["messages"].as_array().expect("messages array");
-    assert!(messages.is_empty(), "messages must be empty");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1,3 +1,5 @@
+#[path = "all/chat_handoff.rs"]
+mod chat_handoff;
 #[path = "all/chat_index.rs"]
 mod chat_index;
 #[path = "all/collaboration.rs"]

@@ -74,7 +74,8 @@ async fn distinct_chat_ids_have_independent_active_turns() {
             authority_epoch: epoch(1),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     let project_turn = authority
         .start_active_turn(ConversationActiveTurnStart {
             address: project_address.clone(),
@@ -83,7 +84,8 @@ async fn distinct_chat_ids_have_independent_active_turns() {
             authority_epoch: epoch(1),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
 
     assert_ne!(agent_turn.turn_id, project_turn.turn_id);
     assert_eq!(
@@ -114,7 +116,8 @@ async fn stopped_turn_is_not_reactivated_by_late_runtime_events() {
             authority_epoch: epoch(1),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     authority
         .request_stop_matching(
             None,
@@ -417,7 +420,8 @@ async fn execution_residency_follows_the_same_phase_contract_for_rua_and_acp() {
                 authority_epoch: epoch(1),
                 driver_detail: None,
             })
-            .await;
+            .await
+            .unwrap();
         assert_eq!(registry.snapshot().active_count, 1);
         assert_eq!(
             registry.snapshot().operations[0].kind,
@@ -537,7 +541,7 @@ async fn control_view_exposes_active_turn_without_run_contract() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(3, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     assert!(active_turn.turn_id.starts_with("turn-"));
     assert_eq!(active_turn.phase, ConversationActiveTurnPhase::Preparing);
@@ -574,7 +578,8 @@ async fn idle_control_retains_authority_placement_after_terminal_handoff() {
             authority_epoch,
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
 
     complete_turn(
         &authority,
@@ -615,7 +620,7 @@ async fn control_revision_increases_with_each_published_authority_mutation() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(3, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
     let started = authority
         .control_view(&agent_address("chat-1"), &serde_json::json!({}))
         .await;
@@ -642,7 +647,7 @@ async fn terminal_candidate_keeps_the_same_active_turn_in_committing_phase() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(3, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     let fact = authority
         .commit_turn_terminal(
@@ -677,7 +682,7 @@ async fn completing_active_turn_reaches_idle_before_draining_the_next_input() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(3, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
     let queued = authority
         .enqueue_input(&agent_address("chat-1"), pending_message("next"), None)
         .await
@@ -765,7 +770,8 @@ async fn terminal_and_control_transitions_share_one_activity_order() {
             authority_epoch: epoch(3),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     authority
         .enqueue_input(&address, pending_message("next"), None)
         .await
@@ -882,7 +888,7 @@ async fn completing_final_turn_keeps_local_stream_until_terminal_is_published() 
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     let handoff = complete_turn(
         &authority,
@@ -1004,7 +1010,7 @@ async fn queued_regeneration_claims_its_target_turn_during_handoff() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
     let mut pending = pending_message("regenerate next");
     pending.extra.insert(
         "regenerate_turn_id".to_string(),
@@ -1086,7 +1092,7 @@ async fn stop_preserves_and_pauses_queue_until_explicit_resume() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(3, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
     let queued = authority
         .enqueue_input(&agent_address("chat-1"), pending_message("keep me"), None)
         .await
@@ -1170,7 +1176,7 @@ async fn stop_with_empty_queue_allows_later_submission_to_be_claimed() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(3, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     authority
         .request_stop(Some(&streams), CONSOLE_CHANNEL_ID, &agent_address("chat-1"))
@@ -1289,7 +1295,7 @@ async fn rua_queued_submit_requests_internal_continue_at_safe_boundary() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(3, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     let accepted = authority
         .accept_submission(
@@ -1333,7 +1339,7 @@ async fn send_now_starts_selected_paused_input_once_when_chat_is_idle() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(3, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
     let queued = authority
         .enqueue_input(
             &agent_address("chat-1"),
@@ -1431,7 +1437,7 @@ async fn control_view_projects_active_turn_metadata_and_allowed_controls() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(3, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     let control = authority
         .control_view(
@@ -1518,7 +1524,7 @@ async fn control_view_projects_runtime_queue_entries_from_authority() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     let queued = authority
         .enqueue_input(
@@ -1558,7 +1564,8 @@ async fn control_view_excludes_task_watch_notifications_from_user_input_queue() 
             authority_epoch: epoch(1),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
 
     let mut notification = pending_message("");
     notification.extra.insert(
@@ -1597,7 +1604,7 @@ async fn editing_queued_input_preserves_identity_and_position() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
     let first = authority
         .enqueue_input(&agent_address("chat-1"), pending_message("first"), None)
         .await
@@ -1634,7 +1641,7 @@ async fn identical_text_submissions_remain_distinct_authority_inputs() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     let mut first_pending = pending_message("repeat");
     first_pending.extra.insert(
@@ -1685,7 +1692,7 @@ async fn accepted_submission_id_stays_idempotent_after_queue_claim() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     let mut pending = pending_message("retry");
     pending.extra.insert(
@@ -1773,7 +1780,7 @@ async fn concurrent_duplicate_submission_id_inserts_one_authority_input() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     let barrier = Arc::new(tokio::sync::Barrier::new(33));
     let mut submissions = Vec::new();
@@ -1829,7 +1836,7 @@ async fn delete_and_pop_update_runtime_queue_without_durable_replay() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
     let first = authority
         .enqueue_input(&agent_address("chat-1"), pending_message("first"), None)
         .await
@@ -1914,7 +1921,7 @@ async fn concurrent_submit_and_worker_finish_never_strands_input() {
                 authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
                 driver_detail: None,
             })
-            .await;
+            .await.unwrap();
 
         let barrier = Arc::new(tokio::sync::Barrier::new(3));
         let finish = {
@@ -2016,7 +2023,7 @@ async fn concurrent_terminal_handoff_and_submit_never_strands_input() {
                 authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
                 driver_detail: None,
             })
-            .await;
+            .await.unwrap();
 
         let barrier = Arc::new(tokio::sync::Barrier::new(3));
         let complete = {
@@ -2330,7 +2337,7 @@ async fn slow_completion_notification_does_not_block_next_submission_or_queued_t
             driver_detail: None,
         };
         let (producer_id, _cancel_rx) = streams.register_active_keyed(&key).await;
-        let first = authority.start_active_turn(start.clone()).await;
+        let first = authority.start_active_turn(start.clone()).await.unwrap();
         if has_queued_input {
             authority
                 .enqueue_input(&key.address, pending_message("queued follow-up"), None)
@@ -2438,7 +2445,7 @@ async fn stop_allows_background_results_without_resuming_user_queue() {
             driver_detail: None,
         };
         let (producer_id, _cancel_rx) = streams.register_active_keyed(&key).await;
-        let active = authority.start_active_turn(start()).await;
+        let active = authority.start_active_turn(start()).await.unwrap();
         let user = authority
             .enqueue_input(&address, pending_message("keep paused"), None)
             .await

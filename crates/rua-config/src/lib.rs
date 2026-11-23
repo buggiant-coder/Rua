@@ -40,7 +40,10 @@ pub use types::{
     XiaoyiConfig, YuanbaoConfig,
 };
 
-pub use migration::atomic::{atomic_write, atomic_write_json};
+pub use migration::atomic::{
+    atomic_write, atomic_write_if_absent, atomic_write_json, remove_file_committed,
+    with_commit_barrier,
+};
 pub use migration::backup::{create_backup, list_backups, rollback};
 
 pub use agent_id::{generate_short_agent_id, sanitize_agent_id, validate_agent_id};

@@ -33,6 +33,7 @@ import type { DeviceDto } from "@/api/modules/sync";
 import type {
   ChatHistory,
   ExecutionPosition,
+  ChatSpec,
   CollaborationChatRelation,
   ModelSlot,
 } from "@/api/types";
@@ -112,6 +113,7 @@ type OwnedConversationSurfaceProps = {
   onSubmitAccepted?: () => void;
   onHistoryChange?: (history: ChatHistory | null) => void;
   authorityPlacementDeviceId?: string | null;
+  committedAuthorityPlacement?: ChatSpec["meta"] | null;
   draftExecutionPosition?: ExecutionPosition | null;
   currentDeviceId?: string | null;
   activeAcpRunner?: string | null;
@@ -603,6 +605,7 @@ export default function OwnedConversationSurface({
   onSubmitAccepted,
   onHistoryChange,
   authorityPlacementDeviceId,
+  committedAuthorityPlacement,
   draftExecutionPosition,
   currentDeviceId,
   activeAcpRunner,
@@ -676,6 +679,12 @@ export default function OwnedConversationSurface({
       applyCommittedModel(chatModel);
     }
   }, [applyCommittedModel, chatModel]);
+
+  useEffect(() => {
+    if (committedAuthorityPlacement) {
+      runtime.applyCommittedAuthorityPlacement(committedAuthorityPlacement);
+    }
+  }, [runtime.applyCommittedAuthorityPlacement, committedAuthorityPlacement]);
 
   useEffect(() => {
     onHistoryChange?.(runtime.authoritativeHistory);

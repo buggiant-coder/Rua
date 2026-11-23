@@ -23,11 +23,10 @@ use crate::services::conversation_authority::{
     ConversationInputEntrySnapshot,
 };
 use crate::services::conversation_authority_placement::{
-    chat_acp_binding_active, ConversationAuthorityEpoch, ConversationAuthorityPlacement,
+    ConversationAuthorityEpoch, ConversationAuthorityPlacement,
 };
 use crate::services::conversation_history_readiness::{
-    ensure_conversation_history_ready, ensure_conversation_history_ready_via_device_session,
-    ConversationHistoryGapRequest, ConversationHistoryReadinessRequest,
+    ensure_conversation_history_ready, ConversationHistoryReadinessRequest,
 };
 use crate::services::conversation_input_intake::ConversationInputIntake;
 use crate::services::conversation_manifest::{load_conversation_manifest, ConversationManifest};
@@ -983,6 +982,7 @@ pub(crate) enum DeviceCommandEnvelope {
     ChatTransfer(Box<super::chat_transfer::ChatTransferCommand>),
     ChatCommand(Box<super::chat_command::ChatCommandCommand>),
     ChatTask(Box<super::chat_task::ChatTaskCommand>),
+    ChatHandoff(Box<super::conversation_input_intake::handoff::ChatHandoffCommand>),
     ChatMediaPrepare(ChatMediaPrepareCommand),
     AgentsInstructions(AgentsInstructionCommand),
     ReadCheck(DeviceReadCheckRequest),
@@ -1047,6 +1047,7 @@ impl DeviceCommandEnvelope {
             Self::ChatTransfer(_)
             | Self::ChatCommand(_)
             | Self::ChatTask(_)
+            | Self::ChatHandoff(_)
             | Self::ReadCheck(_)
             | Self::ReadAllowedFile { .. }
             | Self::CancelFileOperation(_)
@@ -1061,6 +1062,9 @@ impl DeviceCommandEnvelope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum DeviceCommandResponse {
+    ChatHandoff {
+        response: Box<super::conversation_input_intake::handoff::ChatHandoffResponse>,
+    },
     Accepted(RemoteConversationInputAck),
     AcpChat {
         response: AcpChatDeviceResponse,
@@ -1664,6 +1668,19 @@ impl DeviceCommandHandler {
                     })
                     .map_err(|error| ("invalid_task_route", error))
             }
+            DeviceCommandEnvelope::ChatHandoff(command) => {
+                validate_session_source(peer, &command.source_device_id)
+                    .and_then(|()| {
+                        if command.target_device_id == self.local_device_id
+                            && command.source_device_id != self.local_device_id
+                        {
+                            Ok(())
+                        } else {
+                            Err(DeviceCommandBusError::UnauthenticatedSource)
+                        }
+                    })
+                    .map_err(|error| ("invalid_handoff_route", error))
+            }
             DeviceCommandEnvelope::Project(command) => command
                 .validate_session_route(peer, &self.local_device_id)
                 .map_err(|error| ("invalid_project_route", error)),
@@ -1725,6 +1742,23 @@ impl DeviceCommandHandler {
         session: Option<rua_device_network::DeviceSessionCommandContext>,
     ) -> DeviceCommandResponse {
         match envelope {
+            DeviceCommandEnvelope::ChatHandoff(command) => {
+                let Some(intake) = &self.conversation_input_intake else {
+                    return DeviceCommandResponse::Rejected {
+                        reason: "handoff_unavailable".into(),
+                        detail: "Chat handoff runtime is unavailable".into(),
+                    };
+                };
+                match Box::pin(intake.handle_chat_handoff(*command)).await {
+                    Ok(response) => DeviceCommandResponse::ChatHandoff {
+                        response: Box::new(response),
+                    },
+                    Err(detail) => DeviceCommandResponse::Rejected {
+                        reason: "handoff_rejected".into(),
+                        detail,
+                    },
+                }
+            }
             DeviceCommandEnvelope::ConversationInput(request) => {
                 self.handle_remote_conversation_input(*request).await
             }
@@ -3399,353 +3433,22 @@ impl DeviceCommandHandler {
 
     async fn handle_conversation_authority_adopt(
         &self,
-        command: ConversationAuthorityAdoptDeviceCommand,
+        _command: ConversationAuthorityAdoptDeviceCommand,
     ) -> DeviceCommandResponse {
-        if let Err(error) = command.validate_for_target(&self.local_device_id) {
-            return DeviceCommandResponse::Rejected {
-                reason: "invalid_authority_adopt_command".to_string(),
-                detail: error.to_string(),
-            };
-        }
-        let Some(data_dir) = self.data_dir.as_ref() else {
-            return DeviceCommandResponse::Rejected {
-                reason: "authority_adopt_unavailable".to_string(),
-                detail: "target has no workspace data root".to_string(),
-            };
-        };
-        match crate::services::chat_context::load_chat_context(data_dir, command.chat_id()).await {
-            Ok(Some(context)) if context.project_id.is_some() => {
-                return DeviceCommandResponse::Rejected {
-                    reason: "project_authority_fixed".into(),
-                    detail: "Project Chat authority is fixed to its saved execution Device".into(),
-                }
-            }
-            Ok(_) => {}
-            Err(error) => {
-                return DeviceCommandResponse::Rejected {
-                    reason: "chat_unavailable".into(),
-                    detail: error.to_string(),
-                }
-            }
-        }
-        if command
-            .required_manifest
-            .latest_turn_status
-            .as_deref()
-            .is_some_and(|status| {
-                !rua_session::TurnLifecycleStatus::parse(status).is_syncable_conversation_state()
-            })
-        {
-            return DeviceCommandResponse::Rejected {
-                reason: "history_not_terminal".to_string(),
-                detail: "latest conversation Turn is not terminal".to_string(),
-            };
-        }
-        let base_manifest_hash = match command.required_manifest.hash() {
-            Ok(hash) => hash,
-            Err(error) => {
-                return DeviceCommandResponse::Rejected {
-                    reason: "invalid_conversation_manifest".to_string(),
-                    detail: error.to_string(),
-                };
-            }
-        };
-        let scope_store = ChatStore::resolve(data_dir, command.address.clone());
-        let workspace_dir = scope_store.root();
-        if let Ok(current) =
-            crate::services::conversation_authority_target::load_chat_authority_placement_target(
-                workspace_dir,
-                command.chat_id(),
-            )
-            .await
-        {
-            if current.device_id == command.target_device_id
-                && current.authority_epoch > command.expected_authority_epoch
-                && current.base_manifest_hash == base_manifest_hash
-            {
-                return DeviceCommandResponse::ConversationAuthorityAdopt {
-                    response: ConversationAuthorityAdoptDeviceResponse {
-                        command_id: command.command_id,
-                        target_device_id: command.target_device_id,
-                        address: command.address,
-                        placement: ConversationAuthorityPlacement {
-                            device_id: current.device_id,
-                            authority_epoch: current.authority_epoch,
-                            base_manifest_hash: current.base_manifest_hash,
-                        },
-                    },
-                };
-            }
-            if current.authority_epoch > command.expected_authority_epoch {
-                return DeviceCommandResponse::Rejected {
-                    reason: "stale_authority_epoch".to_string(),
-                    detail: format!(
-                        "target already knows newer authority Epoch {}, expected {}",
-                        current.authority_epoch, command.expected_authority_epoch
-                    ),
-                };
-            }
-        }
-        let session_manager = self
-            .sync_transfer_session_manager
-            .as_ref()
-            .and_then(|cell| cell.read().ok().and_then(|guard| guard.as_ref().cloned()));
-        let source_chat = match ensure_conversation_history_ready_via_device_session(
-            ConversationHistoryGapRequest {
-                data_dir,
-                agent_id: &command.agent_id,
-                chat_id: command.chat_id(),
-                source_device_id: &command.source_device_id,
-                target_device_id: &command.target_device_id,
-                expected_authority_epoch: command.expected_authority_epoch,
-                requirement: &command.required_manifest,
-                session_manager: session_manager.as_ref(),
-            },
-        )
-        .await
-        {
-            Ok(source_chat) => source_chat,
-            Err(error) => {
-                return DeviceCommandResponse::Rejected {
-                    reason: "history_not_ready".to_string(),
-                    detail: error,
-                }
-            }
-        };
-        if source_chat
-            .meta
-            .get("project_id")
-            .and_then(serde_json::Value::as_str)
-            .is_some()
-        {
-            return DeviceCommandResponse::Rejected {
-                reason: "project_authority_fixed".into(),
-                detail: "Project Chat authority is fixed to its saved execution Device".into(),
-            };
-        }
-        let current = match crate::services::conversation_authority_placement::parse_conversation_authority_placement(
-            &source_chat.meta,
-        ) {
-            Ok(placement) => placement,
-            Err(error) => {
-                return DeviceCommandResponse::Rejected {
-                    reason: "authority_placement_unavailable".to_string(),
-                    detail: error.to_string(),
-                }
-            }
-        };
-        if current.device_id == command.target_device_id
-            && current.authority_epoch > command.expected_authority_epoch
-            && current.base_manifest_hash == base_manifest_hash
-        {
-            return DeviceCommandResponse::ConversationAuthorityAdopt {
-                response: ConversationAuthorityAdoptDeviceResponse {
-                    command_id: command.command_id,
-                    target_device_id: command.target_device_id,
-                    address: command.address,
-                    placement: ConversationAuthorityPlacement {
-                        device_id: current.device_id,
-                        authority_epoch: current.authority_epoch,
-                        base_manifest_hash: current.base_manifest_hash,
-                    },
-                },
-            };
-        }
-        if current.authority_epoch != command.expected_authority_epoch {
-            return DeviceCommandResponse::Rejected {
-                reason: "stale_authority_epoch".to_string(),
-                detail: format!(
-                    "target has authority Epoch {}, expected {}",
-                    current.authority_epoch, command.expected_authority_epoch
-                ),
-            };
-        }
-        let Some(authority) = self.conversation_authority.as_ref() else {
-            return DeviceCommandResponse::Rejected {
-                reason: "conversation_authority_unavailable".to_string(),
-                detail: "target Conversation Authority is unavailable".to_string(),
-            };
-        };
-        if authority.active_turn(&command.address).await.is_some() {
-            return DeviceCommandResponse::Rejected {
-                reason: "active_turn".to_string(),
-                detail: "cannot adopt authority while the target has an active turn".to_string(),
-            };
-        }
-        match crate::services::conversation_authority_target::load_chat_control_meta(
-            workspace_dir,
-            command.chat_id(),
-        )
-        .await
-        {
-            Ok(Some(meta)) if chat_acp_binding_active(&meta) => {
-                return DeviceCommandResponse::Rejected {
-                    reason: "acp_active".to_string(),
-                    detail: "cannot adopt authority while ACP passthrough is active".to_string(),
-                };
-            }
-            Ok(_) => {}
-            Err(error) => {
-                return DeviceCommandResponse::Rejected {
-                    reason: "authority_placement_unavailable".to_string(),
-                    detail: error.to_string(),
-                };
-            }
-        }
-        let Some(intake) = self.conversation_input_intake.as_ref() else {
-            return DeviceCommandResponse::Rejected {
-                reason: "conversation_input_intake_unavailable".to_string(),
-                detail: "target conversation input intake is unavailable".to_string(),
-            };
-        };
-        if let Err(detail) = intake
-            .validate_authority_adoption_model(&command.agent_id, command.chat_id())
-            .await
-        {
-            return DeviceCommandResponse::Rejected {
-                reason: "model_unavailable".to_string(),
-                detail,
-            };
-        }
-        let target = ConversationAuthorityPlacement {
-            authority_epoch: ConversationAuthorityEpoch::next_for_device(
-                &command.target_device_id,
-                Some(current.authority_epoch),
-            ),
-            device_id: command.target_device_id.clone(),
-            base_manifest_hash,
-        };
-        match Box::pin(intake.adopt_conversation_authority(
-            &command.agent_id,
-            command.chat_id(),
-            target.clone(),
-        ))
-        .await
-        {
-            Ok(_) => {
-                spawn_conversation_authority_supersession(
-                    self.sync_transfer_session_manager.as_ref(),
-                    &command.agent_id,
-                    command.chat_id(),
-                    &current.device_id,
-                    current.authority_epoch,
-                    &target,
-                );
-                DeviceCommandResponse::ConversationAuthorityAdopt {
-                    response: ConversationAuthorityAdoptDeviceResponse {
-                        command_id: command.command_id,
-                        target_device_id: command.target_device_id,
-                        address: command.address,
-                        placement: target,
-                    },
-                }
-            }
-            Err(detail) => DeviceCommandResponse::Rejected {
-                reason: "authority_adopt_rejected".to_string(),
-                detail,
-            },
+        DeviceCommandResponse::Rejected {
+            reason: "cooperative_handoff_required".into(),
+            detail: "Changing the Chat Device requires release by its current Authority".into(),
         }
     }
 
     async fn handle_conversation_authority_supersede(
         &self,
-        command: ConversationAuthoritySupersedeDeviceCommand,
+        _command: ConversationAuthoritySupersedeDeviceCommand,
     ) -> DeviceCommandResponse {
-        if let Err(error) = command.validate_for_target(&self.local_device_id) {
-            return DeviceCommandResponse::Rejected {
-                reason: "invalid_authority_supersede_command".to_string(),
-                detail: error.to_string(),
-            };
-        }
-        let Some(data_dir) = self.data_dir.as_ref() else {
-            return DeviceCommandResponse::Rejected {
-                reason: "authority_supersede_unavailable".to_string(),
-                detail: "target has no workspace data root".to_string(),
-            };
-        };
-        match crate::services::chat_context::load_chat_context(data_dir, command.chat_id()).await {
-            Ok(Some(context)) if context.project_id.is_some() => {
-                return DeviceCommandResponse::Rejected {
-                    reason: "project_authority_fixed".into(),
-                    detail: "Project Chat authority is fixed to its saved execution Device".into(),
-                }
-            }
-            Ok(_) => {}
-            Err(error) => {
-                return DeviceCommandResponse::Rejected {
-                    reason: "chat_unavailable".into(),
-                    detail: error.to_string(),
-                }
-            }
-        }
-        let scope_store = ChatStore::resolve(data_dir, command.address.clone());
-        let workspace_dir = scope_store.root();
-        let current =
-            match crate::services::conversation_authority_target::load_chat_authority_placement_target(
-                workspace_dir,
-                command.chat_id(),
-            )
-            .await
-            {
-                Ok(placement) => placement,
-                Err(detail) => {
-                    return DeviceCommandResponse::Rejected {
-                        reason: "authority_placement_unavailable".to_string(),
-                        detail,
-                    };
-                }
-            };
-        if current.authority_epoch > command.replacement.authority_epoch {
-            return DeviceCommandResponse::Rejected {
-                reason: "stale_authority_supersession".to_string(),
-                detail: format!(
-                    "target already knows newer authority Epoch {}",
-                    current.authority_epoch
-                ),
-            };
-        }
-        if current.authority_epoch == command.replacement.authority_epoch
-            && (current.device_id != command.replacement.device_id
-                || current.base_manifest_hash != command.replacement.base_manifest_hash)
-        {
-            return DeviceCommandResponse::Rejected {
-                reason: "authority_supersession_conflict".to_string(),
-                detail: "same authority Epoch names a different placement".to_string(),
-            };
-        }
-
-        let Some(authority) = self.conversation_authority.as_ref() else {
-            return DeviceCommandResponse::Rejected {
-                reason: "conversation_authority_unavailable".to_string(),
-                detail: "target Conversation Authority is unavailable".to_string(),
-            };
-        };
-        match authority
-            .apply_authority_supersession(
-                workspace_dir,
-                &command.address,
-                command.replacement.clone(),
-            )
-            .await
-        {
-            Ok((record, superseded_input_ids)) => {
-                DeviceCommandResponse::ConversationAuthoritySuperseded {
-                    response: ConversationAuthoritySupersedeDeviceResponse {
-                        command_id: command.command_id,
-                        target_device_id: command.target_device_id,
-                        address: command.address,
-                        placement: crate::services::conversation_authority_placement::parse_conversation_authority_placement(
-                            &record.meta,
-                        )
-                        .expect("supersession persisted a valid authority placement"),
-                        superseded_input_ids,
-                    },
-                }
-            }
-            Err(detail) => DeviceCommandResponse::Rejected {
-                reason: "authority_supersession_rejected".to_string(),
-                detail: detail.to_string(),
-            },
+        DeviceCommandResponse::Rejected {
+            reason: "cooperative_handoff_required".into(),
+            detail: "Chat authority changes are committed by the cooperative handoff journal"
+                .into(),
         }
     }
 
@@ -5370,6 +5073,27 @@ pub async fn deliver_chat_transfer_via_session(
     }
 }
 
+pub async fn deliver_chat_handoff_via_session(
+    session_manager: &rua_device_network::DeviceSessionManager,
+    command: &super::conversation_input_intake::handoff::ChatHandoffCommand,
+    timeout: Duration,
+) -> Result<
+    super::conversation_input_intake::handoff::ChatHandoffResponse,
+    DeviceCommandDeliveryError,
+> {
+    match deliver_envelope_via_session(
+        session_manager,
+        &command.target_device_id,
+        DeviceCommandEnvelope::ChatHandoff(Box::new(command.clone())),
+        timeout,
+    )
+    .await?
+    {
+        DeviceCommandResponse::ChatHandoff { response } => Ok(*response),
+        response => unexpected_response(response, "Chat handoff"),
+    }
+}
+
 pub async fn deliver_chat_media_prepare_via_session(
     session_manager: &rua_device_network::DeviceSessionManager,
     command: &ChatMediaPrepareCommand,
@@ -5545,6 +5269,7 @@ fn device_command_response_kind(response: &DeviceCommandResponse) -> &'static st
         DeviceCommandResponse::ConversationControl { .. } => "Conversation Control",
         DeviceCommandResponse::ConversationManifest { .. } => "Conversation Manifest",
         DeviceCommandResponse::ConversationAuthorityAdopt { .. } => "Conversation Authority Adopt",
+        DeviceCommandResponse::ChatHandoff { .. } => "Chat handoff",
         DeviceCommandResponse::ConversationAuthoritySuperseded { .. } => {
             "Conversation Authority Superseded"
         }

@@ -58,9 +58,10 @@ pub async fn resolve_submit_target(
             .extra
             .get("expected_authority_epoch")
             .and_then(serde_json::Value::as_str),
+        local_device_id,
     )
     .await?;
-    let target = match load_optional_chat_authority_placement(workspace_dir, chat_id).await? {
+    let target = match load_chat_authority_placement(workspace_dir, chat_id).await? {
         Some(placement) => PlacementTarget {
             device_id: placement.device_id,
             authority_epoch: placement.authority_epoch,
@@ -198,7 +199,7 @@ pub async fn load_chat_authority_placement_target(
     workspace_dir: &Path,
     chat_id: &str,
 ) -> std::result::Result<PlacementTarget, String> {
-    let placement = load_optional_chat_authority_placement(workspace_dir, chat_id)
+    let placement = load_chat_authority_placement(workspace_dir, chat_id)
         .await?
         .ok_or_else(|| {
             format!("conversation authority placement not found for Chat '{chat_id}'")
@@ -226,10 +227,51 @@ pub async fn load_optional_chat_authority_placement(
         .map_err(|error| error.to_string())
 }
 
+/// Resolve the authority placement from whichever surface this Device holds.
+///
+/// Only the authority Device owns a Chat Header; every other Device sees the Chat
+/// through the synchronized Chat Index (ADR 0059 D30/D31). Routing decisions must
+/// therefore read the Header first and fall back to the Index, otherwise a Chat
+/// controlled from a non-authority Device would look like an unpublished draft.
+pub async fn load_chat_authority_placement(
+    workspace_dir: &Path,
+    chat_id: &str,
+) -> std::result::Result<Option<ConversationAuthorityPlacement>, String> {
+    match load_optional_chat_authority_placement(workspace_dir, chat_id).await? {
+        Some(placement) => Ok(Some(placement)),
+        None => load_index_chat_authority_placement(workspace_dir, chat_id).await,
+    }
+}
+
+/// Read the authority placement from the synchronized Chat Index projection.
+///
+/// A Device that does not host a Chat still receives its Chat Index entry, which is
+/// the synchronized discovery surface (ADR 0059 D31) and carries the same authority
+/// placement the authoritative header would. Control routes use this so that a
+/// controlling Device can address a Chat it holds no authoritative state for.
+pub async fn load_index_chat_authority_placement(
+    workspace_dir: &Path,
+    chat_id: &str,
+) -> std::result::Result<Option<ConversationAuthorityPlacement>, String> {
+    let Some(entry) = crate::services::chat_index::get(workspace_dir, chat_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    if entry.meta.get("authority_placement").is_none() {
+        return Ok(None);
+    }
+    parse_conversation_authority_placement(&entry.meta)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
 pub async fn validate_chat_submit_materialization(
     workspace_dir: &Path,
     chat_id: &str,
     expected_epoch: Option<&str>,
+    local_device_id: Option<&str>,
 ) -> std::result::Result<(), String> {
     if let Some(placement) = load_optional_chat_authority_placement(workspace_dir, chat_id).await? {
         if let Some(expected) = expected_epoch {
@@ -241,6 +283,24 @@ pub async fn validate_chat_submit_materialization(
             }
         }
         return Ok(());
+    }
+    // A controlling Device legitimately holds no authoritative Chat Header; the
+    // synchronized Chat Index carries the same placement and is enough to route
+    // the submission to the authority Device. The projection only stands in for
+    // the Header while the placement names another Device: when it names this
+    // one, the missing Header means authoritative state has not arrived yet.
+    if let Some(placement) = load_index_chat_authority_placement(workspace_dir, chat_id).await? {
+        if local_device_id != Some(placement.device_id.as_str()) {
+            if let Some(expected) = expected_epoch {
+                if expected != placement.authority_epoch.to_string() {
+                    return Err(format!(
+                        "Conversation Authority epoch changed from '{expected}' to '{}'",
+                        placement.authority_epoch
+                    ));
+                }
+            }
+            return Ok(());
+        }
     }
     let store = rua_session::WorkspaceSessionStore::new(workspace_dir);
     let chat_dir = store.chat_dir(chat_id);

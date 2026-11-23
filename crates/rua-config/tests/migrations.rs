@@ -6,3 +6,6 @@ mod loader_two_round;
 mod paths_cli_arg;
 #[path = "migrations/timezone_probe.rs"]
 mod timezone_probe;
+
+#[path = "migrations/commit_barrier.rs"]
+mod commit_barrier;

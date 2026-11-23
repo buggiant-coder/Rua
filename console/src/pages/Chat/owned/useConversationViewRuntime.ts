@@ -28,7 +28,10 @@ import type {
   Message,
   ModelSlot,
 } from "@/api/types";
-import { resolveChatPlacement } from "../chatPlacementState";
+import {
+  applyConfirmedAuthorityPlacement,
+  resolveChatPlacement,
+} from "../chatPlacementState";
 import { normalizeContentUrls } from "../utils";
 import {
   deviceDeliveryIdFromMessage,
@@ -339,6 +342,9 @@ export type ConversationViewRuntime = {
   historyGap: { beforeMessageId: string; count: number } | null;
   reload: () => void;
   applyCommittedModel: (model: ModelSlot | null) => void;
+  applyCommittedAuthorityPlacement: (
+    meta: NonNullable<ChatHistory["meta"]>,
+  ) => void;
   applyCommittedExecutionDirectory: (
     directory: ResolvedExecutionDirectory,
   ) => void;
@@ -3808,6 +3814,13 @@ export function useConversationViewRuntime({
     });
   }, []);
 
+  const applyCommittedAuthorityPlacement = useCallback(
+    (meta: NonNullable<ChatHistory["meta"]>) => {
+      setHistory((current) => applyConfirmedAuthorityPlacement(current, meta));
+    },
+    [],
+  );
+
   const applyCommittedExecutionDirectory = useCallback(
     (directory: ResolvedExecutionDirectory) => {
       setHistory(
@@ -3855,6 +3868,7 @@ export function useConversationViewRuntime({
     historyGap: historyWindowGap(history, locatedHistory),
     reload,
     applyCommittedModel,
+    applyCommittedAuthorityPlacement,
     applyCommittedExecutionDirectory,
     selectVariant,
     regenerate: async (turnId: string, userText: string) => {

@@ -227,7 +227,7 @@ async fn materialize_local_chat(state: &AppState, tmp: &TempDir, chat_id: &str, 
         rua_server::services::conversation_manifest::initial_conversation_manifest_hash(&address)
             .expect("initial manifest hash");
     materialize_targeted_chat(
-        &tmp.path().join("workspaces/default"),
+        state.chat_workspace().as_path(),
         "default",
         chat_id,
         name,
@@ -246,8 +246,8 @@ async fn accept_first_input(app: &Router, chat_id: &str, message: &str) {
         .clone()
         .oneshot(json_req(
             Method::POST,
-            &format!("/agents/default/chats/{chat_id}/console/submit"),
-            Some(&json!({"message":message}).to_string()),
+            &format!("/chats/{chat_id}/console/submit"),
+            Some(&json!({"message":message,"agent_id":"default"}).to_string()),
         ))
         .await
         .unwrap();
@@ -265,7 +265,7 @@ async fn await_stable_first_input_publication(
             let changes = collect_v4_changes(state).await;
             if changes.iter().any(|change| {
                 change.domain == "evergreen_chat"
-                    && change.record_id == format!("agent/default/{chat_id}/session")
+                    && change.record_id == format!("chats/{chat_id}/session")
             }) {
                 return changes;
             }
@@ -324,7 +324,7 @@ async fn collect_v4_changes(state: &AppState) -> Vec<rua_sync::opaque_replica_lo
 }
 
 async fn append_evergreen_turn(tmp: &TempDir, chat_id: &str, turn_id: &str) {
-    let workspace = tmp.path().join("workspaces/default");
+    let workspace = tmp.path().join("chats");
     rua_session::WorkspaceSessionStore::new(&workspace)
         .append_conversation_turn(
             chat_id,
@@ -371,7 +371,7 @@ async fn append_in_progress_evergreen_turn(
     turn_id: &str,
     user_text: &str,
 ) {
-    let workspace = tmp.path().join("workspaces/default");
+    let workspace = tmp.path().join("chats");
     rua_session::WorkspaceSessionStore::new(&workspace)
         .append_conversation_turn(
             chat_id,
@@ -411,7 +411,7 @@ async fn list_chats_sync_disabled() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_chat_sync_disabled() {
     let (app, _tmp) = build_app();
-    let req = json_req(Method::POST, "/chats", Some(r#"{"name":"Test Chat"}"#));
+    let req = json_req(Method::POST, "/chats", Some(r#"{"name":"Test Chat","agent_id":"default"}"#));
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
@@ -433,7 +433,7 @@ async fn create_chat_emits_chat_index_v4_when_sync_enabled() {
         .oneshot(json_req(
             Method::POST,
             "/chats",
-            Some(r#"{"name":"Sync Runtime Chat"}"#),
+            Some(r#"{"name":"Sync Runtime Chat","agent_id":"default"}"#),
         ))
         .await
         .unwrap();
@@ -444,7 +444,7 @@ async fn create_chat_emits_chat_index_v4_when_sync_enabled() {
 
     let changes = await_stable_first_input_publication(&state, chat_id).await;
     let chat_change = changes.iter().find(|change| {
-        change.domain == "chat" && change.record_id == format!("agent/default/chats/{chat_id}")
+        change.domain == "chat" && change.record_id == format!("chats/{chat_id}")
     });
     assert!(
         chat_change.is_some_and(|change| {
@@ -456,7 +456,7 @@ async fn create_chat_emits_chat_index_v4_when_sync_enabled() {
     );
     let evergreen_session = changes.iter().find(|change| {
         change.domain == "evergreen_chat"
-            && change.record_id == format!("agent/default/{chat_id}/session")
+            && change.record_id == format!("chats/{chat_id}/session")
             && change.kind == "file_snapshot"
             && change.payload["metadata"]["title"] == Value::String("Sync Runtime Chat".to_string())
     });
@@ -490,7 +490,7 @@ async fn create_chat_records_device_activity_metadata_when_sync_enabled() {
         .oneshot(json_req(
             Method::POST,
             "/chats",
-            Some(r#"{"name":"Device activity chat"}"#),
+            Some(r#"{"name":"Device activity chat","agent_id":"default"}"#),
         ))
         .await
         .unwrap();
@@ -511,7 +511,7 @@ async fn create_chat_records_device_activity_metadata_when_sync_enabled() {
     let changes = await_stable_first_input_publication(&state, chat_id).await;
     let chat_change = changes.iter().find(|change| {
         change.domain == "chat"
-            && change.record_id == format!("agent/default/chats/{chat_id}")
+            && change.record_id == format!("chats/{chat_id}")
             && change.payload["meta"]["device_activity"]["last_active_device_id"] == device_id
     });
     assert!(
@@ -520,7 +520,7 @@ async fn create_chat_records_device_activity_metadata_when_sync_enabled() {
     );
     let evergreen_session_change = changes.iter().find(|change| {
         change.domain == "evergreen_chat"
-            && change.record_id == format!("agent/default/{chat_id}/session")
+            && change.record_id == format!("chats/{chat_id}/session")
             && change.payload["device_activity"]["last_active_device_id"] == device_id
     });
     assert!(
@@ -549,7 +549,7 @@ async fn console_submit_updates_chat_device_activity_metadata_when_sync_enabled(
         .await;
     let chat_id = "00000000-0000-0000-0000-000000000942";
     materialize_local_chat(&state, &tmp, chat_id, "Device activity").await;
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let mut header = store.load_chat_header(chat_id).await.unwrap().unwrap();
     let configuration = state
         .product_hooks
@@ -610,7 +610,7 @@ async fn console_submit_updates_chat_device_activity_metadata_when_sync_enabled(
         "events: {events:?}"
     );
 
-    let indexed = chat_index::get(&tmp.path().join("workspaces/default"), chat_id)
+    let indexed = chat_index::get(&tmp.path().join("chats"), chat_id)
         .await
         .expect("read chat index")
         .expect("chat row");
@@ -623,7 +623,7 @@ async fn console_submit_updates_chat_device_activity_metadata_when_sync_enabled(
     let changes = collect_v4_changes(&state).await;
     let chat_change = changes.iter().find(|change| {
         change.domain == "chat"
-            && change.record_id == format!("agent/default/chats/{chat_id}")
+            && change.record_id == format!("chats/{chat_id}")
             && change.payload["meta"]["device_activity"]["last_active_device_id"] == device_id
     });
     assert!(
@@ -641,7 +641,7 @@ async fn update_chat_emits_chat_index_v4_when_sync_enabled() {
         .oneshot(json_req(
             Method::POST,
             "/chats",
-            Some(r#"{"name":"Sync Chat Before Rename"}"#),
+            Some(r#"{"name":"Sync Chat Before Rename","agent_id":"default"}"#),
         ))
         .await
         .unwrap();
@@ -664,7 +664,7 @@ async fn update_chat_emits_chat_index_v4_when_sync_enabled() {
     let changes = collect_v4_changes(&state).await;
     let chat_change = changes.iter().find(|change| {
         change.domain == "chat"
-            && change.record_id == format!("agent/default/chats/{chat_id}")
+            && change.record_id == format!("chats/{chat_id}")
             && change.kind == "index_upsert"
             && change.payload["name"] == Value::String("Sync Chat After Rename".to_string())
     });
@@ -677,7 +677,7 @@ async fn update_chat_emits_chat_index_v4_when_sync_enabled() {
     );
     let evergreen_session = changes.iter().find(|change| {
         change.domain == "evergreen_chat"
-            && change.record_id == format!("agent/default/{chat_id}/session")
+            && change.record_id == format!("chats/{chat_id}/session")
             && change.kind == "file_snapshot"
             && change.payload["metadata"]["title"]
                 == Value::String("Sync Chat After Rename".to_string())
@@ -698,7 +698,7 @@ async fn delete_chat_emits_chat_index_v4_when_sync_enabled() {
         .oneshot(json_req(
             Method::POST,
             "/chats",
-            Some(r#"{"name":"Sync Chat To Delete"}"#),
+            Some(r#"{"name":"Sync Chat To Delete","agent_id":"default"}"#),
         ))
         .await
         .unwrap();
@@ -717,7 +717,7 @@ async fn delete_chat_emits_chat_index_v4_when_sync_enabled() {
     let changes = collect_v4_changes(&state).await;
     let chat_change = changes.iter().find(|change| {
         change.domain == "chat"
-            && change.record_id == format!("agent/default/chats/{chat_id}")
+            && change.record_id == format!("chats/{chat_id}")
             && change.kind == "index_delete"
     });
     assert!(
@@ -726,7 +726,7 @@ async fn delete_chat_emits_chat_index_v4_when_sync_enabled() {
     );
     let evergreen_delete = changes.iter().find(|change| {
         change.domain == "evergreen_chat"
-            && change.record_id == format!("agent/default/{chat_id}/session")
+            && change.record_id == format!("chats/{chat_id}/session")
             && change.kind == "file_delete"
     });
     assert!(
@@ -751,7 +751,7 @@ async fn batch_delete_chat_emits_chat_index_and_evergreen_v4_when_sync_enabled()
         .oneshot(json_req(
             Method::POST,
             "/chats",
-            Some(r#"{"name":"Sync Chat Batch Delete"}"#),
+            Some(r#"{"name":"Sync Chat Batch Delete","agent_id":"default"}"#),
         ))
         .await
         .unwrap();
@@ -771,7 +771,7 @@ async fn batch_delete_chat_emits_chat_index_and_evergreen_v4_when_sync_enabled()
     let changes = collect_v4_changes(&state).await;
     let chat_delete = changes.iter().find(|change| {
         change.domain == "chat"
-            && change.record_id == format!("agent/default/chats/{chat_id}")
+            && change.record_id == format!("chats/{chat_id}")
             && change.kind == "index_delete"
     });
     assert!(
@@ -780,7 +780,7 @@ async fn batch_delete_chat_emits_chat_index_and_evergreen_v4_when_sync_enabled()
     );
     let evergreen_delete = changes.iter().find(|change| {
         change.domain == "evergreen_chat"
-            && change.record_id == format!("agent/default/{chat_id}/session")
+            && change.record_id == format!("chats/{chat_id}/session")
             && change.kind == "file_delete"
     });
     assert!(
@@ -798,7 +798,7 @@ async fn pin_order_emits_chat_index_v4_when_sync_enabled() {
         .oneshot(json_req(
             Method::POST,
             "/chats",
-            Some(r#"{"name":"Pinned Sync Chat"}"#),
+            Some(r#"{"name":"Pinned Sync Chat","agent_id":"default"}"#),
         ))
         .await
         .unwrap();
@@ -817,7 +817,7 @@ async fn pin_order_emits_chat_index_v4_when_sync_enabled() {
     let changes = collect_v4_changes(&state).await;
     let pin_order_change = changes.iter().find(|change| {
         change.domain == "chat"
-            && change.record_id == format!("agent/default/chats/{chat_id}")
+            && change.record_id == format!("chats/{chat_id}")
             && change.kind == "index_upsert"
             && change.payload["pin_order"] == Value::Number(42.into())
     });
@@ -836,7 +836,7 @@ async fn branch_chat_emits_chat_index_and_evergreen_v4_when_sync_enabled() {
         .oneshot(json_req(
             Method::POST,
             "/chats",
-            Some(r#"{"name":"Branch Source Chat"}"#),
+            Some(r#"{"name":"Branch Source Chat","agent_id":"default"}"#),
         ))
         .await
         .unwrap();
@@ -862,7 +862,7 @@ async fn branch_chat_emits_chat_index_and_evergreen_v4_when_sync_enabled() {
     let changes = collect_v4_changes(&state).await;
     let branch_index = changes.iter().find(|change| {
         change.domain == "chat"
-            && change.record_id == format!("agent/default/chats/{branch_chat_id}")
+            && change.record_id == format!("chats/{branch_chat_id}")
             && change.kind == "index_upsert"
     });
     assert!(
@@ -871,7 +871,7 @@ async fn branch_chat_emits_chat_index_and_evergreen_v4_when_sync_enabled() {
     );
     let branch_session = changes.iter().find(|change| {
         change.domain == "evergreen_chat"
-            && change.record_id == format!("agent/default/{branch_chat_id}/session")
+            && change.record_id == format!("chats/{branch_chat_id}/session")
             && change.kind == "file_snapshot"
     });
     assert!(
@@ -889,7 +889,7 @@ async fn rollback_chat_emits_chat_index_and_evergreen_v4_when_sync_enabled() {
         .oneshot(json_req(
             Method::POST,
             "/chats",
-            Some(r#"{"name":"Rollback Source Chat"}"#),
+            Some(r#"{"name":"Rollback Source Chat","agent_id":"default"}"#),
         ))
         .await
         .unwrap();
@@ -913,7 +913,7 @@ async fn rollback_chat_emits_chat_index_and_evergreen_v4_when_sync_enabled() {
     let changes = collect_v4_changes(&state).await;
     let rollback_index = changes.iter().find(|change| {
         change.domain == "chat"
-            && change.record_id == format!("agent/default/chats/{chat_id}")
+            && change.record_id == format!("chats/{chat_id}")
             && change.kind == "index_upsert"
     });
     assert!(
@@ -922,7 +922,7 @@ async fn rollback_chat_emits_chat_index_and_evergreen_v4_when_sync_enabled() {
     );
     let turn_index_snapshot = changes.iter().find(|change| {
         change.domain == "evergreen_chat"
-            && change.record_id == format!("agent/default/{chat_id}/turn_index")
+            && change.record_id == format!("chats/{chat_id}/turn_index")
             && change.kind == "file_snapshot"
     });
     assert!(
@@ -947,9 +947,9 @@ async fn console_submit_eager_chat_index_emits_v4_before_turn_is_stable() {
     let resp = app
         .oneshot(json_req(
             Method::POST,
-            &format!("/agents/default/chats/{chat_id}/console/submit"),
+            &format!("/chats/{chat_id}/console/submit"),
             Some(&format!(
-                r#"{{"message":"eager chat index sync","chat_id":"{chat_id}","submission_id":"submission-eager-sync"}}"#
+                r#"{{"message":"eager chat index sync","agent_id":"default","chat_id":"{chat_id}","submission_id":"submission-eager-sync"}}"#
             )),
         ))
         .await
@@ -971,7 +971,7 @@ async fn console_submit_eager_chat_index_emits_v4_before_turn_is_stable() {
     let changes = collect_v4_changes(&state).await;
     let chat_index_change = changes.iter().find(|change| {
         change.domain == "chat"
-            && change.record_id == format!("agent/default/chats/{chat_id}")
+            && change.record_id == format!("chats/{chat_id}")
             && change.kind == "index_upsert"
             && change.payload["name"] == Value::String("eager chat index sync".to_string())
     });
@@ -981,7 +981,7 @@ async fn console_submit_eager_chat_index_emits_v4_before_turn_is_stable() {
     );
     let stable_session_change = changes.iter().find(|change| {
         change.domain == "evergreen_chat"
-            && change.record_id == format!("agent/default/{chat_id}/turn_index")
+            && change.record_id == format!("chats/{chat_id}/turn_index")
     });
     assert!(
         stable_session_change.is_none(),
@@ -1012,7 +1012,7 @@ async fn runtime_failure_terminal_fact_emits_evergreen_v4_when_sync_enabled() {
             .unwrap()
             .device_id_short(),
     );
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let mut header = store.load_chat_header(chat_id).await.unwrap().unwrap();
     let configuration = state
         .product_hooks
@@ -1077,7 +1077,7 @@ async fn runtime_failure_terminal_fact_emits_evergreen_v4_when_sync_enabled() {
     let changes = collect_v4_changes(&state).await;
     let turn_index_change = changes.iter().find(|change| {
         change.domain == "evergreen_chat"
-            && change.record_id == format!("agent/default/{chat_id}/turn_index")
+            && change.record_id == format!("chats/{chat_id}/turn_index")
             && change.payload.to_string().contains("failed")
     });
     assert!(
@@ -1086,7 +1086,7 @@ async fn runtime_failure_terminal_fact_emits_evergreen_v4_when_sync_enabled() {
     );
     let session_change = changes.iter().find(|change| {
         change.domain == "evergreen_chat"
-            && change.record_id == format!("agent/default/{chat_id}/session")
+            && change.record_id == format!("chats/{chat_id}/session")
             && change
                 .payload
                 .to_string()
@@ -1109,7 +1109,7 @@ async fn chat_open_orphan_in_progress_read_is_read_only_when_sync_enabled() {
         .oneshot(json_req(
             Method::POST,
             "/chats",
-            Some(r#"{"name":"Orphan sync chat"}"#),
+            Some(r#"{"name":"Orphan sync chat","agent_id":"default"}"#),
         ))
         .await
         .unwrap();
@@ -1127,7 +1127,7 @@ async fn chat_open_orphan_in_progress_read_is_read_only_when_sync_enabled() {
         .unwrap();
     assert_eq!(open.status(), StatusCode::OK);
 
-    let workspace = tmp.path().join("workspaces/default");
+    let workspace = tmp.path().join("chats");
     let turns = rua_session::WorkspaceSessionStore::new(&workspace)
         .read_turn_range(chat_id, 1, usize::MAX)
         .await
@@ -1141,7 +1141,7 @@ async fn chat_open_orphan_in_progress_read_is_read_only_when_sync_enabled() {
     let changes = collect_v4_changes(&state).await;
     let turn_index_change = changes.iter().find(|change| {
         change.domain == "evergreen_chat"
-            && change.record_id == format!("agent/default/{chat_id}/turn_index")
+            && change.record_id == format!("chats/{chat_id}/turn_index")
             && change.payload.to_string().contains(turn_id)
             && change.payload.to_string().contains("interrupted")
     });
@@ -1151,7 +1151,7 @@ async fn chat_open_orphan_in_progress_read_is_read_only_when_sync_enabled() {
     );
     let session_change = changes.iter().find(|change| {
         change.domain == "evergreen_chat"
-            && change.record_id == format!("agent/default/{chat_id}/session")
+            && change.record_id == format!("chats/{chat_id}/session")
             && change
                 .payload
                 .to_string()
@@ -1174,7 +1174,7 @@ async fn incomplete_tool_group_does_not_emit_evergreen_v4_when_sync_enabled() {
         .expect("default runtime");
     let chat_id = "00000000-0000-0000-0000-000000000905";
 
-    rua_session::WorkspaceSessionStore::new(runtime.workspace_dir())
+    rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir())
         .save_chat_header(&rua_session::ChatSessionHeader::new(
             rua_session::ChatMetadata {
                 chat_id: chat_id.into(),
@@ -1191,7 +1191,7 @@ async fn incomplete_tool_group_does_not_emit_evergreen_v4_when_sync_enabled() {
         .unwrap();
 
     let persistence = rua_server::services::console_chat::WorkspaceSessionPersistence::new(
-        runtime.workspace_dir(),
+        runtime.chat_workspace_dir(),
     )
     .with_session_sync_emitter(rua_server::services::console_chat::SessionSyncEmitter::new(
         _tmp.path().to_path_buf(),
@@ -1228,7 +1228,7 @@ async fn incomplete_tool_group_does_not_emit_evergreen_v4_when_sync_enabled() {
     .await
     .expect("save in-progress messages");
 
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let turns = store.read_turn_range(chat_id, 1, 10).await.unwrap();
     assert_eq!(turns[0].lifecycle.status, "in_progress");
 
@@ -1253,22 +1253,8 @@ async fn complete_model_call_publishes_active_turn_and_advances_watermark() {
     let chat_id = "00000000-0000-0000-0000-000000000907";
     let turn_id = "turn-active-model-call";
 
-    rua_session::WorkspaceSessionStore::new(runtime.workspace_dir())
-        .save_chat_header(&rua_session::ChatSessionHeader::new(
-            rua_session::ChatMetadata {
-                chat_id: chat_id.into(),
-                agent_id: "default".into(),
-                title: "Active model call publication".into(),
-                created_at: "2026-06-25T00:00:00Z".into(),
-                last_activity_at: "2026-06-25T00:00:00Z".into(),
-                pinned: false,
-                archived: false,
-                preview: None,
-            },
-        ))
-        .await
-        .unwrap();
-    let header_store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    materialize_local_chat(&state, &tmp, chat_id, "Active model call publication").await;
+    let header_store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let mut header = header_store
         .load_chat_header(chat_id)
         .await
@@ -1286,7 +1272,7 @@ async fn complete_model_call_publishes_active_turn_and_advances_watermark() {
     append_in_progress_evergreen_turn(&tmp, chat_id, turn_id, "say hi").await;
 
     let persistence = rua_server::services::console_chat::WorkspaceSessionPersistence::new(
-        runtime.workspace_dir(),
+        runtime.chat_workspace_dir(),
     )
     .with_active_turn_id(turn_id.to_string())
     .with_session_sync_emitter(rua_server::services::console_chat::SessionSyncEmitter::new(
@@ -1312,7 +1298,7 @@ async fn complete_model_call_publishes_active_turn_and_advances_watermark() {
     .await
     .expect("save complete active model call");
 
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let turns = store.read_turn_range(chat_id, 1, 10).await.unwrap();
     assert_eq!(turns[0].lifecycle.status, "in_progress");
 
@@ -1320,7 +1306,7 @@ async fn complete_model_call_publishes_active_turn_and_advances_watermark() {
     assert!(
         changes.iter().any(|change| {
             change.domain == "evergreen_chat"
-                && change.record_id == format!("agent/default/{chat_id}/turn_index")
+                && change.record_id == format!("chats/{chat_id}/turn_index")
                 && change.payload.to_string().contains("in_progress")
         }),
         "a complete Model Call Boundary must publish while the Turn remains active; got {changes:#?}"
@@ -1328,7 +1314,7 @@ async fn complete_model_call_publishes_active_turn_and_advances_watermark() {
 
     let address = ChatAddress::new(chat_id);
     let manifest = rua_server::services::conversation_manifest::load_conversation_manifest(
-        &runtime.workspace_dir(),
+        &runtime.chat_workspace_dir(),
         &address,
     )
     .await
@@ -1358,24 +1344,10 @@ async fn completed_turn_save_emits_stable_evergreen_v4_when_sync_enabled() {
         .expect("default runtime");
     let chat_id = "00000000-0000-0000-0000-000000000906";
 
-    rua_session::WorkspaceSessionStore::new(runtime.workspace_dir())
-        .save_chat_header(&rua_session::ChatSessionHeader::new(
-            rua_session::ChatMetadata {
-                chat_id: chat_id.into(),
-                agent_id: "default".into(),
-                title: "Completed sync gate".into(),
-                created_at: "2026-06-25T00:00:00Z".into(),
-                last_activity_at: "2026-06-25T00:00:00Z".into(),
-                pinned: false,
-                archived: false,
-                preview: None,
-            },
-        ))
-        .await
-        .unwrap();
+    materialize_local_chat(&state, &_tmp, chat_id, "Completed sync gate").await;
 
     let persistence = rua_server::services::console_chat::WorkspaceSessionPersistence::new(
-        runtime.workspace_dir(),
+        runtime.chat_workspace_dir(),
     )
     .with_session_sync_emitter(rua_server::services::console_chat::SessionSyncEmitter::new(
         _tmp.path().to_path_buf(),
@@ -1408,7 +1380,7 @@ async fn completed_turn_save_emits_stable_evergreen_v4_when_sync_enabled() {
     .await
     .expect("save completed messages");
 
-    let store = rua_session::WorkspaceSessionStore::new(runtime.workspace_dir());
+    let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let turns = store.read_turn_range(chat_id, 1, 10).await.unwrap();
     assert_eq!(turns[0].lifecycle.status, "completed");
 
@@ -1416,7 +1388,7 @@ async fn completed_turn_save_emits_stable_evergreen_v4_when_sync_enabled() {
     assert!(
         changes.iter().any(|change| {
             change.domain == "evergreen_chat"
-                && change.record_id == format!("agent/default/{chat_id}/turn_index")
+                && change.record_id == format!("chats/{chat_id}/turn_index")
                 && change.payload.to_string().contains("completed")
         }),
         "completed turns must emit a stable turn_index snapshot; got {changes:#?}"
@@ -1425,7 +1397,7 @@ async fn completed_turn_save_emits_stable_evergreen_v4_when_sync_enabled() {
         changes.iter().any(|change| {
             change.domain == "evergreen_chat"
                 && change.record_id
-                    == format!("agent/default/{chat_id}/messages/000000000000.jsonl")
+                    == format!("chats/{chat_id}/messages/000000000000.jsonl")
                 && change.payload.to_string().contains("hi")
         }),
         "completed turns must emit stable message chunk snapshot; got {changes:#?}"
@@ -1436,7 +1408,7 @@ async fn completed_turn_save_emits_stable_evergreen_v4_when_sync_enabled() {
 async fn create_and_list_chat_sync_disabled() {
     let (app, _tmp) = build_app();
 
-    let req = json_req(Method::POST, "/chats", Some(r#"{"name":"My Chat"}"#));
+    let req = json_req(Method::POST, "/chats", Some(r#"{"name":"My Chat","agent_id":"default"}"#));
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
@@ -1458,7 +1430,7 @@ async fn create_and_list_chat_sync_disabled() {
 async fn delete_chat_sync_disabled() {
     let (app, tmp) = build_app();
 
-    let req = json_req(Method::POST, "/chats", Some(r#"{"name":"To Delete"}"#));
+    let req = json_req(Method::POST, "/chats", Some(r#"{"name":"To Delete","agent_id":"default"}"#));
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = axum::body::to_bytes(resp.into_body(), 1024 * 64)
@@ -1494,7 +1466,7 @@ async fn delete_chat_sync_disabled() {
 async fn delete_chat_fails_closed_when_intent_cannot_be_persisted() {
     let (app, tmp) = build_app();
 
-    let req = json_req(Method::POST, "/chats", Some(r#"{"name":"Keep Me"}"#));
+    let req = json_req(Method::POST, "/chats", Some(r#"{"name":"Keep Me","agent_id":"default"}"#));
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = axum::body::to_bytes(resp.into_body(), 1024 * 64)
@@ -1528,7 +1500,7 @@ async fn delete_chat_fails_closed_when_intent_cannot_be_persisted() {
 async fn delete_chat_rejects_pinned_chat_without_creating_intent() {
     let (app, tmp) = build_app();
 
-    let req = json_req(Method::POST, "/chats", Some(r#"{"name":"Pinned"}"#));
+    let req = json_req(Method::POST, "/chats", Some(r#"{"name":"Pinned","agent_id":"default"}"#));
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = axum::body::to_bytes(resp.into_body(), 1024 * 64)

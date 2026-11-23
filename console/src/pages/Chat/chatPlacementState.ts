@@ -194,3 +194,41 @@ export function resolveChatPlacement({
     lockReason,
   };
 }
+
+export function applyConfirmedAuthorityPlacement(
+  history: ChatHistory | null,
+  meta: Record<string, unknown>,
+): ChatHistory | null {
+  if (!history) return history;
+  const rawPlacement = meta.authority_placement;
+  if (
+    !history.control ||
+    !rawPlacement ||
+    typeof rawPlacement !== "object" ||
+    Array.isArray(rawPlacement)
+  ) {
+    return { ...history, meta };
+  }
+  const placement = rawPlacement as Record<string, unknown>;
+  const deviceId = placement.device_id;
+  if (typeof deviceId !== "string" || !deviceId) {
+    return { ...history, meta };
+  }
+  const authorityEpoch = placement.authority_epoch;
+  return {
+    ...history,
+    meta,
+    control: {
+      ...history.control,
+      authority_device_id: deviceId,
+      placement: {
+        ...history.control.placement,
+        authority_device_id: deviceId,
+        authority_epoch:
+          typeof authorityEpoch === "string"
+            ? authorityEpoch
+            : history.control.placement.authority_epoch,
+      },
+    },
+  };
+}

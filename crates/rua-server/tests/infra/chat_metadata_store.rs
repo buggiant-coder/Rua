@@ -17,10 +17,30 @@ fn address() -> rua_core::ChatAddress {
     rua_core::ChatAddress::new(CHAT_ID)
 }
 
+/// Authority placement may only change on an already materialized Chat, so
+/// every test that seeds or switches a placement first writes a Session File.
+async fn seed_materialized_chat(workspace: &std::path::Path) {
+    let header = ChatSessionHeader::new(ChatMetadata {
+        chat_id: CHAT_ID.to_string(),
+        agent_id: "default".to_string(),
+        title: "Materialized".to_string(),
+        created_at: "2026-07-19T01:02:03Z".to_string(),
+        last_activity_at: "2026-07-19T01:02:03Z".to_string(),
+        pinned: false,
+        archived: false,
+        preview: None,
+    });
+    WorkspaceSessionStore::new(workspace)
+        .save_chat_header(&header)
+        .await
+        .expect("seed materialized Chat");
+}
+
 #[tokio::test]
-async fn authority_placement_update_materializes_and_writes_only_session_file() {
+async fn authority_placement_update_writes_session_file_and_refreshes_projection() {
     let tmp = TempDir::new().expect("tempdir");
     let workspace = tmp.path().join("workspace");
+    seed_materialized_chat(&workspace).await;
 
     let record = update_authority_placement(
         None,
@@ -44,12 +64,14 @@ async fn authority_placement_update_materializes_and_writes_only_session_file() 
         })
     );
 
-    assert!(
-        chat_index::get(&workspace, CHAT_ID)
-            .await
-            .expect("read chat index")
-            .is_none(),
-        "Authority-only materialization must not create a Chat Index row"
+    let indexed = chat_index::get(&workspace, CHAT_ID)
+        .await
+        .expect("read chat index")
+        .expect("materialized Chat is projected");
+    assert_eq!(
+        indexed.meta[CHAT_AUTHORITY_PLACEMENT_META_KEY],
+        record.meta[CHAT_AUTHORITY_PLACEMENT_META_KEY],
+        "an authority change must be reflected in the Chat Index projection"
     );
 
     let header = rua_session::WorkspaceSessionStore::new(&workspace)
@@ -156,6 +178,9 @@ async fn authority_placement_update_preserves_authority_owned_chat_metadata() {
         archived: false,
         preview: None,
     });
+    // Pinned ordering is durable Chat state, so the seeded display order must
+    // live on the Session File rather than only in the transient index row.
+    header.pin_order = 7;
     header.extra.insert(
         "model".to_string(),
         json!({"provider_id": "dashscope", "model": "qwen-plus"}),
@@ -213,6 +238,7 @@ async fn authority_placement_update_preserves_authority_owned_chat_metadata() {
 async fn confirmed_authority_replacement_bypasses_stale_acp_lock_without_sync_publication() {
     let tmp = TempDir::new().expect("tempdir");
     let workspace = tmp.path().join("workspace");
+    seed_materialized_chat(&workspace).await;
     let initial = ConversationAuthorityPlacement {
         device_id: "device-old".to_string(),
         authority_epoch:
@@ -273,7 +299,14 @@ async fn confirmed_authority_replacement_bypasses_stale_acp_lock_without_sync_pu
         .await
         .expect("read chat index")
         .expect("indexed chat");
-    assert_eq!(indexed_after, indexed_before);
+    // The local projection is refreshed in place; only the placement changes and
+    // the still-active ACP binding plus its transient columns are preserved.
+    assert_eq!(indexed_after.created_at, indexed_before.created_at);
+    assert_eq!(indexed_after.meta[CHAT_ACP_BINDING_META_KEY], indexed_before.meta[CHAT_ACP_BINDING_META_KEY]);
+    assert_eq!(
+        indexed_after.meta[CHAT_AUTHORITY_PLACEMENT_META_KEY],
+        serde_json::to_value(&replacement).expect("serialize placement")
+    );
     let header = WorkspaceSessionStore::new(&workspace)
         .load_chat_header(CHAT_ID)
         .await
@@ -289,6 +322,7 @@ async fn confirmed_authority_replacement_bypasses_stale_acp_lock_without_sync_pu
 async fn acp_binding_preserves_explicit_authority_placement() {
     let tmp = TempDir::new().expect("tempdir");
     let workspace = tmp.path().join("workspace");
+    seed_materialized_chat(&workspace).await;
 
     update_authority_placement(
         None,

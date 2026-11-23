@@ -295,17 +295,36 @@ impl ConversationLiveActivity {
                     Arc::clone(&self.sync_node), Arc::clone(&self.device_network), self.data_dir.clone(),
                 );
                 let pending = match delivery.read_source_pending(address).await {
-                    Ok(pending) => pending?,
+                    Ok(pending) => pending,
                     Err(error) => {
                         tracing::warn!(%address, %error, "failed to read accepted remote input for live activity");
                         return None;
                     }
                 };
-                (
-                    pending.target_device_id,
-                    local_device_id?,
-                    pending.authority_epoch,
-                )
+                if let Some(pending) = pending {
+                    (
+                        pending.target_device_id,
+                        local_device_id?,
+                        pending.authority_epoch,
+                    )
+                } else {
+                    // A controlling Device holds no Chat Header; the synchronized
+                    // Chat Index is its only discovery surface (ADR 0059 D31), and
+                    // its placement still names the Device that owns live activity.
+                    let placement =
+                        crate::services::conversation_authority_target::load_index_chat_authority_placement(
+                            workspace_dir,
+                            address.chat_id().as_str(),
+                        )
+                        .await
+                        .ok()
+                        .flatten()?;
+                    (
+                        placement.device_id,
+                        local_device_id?,
+                        placement.authority_epoch,
+                    )
+                }
             }
         };
         spawn_remote_history_hydration(RemoteHistoryHydrationParams {

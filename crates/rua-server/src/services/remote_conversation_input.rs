@@ -355,6 +355,20 @@ impl RemoteConversationInputDelivery {
         request: &RemoteConversationInputRequest,
         log_context: &str,
     ) -> Result<RemoteConversationInputDeliveryOutcome, DeviceCommandDeliveryError> {
+        // A previous delivery for this Chat is settled here rather than at one
+        // routing call site: every submit path reaches this point, and the check
+        // only trusts locally finalized Turns before the marker is recorded again.
+        let pending_workspace = ChatStore::resolve(&self.data_dir, request.address.clone());
+        if let Err(error) = self
+            .clear_source_pending_if_stable_locally(pending_workspace.root(), &request.address)
+            .await
+        {
+            tracing::warn!(
+                chat_address = %request.address,
+                error = %error,
+                "failed to clear finalized source-side pending {log_context} marker"
+            );
+        }
         let ack = self
             .deliver_remote_conversation_input_to_target(request)
             .await?;

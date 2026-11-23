@@ -57,6 +57,12 @@ fn multipart_req(uri: &str, file_name: &str, data: &[u8]) -> axum::extract::Requ
     );
     body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\n");
     body.extend_from_slice(data);
+    body.extend_from_slice(
+        format!("\r\n--{boundary}\r\n").as_bytes(),
+    );
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"agent_id\"\r\n\r\ndefault",
+    );
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
 
     axum::extract::Request::builder()
@@ -134,7 +140,7 @@ async fn scoped_upload_does_not_publish_sync_in_the_foreground() {
 
     let resp = app
         .oneshot(multipart_req(
-            "/api/agents/default/chats/00000000-0000-4000-8000-000000000116/media",
+            "/api/chats/00000000-0000-4000-8000-000000000116/media",
             "sync-upload.txt",
             payload,
         ))
@@ -144,10 +150,7 @@ async fn scoped_upload_does_not_publish_sync_in_the_foreground() {
     let body = read_json(resp).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let stored_name = body["media_id"].as_str().expect("media id");
-    let stored_path = state
-        .rua_root
-        .join("workspaces/default/media")
-        .join(stored_name);
+    let stored_path = state.chat_workspace().as_path().join("media").join(stored_name);
     assert_eq!(std::fs::read(stored_path).expect("stored media"), payload);
 
     let changes = collect_v4_changes(&state).await;

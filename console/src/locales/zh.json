@@ -2423,10 +2423,12 @@
       "blocking": "正在压缩上下文..."
     },
     "authorityPlacement": {
+      "busy": "请先结束当前运行、处理排队输入和待审批请求，再切换执行设备。",
+      "acpLocked": "请先退出 ACP 模式，再切换执行设备。",
       "menu": "选择执行设备",
       "title": "选择对话执行设备",
       "current": "当前选择：{{target}}",
-      "hint": "排队中的输入会在实际发送时使用当前选择的设备。",
+      "hint": "选择目标设备上的工作目录。已有文件保留在原设备。",
       "lockedHint": "本会话之后的输入可以切换到其他执行设备。",
       "menuStatusLabel": "当前设置",
       "unspecified": "未指定设备",
@@ -2435,7 +2437,7 @@
       "noDevices": "暂无已配对设备",
       "thisDevice": "本机",
       "saveFailed": "执行设备更新失败",
-      "firstUseNotice": "远程命令是异步留言。已被目标设备接收的远程提交，当前版本无法从本设备取消。",
+      "firstUseNotice": "当前执行设备需要在线，才能交接此对话。",
       "cacheInvalidatedNotice": "切换执行设备会导致当前对话的缓存失效。",
       "cacheInvalidatedDontRemind": "下次不再提醒"
     },

@@ -10,6 +10,7 @@ export default function ExecutionDirectoryFields({
   devices,
   allowServiceDefault,
   lockDevice,
+  hideDevice,
   disabled,
   onChange,
   onError,
@@ -18,6 +19,7 @@ export default function ExecutionDirectoryFields({
   devices: DeviceDto[];
   allowServiceDefault?: boolean;
   lockDevice?: boolean;
+  hideDevice?: boolean;
   disabled?: boolean;
   onChange: (position: ExecutionPosition | null) => void;
   onError: (error: unknown) => void;
@@ -26,28 +28,30 @@ export default function ExecutionDirectoryFields({
   const deviceId = position?.device_id;
   return (
     <>
-      <FormField label={t("executionLocation.device")}>
-        <Select
-          aria-label={t("executionLocation.device")}
-          disabled={disabled || lockDevice}
-          value={deviceId ?? ""}
-          onChange={(id) => onChange(id ? { device_id: id } : null)}
-        >
-          {allowServiceDefault && (
-            <Select.Option value="">
-              {t("executionLocation.connectedService")}
-            </Select.Option>
-          )}
-          {deviceId && !devices.some((d) => d.device_id === deviceId) && (
-            <Select.Option value={deviceId}>{deviceId}</Select.Option>
-          )}
-          {devices.map((d) => (
-            <Select.Option key={d.device_id} value={d.device_id}>
-              {d.friendly_name || d.label || d.device_id}
-            </Select.Option>
-          ))}
-        </Select>
-      </FormField>
+      {!hideDevice && (
+        <FormField label={t("executionLocation.device")}>
+          <Select
+            aria-label={t("executionLocation.device")}
+            disabled={disabled || lockDevice}
+            value={deviceId ?? ""}
+            onChange={(id) => onChange(id ? { device_id: id } : null)}
+          >
+            {allowServiceDefault && (
+              <Select.Option value="">
+                {t("executionLocation.connectedService")}
+              </Select.Option>
+            )}
+            {deviceId && !devices.some((d) => d.device_id === deviceId) && (
+              <Select.Option value={deviceId}>{deviceId}</Select.Option>
+            )}
+            {devices.map((d) => (
+              <Select.Option key={d.device_id} value={d.device_id}>
+                {d.friendly_name || d.label || d.device_id}
+              </Select.Option>
+            ))}
+          </Select>
+        </FormField>
+      )}
       {position && (
         <>
           <FormField label={t("executionLocation.directory")}>

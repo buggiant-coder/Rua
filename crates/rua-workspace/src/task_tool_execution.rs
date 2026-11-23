@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -205,13 +206,15 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
         )
         .map_err(|error| error.to_string())?;
         let working_dir = fs.resolve(public_cwd).map_err(|error| error.to_string())?;
-        if !working_dir.is_dir()
-            || fs
-                .public_path_from_host(&working_dir)
-                .as_ref()
-                .and_then(|path| path.to_str())
-                != Some(public_cwd)
-        {
+        // Compare resolved directories rather than literal strings: the recorded
+        // public cwd may reach the same directory through a symlinked root (for
+        // example `/var` -> `/private/var` on macOS), so the canonical host path
+        // never string-matches it. Canonicalising both sides preserves the
+        // original "the recorded directory still maps to itself" intent.
+        let recorded_still_matches = fs
+            .public_path_from_host(&working_dir)
+            .is_some_and(|public| same_directory(&public, Path::new(public_cwd)));
+        if !working_dir.is_dir() || !recorded_still_matches {
             return Err("Task original execution directory is unavailable or changed".into());
         }
         let project_root = header.project_id.as_ref().map(|_| working_dir.as_path());
@@ -260,16 +263,27 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             .with_chat_address(request.owner.chat_address.clone())
             .with_working_dir(working_dir.to_string_lossy().to_string())
             .with_security_snapshot(Arc::clone(&security_snapshot));
-        if let Some(turn_id) = request.authorization_origin.turn_id.as_ref() {
-            security_hook = security_hook.with_turn_id(turn_id);
-        }
+        // HTTP Retry has no foreground Turn. Empty is the existing Task approval
+        // binding for that case; the Task/Attempt tool call still identifies it.
+        security_hook = security_hook.with_turn_id(
+            request
+                .authorization_origin
+                .turn_id
+                .as_deref()
+                .unwrap_or_default(),
+        );
         if header.project_id.is_some()
             && security_snapshot
                 .extra
                 .contains_key(rua_security::project_resource_policy::PROJECT_RESOURCE_POLICY_KEY)
         {
-            security_hook =
-                security_hook.with_project_resource_roots(configuration.project_write_roots());
+            security_hook = security_hook.with_project_resource_roots(
+                configuration.project_write_roots(),
+                snapshot
+                    .get("authority_device_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            );
         }
         let cancelled_before_execution = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let hook: Arc<dyn AgentHook> = Arc::new(TaskToolWaitStateHook {
@@ -425,5 +439,16 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             }
         }
         result
+    }
+}
+
+/// Two paths naming the same directory, tolerating symlinked roots.
+fn same_directory(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
     }
 }

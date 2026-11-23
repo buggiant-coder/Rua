@@ -80,6 +80,38 @@ impl RootConfigSyncAdapter {
         hex::encode(bytes)
     }
 
+    /// Read the same portable security projection as normal export, strictly:
+    /// malformed or unreadable persisted settings must not look like empty rules.
+    pub fn security_snapshot(&self) -> SyncResult<Option<SyncChange>> {
+        let path = self.record_path(ROOT_CONFIG_RECORD_SECURITY)?;
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let root: serde_json::Value = serde_json::from_reader(&file)?;
+        let object = root
+            .as_object()
+            .ok_or_else(|| SyncError::InvalidPayload("config.json root must be object".into()))?;
+        let Some(security) = object.get("security") else {
+            return Ok(None);
+        };
+        if !security.is_object() {
+            return Err(SyncError::InvalidPayload(
+                "Root security must be an object".into(),
+            ));
+        }
+        Ok(Some(SyncChange::new(
+            Self::new_op_id(),
+            ROOT_CONFIG_DOMAIN,
+            ROOT_CONFIG_RECORD_SECURITY,
+            ROOT_CONFIG_KIND_SNAPSHOT,
+            self.device_id.clone(),
+            Self::export_hlc_metadata(file.metadata()?, &self.device_id),
+            strip_device_local_security(security.clone()),
+        )))
+    }
+
     fn record_path(&self, record_id: &str) -> SyncResult<PathBuf> {
         match record_id {
             ROOT_CONFIG_RECORD_SETTINGS => Ok(self.data_dir.join("settings.json")),
@@ -99,13 +131,24 @@ impl RootConfigSyncAdapter {
     }
 
     fn export_hlc(path: &Path, device_id: &str) -> HlcTimestamp {
-        let wall_ms = path
-            .metadata()
-            .and_then(|meta| meta.modified())
+        let metadata = match path.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => return Self::export_hlc_wall_ms(0, device_id),
+        };
+        Self::export_hlc_metadata(metadata, device_id)
+    }
+
+    fn export_hlc_metadata(metadata: std::fs::Metadata, device_id: &str) -> HlcTimestamp {
+        let wall_ms = metadata
+            .modified()
             .ok()
             .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
             .map(|duration| duration.as_millis() as u64)
             .unwrap_or(0);
+        Self::export_hlc_wall_ms(wall_ms, device_id)
+    }
+
+    fn export_hlc_wall_ms(wall_ms: u64, device_id: &str) -> HlcTimestamp {
         let mut device = [0u8; 8];
         device.copy_from_slice(&blake3::hash(device_id.as_bytes()).as_bytes()[..8]);
         HlcTimestamp {
@@ -343,7 +386,7 @@ fn delete_record_value(record_id: &str, path: &Path) -> SyncResult<()> {
         return Ok(());
     }
 
-    match std::fs::remove_file(path) {
+    match rua_config::remove_file_committed(path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),

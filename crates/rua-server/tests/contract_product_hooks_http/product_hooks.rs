@@ -123,7 +123,8 @@ async fn queued_claim_uses_current_epoch_while_active_turn_keeps_frozen_epoch() 
             authority_epoch: ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     let mut queued = ConversationInputPayload {
         message: "queued".to_string(),
         model_override: None,
@@ -231,7 +232,8 @@ async fn running_configuration_update_preserves_claimed_epoch_and_persists_new_s
             authority_epoch: ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     let scope = ChatStore::resolve(&test.state.rua_root, address.clone());
     let mut running = before.running_config.clone();
     running.llm_max_concurrent = 2;
@@ -347,7 +349,8 @@ async fn collaboration_mode_update_changes_only_future_configuration_epoch() {
             authority_epoch: ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     let response = request(
         &test.app,
         Method::PUT,
@@ -1791,7 +1794,8 @@ async fn product_hooks_release_acceptance_spans_registration_adoption_turn_and_a
             authority_epoch: ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
 
     request(
         &test.app,
@@ -1959,7 +1963,8 @@ async fn automation_inventory_is_adopted_only_by_target_chat_and_future_turns() 
             authority_epoch: ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     let manager = test.state.mcp_manager_for(agent).await.unwrap();
     let driver = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../rua-mcp/tests/fixtures/mock_mcp_server.py");

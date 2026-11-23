@@ -516,3 +516,119 @@ async fn an_unknown_or_mismatched_approval_id_never_approves_a_call() {
     }
     assert!(authority.snapshot_at(&address).await.pending.is_empty());
 }
+
+#[tokio::test]
+async fn captured_project_roots_remain_device_scoped_and_explicit_approvals_still_work() {
+    let (security, _security_dir) = make_test_security();
+    let resource = TempDir::new().unwrap();
+    let address = rua_core::ChatAddress::new("device-scoped-project");
+    let mut config = SecurityConfig::default();
+    config.extra.insert(
+        rua_security::PROJECT_RESOURCE_POLICY_KEY.into(),
+        serde_json::json!({"profile":"resource-write"}),
+    );
+    let captured = Arc::new(config);
+    let hook = |device: &str, source: Option<&str>| {
+        SecurityAgentHook::new(security.clone(), true)
+            .with_agent_id("agent")
+            .with_session_id(address.chat_id().as_str())
+            .with_chat_address(address.clone())
+            .with_turn_id("turn")
+            .with_local_device_id(device)
+            .with_working_dir(resource.path().to_string_lossy())
+            .with_security_snapshot(captured.clone())
+            .with_project_resource_roots(
+                vec![resource.path().to_path_buf()],
+                source.map(str::to_owned),
+            )
+    };
+    let call = |id: &str, device: Option<&str>| {
+        let mut call = make_call_with_args(
+            "edit",
+            serde_json::json!({
+                "patch": format!("*** Begin Patch\n*** Add File: {}\n+content\n*** End Patch", resource.path().join("new.txt").display()),
+            }),
+        );
+        call.id = id.into();
+        if let Some(device) = device {
+            call.arguments["device_id"] = device.into();
+        }
+        call
+    };
+    assert!(matches!(
+        hook("device-a", Some("device-a"))
+            .before_tool_call(&call("original", None), 0)
+            .await
+            .unwrap(),
+        ToolDecision::Allow,
+    ));
+    for (id, local, source, explicit) in [
+        ("moved", "device-c", Some("device-a"), None),
+        ("unknown-scope", "device-a", None, None),
+    ] {
+        assert!(matches!(
+            hook(local, source)
+                .before_tool_call(&call(id, explicit), 0)
+                .await
+                .unwrap(),
+            ToolDecision::RequiresApproval { .. },
+        ));
+    }
+    let remote = call("explicit-remote", Some("device-c"));
+    let ToolDecision::RequiresApproval { request_id, .. } = hook("device-a", Some("device-a"))
+        .before_tool_call(&remote, 0)
+        .await
+        .unwrap()
+    else {
+        panic!("an explicit remote Device cannot inherit a local writable root");
+    };
+    let pending = security
+        .approval_authority()
+        .snapshot_at(&address)
+        .await
+        .pending
+        .into_iter()
+        .find(|request| request.id == request_id)
+        .unwrap();
+    let matcher = pending
+        .reuse_options
+        .iter()
+        .find(|option| option.scope == rua_security::ApprovalReuseScope::Chat)
+        .expect("the existing card offers a Device-bound Chat approval")
+        .matcher
+        .clone();
+    security
+        .approval_authority()
+        .decide_for_authenticated_user(
+            "agent",
+            &request_id,
+            ApprovalDecision::AllowChat {
+                decided_by: "console".into(),
+                matcher,
+            },
+            "owner",
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        hook("device-c", Some("device-a"))
+            .before_tool_call(&call("approved-on-c", None), 0)
+            .await
+            .unwrap(),
+        ToolDecision::Allow,
+    ));
+    assert!(matches!(
+        hook("device-d", Some("device-a"))
+            .before_tool_call(&call("not-approved-on-d", None), 0)
+            .await
+            .unwrap(),
+        ToolDecision::RequiresApproval { .. },
+    ));
+    assert!(matches!(
+        hook("device-a", Some("device-a"))
+            .before_tool_call(&call("returned-to-a", None), 0)
+            .await
+            .unwrap(),
+        ToolDecision::Allow,
+    ));
+}

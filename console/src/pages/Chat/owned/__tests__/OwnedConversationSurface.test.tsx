@@ -1020,6 +1020,77 @@ describe("OwnedConversationSurface", () => {
     expect(body.regenerate_turn_id).toBeUndefined();
   });
 
+  it("applies the acknowledged authority and directory together before forwarding history", async () => {
+    mockGetChat.mockResolvedValue({
+      ...idleHistory(),
+      control: backgroundWorkControl({ items: [] }),
+      meta: {
+        authority_placement: {
+          device_id: "device-local",
+          authority_epoch: "epoch-local",
+        },
+        execution_directory: {
+          device_id: "device-local",
+          path: "/source-only",
+          managed: false,
+        },
+      },
+    });
+    const onHistoryChange = vi.fn();
+    const show = (meta?: NonNullable<ChatHistory["meta"]>) => (
+      <MemoryRouter>
+        <OwnedConversationSurface
+          address={{ chatId: "chat-1" }}
+          executionAgentId="default"
+          authorityPlacementDeviceId={meta ? "device-target" : "device-local"}
+          committedAuthorityPlacement={meta}
+          onHistoryChange={onHistoryChange}
+          executionLocation={{ devices: [], onDraftChange: vi.fn() }}
+        />
+      </MemoryRouter>
+    );
+    const { rerender } = render(show());
+    await waitFor(() =>
+      expect(onHistoryChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          meta: expect.objectContaining({
+            execution_directory: expect.objectContaining({
+              path: "/source-only",
+            }),
+          }),
+        }),
+      ),
+    );
+    const meta = {
+      authority_placement: {
+        device_id: "device-target",
+        authority_epoch: "epoch-target",
+      },
+      execution_directory: {
+        device_id: "device-target",
+        path: "/target/actual",
+        managed: false,
+      },
+    };
+    rerender(show(meta));
+    await waitFor(() =>
+      expect(onHistoryChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          meta,
+          control: expect.objectContaining({
+            authority_device_id: "device-target",
+            placement: expect.objectContaining({
+              authority_device_id: "device-target",
+              authority_epoch: "epoch-target",
+            }),
+          }),
+        }),
+      ),
+    );
+    expect(screen.getByText(/device-target · \/target\/actual/)).toBeVisible();
+    expect(screen.queryByText(/source-only/)).not.toBeInTheDocument();
+  });
+
   it("reconciles a terminal-only automatic continuation without a new user message", async () => {
     mockGetChat.mockResolvedValue(idleHistory());
     const live = trackedSseResponse();

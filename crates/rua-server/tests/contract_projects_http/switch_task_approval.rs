@@ -517,7 +517,8 @@ async fn managed_directories_are_isolated_and_created_only_for_accepted_chats() 
             authority_device_id: device.clone(),
             authority_epoch: placement.authority_epoch,
         })
-        .await;
+        .await
+        .unwrap();
     authority
         .enqueue_input(
             address,

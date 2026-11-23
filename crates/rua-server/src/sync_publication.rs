@@ -132,6 +132,11 @@ pub enum SyncPublicationFact {
         scope_root: PathBuf,
         chat_addresses: Vec<ChatAddress>,
     },
+    HandoffSettingsSnapshot {
+        scope_root: PathBuf,
+        address: ChatAddress,
+        agent_id: String,
+    },
     StableConversationState {
         scope_root: PathBuf,
         address: ChatAddress,

@@ -182,30 +182,89 @@ async fn resolve_target(
     let chat_id = crate::services::console_chat::resolve_chat_id(chat_id)
         .map_err(ProjectControlError::InvalidChatId)?;
     let address = ChatAddress::new(&chat_id);
-    let scope_root = ChatStore::resolve(&state.rua_root, address.clone())
-        .root()
-        .to_path_buf();
     let source_device_id = current_sync_device_id(&state.sync_device)
         .ok_or(ProjectControlError::MissingDeviceIdentity)?;
-    let Some(header) =
+    let Some(saved) =
         crate::services::chat_context::load_live_chat_header(&state.rua_root, &chat_id)
             .await
             .map_err(|e| ProjectControlError::Store(e.to_string()))?
     else {
-        return Ok(None);
+        // A controlling Device may hold only the synchronized Chat Index entry and no
+        // local Chat Header, yet still drive this Project Chat on its authority
+        // Device. The Index is the synchronized discovery surface (ADR 0059 D31) and
+        // carries the fixed Project membership plus the authority placement.
+        return resolve_from_chat_index(state, &project_id, &address, source_device_id).await;
     };
-    if header.project_id.as_deref() != Some(project_id.as_str()) {
+    if saved.project_id.as_deref() != Some(project_id.as_str()) {
         return Ok(None);
     }
     let placement =
         crate::services::conversation_authority_placement::parse_conversation_authority_placement(
-            &serde_json::Value::Object(header.extra),
+            &serde_json::Value::Object(saved.extra),
         )
         .map_err(|e| ProjectControlError::InvalidAuthorityState(e.to_string()))?;
     Ok(Some(ProjectControlTarget {
-        address,
-        scope_root,
-        agent_id: header.agent_id,
+        address: address.clone(),
+        scope_root: ChatStore::resolve(&state.rua_root, address)
+            .root()
+            .to_path_buf(),
+        agent_id: saved.agent_id,
+        source_device_id,
+        authority_device_id: placement.device_id,
+        authority_epoch: placement.authority_epoch,
+    }))
+}
+
+/// Resolve a Project control target from the synchronized Chat Index alone.
+///
+/// Used when the controlling Device holds no local Chat Header. `Ok(None)` means this
+/// Device knows about no such Chat, preserving the caller's `Not Found` versus
+/// read-only distinction.
+async fn resolve_from_chat_index(
+    state: &AppState,
+    project_id: &ProjectId,
+    address: &ChatAddress,
+    source_device_id: String,
+) -> Result<Option<ProjectControlTarget>, ProjectControlError> {
+    let Some(entry) = crate::services::chat_index::get(
+        state.chat_workspace().as_path(),
+        address.chat_id().as_str(),
+    )
+    .await
+    .map_err(ProjectControlError::Store)?
+    else {
+        return Ok(None);
+    };
+    if entry
+        .meta
+        .get("project_id")
+        .and_then(serde_json::Value::as_str)
+        != Some(project_id.as_str())
+    {
+        return Ok(None);
+    }
+    let placement =
+        crate::services::conversation_authority_placement::parse_conversation_authority_placement(
+            &entry.meta,
+        )
+        .map_err(|e| ProjectControlError::InvalidAuthorityState(e.to_string()))?;
+    let agent_id = entry
+        .meta
+        .get("agent_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|agent_id| !agent_id.trim().is_empty())
+        .ok_or_else(|| {
+            ProjectControlError::InvalidAuthorityState(
+                "Chat Index entry does not identify the current Agent".to_string(),
+            )
+        })?
+        .to_string();
+    Ok(Some(ProjectControlTarget {
+        scope_root: ChatStore::resolve(&state.rua_root, address.clone())
+            .root()
+            .to_path_buf(),
+        address: address.clone(),
+        agent_id,
         source_device_id,
         authority_device_id: placement.device_id,
         authority_epoch: placement.authority_epoch,

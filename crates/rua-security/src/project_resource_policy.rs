@@ -169,16 +169,37 @@ impl EffectiveProjectResourcePolicy {
     }
 }
 
+/// Captured absolute roots only describe paths on their original Device. An
+/// unknown scope keeps the Project restriction, with no implicit writable roots.
+pub fn project_write_roots_for_device<'a>(
+    roots: &'a [PathBuf],
+    source_device_id: Option<&str>,
+    actual_device_id: Option<&str>,
+) -> &'a [PathBuf] {
+    match (source_device_id, actual_device_id) {
+        (Some(source), Some(actual)) if !source.is_empty() && source == actual => roots,
+        _ => &[],
+    }
+}
+
 pub(crate) fn tool_finding(
     config: &SecurityConfig,
     ctx: &crate::ToolCallContext,
 ) -> Option<crate::ToolGuardFinding> {
     let roots: Vec<PathBuf> =
         serde_json::from_value(ctx.metadata.get("project_resource_roots")?.clone()).ok()?;
+    let source_device = ctx
+        .metadata
+        .get("project_resource_device_id")
+        .and_then(serde_json::Value::as_str);
+    let actual_device = match ctx.tool_input.get("device_id") {
+        Some(device) => device.as_str(),
+        None => ctx.local_device_id.as_deref(),
+    };
     let policy = EffectiveProjectResourcePolicy::resolve_with_roots(
         config,
         Path::new(&ctx.working_dir),
-        &roots,
+        project_write_roots_for_device(&roots, source_device, actual_device),
     );
     if policy.profile == ProjectResourceProfile::DangerFullAccess {
         return None;

@@ -116,6 +116,33 @@ mod remote_commands;
 #[path = "device_session_control_view/task_notifications.rs"]
 mod task_notifications;
 
+#[path = "device_session_control_view/handoff.rs"]
+mod handoff;
+
+#[path = "device_session_control_view/handoff_cold_agent.rs"]
+mod handoff_cold_agent;
+
+#[path = "device_session_control_view/handoff_lost_receipt.rs"]
+mod handoff_lost_receipt;
+
+#[path = "device_session_control_view/handoff_permissions.rs"]
+mod handoff_permissions;
+
+#[path = "device_session_control_view/handoff_queue.rs"]
+mod handoff_queue;
+
+#[path = "device_session_control_view/handoff_media.rs"]
+mod handoff_media;
+
+#[path = "device_session_control_view/handoff_recovery.rs"]
+mod handoff_recovery;
+
+#[path = "device_session_control_view/handoff_tasks.rs"]
+mod handoff_tasks;
+
+#[path = "device_session_control_view/handoff_unrelated_sync.rs"]
+mod handoff_unrelated_sync;
+
 fn epoch(wall_ms: u64) -> ConversationAuthorityEpoch {
     ConversationAuthorityEpoch::from_parts(wall_ms, 0, [0; 8])
 }
@@ -164,7 +191,10 @@ where
     S: futures::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
     E: std::fmt::Debug,
 {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    // Attaching to a Chat whose Authority lives on another Device may spend the
+    // production remote-attach connect budget (10s) before the first frame, so the
+    // harness has to outwait that budget rather than race it.
+    tokio::time::timeout(Duration::from_secs(30), async {
         let mut control = None;
         let mut replay = None;
         let mut replay_events = Vec::new();
@@ -1162,6 +1192,54 @@ async fn seed_chat_header(workspace_dir: &std::path::Path, chat_id: &str, device
         .expect("seed chat header");
 }
 
+/// Give a controlling Device the sync identity that backs its paired runtime.
+///
+/// A control command reports `current_sync_device_id` as its source, and the authority
+/// Device authenticates that against the live Session peer. A controller fixture that
+/// never installed an identity sends an unauthenticated source and is rejected before
+/// any control is dispatched.
+fn install_controller_identity(state: &AppState, secret_byte: u8) {
+    let identity = serde_json::from_value::<rua_sync::identity::DeviceIdentity>(
+        serde_json::json!({"secret_bytes": vec![secret_byte; 32]}),
+    )
+    .expect("controller Device identity");
+    let expected = hex::encode(identity.device_id_short());
+    *state.sync_device.write().expect("sync Device lock") = Some(Arc::new(identity));
+    assert_eq!(
+        rua_server::services::device_context::current_sync_device_id(&state.sync_device).as_deref(),
+        Some(expected.as_str()),
+        "controller sync identity must be installed"
+    );
+}
+
+/// Mirror the synchronized Chat Index entry onto a controlling Device.
+///
+/// Discovery of a Chat that lives on another Device goes through the synchronized
+/// Chat Index (ADR 0059 D30/D31): the controller holds no authoritative Chat state,
+/// but it does receive the rebuildable list projection that names the Chat's fixed
+/// Project membership and authority placement.
+async fn seed_synced_chat_index(
+    controller_state: &AppState,
+    authority_scope_root: &std::path::Path,
+    chat_id: &str,
+) {
+    // Rebuild the projection from the authoritative header so the replicated entry
+    // carries the same fixed Project membership and authority placement that Sync
+    // would publish, rather than whatever an earlier seed step left behind.
+    let address = ChatAddress::new(chat_id);
+    rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(authority_scope_root))
+        .repair_projection(&address)
+        .await
+        .expect("rebuild authority Chat projection");
+    let index = rua_server::services::chat_index::get(authority_scope_root, chat_id)
+        .await
+        .expect("read authority Chat Index")
+        .expect("authority Chat Index entry");
+    rua_server::services::chat_index::upsert(controller_state.chat_workspace().as_path(), index)
+        .await
+        .expect("seed synchronized Chat Index on the controller");
+}
+
 async fn seed_project_chat_state(
     scope_root: &std::path::Path,
     project_id: &rua_core::ProjectId,
@@ -1561,6 +1639,10 @@ async fn remote_project_live_replays_one_activity_to_two_viewer_devices() {
         &target_device_id,
     )
     .await;
+    install_controller_identity(&first_state, 96);
+    seed_synced_chat_index(&first_state, target_scope.root(), chat_id).await;
+    install_controller_identity(&second_state, 98);
+    seed_synced_chat_index(&second_state, target_scope.root(), chat_id).await;
 
     let first = build_runtime(
         96,
@@ -1651,10 +1733,7 @@ async fn remote_project_live_replays_one_activity_to_two_viewer_devices() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/console/live",
-                    project.project_id
-                ))
+                .uri(format!("/api/chats/{chat_id}/console/live",))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
@@ -1681,10 +1760,7 @@ async fn remote_project_live_replays_one_activity_to_two_viewer_devices() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/console/live",
-                    project.project_id
-                ))
+                .uri(format!("/api/chats/{chat_id}/console/live",))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
@@ -1819,6 +1895,8 @@ async fn remote_project_stop_and_queue_controls_do_not_require_controller_chat_s
         &target_device_id,
     )
     .await;
+    install_controller_identity(&source_state, 102);
+    seed_synced_chat_index(&source_state, target_scope.root(), chat_id).await;
     let mut first_viewer = target_state
         .active_stream_broadcast_hub
         .subscribe_chat(&address, &BTreeMap::new())
@@ -1847,7 +1925,8 @@ async fn remote_project_stop_and_queue_controls_do_not_require_controller_chat_s
             authority_epoch: placement.authority_epoch,
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
 
     let target_handler = full_command_handler(&target_state, &target_device_id);
     let source = build_runtime(
@@ -1919,13 +1998,8 @@ async fn remote_project_stop_and_queue_controls_do_not_require_controller_chat_s
     );
 
     let source_scope = rua_core::ChatStore::resolve(&source_state.rua_root, address.clone());
-    assert!(
-        rua_server::services::chat_index::get(source_scope.root(), chat_id)
-            .await
-            .unwrap()
-            .is_none(),
-        "controller has no Project Chat Index"
-    );
+    // The controller only holds the rebuildable Chat Index projection that Sync
+    // publishes for discovery (ADR 0059 D31); it never holds authoritative storage.
     assert!(
         WorkspaceSessionStore::new(source_scope.root())
             .load_chat_header(chat_id)
@@ -1947,10 +2021,7 @@ async fn remote_project_stop_and_queue_controls_do_not_require_controller_chat_s
         .oneshot(
             Request::builder()
                 .method(Method::PATCH)
-                .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/queue/{}",
-                    project.project_id, queued_input_id
-                ))
+                .uri(format!("/api/chats/{chat_id}/queue/{queued_input_id}",))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({ "message": "edited at authority" }).to_string(),
@@ -2009,8 +2080,7 @@ async fn remote_project_stop_and_queue_controls_do_not_require_controller_chat_s
             Request::builder()
                 .method(Method::POST)
                 .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/queue/{queued_input_id}/send-now",
-                    project.project_id
+                    "/api/chats/{chat_id}/queue/{queued_input_id}/send-now",
                 ))
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -2032,8 +2102,7 @@ async fn remote_project_stop_and_queue_controls_do_not_require_controller_chat_s
             Request::builder()
                 .method(Method::POST)
                 .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/queue/{second_input_id}/send-now",
-                    project.project_id
+                    "/api/chats/{chat_id}/queue/{second_input_id}/send-now",
                 ))
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -2062,8 +2131,7 @@ async fn remote_project_stop_and_queue_controls_do_not_require_controller_chat_s
             Request::builder()
                 .method(Method::POST)
                 .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/queue/{queued_input_id}/send-now",
-                    project.project_id
+                    "/api/chats/{chat_id}/queue/{queued_input_id}/send-now",
                 ))
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -2084,10 +2152,7 @@ async fn remote_project_stop_and_queue_controls_do_not_require_controller_chat_s
         .oneshot(
             Request::builder()
                 .method(Method::DELETE)
-                .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/queue/{second_input_id}",
-                    project.project_id
-                ))
+                .uri(format!("/api/chats/{chat_id}/queue/{second_input_id}",))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2155,8 +2220,7 @@ async fn remote_project_stop_and_queue_controls_do_not_require_controller_chat_s
             Request::builder()
                 .method(Method::POST)
                 .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/console/stop",
-                    project.project_id
+                    "/api/chats/{chat_id}/console/stop",
                 ))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::json!({"turn_id": active_turn.turn_id, "authority_epoch": placement.authority_epoch}).to_string()))
@@ -2209,10 +2273,7 @@ async fn remote_project_stop_and_queue_controls_do_not_require_controller_chat_s
         .oneshot(
             Request::builder()
                 .method(Method::DELETE)
-                .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/queue/{queued_input_id}",
-                    project.project_id
-                ))
+                .uri(format!("/api/chats/{chat_id}/queue/{queued_input_id}",))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2306,6 +2367,8 @@ async fn remote_project_model_reasoning_and_options_use_resource_authority() {
         &target_device_id,
     )
     .await;
+    install_controller_identity(&source_state, 105);
+    seed_synced_chat_index(&source_state, target_scope.root(), chat_id).await;
     let store = WorkspaceSessionStore::new(target_scope.root());
     let header = store.load_chat_header(chat_id).await.unwrap().unwrap();
     let mut configuration = header.extra["hook_configuration"].clone();
@@ -2359,7 +2422,7 @@ async fn remote_project_model_reasoning_and_options_use_resource_authority() {
         "controller has no Project Chat Header"
     );
     let source_app = rua_server::router::build_app(source_state.clone(), None);
-    let chat_uri = format!("/api/projects/{}/chats/{chat_id}", project.project_id);
+    let chat_uri = format!("/api/chats/{chat_id}");
 
     let model_response = source_app
         .clone()
@@ -2382,13 +2445,17 @@ async fn remote_project_model_reasoning_and_options_use_resource_authority() {
         )
         .await
         .unwrap();
-    assert_eq!(model_response.status(), StatusCode::OK);
-    let model_body: serde_json::Value = serde_json::from_slice(
-        &axum::body::to_bytes(model_response.into_body(), usize::MAX)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
+    let model_status = model_response.status();
+    let model_raw = axum::body::to_bytes(model_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        model_status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&model_raw)
+    );
+    let model_body: serde_json::Value = serde_json::from_slice(&model_raw).unwrap();
     assert_eq!(model_body["model"]["model"], "reasoning-model");
     assert_eq!(model_body["model"]["thinking_strength"], "auto");
     let first_model_control = read_control_for_reason(&mut first_viewer, "model_updated").await;
@@ -2572,7 +2639,17 @@ async fn remote_project_model_reasoning_and_options_use_resource_authority() {
         )
         .await
         .unwrap();
-    assert_eq!(invalid_options.status(), StatusCode::CONFLICT);
+    let invalid_options_status = invalid_options.status();
+    let invalid_options_raw = axum::body::to_bytes(invalid_options.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        invalid_options_status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid Chat options are a validation error, never a remote rejection: {} ({})",
+        invalid_options_status,
+        String::from_utf8_lossy(&invalid_options_raw)
+    );
     assert_eq!(
         target_state
             .conversation_input_intake
@@ -2581,8 +2658,11 @@ async fn remote_project_model_reasoning_and_options_use_resource_authority() {
             .unwrap()["max_iters"],
         17
     );
+    // Model and options controls resolve through the Chat Index projection alone;
+    // the controller never materializes authoritative Chat storage.
     assert!(
-        rua_server::services::chat_index::get(source_scope.root(), chat_id)
+        WorkspaceSessionStore::new(source_scope.root())
+            .load_chat_header(chat_id)
             .await
             .unwrap()
             .is_none(),
@@ -2640,6 +2720,8 @@ async fn remote_project_approval_and_acp_use_resource_authority_without_controll
         &target_device_id,
     )
     .await;
+    install_controller_identity(&source_state, 108);
+    seed_synced_chat_index(&source_state, target_scope.root(), chat_id).await;
     let placement =
         rua_server::services::conversation_authority_target::load_chat_authority_placement_target(
             target_scope.root(),
@@ -2709,7 +2791,7 @@ async fn remote_project_approval_and_acp_use_resource_authority_without_controll
         "controller has no Project Chat Header"
     );
     let source_app = rua_server::router::build_app(source_state.clone(), None);
-    let chat_uri = format!("/api/projects/{}/chats/{chat_id}", project.project_id);
+    let chat_uri = format!("/api/chats/{chat_id}");
 
     let approval_authority = target_state.security.approval_authority();
     for (index, name) in ["run-once", "allow-chat", "allow-agent", "reject"]
@@ -3280,6 +3362,8 @@ async fn collaboration_device_command_is_idempotent_epoch_gated_and_rebuilds_pro
         &target_device_id,
     )
     .await;
+    install_controller_identity(&source_state, 118);
+    seed_synced_chat_index(&source_state, target_scope.root(), chat_id).await;
     let configuration = rua_server::services::product_hooks::ChatHookConfiguration {
         epoch: "project-source-configuration".into(),
         running_config: rua_config::ChatRunningConfig::default(),
@@ -3740,6 +3824,8 @@ async fn remote_project_agent_switch_is_live_for_two_viewers_with_replicated_hea
         &target_device_id,
     )
     .await;
+    install_controller_identity(&first_state, 111);
+    seed_synced_chat_index(&first_state, target_scope.root(), chat_id).await;
 
     rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(target_scope.root()))
         .repair_projection(&address)
@@ -3993,6 +4079,8 @@ async fn remote_project_variant_and_rollback_are_live_without_controller_storage
         &target_device_id,
     )
     .await;
+    install_controller_identity(&source_state, 121);
+    seed_synced_chat_index(&source_state, target_scope.root(), chat_id).await;
     let target_store = WorkspaceSessionStore::new(target_scope.root());
     target_store
         .append_conversation_turn(
@@ -4108,10 +4196,7 @@ async fn remote_project_variant_and_rollback_are_live_without_controller_storage
         app.clone().oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/console/live",
-                    project.project_id
-                ))
+                .uri(format!("/api/chats/{chat_id}/console/live",))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
@@ -4137,10 +4222,7 @@ async fn remote_project_variant_and_rollback_are_live_without_controller_storage
         .oneshot(
             Request::builder()
                 .method(Method::PUT)
-                .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}",
-                    project.project_id
-                ))
+                .uri(format!("/api/chats/{chat_id}"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
@@ -4214,10 +4296,7 @@ async fn remote_project_variant_and_rollback_are_live_without_controller_storage
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri(format!(
-                    "/api/projects/{}/chats/{chat_id}/rollback",
-                    project.project_id
-                ))
+                .uri(format!("/api/chats/{chat_id}/rollback",))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({ "before_turn_id": "turn-2" }).to_string(),
@@ -4304,6 +4383,8 @@ async fn removed_remote_project_background_tool_route_does_not_transfer_executio
         &target_device_id,
     )
     .await;
+    install_controller_identity(&source_state, 124);
+    seed_synced_chat_index(&source_state, target_scope.root(), chat_id).await;
 
     let source = build_runtime(
         124,
@@ -5180,7 +5261,8 @@ async fn remote_project_first_submit_materializes_on_selected_device() {
             authority_epoch: sibling_placement.authority_epoch,
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     let first_placement =
         rua_server::services::conversation_authority_target::load_chat_authority_placement_target(
             target_scope.root(),
@@ -5242,7 +5324,8 @@ async fn remote_project_first_submit_materializes_on_selected_device() {
             authority_epoch: first_placement.authority_epoch,
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     assert!(target_state
         .conversation_authority
         .active_turn(&first_address)
@@ -5502,7 +5585,8 @@ async fn remote_project_first_submit_materializes_on_selected_device() {
             authority_epoch: control_placement.authority_epoch,
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     let control_key = StreamKey::new(
         CONSOLE_CHANNEL_ID,
         control_address.clone(),
@@ -6228,7 +6312,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
         DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[22; 32])).local_device_id(),
     );
     let chat_id = "00000000-0000-0000-0000-000000009906";
-    let workspace_dir = state.rua_root.join("workspaces").join("default");
+    let workspace_dir = state.chat_workspace().as_path().to_path_buf();
     seed_authority_placement(&workspace_dir, chat_id, &target_device_id).await;
     seed_chat_header(&workspace_dir, chat_id, &target_device_id).await;
     let key = StreamKey::new(
@@ -6246,7 +6330,7 @@ async fn repeated_control_view_reads_reuse_one_device_session_generation() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
     let queued = state
         .conversation_authority
         .enqueue_input(
@@ -6741,7 +6825,7 @@ async fn remote_acp_lifecycle_persists_binding_on_authority_device() {
         .get_or_create("default")
         .await
         .expect("target workspace runtime");
-    let target_workspace = target_runtime.workspace_dir();
+    let target_workspace = target_runtime.chat_workspace_dir();
     let existing_handle = target_state
         .acp_chat_registry
         .get("default")
@@ -6872,8 +6956,8 @@ async fn remote_live_sends_initial_control_before_replay() {
         DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[54; 32])).local_device_id(),
     );
     let chat_id = "00000000-0000-0000-0000-000000009919";
-    let source_workspace = source_state.rua_root.join("workspaces").join("default");
-    let target_workspace = target_state.rua_root.join("workspaces").join("default");
+    let source_workspace = source_state.chat_workspace().as_path().to_path_buf();
+    let target_workspace = target_state.chat_workspace().as_path().to_path_buf();
     seed_authority_placement(&source_workspace, chat_id, &target_device_id).await;
     seed_authority_placement(&target_workspace, chat_id, &target_device_id).await;
 
@@ -6991,8 +7075,8 @@ async fn failed_chat_live_recovers_when_another_chat_connects_the_shared_session
     );
     let chat_a = "00000000-0000-0000-0000-000000009921";
     let chat_b = "00000000-0000-0000-0000-000000009922";
-    let source_workspace = source_state.rua_root.join("workspaces").join("default");
-    let target_workspace = target_state.rua_root.join("workspaces").join("default");
+    let source_workspace = source_state.chat_workspace().as_path().to_path_buf();
+    let target_workspace = target_state.chat_workspace().as_path().to_path_buf();
     for chat_id in [chat_a, chat_b] {
         seed_authority_placement(&source_workspace, chat_id, &target_device_id).await;
         seed_authority_placement(&target_workspace, chat_id, &target_device_id).await;
@@ -7150,8 +7234,8 @@ async fn synced_placement_wake_reconnects_remote_live_without_retry_timer() {
         DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[63; 32])).local_device_id(),
     );
     let chat_id = "00000000-0000-0000-0000-000000009924";
-    let source_workspace = source_state.rua_root.join("workspaces").join("default");
-    let target_workspace = target_state.rua_root.join("workspaces").join("default");
+    let source_workspace = source_state.chat_workspace().as_path().to_path_buf();
+    let target_workspace = target_state.chat_workspace().as_path().to_path_buf();
     seed_authority_placement(&source_workspace, chat_id, old_authority_device_id).await;
     seed_authority_placement_at_epoch(&target_workspace, chat_id, &target_device_id, epoch(2))
         .await;
@@ -7309,9 +7393,9 @@ async fn higher_epoch_wake_interrupts_only_the_old_live_route() {
         DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[67; 32])).local_device_id(),
     );
     let chat_id = "00000000-0000-0000-0000-000000009925";
-    let source_workspace = source_state.rua_root.join("workspaces").join("default");
-    let old_workspace = old_state.rua_root.join("workspaces").join("default");
-    let new_workspace = new_state.rua_root.join("workspaces").join("default");
+    let source_workspace = source_state.chat_workspace().as_path().to_path_buf();
+    let old_workspace = old_state.chat_workspace().as_path().to_path_buf();
+    let new_workspace = new_state.chat_workspace().as_path().to_path_buf();
     seed_authority_placement_at_epoch(&source_workspace, chat_id, &old_device_id, epoch(1)).await;
     seed_authority_placement_at_epoch(&old_workspace, chat_id, &old_device_id, epoch(1)).await;
     seed_authority_placement_at_epoch(&new_workspace, chat_id, &new_device_id, epoch(2)).await;
@@ -7491,246 +7575,132 @@ async fn higher_epoch_wake_interrupts_only_the_old_live_route() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn target_adopts_history_without_copying_referenced_media() {
-    let source_state_dir = TempDir::new().expect("source state tempdir");
-    let source_state =
-        AppState::from_tempdir(source_state_dir.path().to_path_buf(), ServerProfile::Test);
-    let target_state_dir = TempDir::new().expect("target state tempdir");
-    let target_state =
-        AppState::from_tempdir(target_state_dir.path().to_path_buf(), ServerProfile::Test);
-    seed_fixture_provider(&target_state, vec![fixture_provider_model("available")]).await;
-
-    let network_secret = [55; 32];
-    let target_device_id = hex::encode(
-        DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[57; 32])).local_device_id(),
-    );
-    let source_device_id = hex::encode(
+async fn legacy_authority_adopt_cannot_bypass_cooperative_handoff() {
+    let source_state_dir = TempDir::new().unwrap();
+    let source_state = AppState::from_tempdir(source_state_dir.path().into(), ServerProfile::Test);
+    let target_state_dir = TempDir::new().unwrap();
+    let target_state = AppState::from_tempdir(target_state_dir.path().into(), ServerProfile::Test);
+    let source_id = hex::encode(
         DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[56; 32])).local_device_id(),
     );
-    let old_authority_device_id = source_device_id.as_str();
-    let chat_id = "00000000-0000-0000-0000-000000009920";
-    let empty_chat_id = "00000000-0000-0000-0000-000000009921";
-    let source_workspace = source_state.chat_workspace().as_path().to_path_buf();
-    let target_workspace = target_state.chat_workspace().as_path().to_path_buf();
-    seed_adoptable_chat(
-        &source_workspace,
-        chat_id,
-        old_authority_device_id,
-        "available",
-    )
-    .await;
-    let required_media_id = "00000000-0000-4000-8000-000000009920";
-    let source_chat_dir = source_workspace.join("sessions").join(chat_id);
-    std::fs::write(
-        source_chat_dir.join("required-media.json"),
-        serde_json::to_vec(&serde_json::json!({
-            "content": [{"media_ref": format!("media/{required_media_id}")}]
-        }))
-        .expect("required Media JSON"),
-    )
-    .expect("write required Media reference");
-    let source_media_dir = source_workspace.join("media");
-    std::fs::create_dir_all(&source_media_dir).expect("source Media dir");
-    std::fs::write(
-        source_media_dir.join(required_media_id),
-        b"required authority media",
-    )
-    .expect("write required Media");
-    seed_adoptable_empty_chat(
-        &target_workspace,
-        chat_id,
-        old_authority_device_id,
-        "available",
-    )
-    .await;
-    seed_adoptable_empty_chat(
-        &source_workspace,
-        empty_chat_id,
-        old_authority_device_id,
-        "available",
-    )
-    .await;
-    seed_adoptable_empty_chat(
-        &target_workspace,
-        empty_chat_id,
-        old_authority_device_id,
-        "available",
-    )
-    .await;
-    let address = rua_core::ChatAddress::new(chat_id);
-    let empty_address = rua_core::ChatAddress::new(empty_chat_id);
-    let required_manifest = load_conversation_manifest(&source_workspace, &address)
-        .await
-        .expect("load source manifest")
-        .expect("source manifest");
-    let empty_manifest = load_conversation_manifest(&source_workspace, &empty_address)
-        .await
-        .expect("load empty source manifest")
-        .expect("empty source manifest");
-
-    let source_handler = full_command_handler(&source_state, &source_device_id);
-    let target_handler = full_command_handler(&target_state, &target_device_id);
+    let target_id = hex::encode(
+        DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[57; 32])).local_device_id(),
+    );
     let source = build_runtime(
         56,
-        network_secret,
+        [55; 32],
         vec![peer_entry(57)],
-        Some(source_handler),
+        Some(full_command_handler(&source_state, &source_id)),
         Vec::new(),
         test_config(),
     )
     .await;
     let target = build_runtime(
         57,
-        network_secret,
+        [55; 32],
         vec![peer_entry(56)],
-        Some(target_handler),
+        Some(full_command_handler(&target_state, &target_id)),
         Vec::new(),
         test_config(),
     )
     .await;
     install_connectable_peer(&source, &target);
-    install_connectable_peer(&target, &source);
-    assert_eq!(target.device_id, target_device_id);
-    *source_state
-        .sync_transfer_session_manager
-        .write()
-        .expect("source session manager cell") = Some(source.runtime.session_manager().clone());
-    *target_state
-        .sync_transfer_session_manager
-        .write()
-        .expect("target session manager cell") = Some(target.runtime.session_manager().clone());
-    source
-        .runtime
-        .session_manager()
-        .set_bulk_transfer_handler(Arc::new(
-            SyncTransferBulkHandler::new(source.device_id.clone())
-                .with_chat_media_root(source_state.rua_root.clone()),
-        ));
-    target
-        .runtime
-        .session_manager()
-        .set_bulk_transfer_handler(Arc::new(SyncTransferBulkHandler::new(
-            target.device_id.clone(),
-        )));
-
-    let mut control_events = target_state
-        .conversation_authority
-        .subscribe_global_control_events();
-    let command = authority_adopt_command(
-        "authority-adopt-success",
-        &source.device_id,
-        &target.device_id,
-        chat_id,
-        required_manifest.clone(),
-    );
-    target_state.sync_enabled.store(true, Ordering::Relaxed);
-    let target_sync_guard = target_state.sync_node.lock().await;
-    let response = tokio::time::timeout(
-        Duration::from_secs(1),
-        deliver_conversation_authority_adopt_via_session(
+    let source_workspace = source_state.chat_workspace();
+    let target_workspace = target_state.chat_workspace();
+    for empty in [false, true] {
+        let chat = uuid::Uuid::new_v4().to_string();
+        if empty {
+            seed_adoptable_empty_chat(source_workspace.as_path(), &chat, &source_id, "available")
+                .await;
+        } else {
+            seed_adoptable_chat(source_workspace.as_path(), &chat, &source_id, "available").await;
+        }
+        seed_adoptable_empty_chat(target_workspace.as_path(), &chat, &source_id, "available").await;
+        let old = load_conversation_manifest(target_workspace.as_path(), &ChatAddress::new(&chat))
+            .await
+            .unwrap()
+            .unwrap();
+        let manifest =
+            load_conversation_manifest(source_workspace.as_path(), &ChatAddress::new(&chat))
+                .await
+                .unwrap()
+                .unwrap();
+        let command = authority_adopt_command(
+            &format!("legacy-adopt-{chat}"),
+            &source_id,
+            &target_id,
+            &chat,
+            manifest,
+        );
+        for _ in 0..2 {
+            let error = deliver_conversation_authority_adopt_via_session(
+                source.runtime.session_manager(),
+                &command,
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(error, DeviceCommandDeliveryError::Rejected { ref reason, .. } if reason == "cooperative_handoff_required"),
+                "{error}"
+            );
+        }
+        let after =
+            load_conversation_manifest(target_workspace.as_path(), &ChatAddress::new(&chat))
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(
+            after.compare(&old).matches,
+            "rejected legacy adoption cannot replace history"
+        );
+        let placement = rua_server::services::conversation_authority_target::load_chat_authority_placement_target(target_workspace.as_path(), &chat).await.unwrap();
+        assert_eq!(placement.device_id, source_id);
+        let supersede = ConversationAuthoritySupersedeDeviceCommand {
+            command_id: format!("legacy-supersede-{chat}"),
+            agent_id: "default".into(),
+            address: ChatAddress::new(&chat),
+            source_device_id: source_id.clone(),
+            target_device_id: target_id.clone(),
+            previous_authority_epoch: epoch(1),
+            replacement: ConversationAuthorityPlacement {
+                device_id: target_id.clone(),
+                authority_epoch: epoch(2),
+                base_manifest_hash: old.hash().unwrap(),
+            },
+        };
+        let error = deliver_conversation_authority_supersede_via_session(
             source.runtime.session_manager(),
-            &command,
+            &supersede,
             Duration::from_secs(5),
-        ),
-    )
-    .await
-    .expect("authority adoption acknowledgement must not await Sync publication")
-    .expect("target adopts authority");
-    drop(target_sync_guard);
-    target_state.sync_enabled.store(false, Ordering::Relaxed);
-    assert_eq!(response.placement.device_id, target.device_id);
-    assert!(response.placement.authority_epoch > command.expected_authority_epoch);
-
-    let control_event = tokio::time::timeout(Duration::from_secs(1), control_events.recv())
-        .await
-        .expect("target Live control event timeout")
-        .expect("target Live control event");
-    let control_event: serde_json::Value =
-        serde_json::from_str(&control_event.payload).expect("control event JSON");
-    assert_eq!(control_event["reason"], "authority_placement_updated");
-    assert_eq!(
-        control_event["control"]["placement"]["authority_device_id"],
-        target.device_id
-    );
-    assert_eq!(
-        control_event["control"]["placement"]["authority_epoch"],
-        serde_json::json!(response.placement.authority_epoch)
-    );
-
-    let adopted =
-        rua_server::services::conversation_authority_target::load_chat_authority_placement_target(
-            &target_workspace,
-            chat_id,
         )
         .await
-        .expect("target adopted placement");
-    assert_eq!(adopted.device_id, target.device_id);
-    assert_eq!(adopted.authority_epoch, response.placement.authority_epoch);
-    let target_manifest = load_conversation_manifest(&target_workspace, &address)
+        .unwrap_err();
+        assert!(
+            matches!(error, DeviceCommandDeliveryError::Rejected { ref reason, .. } if reason == "cooperative_handoff_required"),
+            "{error}"
+        );
+        let mut conflicting = command.clone();
+        conflicting.required_manifest.message_count += 1;
+        let error = deliver_conversation_authority_adopt_via_session(
+            source.runtime.session_manager(),
+            &conflicting,
+            Duration::from_secs(5),
+        )
         .await
-        .expect("load target manifest")
-        .expect("target manifest");
-    assert!(target_manifest.compare(&required_manifest).matches);
-    assert!(!target_workspace
-        .join("media")
-        .join(required_media_id)
-        .exists());
-    assert_eq!(
-        std::fs::read(source_workspace.join("media").join(required_media_id)).unwrap(),
-        b"required authority media"
-    );
-
-    let empty_command = authority_adopt_command(
-        "authority-adopt-empty-chat",
-        &source.device_id,
-        &target.device_id,
-        empty_chat_id,
-        empty_manifest.clone(),
-    );
-    let empty_response = deliver_conversation_authority_adopt_via_session(
-        source.runtime.session_manager(),
-        &empty_command,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("target adopts empty Chat without full Sync");
-    assert_eq!(empty_response.placement.device_id, target.device_id);
-    let target_empty_manifest = load_conversation_manifest(&target_workspace, &empty_address)
-        .await
-        .expect("load target empty manifest")
-        .expect("target empty manifest");
-    assert!(target_empty_manifest.compare(&empty_manifest).matches);
-
-    let repeated = deliver_conversation_authority_adopt_via_session(
-        source.runtime.session_manager(),
-        &command,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("same adoption command is idempotent");
-    assert_eq!(repeated.placement, response.placement);
-
-    let mut conflicting = command.clone();
-    conflicting.required_manifest.message_count += 1;
-    let conflict = deliver_conversation_authority_adopt_via_session(
-        source.runtime.session_manager(),
-        &conflicting,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect_err("same command id with different Manifest must fail");
-    assert!(matches!(
-        conflict,
-        DeviceCommandDeliveryError::Rejected { ref reason, .. }
-            if reason == "duplicate_command_conflict"
-    ));
-
-    source.runtime.shutdown().await.expect("shutdown source");
-    target.runtime.shutdown().await.expect("shutdown target");
+        .unwrap_err();
+        assert!(
+            matches!(error, DeviceCommandDeliveryError::Rejected { ref reason, .. } if reason == "duplicate_command_conflict"),
+            "{error}"
+        );
+    }
+    source.runtime.shutdown().await.unwrap();
+    target.runtime.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
-async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients() {
+async fn confirmed_placement_projection_clears_stale_queue_and_redirects_attached_and_late_clients()
+{
     let controller_state_dir = TempDir::new().expect("controller state tempdir");
     let controller_state = AppState::from_tempdir(
         controller_state_dir.path().to_path_buf(),
@@ -7756,9 +7726,9 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
         DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[78; 32])).local_device_id(),
     );
     let chat_id = "00000000-0000-0000-0000-000000009926";
-    let old_workspace = old_state.rua_root.join("workspaces").join("default");
-    let new_workspace = new_state.rua_root.join("workspaces").join("default");
-    let controller_workspace = controller_state.rua_root.join("workspaces").join("default");
+    let old_workspace = old_state.chat_workspace().as_path().to_path_buf();
+    let new_workspace = new_state.chat_workspace().as_path().to_path_buf();
+    let controller_workspace = controller_state.chat_workspace().as_path().to_path_buf();
     seed_authority_placement(&controller_workspace, chat_id, &old_device_id).await;
     seed_adoptable_chat(&old_workspace, chat_id, &old_device_id, "available").await;
     seed_adoptable_chat(&new_workspace, chat_id, &old_device_id, "available").await;
@@ -7777,7 +7747,8 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
             authority_epoch: epoch(1),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     let queued = old_state
         .conversation_authority
         .enqueue_input(
@@ -7901,25 +7872,22 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     let mut old_control_events = old_state
         .conversation_authority
         .subscribe_global_control_events();
-    let command = authority_adopt_command(
-        "authority-adopt-with-supersession",
-        &controller.device_id,
-        &new.device_id,
-        chat_id,
-        required_manifest,
-    );
-    let adopted = deliver_conversation_authority_adopt_via_session(
-        controller.runtime.session_manager(),
-        &command,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("new authority adoption");
-    assert_eq!(adopted.placement.device_id, new_device_id);
+    // Exercise delivery of an already confirmed placement. Public movement is
+    // covered by the cooperative handoff tests; legacy force-adopt RPCs reject.
+    let replacement = ConversationAuthorityPlacement {
+        device_id: new_device_id.clone(),
+        authority_epoch: epoch(2),
+        base_manifest_hash: required_manifest.hash().unwrap(),
+    };
+    new_state
+        .conversation_authority
+        .apply_confirmed_authority_placement(&new_workspace, &address, replacement.clone())
+        .await
+        .unwrap();
 
     old_state
         .conversation_authority
-        .apply_confirmed_authority_placement(&old_workspace, &address, adopted.placement.clone())
+        .apply_confirmed_authority_placement(&old_workspace, &address, replacement.clone())
         .await
         .expect("initiating authority applies target acknowledgement");
     let acknowledged_control =
@@ -7952,21 +7920,11 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     .expect("acknowledged Control frame timeout");
 
     drop_next_redirect.store(1, Ordering::SeqCst);
-    deliver_conversation_authority_supersede_via_session(
-        new.runtime.session_manager(),
-        &ConversationAuthoritySupersedeDeviceCommand {
-            command_id: "authority-supersede-after-ack".to_string(),
-            agent_id: "default".to_string(),
-            address: address.clone(),
-            source_device_id: new.device_id.clone(),
-            target_device_id: old.device_id.clone(),
-            previous_authority_epoch: epoch(1),
-            replacement: adopted.placement.clone(),
-        },
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("new authority supersedes the acknowledged old authority");
+    old_state
+        .conversation_authority
+        .apply_authority_supersession(&old_workspace, &address, replacement.clone())
+        .await
+        .unwrap();
 
     let old_redirect_event =
         tokio::time::timeout(Duration::from_secs(5), old_control_events.recv())
@@ -7978,7 +7936,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     assert_eq!(old_redirect_event["type"], "authority_redirect");
     assert_eq!(
         old_redirect_event["placement"]["device_id"],
-        adopted.placement.device_id
+        replacement.device_id
     );
     assert_eq!(
         old_redirect_event["superseded_input_ids"],
@@ -8007,10 +7965,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
         .await
         .expect("old authority stored replacement");
     assert_eq!(old_placement.device_id, new_device_id);
-    assert_eq!(
-        old_placement.authority_epoch,
-        adopted.placement.authority_epoch
-    );
+    assert_eq!(old_placement.authority_epoch, replacement.authority_epoch);
     let old_control = old_state
         .conversation_authority
         .control_view(
@@ -8030,10 +7985,11 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
             address: rua_core::ChatAddress::new(chat_id.to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: new_device_id.clone(),
-            authority_epoch: adopted.placement.authority_epoch,
+            authority_epoch: replacement.authority_epoch,
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     let redirected_queue_entry = new_state
         .conversation_authority
         .enqueue_input(
@@ -8080,7 +8036,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
         controller.runtime.session_manager(),
         &ConversationControlDeviceCommand {
             target_device_id: new.device_id.clone(),
-            authority_epoch: adopted.placement.authority_epoch,
+            authority_epoch: replacement.authority_epoch,
             ..redirected_delete
         },
         Duration::from_secs(5),
@@ -8113,7 +8069,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     assert!(matches!(
         acp_redirect,
         DeviceCommandDeliveryError::AuthorityRedirect(ref redirect)
-            if redirect.placement == adopted.placement
+            if redirect.placement == replacement
     ));
     let redirected_acp_status = AcpChatDeviceCommand {
         command_id: "acp-status-follows-one-redirect".to_string(),
@@ -8135,7 +8091,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
         controller.runtime.session_manager(),
         &AcpChatDeviceCommand {
             target_device_id: new.device_id.clone(),
-            authority_epoch: adopted.placement.authority_epoch,
+            authority_epoch: replacement.authority_epoch,
             ..redirected_acp_status
         },
         Duration::from_secs(5),
@@ -8150,10 +8106,11 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
             address: rua_core::ChatAddress::new(chat_id.to_string()),
             driver: ConversationDriverKind::Rua,
             authority_device_id: new_device_id.clone(),
-            authority_epoch: adopted.placement.authority_epoch,
+            authority_epoch: replacement.authority_epoch,
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     let submit_outcome = controller_state
         .console_facade
         .submit_chat(
@@ -8219,7 +8176,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     assert_eq!(stop_observed_placement.device_id, new_device_id);
     assert_eq!(
         stop_observed_placement.authority_epoch,
-        adopted.placement.authority_epoch
+        replacement.authority_epoch
     );
 
     let stale_control = ConversationControlDeviceCommand {
@@ -8242,13 +8199,13 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
         DeviceCommandDeliveryError::AuthorityRedirect(redirect) => redirect,
         other => panic!("expected authority Redirect, got {other:?}"),
     };
-    assert_eq!(redirect.placement, adopted.placement);
+    assert_eq!(redirect.placement, replacement);
     let observed = controller_state
         .conversation_input_intake
         .observe_authority_redirect(epoch(1), &redirect)
         .await
         .expect("verify and observe redirected authority");
-    assert_eq!(observed, adopted.placement);
+    assert_eq!(observed, replacement);
     let controller_placement =
         rua_server::services::conversation_authority_target::load_chat_authority_placement_target(
             &controller_workspace,
@@ -8259,11 +8216,11 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     assert_eq!(controller_placement.device_id, new_device_id);
     assert_eq!(
         controller_placement.authority_epoch,
-        adopted.placement.authority_epoch
+        replacement.authority_epoch
     );
     let redirected_control = ConversationControlDeviceCommand {
         target_device_id: new.device_id.clone(),
-        authority_epoch: adopted.placement.authority_epoch,
+        authority_epoch: replacement.authority_epoch,
         ..stale_control.clone()
     };
     let redirected_control = deliver_conversation_control_via_session(
@@ -8293,7 +8250,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     assert!(matches!(
         input_error,
         DeviceCommandDeliveryError::AuthorityRedirect(ref redirect)
-            if redirect.placement == adopted.placement
+            if redirect.placement == replacement
     ));
 
     let stale_stop = RemoteChatControlCommand {
@@ -8317,12 +8274,12 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     assert!(matches!(
         stop_error,
         DeviceCommandDeliveryError::AuthorityRedirect(ref redirect)
-            if redirect.placement == adopted.placement
+            if redirect.placement == replacement
     ));
     let idle_stop = RemoteChatControlCommand {
         command_id: "idle-stop-on-current-authority".to_string(),
         target_device_id: new.device_id.clone(),
-        authority_epoch: adopted.placement.authority_epoch,
+        authority_epoch: replacement.authority_epoch,
         ..stale_stop.clone()
     };
     let idle_stop = deliver_remote_chat_control_via_session(
@@ -8366,7 +8323,7 @@ async fn supersession_clears_old_queue_and_redirects_attached_and_late_clients()
     assert!(matches!(
         late_frame,
         ActiveStreamBroadcastFrame::AuthorityRedirect { ref placement, .. }
-            if placement == &adopted.placement
+            if placement == &replacement
     ));
 
     controller
@@ -8403,8 +8360,8 @@ async fn redirect_verification_rejects_a_second_redirect_without_updating_local_
         DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[83; 32])).local_device_id(),
     );
     let chat_id = "00000000-0000-0000-0000-000000009927";
-    let source_workspace = source_state.rua_root.join("workspaces").join("default");
-    let target_workspace = target_state.rua_root.join("workspaces").join("default");
+    let source_workspace = source_state.chat_workspace().as_path().to_path_buf();
+    let target_workspace = target_state.chat_workspace().as_path().to_path_buf();
     seed_authority_placement_at_epoch(&source_workspace, chat_id, "old-device", epoch(1)).await;
     seed_authority_placement_at_epoch(&target_workspace, chat_id, &third_device_id, epoch(3)).await;
 
@@ -8472,145 +8429,68 @@ async fn redirect_verification_rejects_a_second_redirect_without_updating_local_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn target_rejects_adoption_for_model_active_turn_and_acp() {
-    let source_state_dir = TempDir::new().expect("source state tempdir");
-    let source_state =
-        AppState::from_tempdir(source_state_dir.path().to_path_buf(), ServerProfile::Test);
-    let target_state_dir = TempDir::new().expect("target state tempdir");
-    let target_state =
-        AppState::from_tempdir(target_state_dir.path().to_path_buf(), ServerProfile::Test);
-    seed_fixture_provider(&target_state, vec![fixture_provider_model("available")]).await;
-
-    let network_secret = [58; 32];
-    let old_authority_device_id = "bbbbbbbbbbbbbbbb";
-    let target_device_id = hex::encode(
-        DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[60; 32])).local_device_id(),
-    );
-    let source_workspace = source_state.rua_root.join("workspaces").join("default");
-    let target_workspace = target_state.rua_root.join("workspaces").join("default");
-    let model_chat = "00000000-0000-0000-0000-000000009921";
-    let active_chat = "00000000-0000-0000-0000-000000009922";
-    let acp_chat = "00000000-0000-0000-0000-000000009923";
-
-    for (chat_id, model_id) in [
-        (model_chat, "missing"),
-        (active_chat, "available"),
-        (acp_chat, "available"),
-    ] {
-        seed_adoptable_chat(
-            &source_workspace,
-            chat_id,
-            old_authority_device_id,
-            model_id,
-        )
-        .await;
-        seed_adoptable_chat(
-            &target_workspace,
-            chat_id,
-            old_authority_device_id,
-            model_id,
-        )
-        .await;
-        let address = ChatAddress::new(chat_id);
-        let source_manifest = load_conversation_manifest(&source_workspace, &address)
-            .await
-            .expect("load source validation manifest")
-            .expect("source validation manifest");
-        let target_manifest = load_conversation_manifest(&target_workspace, &address)
-            .await
-            .expect("load target validation manifest")
-            .expect("target validation manifest");
-        assert!(
-            target_manifest.compare(&source_manifest).matches,
-            "validation fixture histories must match"
-        );
-    }
-    target_state
+async fn handoff_rejects_active_turn_and_acp_at_the_current_authority() {
+    let secret = rua_sync::identity::NetworkSecret::generate();
+    let source = handoff::Peer::new(&secret).await;
+    let target = handoff::Peer::new(&secret).await;
+    source.pair(&[&target]);
+    target.pair(&[&source]);
+    let chat = uuid::Uuid::new_v4().to_string();
+    let address = ChatAddress::new(&chat);
+    source.submit(&chat, "idle before blocked switches").await;
+    let old = source.placement(&chat).await;
+    source
+        .state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
-            address: rua_core::ChatAddress::new(active_chat.to_string()),
+            address: address.clone(),
             driver: ConversationDriverKind::Rua,
-            authority_device_id: old_authority_device_id.to_string(),
-            authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
+            authority_device_id: source.device_id.clone(),
+            authority_epoch: old.authority_epoch,
             driver_detail: None,
         })
-        .await;
-    let store = WorkspaceSessionStore::new(&target_workspace);
-    let mut acp_header = store
-        .load_chat_header(acp_chat)
         .await
-        .expect("load ACP Chat Session")
-        .expect("ACP Chat Session");
-    acp_header.extra.insert(
-        "acp_binding".to_string(),
-        serde_json::json!({
-            "device_id": old_authority_device_id,
-            "runner": "codex",
-        }),
-    );
-    store
-        .save_chat_header(&acp_header)
-        .await
-        .expect("seed target Session ACP binding");
-
-    let target_handler = full_command_handler(&target_state, &target_device_id);
-    let source = build_runtime(
-        59,
-        network_secret,
-        vec![peer_entry(60)],
-        None,
-        Vec::new(),
-        test_config(),
-    )
-    .await;
-    let target = build_runtime(
-        60,
-        network_secret,
-        vec![peer_entry(59)],
-        Some(target_handler),
-        Vec::new(),
-        test_config(),
-    )
-    .await;
-    install_connectable_peer(&source, &target);
-    assert_eq!(target.device_id, target_device_id);
-
-    for (chat_id, command_id, expected_reason) in [
-        (model_chat, "authority-adopt-model", "model_unavailable"),
-        (active_chat, "authority-adopt-active", "active_turn"),
-        (acp_chat, "authority-adopt-acp", "acp_active"),
-    ] {
-        let address = rua_core::ChatAddress::new(chat_id);
-        let manifest = load_conversation_manifest(&source_workspace, &address)
-            .await
-            .expect("load source manifest")
-            .expect("source manifest");
-        let command = authority_adopt_command(
-            command_id,
-            &source.device_id,
-            &target.device_id,
-            chat_id,
-            manifest,
-        );
-        let error = deliver_conversation_authority_adopt_via_session(
-            source.runtime.session_manager(),
-            &command,
-            Duration::from_secs(5),
+        .unwrap();
+    let (status, body) = source
+        .request(
+            Method::PUT,
+            &chat,
+            "/authority-placement",
+            serde_json::json!({"device_id":target.device_id}),
         )
-        .await
-        .expect_err("target validation must reject adoption");
-        assert!(
-            matches!(
-                error,
-                DeviceCommandDeliveryError::Rejected { ref reason, .. }
-                    if reason == expected_reason
-            ),
-            "unexpected rejection for {chat_id}: {error}"
-        );
-    }
-
-    source.runtime.shutdown().await.expect("shutdown source");
-    target.runtime.shutdown().await.expect("shutdown target");
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["detail"].as_str().unwrap().contains("active turn"),
+        "{body}"
+    );
+    assert_eq!(source.placement(&chat).await, old);
+    source
+        .state
+        .conversation_authority
+        .finish_active_turn(&address)
+        .await;
+    let store = source.store();
+    let mut header = store.load_chat_header(&chat).await.unwrap().unwrap();
+    header.extra.insert(
+        "acp_binding".into(),
+        serde_json::json!({"device_id":source.device_id,"runner":"codex"}),
+    );
+    store.save_chat_header(&header).await.unwrap();
+    let (status, body) = source
+        .request(
+            Method::PUT,
+            &chat,
+            "/authority-placement",
+            serde_json::json!({"device_id":target.device_id}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body["detail"].as_str().unwrap().contains("ACP"), "{body}");
+    assert_eq!(source.placement(&chat).await, old);
+    assert!(target.captured.requests.lock().await.is_empty());
+    source.close().await;
+    target.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -8633,7 +8513,7 @@ async fn remote_model_control_is_normalized_and_persisted_on_authority() {
         DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[70; 32])).local_device_id(),
     );
     let chat_id = "00000000-0000-0000-0000-000000009926";
-    let target_workspace = target_state.rua_root.join("workspaces").join("default");
+    let target_workspace = target_state.chat_workspace().as_path().to_path_buf();
     seed_adoptable_chat(&target_workspace, chat_id, &target_device_id, "old-model").await;
     target_state
         .conversation_authority
@@ -8650,7 +8530,7 @@ async fn remote_model_control_is_normalized_and_persisted_on_authority() {
                 }
             })),
         })
-        .await;
+        .await.unwrap();
     let mut control_events = target_state
         .conversation_authority
         .subscribe_global_control_events();
@@ -8779,89 +8659,21 @@ async fn remote_model_control_is_normalized_and_persisted_on_authority() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn agent_chat_model_and_authority_switch_matrix_accepts_input() {
-    let source_dir = TempDir::new().unwrap();
-    let target_dir = TempDir::new().unwrap();
-    let source_state = AppState::from_tempdir(source_dir.path().to_path_buf(), ServerProfile::Test);
-    let target_state = AppState::from_tempdir(target_dir.path().to_path_buf(), ServerProfile::Test);
-    install_test_device(&source_state, 151);
-    install_test_device(&target_state, 152);
-    let captured = CapturingAgentRuntime::default();
-    for state in [&source_state, &target_state] {
-        state
-            .registry
-            .get_or_create("default")
-            .await
-            .unwrap()
-            .set_react_runtime(Arc::new(captured.clone()))
-            .await;
+    let secret = rua_sync::identity::NetworkSecret::generate();
+    let source = handoff::Peer::new(&secret).await;
+    let target = handoff::Peer::new(&secret).await;
+    source.pair(&[&target]);
+    target.pair(&[&source]);
+    for peer in [&source, &target] {
         seed_fixture_provider(
-            state,
+            &peer.state,
             vec![
                 fixture_provider_model("model-a"),
                 fixture_provider_model("model-b"),
             ],
         )
         .await;
-        state
-            .agent_service
-            .get_agent("default")
-            .await
-            .unwrap()
-            .expect("default Agent");
     }
-    let source_id = hex::encode(
-        DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[151; 32])).local_device_id(),
-    );
-    let target_id = hex::encode(
-        DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[152; 32])).local_device_id(),
-    );
-    let source = build_runtime(
-        151,
-        [153; 32],
-        vec![peer_entry(152)],
-        Some(full_command_handler(&source_state, &source_id)),
-        Vec::new(),
-        test_config(),
-    )
-    .await;
-    let target = build_runtime(
-        152,
-        [153; 32],
-        vec![peer_entry(151)],
-        Some(full_command_handler(&target_state, &target_id)),
-        Vec::new(),
-        test_config(),
-    )
-    .await;
-    install_connectable_peer(&source, &target);
-    install_connectable_peer(&target, &source);
-    *source_state.device_network.lock().await = Some(source.runtime.clone());
-    *target_state.device_network.lock().await = Some(target.runtime.clone());
-    *source_state.sync_transfer_session_manager.write().unwrap() =
-        Some(source.runtime.session_manager().clone());
-    *target_state.sync_transfer_session_manager.write().unwrap() =
-        Some(target.runtime.session_manager().clone());
-    source
-        .runtime
-        .session_manager()
-        .set_bulk_transfer_handler(Arc::new(
-            SyncTransferBulkHandler::new(source.device_id.clone())
-                .with_chat_media_root(source_state.rua_root.clone()),
-        ));
-    target
-        .runtime
-        .session_manager()
-        .set_bulk_transfer_handler(Arc::new(
-            SyncTransferBulkHandler::new(target.device_id.clone())
-                .with_chat_media_root(target_state.rua_root.clone()),
-        ));
-    let app = axum::Router::new()
-        .nest("/api", rua_server::endpoints::chats::router())
-        .layer(axum::middleware::from_fn_with_state(
-            source_state.clone(),
-            rua_server::middleware::agent_context_middleware,
-        ))
-        .with_state(source_state.clone());
     for materialized in [false, true] {
         for operations in [
             vec!["model", "device"],
@@ -8869,85 +8681,65 @@ async fn agent_chat_model_and_authority_switch_matrix_accepts_input() {
             vec!["model"],
             vec!["device"],
         ] {
-            let chat_id = uuid::Uuid::new_v4().to_string();
-            let address = ChatAddress::new(&chat_id);
+            let chat = uuid::Uuid::new_v4().to_string();
+            let address = ChatAddress::new(&chat);
             let mut selected_model = "model-a";
-            let mut exists = materialized;
             if materialized {
-                let workspace = source_state
-                    .registry
-                    .get_or_create("default")
-                    .await
-                    .unwrap()
-                    .workspace_dir();
-                seed_adoptable_chat(&workspace, &chat_id, &source_id, selected_model).await;
+                let (status, body) = source.request(Method::POST, &chat, "/console/submit", serde_json::json!({
+                    "message":"materialize matrix Chat", "agent_id":"default", "submission_id":uuid::Uuid::new_v4().to_string(),
+                    "execution_directory":{"device_id":source.device_id}, "model":{"provider_id":"fixture","model":selected_model},
+                })).await;
+                assert_eq!(status, StatusCode::OK, "{body}");
+                assert_eq!(body["accepted"], true, "{body}");
+                source.idle(&chat).await;
             }
             for operation in &operations {
-                let (path, body) = if *operation == "model" {
+                if *operation == "model" {
                     selected_model = "model-b";
-                    if !exists {
-                        continue;
-                    }
+                }
+                if !materialized {
+                    continue;
+                }
+                let (suffix, body) = if *operation == "model" {
                     (
-                        format!("/api/agents/default/chats/{chat_id}"),
+                        "",
                         serde_json::json!({"model":{"provider_id":"fixture","model":selected_model}}),
                     )
                 } else {
-                    if !exists {
-                        continue;
-                    }
                     (
-                        format!("/api/agents/default/chats/{chat_id}/authority-placement"),
-                        serde_json::json!({"device_id":target_id,"model":{"provider_id":"fixture","model":selected_model}}),
+                        "/authority-placement",
+                        serde_json::json!({"device_id":target.device_id}),
                     )
                 };
-                let response = app
-                    .clone()
-                    .oneshot(
-                        Request::builder()
-                            .method(Method::PUT)
-                            .uri(path)
-                            .header("content-type", "application/json")
-                            .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                            .unwrap(),
-                    )
-                    .await
-                    .unwrap();
-                let status = response.status();
-                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-                    .await
-                    .unwrap();
-                assert_eq!(status, StatusCode::OK, "materialized={materialized} operations={operations:?} operation={operation}: {}", String::from_utf8_lossy(&bytes));
-                exists = true;
+                let (status, body) = source.request(Method::PUT, &chat, suffix, body).await;
+                assert_eq!(status, StatusCode::OK, "materialized={materialized} operations={operations:?} operation={operation}: {body}");
                 if *operation == "device" {
+                    // A delayed Session from the old writer cannot reverse a
+                    // completed cooperative handoff, even with a larger HLC.
                     use rua_sync::sync_registry::DomainSyncAdapter;
-                    let target_workspace = target_state
-                        .registry
-                        .get_or_create("default")
-                        .await
-                        .unwrap()
-                        .workspace_dir();
-                    let header = WorkspaceSessionStore::new(&target_workspace)
-                        .load_chat_header(&chat_id)
+                    let header = target
+                        .store()
+                        .load_chat_header(&chat)
                         .await
                         .unwrap()
                         .unwrap();
                     let mut delayed = serde_json::to_value(&header).unwrap();
-                    delayed["authority_placement"]["device_id"] = serde_json::json!(source_id);
+                    delayed["authority_placement"]["device_id"] =
+                        serde_json::json!(source.device_id);
                     delayed["authority_placement"]["authority_epoch"] = serde_json::json!(epoch(1));
                     let adapter = rua_sync::evergreen_chat_adapter::EvergreenChatSyncAdapter::new(
-                        target_state.rua_root.clone(),
-                        target_id.clone(),
+                        target.state.rua_root.clone(),
+                        target.device_id.clone(),
                     );
                     let merge_dir = TempDir::new().unwrap();
                     let merge = rua_sync::merge_store::MergeStore::open(merge_dir.path()).unwrap();
                     let change =
                         rua_sync::evergreen_chat_adapter::EvergreenChatSyncAdapter::file_change(
-                            format!("delayed-{chat_id}"),
+                            format!("delayed-{chat}"),
                             &address,
                             "session",
                             delayed,
-                            &source_id,
+                            &source.device_id,
                             rua_sync::hlc::HlcTimestamp {
                                 wall_ms: u64::MAX - 1,
                                 counter: 0,
@@ -8957,125 +8749,68 @@ async fn agent_chat_model_and_authority_switch_matrix_accepts_input() {
                     adapter.apply_change(&change, &merge).await.unwrap();
                 }
             }
-            let remote = operations.contains(&"device");
-            let authority_state = if remote { &target_state } else { &source_state };
-            let workspace = authority_state
-                .registry
-                .get_or_create("default")
+            let authority = if operations.contains(&"device") {
+                &target
+            } else {
+                &source
+            };
+            if !materialized {
+                assert!(source
+                    .store()
+                    .load_chat_header(&chat)
+                    .await
+                    .unwrap()
+                    .is_none());
+                assert!(target
+                    .store()
+                    .load_chat_header(&chat)
+                    .await
+                    .unwrap()
+                    .is_none());
+            }
+            let (status, body) = source.request(Method::POST, &chat, "/console/submit", serde_json::json!({
+                "message":"matrix input", "agent_id":"default", "submission_id":uuid::Uuid::new_v4().to_string(),
+                "execution_directory":{"device_id":authority.device_id}, "model":{"provider_id":"fixture","model":selected_model},
+            })).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(
+                body["accepted"], true,
+                "materialized={materialized} operations={operations:?}: {body}"
+            );
+            authority.idle(&chat).await;
+            let after = authority
+                .store()
+                .load_chat_header(&chat)
                 .await
                 .unwrap()
-                .workspace_dir();
-            let store = WorkspaceSessionStore::new(&workspace);
-            if exists {
-                let before = store.load_chat_header(&chat_id).await.unwrap().unwrap();
-                assert_eq!(
-                    rua_chat::model_slot_from_header(&before).unwrap()["model"],
-                    selected_model
-                );
-            }
-            let outcome = source_state
-                .console_facade
-                .submit_chat(
-                    "default",
-                    ConsoleChatRequest {
-                        message: "matrix input".into(),
-                        chat_id: Some(chat_id.clone()),
-                        model: None,
-                        is_reconnect: false,
-                        attachments: vec![],
-                        input: None,
-                        messages: None,
-                        extra: serde_json::Map::from_iter([
-                            (
-                                "target_device_id".into(),
-                                serde_json::json!(if remote { &target_id } else { &source_id }),
-                            ),
-                            (
-                                "chat_model_slot".into(),
-                                serde_json::json!({"provider_id":"fixture","model":selected_model}),
-                            ),
-                            (
-                                "submission_id".into(),
-                                serde_json::json!(uuid::Uuid::new_v4().to_string()),
-                            ),
-                        ]),
-                        channel_kind: None,
-                    },
-                )
-                .await;
-            assert!(
-                outcome.accepted,
-                "materialized={materialized} operations={operations:?}: {outcome:?}"
-            );
-            let placement = rua_server::services::conversation_authority_target::load_chat_authority_placement_target(&workspace, &chat_id).await.unwrap();
-            let active = authority_state
-                .conversation_authority
-                .active_turn(&address)
-                .await;
-            if let Some(active) = active {
-                assert_eq!(active.authority_epoch, placement.authority_epoch);
-            }
-            let after = tokio::time::timeout(Duration::from_secs(5), async {
-                loop {
-                    let header = store.load_chat_header(&chat_id).await.unwrap().unwrap();
-                    if header.turn_index.latest_turn == if materialized { 2 } else { 1 } {
-                        break header;
-                    }
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .expect("accepted input persisted on authority");
-            assert_eq!(
-                placement.device_id,
-                if remote {
-                    target_id.clone()
-                } else {
-                    source_id.clone()
-                }
-            );
+                .unwrap();
+            let placement = authority.placement(&chat).await;
+            assert_eq!(placement.device_id, authority.device_id);
             assert_eq!(
                 after.turn_index.latest_turn,
-                if materialized { 2 } else { 1 },
-                "accepted input must be persisted on the authority: {operations:?}"
+                if materialized { 2 } else { 1 }
             );
-            if materialized || !remote {
-                let controller_placement = rua_server::services::conversation_authority_target::load_optional_chat_authority_placement(&source_state.registry.get_or_create("default").await.unwrap().workspace_dir(), &chat_id).await.unwrap().unwrap();
-                assert_eq!(controller_placement.device_id, placement.device_id);
-                assert_eq!(
-                    controller_placement.authority_epoch,
-                    placement.authority_epoch
-                );
-            } else {
-                assert!(WorkspaceSessionStore::new(
-                    source_state
-                        .registry
-                        .get("default")
-                        .await
-                        .unwrap()
-                        .workspace_dir()
-                )
-                .load_chat_header(&chat_id)
-                .await
-                .unwrap()
-                .is_none());
-            }
             assert_eq!(
                 rua_chat::model_slot_from_header(&after).unwrap()["model"],
                 selected_model
             );
+            if source
+                .store()
+                .load_chat_header(&chat)
+                .await
+                .unwrap()
+                .is_some()
+            {
+                assert_eq!(source.placement(&chat).await, placement);
+            }
         }
     }
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while captured.requests.lock().await.len() < 8 {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("all accepted inputs reach the runtime");
-    assert_eq!(captured.requests.lock().await.len(), 8);
-    source.runtime.shutdown().await.unwrap();
-    target.runtime.shutdown().await.unwrap();
+    assert_eq!(
+        source.captured.requests.lock().await.len() + target.captured.requests.lock().await.len(),
+        12
+    );
+    source.close().await;
+    target.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -9089,7 +8824,7 @@ async fn remote_chat_options_update_authority_runtime_and_control_view() {
         DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[73; 32])).local_device_id(),
     );
     let chat_id = "00000000-0000-0000-0000-000000009927";
-    let target_workspace = target_state.rua_root.join("workspaces").join("default");
+    let target_workspace = target_state.chat_workspace().as_path().to_path_buf();
     seed_authority_placement(&target_workspace, chat_id, &target_device_id).await;
     seed_chat_header(&target_workspace, chat_id, &target_device_id).await;
     let runtime_before = target_state
@@ -9261,7 +8996,7 @@ async fn stop_waits_for_handoff_and_duplicate_command_does_not_stop_later_turn()
         DeviceNetworkIdentity::new(iroh::SecretKey::from_bytes(&[28; 32])).local_device_id(),
     );
     let chat_id = "00000000-0000-0000-0000-000000009907";
-    let workspace_dir = state.rua_root.join("workspaces").join("default");
+    let workspace_dir = state.chat_workspace().as_path().to_path_buf();
     seed_authority_placement(&workspace_dir, chat_id, &target_device_id).await;
     seed_chat_header(&workspace_dir, chat_id, &target_device_id).await;
     let key = StreamKey::new(
@@ -9279,7 +9014,7 @@ async fn stop_waits_for_handoff_and_duplicate_command_does_not_stop_later_turn()
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
     let target_handler = full_command_handler(&state, &target_device_id);
     let source = build_runtime(
         29,
@@ -9362,7 +9097,7 @@ async fn stop_waits_for_handoff_and_duplicate_command_does_not_stop_later_turn()
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
     let duplicate = deliver_remote_chat_control_via_session(
         source.runtime.session_manager(),
         &command,

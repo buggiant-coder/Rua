@@ -918,6 +918,13 @@ impl ChatScopeRuleStore for FileBackedChatScopeRuleStore {
         write_stored_permission_rules_to_path(&path, &rules)
     }
 
+    fn ensure_chat_rules_snapshot(&self, address: &ChatAddress) -> Result<(), String> {
+        let path = self.permission_rules_path(address);
+        rua_config::atomic_write_if_absent(&path, b"[]")
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
     fn delete_chat_rules(&self, address: &ChatAddress) -> Result<(), String> {
         let path = self.permission_rules_path(address);
         if path.exists() && path.with_file_name("session.json").is_file() {
@@ -972,7 +979,7 @@ fn write_stored_permission_rules_to_path(
 }
 
 fn remove_permission_rules_file(path: &std::path::Path) -> Result<(), String> {
-    match std::fs::remove_file(path) {
+    match rua_config::remove_file_committed(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.to_string()),

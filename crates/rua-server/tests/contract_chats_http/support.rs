@@ -171,11 +171,17 @@ pub async fn seed_materialized_chat(test: &TestApp, agent_id: &str, name: &str) 
         .transpose()
         .unwrap()
         .unwrap_or_default();
+    // The Session File is the authority for Chat identity: the Chat Index is a
+    // projection rebuilt from this header, so both must agree or the first
+    // projection silently reverts the seeded user identity.
+    let user_id = format!("user-{name}");
+    header.user_id.clone_from(&user_id);
+    store.save_chat_header(&header).await.unwrap();
     let mut index = rua_session::chat_index::get(&runtime.chat_workspace_dir(), id)
         .await
         .unwrap()
         .unwrap();
-    index.user_id = format!("user-{name}");
+    index.user_id = user_id;
     rua_session::chat_index::upsert(&runtime.chat_workspace_dir(), index)
         .await
         .unwrap();

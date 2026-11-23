@@ -436,9 +436,9 @@ impl SummaryCheckpointPublisher {
             .as_ref()
             .map(|checkpoint| checkpoint.covered_sequence_range.start_sequence)
             .unwrap_or(frontier.start_sequence);
-        let checkpoint = self
+        let Some(checkpoint) = self
             .store
-            .publish_summary_checkpoint(
+            .publish_summary_checkpoint_if(
                 &self.chat_id,
                 expected_active_checkpoint_id.as_deref(),
                 SummaryCheckpointDraft {
@@ -469,8 +469,12 @@ impl SummaryCheckpointPublisher {
                     model: self.model.clone(),
                     created_at: chrono::Utc::now().to_rfc3339(),
                 },
+                can_publish,
             )
-            .await?;
+            .await?
+        else {
+            return Ok(None);
+        };
         if let Some(hook) = self.replication_hook.as_ref() {
             hook.on_session_state_changed(
                 &self.chat_address,

@@ -173,6 +173,23 @@ describe("chatApi Rust independent Chat routes", () => {
     vi.clearAllMocks();
   });
 
+  it.each([
+    { device_id: "target-device" },
+    { device_id: "target-device", path: "/target/photos" },
+  ])(
+    "submits the selected target directory with one authority handoff request",
+    async (position) => {
+      await chatApi.setAuthorityPlacement("chat/one", position);
+      expect(request).toHaveBeenCalledExactlyOnceWith(
+        "/chats/chat%2Fone/authority-placement",
+        {
+          method: "PUT",
+          body: JSON.stringify(position),
+        },
+      );
+    },
+  );
+
   it("lists chats with query params, auth headers, and total header", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       new Response(JSON.stringify([{ id: "chat-1", name: "Chat" }]), {

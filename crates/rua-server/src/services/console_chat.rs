@@ -1057,6 +1057,44 @@ impl SessionSyncEmitter {
         .await;
     }
 
+    pub(crate) async fn publish_handoff_settings(
+        &self,
+        scope_root: &Path,
+        address: &rua_core::ChatAddress,
+        agent_id: &str,
+        approvals: &rua_security::approval_authority::ApprovalAuthority,
+    ) -> Result<(), String> {
+        approvals.ensure_chat_rules_snapshot(address).await?;
+        let runtime = SyncPublicationRuntime::new(
+            self.data_dir.join("sync"),
+            Arc::clone(&self.sync_enabled),
+            Arc::clone(&self.sync_node),
+            Arc::clone(&self.sync_network_secret),
+            Arc::clone(&self.sync_device),
+            Some(Arc::clone(&self.sync_hlc_clock)),
+            Arc::clone(&self.sync_trigger),
+        );
+        let result = publish_sync_fact_with_runtime(
+            &runtime,
+            SyncPublicationFact::HandoffSettingsSnapshot {
+                scope_root: scope_root.to_path_buf(),
+                address: address.clone(),
+                agent_id: agent_id.to_owned(),
+            },
+        )
+        .await;
+        // Sync being disabled is not a handoff failure: the target Device already
+        // receives the settings inline in the handoff Prepare request, and this
+        // publication only keeps later peers caught up.
+        match result.status {
+            PublicationStatus::Published | PublicationStatus::SkippedDisabled => Ok(()),
+            _ => Err(format!(
+                "handoff settings publication did not complete: {:?}",
+                result
+            )),
+        }
+    }
+
     async fn publish_conversation_boundary(
         &self,
         scope_root: &Path,
@@ -2229,6 +2267,7 @@ impl WorkspaceSessionPersistence {
                 );
             }
             maybe_spawn_early_background_compaction(EarlyBackgroundCompactionJobInput {
+                authority_device_id: self.authority_device_id.clone(),
                 store: rua_session::WorkspaceSessionStore::new(&self.workspace_dir),
                 workspace_dir: self.workspace_dir.clone(),
                 agent_id: agent_id.to_string(),
@@ -2411,6 +2450,7 @@ impl SessionPersistence for WorkspaceSessionPersistence {
 }
 
 struct EarlyBackgroundCompactionJobInput {
+    authority_device_id: String,
     store: WorkspaceSessionStore,
     workspace_dir: PathBuf,
     agent_id: String,
@@ -2426,6 +2466,7 @@ struct EarlyBackgroundCompactionJobInput {
 
 async fn maybe_spawn_early_background_compaction(input: EarlyBackgroundCompactionJobInput) {
     let EarlyBackgroundCompactionJobInput {
+        authority_device_id,
         store,
         workspace_dir,
         agent_id,
@@ -2547,6 +2588,7 @@ async fn maybe_spawn_early_background_compaction(input: EarlyBackgroundCompactio
     let finish_lease = lease.clone();
     tokio::spawn(async move {
         if let Err(e) = create_summary_checkpoint(SummaryCheckpointJob {
+            authority_device_id,
             store,
             chat_id: chat_id.clone(),
             chat_address,
@@ -2569,6 +2611,7 @@ async fn maybe_spawn_early_background_compaction(input: EarlyBackgroundCompactio
 }
 
 struct SummaryCheckpointJob {
+    authority_device_id: String,
     store: WorkspaceSessionStore,
     chat_id: String,
     chat_address: ChatAddress,
@@ -2585,6 +2628,7 @@ struct SummaryCheckpointJob {
 
 async fn create_summary_checkpoint(job: SummaryCheckpointJob) -> rua_core::Result<bool> {
     let SummaryCheckpointJob {
+        authority_device_id,
         store,
         chat_id,
         chat_address,
@@ -2609,6 +2653,7 @@ async fn create_summary_checkpoint(job: SummaryCheckpointJob) -> rua_core::Resul
         frontier.end_sequence,
     )
     .await?;
+    let publication_store = store.clone();
     let publisher = rua_agent::summary_checkpoint::SummaryCheckpointPublisher::new(
         rua_agent::summary_checkpoint::SummaryCheckpointPublisherInput {
             store,
@@ -2624,9 +2669,13 @@ async fn create_summary_checkpoint(job: SummaryCheckpointJob) -> rua_core::Resul
         },
     );
     let publish = publisher.publish(&frontier, summary_source, || {
-        lease.as_ref().is_none_or(|lease| {
-            !lease.is_cancelled() && early_background_compaction_coordinator().can_publish(lease)
-        })
+        publication_store
+            .chat_handoff_allows_history_write(&chat_id, &authority_device_id)
+            .unwrap_or(false)
+            && lease.as_ref().is_none_or(|lease| {
+                !lease.is_cancelled()
+                    && early_background_compaction_coordinator().can_publish(lease)
+            })
     });
     let published = if let Some(active_lease) = lease.as_ref() {
         tokio::select! {
@@ -3982,6 +4031,10 @@ impl ConsoleChatService {
                         .map(|capabilities| capabilities.project_write_roots())
                         .unwrap_or_default();
                     metadata.insert("project_resource_roots".into(), serde_json::json!(roots));
+                    metadata.insert(
+                        "project_resource_device_id".into(),
+                        serde_json::json!(config.authority_device_id),
+                    );
                 }
                 metadata.insert(
                     rua_agent::hooks::PROJECT_SKILLS_ROOT_METADATA_KEY.into(),

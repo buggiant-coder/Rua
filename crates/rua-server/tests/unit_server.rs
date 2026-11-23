@@ -18,3 +18,8 @@ mod unit_path_augment;
 mod unit_static_assets;
 #[path = "unit_usage_stats.rs"]
 mod unit_usage_stats;
+
+#[path = "unit_server/handoff_history.rs"]
+mod handoff_history;
+#[path = "unit_server/handoff_settings.rs"]
+mod handoff_settings;

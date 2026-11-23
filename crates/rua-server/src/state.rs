@@ -726,6 +726,7 @@ impl AppState {
             host_profile: Some(profile.to_string()),
             authority_epoch: None,
             public_cwd: None,
+            cwd_managed: None,
         };
         task_runtime_config.limits = rua_task::TaskRuntimeLimits {
             max_active_tasks_per_chat: root_config.task_runtime.max_active_tasks_per_chat,
@@ -1306,7 +1307,8 @@ impl AppState {
             .with_security(Arc::clone(&security_module))
             .with_approval_authority(Arc::clone(security_module.approval_authority()))
             .with_acp_permission_relay(Arc::clone(&acp_permission_relay))
-            .with_task_runtime(Arc::clone(&task_runtime));
+            .with_task_runtime(Arc::clone(&task_runtime))
+            .with_history_sync(remote_history_sync_tx.clone());
         task_notification_sink.install_tasks(&task_runtime);
         conversation_input_intake = conversation_input_intake
             .with_task_notifications(Arc::downgrade(&task_notification_sink));
@@ -2247,7 +2249,8 @@ impl AppState {
                 .with_security(Arc::clone(&self.security))
                 .with_approval_authority(Arc::clone(self.security.approval_authority()))
                 .with_acp_permission_relay(Arc::clone(&self.acp_permission_relay))
-                .with_task_runtime(Arc::clone(&self.task_runtime)),
+                .with_task_runtime(Arc::clone(&self.task_runtime))
+                .with_history_sync(self.remote_history_sync_tx.clone()),
             )
             .with_collaboration_binding(collaboration_binding)
             .with_conversation_authority(Arc::clone(&self.conversation_authority))

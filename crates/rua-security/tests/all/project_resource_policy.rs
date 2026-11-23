@@ -97,6 +97,9 @@ fn actual_tool_guard_uses_each_root_and_preserves_external_read_behavior() {
     let engine = rua_security::ToolGuardEngine::new(&SecurityConfig::default(), None);
     let mut ctx = rua_security::ToolCallContext::new("agent", "chat", "edit", json!({}));
     ctx.working_dir = app.to_string_lossy().into_owned();
+    ctx.local_device_id = Some("device-a".into());
+    ctx.metadata
+        .insert("project_resource_device_id".into(), json!("device-a"));
     ctx.metadata
         .insert("project_resource_roots".into(), json!([app, docs]));
     for (path, allowed) in [
@@ -160,4 +163,48 @@ fn resource_write_resolves_symlink_destinations_and_missing_suffixes() {
     assert!(!policy.permits_write(&root.path().join("file")));
     assert!(!policy.permits_write(&root.path().join("missing/../../outside")));
     assert!(policy.permits_write(&root.path().join("new/sub/file")));
+}
+
+#[test]
+fn project_write_roots_apply_only_to_their_captured_device() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("new.txt");
+    let engine = rua_security::ToolGuardEngine::new(&SecurityConfig::default(), None);
+    for (source, local, explicit, allowed) in [
+        (Some("device-a"), Some("device-a"), None, true),
+        (Some("device-a"), Some("device-c"), None, false),
+        (Some("device-a"), Some("device-a"), Some("device-c"), false),
+        (None, Some("device-a"), None, false),
+        (Some("device-a"), None, None, false),
+        (Some("device-a"), Some("device-c"), Some("device-a"), true),
+    ] {
+        let mut ctx = rua_security::ToolCallContext::new(
+            "agent",
+            "chat",
+            "edit",
+            json!({
+                "patch": format!("*** Begin Patch\n*** Add File: {}\n+hello\n*** End Patch", path.display())
+            }),
+        );
+        ctx.local_device_id = local.map(str::to_owned);
+        ctx.working_dir = temp.path().to_string_lossy().into_owned();
+        ctx.metadata
+            .insert("project_resource_roots".into(), json!([temp.path()]));
+        if let Some(source) = source {
+            ctx.metadata
+                .insert("project_resource_device_id".into(), json!(source));
+        }
+        if let Some(explicit) = explicit {
+            ctx.tool_input["device_id"] = json!(explicit);
+        }
+        assert_eq!(
+            engine.evaluate(&ctx).decision,
+            if allowed {
+                rua_security::GuardDecision::Allow
+            } else {
+                rua_security::GuardDecision::RequiresApproval
+            },
+            "source={source:?} local={local:?} explicit={explicit:?}",
+        );
+    }
 }

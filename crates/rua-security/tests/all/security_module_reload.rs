@@ -725,3 +725,51 @@ async fn hands_off_mode_respects_disabled_builtin_rules() {
         "Hands-off mode should respect disabled built-in rules, got {custom_verdict:?}"
     );
 }
+
+#[tokio::test]
+async fn handoff_snapshot_initializes_only_missing_chat_rules() {
+    let temp = tempfile::tempdir().unwrap();
+    let module = make_module(temp.path());
+    let address = rua_core::ChatAddress::new("handoff-empty");
+    let path = rua_core::ChatStore::resolve(temp.path(), address.clone())
+        .root()
+        .join("sessions/handoff-empty/permission_rules.json");
+    module
+        .approval_authority()
+        .ensure_chat_rules_snapshot(&address)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"[]");
+    let rule = rua_security::approval_authority::StoredApprovalReuseRule {
+        id: "already-approved".into(),
+        label: "Own file".into(),
+        matcher: rua_security::ApprovalReuseMatcher::ToolCall {
+            tool_name: "read".into(),
+            input_params: Some(r#"{"file_path":"/photo.jpg"}"#.into()),
+        },
+        exact_read_args: Some(true),
+        source_approval_id: "original-card".into(),
+        created_at: chrono::Utc::now(),
+        updated_at: None,
+        enabled: true,
+        effect: rua_security::PermissionRuleEffect::Allow,
+        source: rua_security::PermissionRuleSource::Approval,
+        hit_count: 0,
+    };
+    let original = serde_json::to_vec(&vec![rule]).unwrap();
+    rua_config::atomic_write(&path, &original).unwrap();
+    module
+        .approval_authority()
+        .ensure_chat_rules_snapshot(&address)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(
+        module
+            .approval_authority()
+            .list_chat_rules(&address)
+            .await
+            .len(),
+        1
+    );
+}

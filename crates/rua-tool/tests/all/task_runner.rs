@@ -2076,11 +2076,12 @@ async fn tool_attachments_are_externalized_when_raw_result_is_bounded() {
         .rsplit('/')
         .next()
         .expect("artifact file name");
-    let artifact_path = dir
-        .path()
-        .join("workspaces/agent-a/sessions/chat-a/tasks")
-        .join(task_id)
-        .join("attempts/1/artifacts")
+    // Derive the attempt directory from the runtime's own layout instead of
+    // hardcoding a storage path: the Task workspace moved from
+    // `workspaces/<agent>/sessions/<chat>` to the Chat-scoped root.
+    let artifact_path = TaskRuntimeConfig::new(dir.path())
+        .attempt_dir(&owner, task_id, 1)
+        .join("artifacts")
         .join(file_name);
     assert_eq!(
         std::fs::read_to_string(artifact_path).unwrap(),

@@ -602,7 +602,8 @@ async fn active_conversation_survives_background_and_approval_resume_cancels_sus
             authority_epoch: ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
 
     let background = request(&app, "background").await;
     assert_eq!(background.status(), StatusCode::OK);

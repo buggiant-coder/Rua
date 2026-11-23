@@ -1431,7 +1431,7 @@ async fn publication_seam_preserves_large_daily_change_sets() {
     .await;
 
     assert_eq!(result.status, PublicationStatus::Published);
-    assert!(result.appended >= 100);
+    assert!(result.appended >= 100, "DEBUG appended={} status={:?}", result.appended, result.status);
     let (frame_count, changes) = collect_v4_frame_stats(&state).await;
     assert_eq!(
         frame_count,

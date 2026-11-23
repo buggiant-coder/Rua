@@ -34,6 +34,9 @@ use rua_session::{
 };
 use tempfile::TempDir;
 
+#[path = "conversation_input_intake/handoff_fences.rs"]
+mod handoff_fences;
+
 fn epoch(wall_ms: u64) -> ConversationAuthorityEpoch {
     ConversationAuthorityEpoch::from_parts(wall_ms, 0, [0; 8])
 }
@@ -276,7 +279,8 @@ async fn remote_input_queues_on_busy_target() {
             authority_epoch: epoch(1),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     let request = remote_request_to(
         CHAT_ID,
         "submission-cli-busy",
@@ -1739,7 +1743,7 @@ async fn acp_passive_queue_uses_conversation_authority_not_stream_pending() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: Some(serde_json::json!({ "runner": "codex" })),
         })
-        .await;
+        .await.unwrap();
 
     let outcome = state
         .console_facade
@@ -1772,7 +1776,7 @@ async fn acp_send_now_targets_queued_input_and_signals_active_producer() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: Some(serde_json::json!({ "runner": "codex" })),
         })
-        .await;
+        .await.unwrap();
 
     let mut queued_request = request(CHAT_ID, "urgent acp input");
     queued_request.extra.insert(
@@ -2005,7 +2009,7 @@ async fn intake_queues_to_existing_active_authority_queue() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     let mut second = request(CHAT_ID, "second");
     second.extra.insert(
@@ -2072,7 +2076,8 @@ async fn task_watch_output_continues_active_turn_at_boundary_without_user_interj
             authority_epoch: ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
 
     let intake = state.conversation_input_intake.clone();
     let delivery = tokio::spawn(async move {
@@ -2192,6 +2197,40 @@ async fn delegated_task_watch_output_does_not_interrupt_the_parent_turn() {
     seed_local_authority(&state, CHAT_ID, "Delegated Task Watch authority").await;
     let key = stream_key();
     let (_producer_id, mut cancel_rx) = state.streams.register_active_keyed(&key).await;
+    // An active Turn is always backed by a persisted Turn record; delegated
+    // Activity-only output is attached to that record as a runtime note.
+    let workspace = state
+        .registry
+        .get_or_create("default")
+        .await
+        .unwrap()
+        .chat_workspace_dir();
+    WorkspaceSessionStore::new(&workspace)
+        .append_conversation_turn(
+            CHAT_ID,
+            NewConversationTurn {
+                turn_id: "turn-active".to_string(),
+                lifecycle: TurnLifecycle {
+                    user_submitted_at: "2026-07-16T00:00:00Z".to_string(),
+                    assistant_started_at: Some("2026-07-16T00:00:01Z".to_string()),
+                    assistant_completed_at: None,
+                    status: "in_progress".to_string(),
+                },
+                selected_variant_id: None,
+                messages: vec![NewConversationMessage {
+                    message_id: "msg-active-user".to_string(),
+                    role: "user".to_string(),
+                    created_at: "2026-07-16T00:00:00Z".to_string(),
+                    status: "completed".to_string(),
+                    content: serde_json::json!([{ "type": "text", "text": "hello" }]),
+                    provider: None,
+                    tool: None,
+                    metadata: serde_json::Map::new(),
+                }],
+            },
+        )
+        .await
+        .expect("append active turn");
     state
         .conversation_authority
         .start_active_turn(ConversationActiveTurnStart {
@@ -2201,7 +2240,8 @@ async fn delegated_task_watch_output_does_not_interrupt_the_parent_turn() {
             authority_epoch: ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
 
     state
         .conversation_input_intake
@@ -2245,7 +2285,7 @@ async fn intake_queues_existing_active_authority() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     let outcome = intake(&state)
         .submit_delivery("default", request(CHAT_ID, "second"))
@@ -2282,7 +2322,7 @@ async fn submit_delivery_rejects_orphan_active_turn_without_durable_placement() 
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     let outcome = intake(&state)
         .submit_delivery("default", request(CHAT_ID, "remote active follow-up"))
@@ -2605,7 +2645,7 @@ async fn local_stop_waits_for_terminal_handoff_before_success() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
     let authority = Arc::clone(&state.conversation_authority);
     let streams = Arc::clone(&state.streams);
     let handoff_key = key.clone();
@@ -2701,7 +2741,7 @@ async fn local_submit_with_active_authority_queues_through_authority() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     let outcome = state
         .console_facade
@@ -2784,7 +2824,7 @@ async fn panicked_producer_persists_failed_terminal_fact_and_drains_stream() {
             authority_epoch: rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await.unwrap();
 
     finalize_panicked_console_producer(PanickedConsoleProducerContext {
         panic_key: key.clone(),
@@ -2868,7 +2908,8 @@ async fn local_stop_preserves_user_queue_and_background_observations() {
             authority_epoch: epoch(1),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     for runtime_only in [false, true] {
         let mut extra = serde_json::Map::new();
         if runtime_only {

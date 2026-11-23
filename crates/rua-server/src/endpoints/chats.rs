@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::Duration;
 
 use agent_types::conversation_message_identity::{
     tool_result_message_id, tool_use_message_id, CANONICAL_MESSAGE_ID_METADATA_KEY,
@@ -31,16 +30,13 @@ use crate::services::conversation_authority::{
     ConversationControlView, ConversationInputEntrySnapshot,
 };
 use crate::services::conversation_authority_placement::{
-    chat_acp_binding_active, contains_conversation_authority_placement, ConversationAuthorityEpoch,
-    ConversationAuthorityPlacement, CHAT_ACP_BINDING_META_KEY, CHAT_AUTHORITY_PLACEMENT_META_KEY,
-    CHAT_MODEL_META_KEY,
+    contains_conversation_authority_placement, ConversationAuthorityEpoch,
+    CHAT_ACP_BINDING_META_KEY, CHAT_AUTHORITY_PLACEMENT_META_KEY, CHAT_MODEL_META_KEY,
 };
 use crate::services::conversation_control_dispatcher::dispatch_conversation_control;
 use crate::services::device_command_bus::{
-    deliver_conversation_authority_adopt_via_session, spawn_conversation_authority_supersession,
-    ConversationAuthorityAdoptDeviceCommand, ConversationControlDeviceAction,
-    ConversationControlDeviceCommand, ConversationControlDeviceResponse,
-    DeviceCommandDeliveryError,
+    ConversationControlDeviceAction, ConversationControlDeviceCommand,
+    ConversationControlDeviceResponse, DeviceCommandDeliveryError,
 };
 use crate::state::AppState;
 use crate::sync_publication::{publish_sync_fact, SyncPublicationFact};
@@ -392,6 +388,10 @@ struct ChatUpdateBody {
 #[derive(Debug, Deserialize)]
 struct ConversationAuthorityPlacementUpdateBody {
     device_id: String,
+    #[serde(default)]
+    path: Option<std::path::PathBuf>,
+    #[serde(default, flatten)]
+    extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -571,17 +571,26 @@ pub(crate) async fn dispatch_saved_chat_control(
     action: ConversationControlDeviceAction,
     login_user: Option<&crate::auth::VerifiedLoginUser>,
 ) -> Result<ConversationControlDeviceResponse, ApiError> {
-    let placement =
-        crate::services::conversation_authority_target::load_optional_chat_authority_placement(
-            ws_dir, chat_id,
-        )
+    let placement = match crate::services::conversation_authority_target::
+        load_optional_chat_authority_placement(ws_dir, chat_id)
         .await
         .map_err(ApiError::Internal)?
-        .ok_or_else(|| {
-            ApiError::Conflict(format!(
-                "conversation authority placement not found for Chat '{chat_id}'"
-            ))
-        })?;
+    {
+        Some(placement) => placement,
+        // A controlling Device holds no authoritative Chat state for a Chat that
+        // lives on another Device. The synchronized Chat Index carries the same
+        // authority placement, so address the authority Device from that
+        // projection rather than requiring local Chat storage.
+        None => crate::services::conversation_authority_target::
+            load_index_chat_authority_placement(ws_dir, chat_id)
+            .await
+            .map_err(ApiError::Internal)?
+            .ok_or_else(|| {
+                ApiError::Conflict(format!(
+                    "conversation authority placement not found for Chat '{chat_id}'"
+                ))
+            })?,
+    };
     let source_device_id = source_device_id
         .ok_or_else(|| ApiError::Unavailable("local Device identity is unavailable".to_string()))?;
     crate::services::conversation_control_dispatcher::dispatch_control_from_local_login(
@@ -1450,17 +1459,26 @@ async fn control_view_for_chat(
     ws_dir: &Path,
     chat_id: &str,
 ) -> Result<ConversationControlView, ApiError> {
-    let placement =
-        crate::services::conversation_authority_target::load_optional_chat_authority_placement(
-            ws_dir, chat_id,
-        )
+    let placement = match crate::services::conversation_authority_target::
+        load_optional_chat_authority_placement(ws_dir, chat_id)
         .await
         .map_err(ApiError::Internal)?
-        .ok_or_else(|| {
-            ApiError::Conflict(format!(
-                "conversation authority placement not found for Chat '{chat_id}'"
-            ))
-        })?;
+    {
+        Some(placement) => placement,
+        // A controlling Device holds no authoritative Chat state for a Chat that
+        // lives on another Device. The synchronized Chat Index carries the same
+        // authority placement, so address the authority Device from that
+        // projection rather than requiring local Chat storage.
+        None => crate::services::conversation_authority_target::
+            load_index_chat_authority_placement(ws_dir, chat_id)
+            .await
+            .map_err(ApiError::Internal)?
+            .ok_or_else(|| {
+                ApiError::Conflict(format!(
+                    "conversation authority placement not found for Chat '{chat_id}'"
+                ))
+            })?,
+    };
     let header = WorkspaceSessionStore::new(ws_dir)
         .load_chat_header(chat_id)
         .await
@@ -1516,17 +1534,26 @@ async fn remote_conversation_control_if_needed(
     action: ConversationControlDeviceAction,
     expected_authority_epoch: Option<ConversationAuthorityEpoch>,
 ) -> Result<Option<ConversationControlDeviceResponse>, ApiError> {
-    let placement =
-        crate::services::conversation_authority_target::load_optional_chat_authority_placement(
-            ws_dir, chat_id,
-        )
+    let placement = match crate::services::conversation_authority_target::
+        load_optional_chat_authority_placement(ws_dir, chat_id)
         .await
         .map_err(ApiError::Internal)?
-        .ok_or_else(|| {
-            ApiError::Conflict(format!(
-                "conversation authority placement not found for Chat '{chat_id}'"
-            ))
-        })?;
+    {
+        Some(placement) => placement,
+        // A controlling Device holds no authoritative Chat state for a Chat that
+        // lives on another Device. The synchronized Chat Index carries the same
+        // authority placement, so address the authority Device from that
+        // projection rather than requiring local Chat storage.
+        None => crate::services::conversation_authority_target::
+            load_index_chat_authority_placement(ws_dir, chat_id)
+            .await
+            .map_err(ApiError::Internal)?
+            .ok_or_else(|| {
+                ApiError::Conflict(format!(
+                    "conversation authority placement not found for Chat '{chat_id}'"
+                ))
+            })?,
+    };
     if expected_authority_epoch.is_some_and(|expected| expected != placement.authority_epoch) {
         return Err(ApiError::Conflict(
             "stale conversation authority Epoch".to_string(),
@@ -1745,6 +1772,12 @@ pub(crate) async fn persist_acp_history_preview_core(
     let turn_id = format!("acp-history-preview-{preview_id}");
     let message_id = format!("acp-history-preview-message-{preview_id}");
     let store = WorkspaceSessionStore::new(ws_dir);
+
+    let gate = state.conversation_authority.transition_gate(address);
+    let _transition = gate.lock().await;
+    if let Err(error) = ensure_local_history_write(state, ws_dir, address).await {
+        return error.into_response();
+    }
 
     match store.read_turn_range(chat_id, 1, usize::MAX).await {
         Ok(turns) if turns.iter().any(|turn| turn.turn_id == turn_id) => {
@@ -2745,18 +2778,62 @@ async fn update_chat_core(
             Err(error) => return error.into_response(),
         }
     }
+    // A variant selection rewrites Conversation history, so it is decided by the
+    // Chat's authority. Ask that Device first; only a local authority falls through
+    // to the in-process selection below.
+    let mut variant_selected_remotely = false;
+    if let (Some(turn_id), Some(selected_variant_id)) =
+        (body.turn_id.clone(), body.selected_variant_id.clone())
+    {
+        match remote_conversation_control_if_needed(
+            state,
+            agent_id,
+            ws_dir,
+            chat_id,
+            ConversationControlDeviceAction::SelectVariant {
+                turn_id,
+                selected_variant_id,
+            },
+            None,
+        )
+        .await
+        {
+            Ok(Some(ConversationControlDeviceResponse::VariantSelected { .. })) => {
+                variant_selected_remotely = true;
+            }
+            Ok(Some(_)) => {
+                return ApiError::Internal(
+                    "unexpected remote Chat variant response".to_string(),
+                )
+                .into_response()
+            }
+            Ok(None) => {}
+            Err(error) => return error.into_response(),
+        }
+    }
     let configuration_address = rua_core::ChatAddress::new(chat_id);
     let configuration_gate = state
         .conversation_authority
         .transition_gate(&configuration_address);
-    let _configuration_transition = if body.collaboration_mode.is_some() {
+    let selects_variant_locally = !variant_selected_remotely
+        && body.turn_id.is_some()
+        && body.selected_variant_id.is_some();
+    let changes_authority_state = body.collaboration_mode.is_some() || selects_variant_locally;
+    let _configuration_transition = if changes_authority_state {
         Some(configuration_gate.lock().await)
     } else {
         None
     };
-    if let (Some(turn_id), Some(selected_variant_id)) =
-        (body.turn_id.as_deref(), body.selected_variant_id.as_deref())
-    {
+    if changes_authority_state {
+        if let Err(error) = ensure_local_history_write(state, ws_dir, &configuration_address).await
+        {
+            return error.into_response();
+        }
+    }
+    if let (Some(turn_id), Some(selected_variant_id)) = (
+        body.turn_id.as_deref().filter(|_| selects_variant_locally),
+        body.selected_variant_id.as_deref().filter(|_| selects_variant_locally),
+    ) {
         let address = rua_core::ChatAddress::new(chat_id);
         match rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(ws_dir))
             .select_variant(&address, turn_id, selected_variant_id)
@@ -2924,240 +3001,78 @@ async fn update_chat_core(
     (StatusCode::OK, Json(updated)).into_response()
 }
 
+async fn ensure_local_history_write(
+    state: &AppState,
+    ws_dir: &Path,
+    address: &rua_core::ChatAddress,
+) -> Result<(), ApiError> {
+    state
+        .conversation_authority
+        .ensure_handoff_admission_locked(address)
+        .await
+        .map_err(ApiError::Conflict)?;
+    let placement =
+        crate::services::conversation_authority_target::load_optional_chat_authority_placement(
+            ws_dir,
+            address.chat_id().as_str(),
+        )
+        .await
+        .map_err(ApiError::Internal)?;
+    if let Some(placement) = placement {
+        if device_id_from_sync_device(&state.sync_device).as_deref()
+            != Some(placement.device_id.as_str())
+        {
+            return Err(ApiError::Conflict(
+                "Chat history must be changed on its current Authority Device".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 async fn update_authority_placement_core(
-    agent_id: &str,
+    _agent_id: &str,
     ws_dir: &Path,
     chat_id: &str,
     body: ConversationAuthorityPlacementUpdateBody,
     state: &AppState,
 ) -> Response {
-    let next_device_id = body.device_id.trim();
-    if next_device_id.is_empty() {
-        return ApiError::BadRequest("device_id is required".to_string()).into_response();
+    let selection = rua_core::ExecutionDirectorySelection {
+        device_id: body.device_id,
+        path: body.path,
+        extra: body.extra,
+    };
+    if let Err(error) = selection.validate() {
+        return ApiError::BadRequest(error.to_string()).into_response();
     }
-    let address = rua_core::ChatAddress::new(chat_id);
-    let service = rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(ws_dir));
-    match service.policy(&address).await {
-        Ok(policy) if policy.authority_placement == rua_chat::AuthorityPlacementPolicy::Fixed => {
-            return ApiError::Conflict(
-                "Chat authority placement is fixed on its execution Device".into(),
-            )
-            .into_response();
-        }
-        Ok(_) => {}
-        Err(error) => return ApiError::from(error).into_response(),
-    }
-    if state
-        .conversation_authority
-        .active_turn(&address)
-        .await
-        .is_some()
-    {
-        return ApiError::Conflict(
-            "cannot change authority placement while the chat has an active turn".to_string(),
-        )
-        .into_response();
-    }
-    let current = match crate::services::conversation_authority_target::load_optional_chat_authority_placement(
-        ws_dir,
-        chat_id,
-    )
-    .await
-    {
-        Ok(Some(placement)) => {
-            let header_acp_active = match WorkspaceSessionStore::new(ws_dir)
-                .load_chat_header(chat_id)
-                .await
-            {
-                Ok(Some(header)) => {
-                    chat_acp_binding_active(&serde_json::Value::Object(header.extra))
-                }
-                Ok(None) => false,
-                Err(error) => return ApiError::from(error).into_response(),
-            };
-            if header_acp_active {
-                return ApiError::Conflict(
-                    "Current chat is in ACP mode. Exit ACP before changing the authority device."
-                        .to_string(),
-                )
-                .into_response();
-            }
-            placement
-        }
+    let current = match crate::services::conversation_authority_target::load_optional_chat_authority_placement(ws_dir, chat_id).await {
+        Ok(Some(current)) => current,
         Ok(None) => return ApiError::NotFound("Chat is not materialized".into()).into_response(),
-
         Err(error) => return ApiError::Internal(error).into_response(),
     };
-    if current.device_id == next_device_id {
-        return match chat_index::get(ws_dir, chat_id).await {
-            Ok(Some(entry)) => (StatusCode::OK, Json(chat_from_index_entry(entry))).into_response(),
-            Ok(None) => ApiError::NotFound(format!("chat not found: {chat_id}")).into_response(),
-            Err(error) => ApiError::Internal(error.to_string()).into_response(),
+    if current.device_id == selection.device_id {
+        return match crate::services::chat_metadata_store::load_chat_record(ws_dir, chat_id).await {
+            Ok(Some(chat)) => Json(chat_from_metadata_record(chat)).into_response(),
+            Ok(None) => ApiError::NotFound("Chat is not materialized".into()).into_response(),
+            Err(error) => ApiError::from(error).into_response(),
         };
     }
-    let required_manifest = match authority_switch_manifest(ws_dir, &address).await {
-        Ok(manifest) => manifest,
-        Err(error) => return error.into_response(),
-    };
-    let base_manifest_hash = match required_manifest.hash() {
-        Ok(hash) => hash,
-        Err(error) => return ApiError::from(error).into_response(),
-    };
-    let local_device_id = match device_id_from_sync_device(&state.sync_device) {
-        Some(device_id) => device_id,
-        None => {
-            return ApiError::Unavailable("local Device identity is unavailable".to_string())
-                .into_response();
-        }
-    };
-    let remote_adoption = next_device_id != local_device_id;
-    let target = if remote_adoption {
-        let session_manager = match crate::services::device_session_access::current_session_manager(
-            &state.device_network,
-        )
-        .await
-        {
-            Ok(manager) => manager,
-            Err(error) => return ApiError::Unavailable(error).into_response(),
-        };
-        let response = deliver_conversation_authority_adopt_via_session(
-            &session_manager,
-            &ConversationAuthorityAdoptDeviceCommand {
-                command_id: format!("authority-adopt-{}", uuid::Uuid::new_v4()),
-                agent_id: agent_id.to_string(),
-                address: rua_core::ChatAddress::new(chat_id),
-                source_device_id: local_device_id.clone(),
-                authority_source_device_id: current.device_id.clone(),
-                target_device_id: next_device_id.to_string(),
-                expected_authority_epoch: current.authority_epoch,
-                required_manifest,
-            },
-            Duration::from_secs(35),
-        )
-        .await;
-        match response {
-            Ok(response)
-                if response.placement.device_id == next_device_id
-                    && response.placement.authority_epoch > current.authority_epoch
-                    && response.placement.base_manifest_hash == base_manifest_hash =>
-            {
-                response.placement
-            }
-            Ok(_) => {
-                return ApiError::Conflict(
-                    "target Device confirmed a different Conversation Authority placement"
-                        .to_string(),
-                )
-                .into_response();
-            }
-            Err(error) => return authority_adopt_delivery_error(error).into_response(),
-        }
-    } else {
-        if let Err(error) = state
-            .conversation_input_intake
-            .validate_authority_adoption_model(agent_id, chat_id)
-            .await
-        {
-            return ApiError::Conflict(error).into_response();
-        }
-        ConversationAuthorityPlacement {
-            device_id: next_device_id.to_string(),
-            authority_epoch: ConversationAuthorityEpoch::next_for_device(
-                next_device_id,
-                Some(current.authority_epoch),
-            ),
-            base_manifest_hash,
-        }
-    };
-    let supersession_target = target.clone();
-    let updated = match if remote_adoption {
-        state
-            .conversation_authority
-            .apply_confirmed_authority_placement(
-                ws_dir,
-                &rua_core::ChatAddress::new(chat_id),
-                target,
-            )
-            .await
-    } else {
-        state
-            .conversation_authority
-            .switch_authority(
-                Some(state),
-                ws_dir,
-                &rua_core::ChatAddress::new(chat_id),
-                target,
-            )
-            .await
-    } {
-        Ok(record) => chat_from_metadata_record(record),
-        Err(error) => return ApiError::from(error).into_response(),
-    };
-    if !remote_adoption {
-        spawn_conversation_authority_supersession(
-            Some(&state.sync_transfer_session_manager),
-            agent_id,
-            chat_id,
-            &current.device_id,
-            current.authority_epoch,
-            &supersession_target,
-        );
-    }
-
-    (StatusCode::OK, Json(updated)).into_response()
-}
-
-async fn authority_switch_manifest(
-    ws_dir: &Path,
-    address: &rua_core::ChatAddress,
-) -> Result<crate::services::conversation_manifest::ConversationManifest, ApiError> {
-    let manifest =
-        crate::services::conversation_manifest::load_conversation_manifest(ws_dir, address)
-            .await
-            .map_err(ApiError::from)?
-            .ok_or_else(|| {
-                ApiError::Conflict("conversation manifest is unavailable".to_string())
-            })?;
-    if manifest
-        .latest_turn_status
-        .as_deref()
-        .is_some_and(|status| {
-            !rua_session::TurnLifecycleStatus::parse(status).is_syncable_conversation_state()
-        })
+    match Box::pin(state.conversation_input_intake.handoff_chat_authority(
+        &rua_core::ChatAddress::new(chat_id),
+        current,
+        selection,
+    ))
+    .await
     {
-        return Err(ApiError::Conflict(
-            "latest conversation turn is not terminal".to_string(),
-        ));
-    }
-    Ok(manifest)
-}
-
-fn authority_adopt_delivery_error(error: DeviceCommandDeliveryError) -> ApiError {
-    if error.is_session_version_incompatible() {
-        return ApiError::UpgradeRequired(error.to_string());
-    }
-    match error {
-        DeviceCommandDeliveryError::Rejected { reason, detail } => {
-            if reason.contains("manifest")
-                || reason.contains("history")
-                || reason.contains("authority")
-                || matches!(
-                    reason.as_str(),
-                    "active_turn"
-                        | "acp_active"
-                        | "model_unavailable"
-                        | "duplicate_command_conflict"
-                )
-            {
-                ApiError::Conflict(detail)
-            } else {
-                ApiError::Unavailable(format!("{reason}: {detail}"))
-            }
+        Ok(chat) => Json(chat_from_metadata_record(chat)).into_response(),
+        Err(detail)
+            if detail.contains("unavailable")
+                || detail.contains("timed out")
+                || detail.contains("awaiting target confirmation") =>
+        {
+            ApiError::Unavailable(detail).into_response()
         }
-        DeviceCommandDeliveryError::Timeout => {
-            ApiError::Unavailable("target Device authority adoption timed out".to_string())
-        }
-        other => ApiError::Unavailable(format!("target Device authority adoption failed: {other}")),
+        Err(detail) => ApiError::Conflict(detail).into_response(),
     }
 }
 
@@ -3182,8 +3097,16 @@ fn chat_command_delivery_error(error: DeviceCommandDeliveryError, operation: &st
                 || reason.contains("redirect")
             {
                 ApiError::Conflict(detail)
+            } else if reason.contains("running_config_update_rejected") {
+                // The authority rejected the candidate configuration. Relay its
+                // real status instead of flattening validation failures into 400.
+                match detail.strip_prefix("validation error: ") {
+                    Some(message) => ApiError::Core(rua_core::RuaError::Validation {
+                        message: message.to_string(),
+                    }),
+                    None => ApiError::BadRequest(detail),
+                }
             } else if reason.contains("model_update_rejected")
-                || reason.contains("running_config_update_rejected")
                 || reason.contains("invalid")
                 || reason.contains("wrong")
                 || reason.contains("missing")

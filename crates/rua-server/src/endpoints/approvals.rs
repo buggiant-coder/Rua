@@ -83,6 +83,9 @@ impl From<ApprovalReuseRule> for ApprovalRuleResponse {
     }
 }
 
+/// The identity that decides approvals on a server without account authentication.
+const LOCAL_OPERATOR_ID: &str = "local";
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/chats/{chatId}/approvals/snapshot", get(chat_snapshot))
@@ -168,6 +171,14 @@ async fn chat_control_approval(
     action: ConversationControlDeviceAction,
     login_user: Option<&crate::auth::VerifiedLoginUser>,
 ) -> Response {
+    // A Task approval records who decided it. When this server has account
+    // authentication, only a signed login may decide; without it there is exactly
+    // one local operator, who is that same decider under a stable identity.
+    let decider = match login_user {
+        Some(user) => Some(user.id().to_string()),
+        None if !state.auth.has_registered_users() => Some(LOCAL_OPERATOR_ID.to_string()),
+        None => None,
+    };
     if let ConversationControlDeviceAction::DecideApproval {
         approval_id,
         decision,
@@ -184,7 +195,7 @@ async fn chat_control_approval(
                         .chain(&snapshot.resolved)
                         .any(|request| request.id == *approval_id)
                     {
-                        let Some(user) = login_user else {
+                        let Some(decider) = decider.as_deref() else {
                             return ApiError::Unauthorized(
                                 "A logged-in user must decide the Task approval".into(),
                             )
@@ -198,7 +209,7 @@ async fn chat_control_approval(
                                 attempt_no,
                                 approval_id,
                                 decision.clone(),
-                                user.id(),
+                                decider,
                             )
                             .await
                         {

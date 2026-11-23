@@ -240,10 +240,16 @@ impl InboundApplyRuntime {
         if let Some(error) = result.error.as_ref() {
             return Err(rua_sync::SyncError::Store(error.clone()));
         }
-        if result.retryable > 0 || result.discarded > 0 {
+        // A later batch in this same drain may apply the dependency that made
+        // an earlier entry retryable, then successfully retry that entry. The
+        // attempt counter is diagnostic; readiness depends on what remains.
+        let retryable = self
+            .inbound_inbox
+            .count_by_state(rua_sync::inbound_inbox::InboxState::Retryable)?;
+        if retryable > 0 || result.discarded > 0 {
             return Err(rua_sync::SyncError::Store(format!(
                 "Inbound Inbox drain incomplete: {} retryable, {} discarded",
-                result.retryable, result.discarded
+                retryable, result.discarded
             )));
         }
         Ok(())

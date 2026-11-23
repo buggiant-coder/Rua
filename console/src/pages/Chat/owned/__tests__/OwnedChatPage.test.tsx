@@ -24,6 +24,7 @@ import ChatPage from "../../index";
 import { readDraftChatContext } from "../../chatContext";
 import { openChatDraft } from "../../chatNavigation";
 import { conversationApi } from "@/api/modules/conversation";
+import { executionDirectoryApi } from "@/api/modules/executionDirectory";
 import { rememberProjectChat } from "@/pages/Projects/projectChatNavigation";
 import {
   subscribeConversationNavigation,
@@ -47,6 +48,7 @@ const chatApiMock = vi.hoisted(() => ({
 }));
 
 const consoleFetchMock = vi.hoisted(() => vi.fn());
+const directoryBrowseMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/consoleTransport", () => ({
   consoleFetch: consoleFetchMock,
@@ -379,6 +381,17 @@ function controlledJsonLineResponse() {
 describe("owned ChatPage route identity", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    directoryBrowseMock
+      .mockReset()
+      .mockImplementation(async (_device, path) => ({
+        path,
+        parent_path: null,
+        roots: [],
+        entries: [],
+      }));
+    vi.spyOn(executionDirectoryApi, "browse").mockImplementation(
+      directoryBrowseMock,
+    );
     consoleFetchMock
       .mockReset()
       .mockRejectedValue(new Error("No activity fixture"));
@@ -445,14 +458,19 @@ describe("owned ChatPage route identity", () => {
       }),
     );
     chatApiMock.setAuthorityPlacement.mockImplementation(
-      (chatId: string, deviceId: string, _agentId: string, model?: unknown) =>
+      (
+        chatId: string,
+        position: { device_id: string; path?: string },
+        _agentId: string,
+        model?: unknown,
+      ) =>
         Promise.resolve({
           id: chatId,
           user_id: "default",
           channel: "console",
           created_at: null,
           updated_at: null,
-          meta: { authority_placement: { device_id: deviceId } },
+          meta: { authority_placement: { device_id: position.device_id } },
           model: model ?? null,
         }),
     );
@@ -2682,7 +2700,7 @@ describe("owned ChatPage route identity", () => {
     await waitFor(() =>
       expect(chatApiMock.setAuthorityPlacement).toHaveBeenCalledWith(
         "chat-1",
-        "device-remote",
+        { device_id: "device-remote" },
         "default",
       ),
     );
@@ -2706,6 +2724,263 @@ describe("owned ChatPage route identity", () => {
     expect(
       localStorage.getItem("rua:authority-switch-cache-notice-disabled"),
     ).toBe("true");
+  });
+
+  it("confirms the target directory before switching from the device chip", async () => {
+    chatApiMock.getChat.mockResolvedValue({
+      status: "idle",
+      messages: [],
+      meta: {
+        authority_placement: { device_id: "device-current" },
+        execution_directory: {
+          device_id: "device-current",
+          path: "/source-only",
+          managed: false,
+        },
+      },
+    });
+    directoryBrowseMock.mockResolvedValue({
+      path: "/target/real/photos",
+      parent_path: "/target/real",
+      roots: [],
+      entries: [],
+    });
+    renderChat("/chats/chat-1");
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: label("chat.deviceChip.tooltip", {
+          name: label("chat.deviceChip.localShort"),
+        }),
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Remote device/ }));
+    await screen.findByText(label("chat.authorityPlacement.title"));
+    expect(chatApiMock.setAuthorityPlacement).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole("combobox", {
+        name: label("executionLocation.directory"),
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("option", { name: label("executionLocation.explicit") }),
+    );
+    const path = screen.getByRole("textbox", {
+      name: label("executionLocation.path"),
+    });
+    expect(path).toHaveValue("");
+    expect(
+      screen.getByRole("button", { name: label("common.save") }),
+    ).toBeDisabled();
+    fireEvent.change(path, { target: { value: "~/photos" } });
+    fireEvent.click(screen.getByRole("button", { name: label("common.save") }));
+    await waitFor(() =>
+      expect(chatApiMock.setAuthorityPlacement).toHaveBeenCalledWith(
+        "chat-1",
+        { device_id: "device-remote", path: "/target/real/photos" },
+        "default",
+      ),
+    );
+    expect(directoryBrowseMock).toHaveBeenCalledWith(
+      "device-remote",
+      "~/photos",
+    );
+  });
+
+  it("does not fall back to managed or switch when the target directory is invalid", async () => {
+    chatApiMock.getChat.mockResolvedValue({
+      status: "idle",
+      messages: [],
+      meta: {
+        authority_placement: { device_id: "device-current" },
+      },
+    });
+    directoryBrowseMock.mockRejectedValue(
+      new Error("Target directory is unavailable"),
+    );
+    renderChat("/chats/chat-1");
+    fireEvent.click(screen.getByLabelText(label("common.more")));
+    fireEvent.click(
+      await screen.findByRole("menuitem", {
+        name: new RegExp(label("chat.authorityPlacement.menu")),
+      }),
+    );
+    fireEvent.click(screen.getByRole("radio", { name: /Remote device/ }));
+    fireEvent.click(
+      screen.getByRole("combobox", {
+        name: label("executionLocation.directory"),
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("option", { name: label("executionLocation.explicit") }),
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", { name: label("executionLocation.path") }),
+      { target: { value: "/missing" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: label("common.save") }));
+    await screen.findByText("Target directory is unavailable");
+    expect(chatApiMock.setAuthorityPlacement).not.toHaveBeenCalled();
+    expect(ownedSurfaceRenderMock).toHaveBeenLastCalledWith(
+      "chat-1",
+      "device-current",
+      "device-current",
+    );
+  });
+
+  it("keeps the original authority when the cooperative handoff is rejected", async () => {
+    chatApiMock.getChat.mockResolvedValue({
+      status: "idle",
+      messages: [],
+      meta: {
+        authority_placement: { device_id: "device-current" },
+        execution_directory: {
+          device_id: "device-current",
+          path: "/source-only",
+          managed: false,
+        },
+      },
+    });
+    chatApiMock.setAuthorityPlacement.mockRejectedValueOnce(
+      new Error("Current execution device is offline"),
+    );
+    renderChat("/chats/chat-1");
+    fireEvent.click(screen.getByLabelText(label("common.more")));
+    fireEvent.click(
+      await screen.findByRole("menuitem", {
+        name: new RegExp(label("chat.authorityPlacement.menu")),
+      }),
+    );
+    fireEvent.click(screen.getByRole("radio", { name: /Remote device/ }));
+    fireEvent.click(screen.getByRole("button", { name: label("common.save") }));
+    await screen.findByText("Current execution device is offline");
+    expect(chatApiMock.setAuthorityPlacement).toHaveBeenCalledExactlyOnceWith(
+      "chat-1",
+      { device_id: "device-remote" },
+      "default",
+    );
+    expect(ownedSurfaceRenderMock).toHaveBeenLastCalledWith(
+      "chat-1",
+      "device-current",
+      "device-current",
+    );
+    expect(
+      screen.queryByText(
+        label("chat.authorityPlacement.cacheInvalidatedNotice"),
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it("ignores a late authority handoff receipt after opening a different chat", async () => {
+    let resolveSwitch!: (value: unknown) => void;
+    chatApiMock.setAuthorityPlacement.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSwitch = resolve;
+      }),
+    );
+    renderChat("/chats/chat-1");
+    fireEvent.click(screen.getByLabelText(label("common.more")));
+    fireEvent.click(
+      await screen.findByRole("menuitem", {
+        name: new RegExp(label("chat.authorityPlacement.menu")),
+      }),
+    );
+    fireEvent.click(screen.getByRole("radio", { name: /Remote device/ }));
+    fireEvent.click(screen.getByRole("button", { name: label("common.save") }));
+    await waitFor(() =>
+      expect(chatApiMock.setAuthorityPlacement).toHaveBeenCalledTimes(1),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "go default chat" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent(
+        "/chats/return-chat",
+      ),
+    );
+    await act(async () => {
+      resolveSwitch({
+        id: "chat-1",
+        meta: {
+          authority_placement: { device_id: "device-remote" },
+          execution_directory: {
+            device_id: "device-remote",
+            path: "/remote/actual",
+            managed: true,
+          },
+        },
+      });
+    });
+    expect(ownedSurfaceRenderMock).not.toHaveBeenLastCalledWith(
+      "return-chat",
+      "device-remote",
+      "device-current",
+    );
+    expect(
+      screen.queryByText(
+        label("chat.authorityPlacement.cacheInvalidatedNotice"),
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { active_turn: { turn_id: "running" } },
+    { queue: { entries: [{ input_id: "queued" }] } },
+    {
+      chat_agent_state: {
+        selection: { agent_id: "default" },
+        blockers: ["unresolved_approval"],
+      },
+    },
+  ])(
+    "blocks authority selection for known foreground, queue or approval work",
+    async (control) => {
+      chatApiMock.getChat.mockResolvedValue({
+        status: "idle",
+        messages: [],
+        control: {
+          placement: { authority_device_id: "device-current" },
+          acp: { active: false },
+          ...control,
+        },
+      });
+      renderChat("/chats/chat-1");
+      fireEvent.click(screen.getByLabelText(label("common.more")));
+      expect(
+        await screen.findByRole("menuitem", {
+          name: new RegExp(label("chat.authorityPlacement.menu")),
+        }),
+      ).toHaveAttribute("aria-disabled", "true");
+      expect(chatApiMock.setAuthorityPlacement).not.toHaveBeenCalled();
+    },
+  );
+
+  it("allows authority selection with only a running background Task", async () => {
+    chatApiMock.getChat.mockResolvedValue({
+      status: "idle",
+      messages: [],
+      control: {
+        placement: { authority_device_id: "device-current" },
+        acp: { active: false },
+        queue: { entries: [] },
+        background_work: {
+          items: [{ kind: "task", id: "task-remote", status: "running" }],
+        },
+      },
+    });
+    renderChat("/chats/chat-1");
+    fireEvent.click(screen.getByLabelText(label("common.more")));
+    fireEvent.click(
+      await screen.findByRole("menuitem", {
+        name: new RegExp(label("chat.authorityPlacement.menu")),
+      }),
+    );
+    fireEvent.click(screen.getByRole("radio", { name: /Remote device/ }));
+    fireEvent.click(screen.getByRole("button", { name: label("common.save") }));
+    await waitFor(() =>
+      expect(chatApiMock.setAuthorityPlacement).toHaveBeenCalledExactlyOnceWith(
+        "chat-1",
+        { device_id: "device-remote" },
+        "default",
+      ),
+    );
   });
 
   it("preserves the draft model when selecting authority for a lazy chat", async () => {
@@ -2870,7 +3145,7 @@ describe("owned ChatPage route identity", () => {
     await waitFor(() =>
       expect(chatApiMock.setAuthorityPlacement).toHaveBeenCalledWith(
         "chat-1",
-        "device-remote",
+        { device_id: "device-remote" },
         "default",
       ),
     );
@@ -2910,7 +3185,7 @@ describe("owned ChatPage route identity", () => {
     await waitFor(() =>
       expect(chatApiMock.setAuthorityPlacement).toHaveBeenCalledWith(
         "chat-1",
-        "device-remote",
+        { device_id: "device-remote" },
         "default",
       ),
     );
@@ -3015,7 +3290,7 @@ describe("owned ChatPage route identity", () => {
     await waitFor(() =>
       expect(chatApiMock.setAuthorityPlacement).toHaveBeenCalledWith(
         "chat-1",
-        "device-current",
+        { device_id: "device-current" },
         "default",
       ),
     );

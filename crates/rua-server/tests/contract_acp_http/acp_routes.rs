@@ -1760,7 +1760,8 @@ async fn acp_permission_relay_routes_are_chat_scoped_and_validate_option_ids() {
             authority_epoch: ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     app.state
         .conversation_authority
         .transition_active_turn_phase(

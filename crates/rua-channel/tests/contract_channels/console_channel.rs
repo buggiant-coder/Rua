@@ -14,7 +14,7 @@ fn console_chat_request_keeps_managed_media_in_ordered_user_content() {
             "role": "user",
             "content": [
                 { "type": "text", "text": "inspect this" },
-                { "type": "image", "media_ref": "media/uuid-image.png" }
+                { "type": "image", "media_ref": "media/00000000-0000-4000-8000-000000000001" }
             ]
         })]),
         messages: None,
@@ -26,7 +26,7 @@ fn console_chat_request_keeps_managed_media_in_ordered_user_content() {
     assert_eq!(parts.len(), 2);
     assert!(matches!(
         &parts[1],
-        agent_types::ContentPart::Image { url, .. } if url == "media/uuid-image.png"
+        agent_types::ContentPart::Image { url, .. } if url == "media/00000000-0000-4000-8000-000000000001"
     ));
 }
 #[test]

@@ -65,7 +65,7 @@ impl SecurityConfigStore {
 
     pub fn delete(&self, agent_id: &str) -> Result<(), StoreError> {
         let path = self.agent_security_path(agent_id);
-        match std::fs::remove_file(&path) {
+        match rua_config::remove_file_committed(&path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(source) => Err(StoreError::Io { path, source }),

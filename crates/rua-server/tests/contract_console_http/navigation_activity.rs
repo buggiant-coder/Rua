@@ -39,7 +39,8 @@ async fn global_activity_stream_snapshots_running_chats_then_emits_terminal_and_
             authority_epoch: epoch,
             driver_detail: None,
         })
-        .await;
+        .await
+        .unwrap();
     let app = Router::new()
         .nest("/api", rua_server::endpoints::platform::router())
         .with_state(test.state.clone());

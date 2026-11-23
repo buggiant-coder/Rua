@@ -247,6 +247,20 @@ async fn collaboration_wake_suppression_round_trips_independently() {
         .unwrap();
     assert!(!resumed.suppressed);
     assert!(resumed.stopped_at.is_none());
+    let target_dir = tempfile::tempdir().unwrap();
+    let target = WorkspaceSessionStore::new(target_dir.path());
+    target
+        .save_collaboration_wake_state("source", &stopped)
+        .await
+        .unwrap();
+    assert_eq!(
+        target
+            .load_collaboration_wake_state("source")
+            .await
+            .unwrap(),
+        stopped,
+        "handoff restores the original suppression timestamp without creating another stop"
+    );
 }
 
 #[tokio::test]

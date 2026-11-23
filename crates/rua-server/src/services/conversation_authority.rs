@@ -223,6 +223,7 @@ pub struct ConversationAllowedControls {
 }
 
 pub struct ConversationAuthority {
+    handoff_admission: std::sync::OnceLock<HandoffAdmission>,
     runtime_observation_receipts: crate::services::conversation_input_intake::TaskWatchWakeReceipts,
     project_resources:
         std::sync::OnceLock<(Arc<rua_project::ProjectCatalog>, rua_core::WorkspaceRoot)>,
@@ -261,6 +262,11 @@ pub struct ConversationAuthority {
         Option<Arc<crate::services::active_stream_broadcast::ActiveStreamBroadcastHub>>,
     >,
     gossip_broadcast: std::sync::RwLock<Option<GossipBroadcastHandles>>,
+}
+
+struct HandoffAdmission {
+    rua_root: std::path::PathBuf,
+    device: Arc<std::sync::RwLock<Option<Arc<rua_sync::identity::DeviceIdentity>>>>,
 }
 
 #[derive(Clone)]
@@ -503,6 +509,7 @@ impl ConversationAuthority {
     ) -> Self {
         let (global_control_events, _) = broadcast::channel(256);
         Self {
+            handoff_admission: std::sync::OnceLock::new(),
             runtime_observation_receipts: Default::default(),
             active_turns: RwLock::new(HashMap::new()),
             background_work: std::sync::OnceLock::new(),
@@ -776,13 +783,65 @@ impl ConversationAuthority {
         self.transition_gate_at(address)
     }
 
+    pub(crate) fn bind_handoff_admission(
+        &self,
+        rua_root: &std::path::Path,
+        device: Arc<std::sync::RwLock<Option<Arc<rua_sync::identity::DeviceIdentity>>>>,
+    ) {
+        let _ = self.handoff_admission.set(HandoffAdmission {
+            rua_root: rua_root.to_path_buf(),
+            device,
+        });
+    }
+
+    /// Caller owns transition_gate. Disk intent fences the old writer even after
+    /// a restart with an old placement header.
+    pub(crate) async fn ensure_handoff_admission_locked(
+        &self,
+        address: &ChatAddress,
+    ) -> Result<(), String> {
+        let Some(binding) = self.handoff_admission.get() else {
+            return Ok(());
+        };
+        let scope = rua_core::ChatStore::resolve(&binding.rua_root, address.clone());
+        let store = rua_session::WorkspaceSessionStore::new(scope.root());
+        let Some(record) = store
+            .load_chat_handoff(address.chat_id().as_str())
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(());
+        };
+        use rua_session::chat_handoff::ChatHandoffPhase;
+        match record.phase {
+            ChatHandoffPhase::Prepared | ChatHandoffPhase::Released => Err(format!(
+                "Chat handoff {} is {:?}; local writes are not admitted",
+                record.handoff_id, record.phase
+            )),
+            ChatHandoffPhase::Aborted => Ok(()),
+            ChatHandoffPhase::Activated => {
+                let local =
+                    crate::services::device_context::current_sync_device_id(&binding.device)
+                        .ok_or("Local Device identity is unavailable")?;
+                let placement = crate::services::conversation_authority_target::load_chat_authority_placement_target(
+                    scope.root(), address.chat_id().as_str(),
+                ).await?;
+                if placement.device_id != local {
+                    return Err("Chat handoff completed on another Authority Device".into());
+                }
+                Ok(())
+            }
+        }
+    }
+
     pub async fn start_active_turn(
         &self,
         start: ConversationActiveTurnStart,
-    ) -> ConversationActiveTurn {
+    ) -> Result<ConversationActiveTurn, String> {
         let gate = self.transition_gate_at(&start.address);
         let _transition = gate.lock().await;
-        self.start_active_turn_locked(start).await
+        self.ensure_handoff_admission_locked(&start.address).await?;
+        Ok(self.start_active_turn_locked(start).await)
     }
 
     async fn start_active_turn_locked(
@@ -1228,6 +1287,7 @@ impl ConversationAuthority {
             return Ok(ConversationSendNowOutcome::AlreadyApplied { input });
         }
 
+        self.ensure_handoff_admission_locked(address).await?;
         let placement = self
             .observe_placement_projection_at(
                 address,
@@ -1424,7 +1484,9 @@ impl ConversationAuthority {
         self.publish_control_snapshot(address, "turn_completed", &serde_json::json!({}))
             .await;
 
-        let mut next_input = if drain_queue || self.is_queue_drain_paused(address).await {
+        let mut next_input = if self.ensure_handoff_admission_locked(address).await.is_ok()
+            && (drain_queue || self.is_queue_drain_paused(address).await)
+        {
             self.pop_next_input_state(&key).await
         } else {
             None
@@ -1691,6 +1753,7 @@ impl ConversationAuthority {
             .extra
             .remove(rua_session::TURN_PROJECT_RESOURCES_KEY);
         pending.extra.remove("project_resource_capture_error");
+        self.ensure_handoff_admission_locked(&address).await?;
         let submission_id = ensure_submission_id(&mut pending);
         // Intake prepares an execution context before acquiring admission. A switch
         // that won the gate invalidates that context, including its Agent runtime.
@@ -1901,6 +1964,11 @@ impl ConversationAuthority {
         // Turn. The queue itself is discarded by shutdown under this same gate,
         // and the producer still has to finish through the normal tail so the
         // Turn and its stream are not left dangling.
+        if self.ensure_handoff_admission_locked(address).await.is_err() {
+            streams.mark_completed(stream_key, producer_id).await;
+            let _ = self.finish_active_turn_locked(address).await;
+            return None;
+        }
         let draining = self.draining_chats.read().await.contains(address)
             || self.selected_agent_draining(address).await;
         if let Some(mut next) = self.pop_next_input_state(address).await {
@@ -1979,6 +2047,7 @@ impl ConversationAuthority {
         let _transition = gate.lock().await;
         if self.draining_chats.read().await.contains(address)
             || self.selected_agent_draining(address).await
+            || self.ensure_handoff_admission_locked(address).await.is_err()
         {
             return None;
         }
@@ -2871,6 +2940,21 @@ impl ConversationAuthority {
 
     pub(crate) async fn is_queue_drain_paused(&self, address: &ChatAddress) -> bool {
         self.paused_queue_drain.read().await.contains(address)
+    }
+
+    /// The handoff coordinator owns this Chat's transition gate. An empty queue
+    /// can remain paused after its last input was removed; preserve that state.
+    pub(crate) async fn restore_handoff_queue_pause_locked(
+        &self,
+        address: &ChatAddress,
+        paused: bool,
+    ) {
+        let mut pauses = self.paused_queue_drain.write().await;
+        if paused {
+            pauses.insert(address.clone());
+        } else {
+            pauses.remove(address);
+        }
     }
 
     async fn set_queued_count_from_queue(&self, address: &ChatAddress) {
