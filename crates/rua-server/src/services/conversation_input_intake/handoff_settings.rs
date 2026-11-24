@@ -56,6 +56,35 @@ pub(crate) fn capture(
     rua_config::with_commit_barrier(&paths, || capture_locked(root, agent_id, &paths[0]))
 }
 
+/// Chat-scoped readiness. When the Authority could publish its current rules, the
+/// target must have applied exactly them (including an explicitly cleared set), so
+/// its first Turn reuses the same grants. When Sync is off nothing was published to
+/// wait for, and the target keeps whatever it already holds — its first Turn then
+/// re-evaluates each grant against its own policy instead of inheriting a stale one.
+/// Agent/root security is Device-local and never a switch prerequisite.
+pub(crate) fn chat_rules_ready(
+    root: &Path,
+    address: &ChatAddress,
+    expected: &HandoffSettingsSnapshot,
+    published: bool,
+) -> io::Result<bool> {
+    if !published {
+        return Ok(true);
+    }
+    let path = ChatStore::resolve(root, address.clone())
+        .root()
+        .join("sessions")
+        .join(address.chat_id().as_str())
+        .join("permission_rules.json");
+    let rules: Value = match std::fs::File::open(&path) {
+        Ok(file) => serde_json::from_reader(file).map_err(invalid)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Value::Array(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    serde_json::from_value::<Vec<StoredApprovalReuseRule>>(rules.clone()).map_err(invalid)?;
+    Ok(digest(rules)? == expected.chat_rules)
+}
+
 /// Full readiness: Chat rules plus the portable Agent/root security projections.
 pub(crate) fn matches(
     root: &Path,

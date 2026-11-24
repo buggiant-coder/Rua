@@ -1057,13 +1057,15 @@ impl SessionSyncEmitter {
         .await;
     }
 
+    /// Publish the Chat's portable settings for a handoff. Returns whether anything
+    /// was published: with Sync switched off the target can only keep its own rules.
     pub(crate) async fn publish_handoff_settings(
         &self,
         scope_root: &Path,
         address: &rua_core::ChatAddress,
         agent_id: &str,
         approvals: &rua_security::approval_authority::ApprovalAuthority,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         approvals.ensure_chat_rules_snapshot(address).await?;
         let runtime = SyncPublicationRuntime::new(
             self.data_dir.join("sync"),
@@ -1083,11 +1085,11 @@ impl SessionSyncEmitter {
             },
         )
         .await;
-        // Sync being disabled is not a handoff failure: the handoff itself carries no
-        // settings, but a Device without Sync keeps its own applied projections and
-        // the readiness check below still fails closed if they differ.
+        // Sync being disabled is not a handoff failure: there is then nothing for the
+        // target to wait for, and readiness stops requiring the exact same rules.
         match result.status {
-            PublicationStatus::Published | PublicationStatus::SkippedDisabled => Ok(()),
+            PublicationStatus::Published => Ok(true),
+            PublicationStatus::SkippedDisabled => Ok(false),
             _ => Err(format!(
                 "handoff settings publication did not complete: {:?}",
                 result

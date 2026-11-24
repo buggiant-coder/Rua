@@ -77,6 +77,10 @@ struct Requirements {
     history: Option<HandoffHistorySnapshot>,
     queue_paused: bool,
     settings: HandoffSettingsSnapshot,
+    /// Whether the Authority could publish this snapshot. With Sync off nothing was
+    /// published, so the target keeps its own applied Chat rules.
+    #[serde(default)]
+    settings_published: bool,
     // Only immutable routing identity is required. A live Task may change its
     // status throughout handoff, including while its Device is unreachable.
     task_refs: BTreeMap<String, Value>,
@@ -651,6 +655,7 @@ impl ConversationInputIntake {
             )
             .map_err(|e| e.to_string())?,
             task_refs: task_ref_identities(&store, address.chat_id().as_str())?,
+            settings_published: false,
             extra: BTreeMap::new(),
         };
         let record = ChatHandoffRecord {
@@ -695,7 +700,8 @@ impl ConversationInputIntake {
         self.session_sync
             .emit_evergreen_chat_snapshot(scope.root(), address)
             .await;
-        self.session_sync
+        requirements.settings_published = self
+            .session_sync
             .publish_handoff_settings(scope.root(), address, &requirements.agent_id, approvals)
             .await?;
         // Bidirectional synchronization preserves legitimate newer shared settings
@@ -887,15 +893,14 @@ impl ConversationInputIntake {
         {
             return Err("Target Chat authorization snapshot is not synchronized".into());
         }
-        // The target may only take over once the Authority's persisted settings for
-        // this Chat are actually applied here: its Chat permission rules plus the
-        // portable Agent/root security projections that decide how its first Turn is
-        // authorized. A concurrent newer local value therefore fails closed.
-        if !handoff_settings::matches(
+        // The target may take over only once the Chat permission rules the Authority
+        // published are actually applied here, so the first Turn reuses the same
+        // grants. Device-local Agent/root security is re-evaluated on this Device.
+        if !handoff_settings::chat_rules_ready(
             self.session_sync.rua_root(),
             address,
-            &requirements.agent_id,
             &requirements.settings,
+            requirements.settings_published,
         )
         .map_err(|e| e.to_string())?
         {
