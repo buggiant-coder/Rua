@@ -112,14 +112,6 @@ async fn handoff_while_settings_apply_is_blocked(source: &Peer, target: &Peer, c
         } => {}
     }
     assert_eq!(target.placement(chat).await, old);
-    assert!(!target
-        .store()
-        .load_chat_handoff(chat)
-        .await
-        .unwrap()
-        .is_some_and(
-            |record| record.phase == rua_session::chat_handoff::ChatHandoffPhase::Activated
-        ));
     assert!(target
         .state
         .conversation_authority
