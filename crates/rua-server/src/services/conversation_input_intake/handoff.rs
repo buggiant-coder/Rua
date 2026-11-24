@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::handoff_history::{self, HandoffHistorySnapshot};
-use super::handoff_settings::{self, HandoffSettingsSnapshot};
+use super::handoff_settings::{self, HandoffSettingsPayload, HandoffSettingsSnapshot};
 use super::ConversationInputIntake;
 use crate::services::chat_metadata_store::{load_chat_record, ChatMetadataRecord};
 use crate::services::conversation_authority_placement::{
@@ -77,6 +77,10 @@ struct Requirements {
     history: Option<HandoffHistorySnapshot>,
     queue_paused: bool,
     settings: HandoffSettingsSnapshot,
+    // Delivered with Prepare so the target can hold the same global security
+    // projections even when Sync is not live. Absent in older journals.
+    #[serde(default)]
+    settings_payload: HandoffSettingsPayload,
     // Only immutable routing identity is required. A live Task may change its
     // status throughout handoff, including while its Device is unreachable.
     task_refs: BTreeMap<String, Value>,
@@ -638,6 +642,12 @@ impl ConversationInputIntake {
                 &header.agent_id,
             )
             .map_err(|e| e.to_string())?,
+            settings_payload: handoff_settings::payload(
+                self.session_sync.rua_root(),
+                address,
+                &header.agent_id,
+            )
+            .map_err(|e| e.to_string())?,
             task_refs: task_ref_identities(&store, address.chat_id().as_str())?,
             extra: BTreeMap::new(),
         };
@@ -844,7 +854,24 @@ impl ConversationInputIntake {
         })
         .await?;
         self.sync_handoff_state(source).await?;
+        // The Prepare request also carries the portable global security projections.
+        // Install only what this Device does not have yet, so a Device with its own
+        // newer value keeps it and fails the readiness check below instead of being
+        // silently overridden by the old Authority.
+        handoff_settings::apply_missing(
+            self.session_sync.rua_root(),
+            address,
+            &requirements.agent_id,
+            &requirements.settings_payload,
+        )
+        .map_err(|error| error.to_string())?;
         let _project = self.project_work_admission(address).await?;
+        // Bringing the selected Agent up is slow and publishes Agent state; it must
+        // happen before this Chat's writer gate is taken, never while holding it.
+        self.registry
+            .get_or_create(&requirements.agent_id)
+            .await
+            .map_err(|error| error.to_string())?;
         let authority = self
             .conversation_authority
             .as_ref()

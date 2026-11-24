@@ -457,15 +457,21 @@ impl ConversationInputIntake {
         .await
     }
 
+    /// The directory a collaboration Chat works in on this Device: the Project's
+    /// own resource directory when the Project has one here, otherwise the Chat's
+    /// execution directory. Working files are never copied between Devices (D37).
     pub(crate) async fn resolve_collaboration_working_dir(
         &self,
         address: &ChatAddress,
         local_device_id: &str,
     ) -> Result<PathBuf, String> {
         let (agent_id, project_id) = self.chat_selection(address).await?;
-        if project_id.is_some() {
+        if let Some(project_id) = project_id {
             self.resolve_project_conversation_scope_target(address, local_device_id)
                 .await?;
+            if let Some(directory) = self.project_resource_directory(&project_id, local_device_id) {
+                return Ok(directory);
+            }
         }
         self.execution_working_directory(
             address.chat_id().as_str(),
@@ -785,7 +791,9 @@ impl ConversationInputIntake {
                     .map_err(|error| error.to_string())?;
                 return Ok(());
             }
-            return Err("Task Watch retained: no persisted Turn is available".into());
+            // Activity-only output has no Turn to attach to; there is nothing to
+            // persist and nothing to wake, so the observation is simply consumed.
+            return Ok(());
         }
         let mut extra = serde_json::Map::new();
         let runtime_note = rua_session::RuntimeNote {
@@ -1046,29 +1054,25 @@ impl ConversationInputIntake {
             .ok_or_else(|| "Conversation Authority is unavailable".to_string())?;
         // A Task may outlive its executor's selection. Choose its result Turn's
         // Agent under the same gate that accepts the input and switches the Chat.
-        // Claim this observation before waiting for the Chat's transition gate: the
-        // gate is held for the whole delivery, so a duplicate that registers later
-        // could only observe a stalled Chat.
+        // Claim the observation before waiting for that gate: the gate is held for a
+        // whole delivery, so a duplicate arriving meanwhile must join the in-flight
+        // receipt instead of queueing a second Turn once the gate is released.
         let mut wake_receipt = if wait_for_watch || wait_for_persistence {
             let receipt = self
                 .task_watch_wake_receipts
                 .register(observation_id.clone(), address.clone());
             if !receipt.fresh {
-                // The same observation is still being delivered. Report it instead of
-                // waiting, so the sender keeps its durable record and can try again
-                // rather than silently joining a delivery it cannot observe.
+                // A terminal result is acknowledged exactly once, so an overlapping
+                // delivery joins the in-flight one and reports its outcome. Live watch
+                // output is not acknowledged; a duplicate is reported instead of
+                // silently waiting on a delivery it did not start.
+                if wait_for_persistence {
+                    return receipt.wait().await;
+                }
                 return Err(format!(
                     "Runtime observation {observation_id} is already registered"
                 ));
             }
-            extra.insert(
-                RUNTIME_OBSERVATION_RECEIPT_META_KEY.into(),
-                serde_json::json!(receipt.receipt_id),
-            );
-            extra.insert(
-                SUBMISSION_ID_KEY.into(),
-                serde_json::json!(receipt.receipt_id),
-            );
             Some(receipt)
         } else {
             None
@@ -1146,6 +1150,19 @@ impl ConversationInputIntake {
             .map_err(|error| error.to_string())?,
         };
         extra.insert(rua_chat::TURN_AGENT_ASSIGNMENT_META_KEY.into(), assignment);
+        // The receipt travels with the enqueued input so a queue discard fails it
+        // instead of leaving the sender waiting for an acknowledgement that can never
+        // arrive.
+        if let Some(receipt) = wake_receipt.as_ref() {
+            extra.insert(
+                RUNTIME_OBSERVATION_RECEIPT_META_KEY.into(),
+                serde_json::json!(receipt.receipt_id),
+            );
+            extra.insert(
+                SUBMISSION_ID_KEY.into(),
+                serde_json::json!(receipt.receipt_id),
+            );
+        }
         let pending = ConversationInputPayload {
             message: String::new(),
             model_override: None,
@@ -2592,19 +2609,13 @@ impl ConversationInputIntake {
                     .map_err(|error| reject("project_unavailable", error))?;
             }
         }
-        // A Project Chat works inside the Project's own resource directory on this
-        // Device. Only a Project without a directory here falls back to the Chat's
-        // execution directory, which is what a standalone Chat always uses.
-        let project_cwd = project_id.as_ref().and_then(|project_id| {
-            self.project_resource_directory(project_id, &command.target_device_id)
-                .map(|path| path.to_string_lossy().into_owned())
-        });
-        // ACP reports the directory the Chat actually works in: the Project's
-        // resource directory on this Device, or the Chat's own execution directory.
-        let acp_workspace_dir = project_cwd
-            .as_deref()
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| target.working_dir.clone());
+        // ACP reports the directory the Chat actually runs in on this Device. A
+        // Project Chat's tool work happens inside the Project's resource directory,
+        // but the Chat's own execution directory is what the Chat is bound to.
+        let project_cwd = project_id
+            .as_ref()
+            .map(|_| target.working_dir.to_string_lossy().to_string());
+        let acp_workspace_dir = target.working_dir.clone();
 
         match command.action {
             AcpChatDeviceAction::ListRunners => Ok(AcpChatDeviceResponse::Runners {

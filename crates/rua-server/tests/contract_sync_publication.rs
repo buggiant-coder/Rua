@@ -1396,8 +1396,34 @@ async fn stable_conversation_fact_publishes_evergreen_snapshots_when_bound() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn publication_seam_preserves_large_daily_change_sets() {
     let (state, tmp) = build_state(true, true);
-    let workspace_dir = tmp.path().join("workspaces/default");
     let chat_id = "00000000-0000-0000-0000-000000001002";
+    let address = ChatAddress::new(chat_id);
+    let workspace_dir = ChatStore::resolve(tmp.path(), address.clone())
+        .root()
+        .to_path_buf();
+    // History publication is gated by the Chat's recorded Authority placement.
+    let mut header = rua_session::ChatSessionHeader::new(rua_session::ChatMetadata {
+        chat_id: chat_id.into(),
+        agent_id: "default".into(),
+        title: "Large daily change set".into(),
+        created_at: "2026-06-25T00:00:00Z".into(),
+        last_activity_at: "2026-06-25T00:00:00Z".into(),
+        pinned: false,
+        archived: false,
+        preview: None,
+    });
+    header.extra.insert(
+        "authority_placement".into(),
+        json!({
+            "device_id": state.task_runtime.device_context().device_id,
+            "authority_epoch": "0000000000000001000000000000000000000000",
+            "base_manifest_hash": format!("sha256:{}", "0".repeat(64))
+        }),
+    );
+    rua_session::WorkspaceSessionStore::new(&workspace_dir)
+        .save_chat_header(&header)
+        .await
+        .unwrap();
     let messages_dir = workspace_dir
         .join("sessions")
         .join(chat_id)
@@ -1425,13 +1451,16 @@ async fn publication_seam_preserves_large_daily_change_sets() {
         &state,
         SyncPublicationFact::StableConversationState {
             scope_root: workspace_dir,
-            address: rua_core::ChatAddress::new(chat_id),
+            address,
         },
     )
     .await;
 
     assert_eq!(result.status, PublicationStatus::Published);
-    assert!(result.appended >= 100, "DEBUG appended={} status={:?}", result.appended, result.status);
+    assert!(
+        result.appended >= 100,
+        "expected the whole daily batch to be published: {result:?}"
+    );
     let (frame_count, changes) = collect_v4_frame_stats(&state).await;
     assert_eq!(
         frame_count,
@@ -1442,7 +1471,7 @@ async fn publication_seam_preserves_large_daily_change_sets() {
         changes.iter().any(|change| {
             change.domain == "evergreen_chat"
                 && change.record_id
-                    == format!("agent/default/{chat_id}/messages/000000000099.jsonl")
+                    == format!("chats/{chat_id}/messages/000000000099.jsonl")
                 && change.payload.to_string().contains("daily batch 99")
         }),
         "expanded batch should preserve ordinary Evergreen Chat changes"

@@ -45,12 +45,15 @@ fn seed_sync_identity_with_network(tmp: &TempDir, network: &rua_sync::identity::
 async fn seed_portable_state(tmp: &TempDir) {
     let root = tmp.path();
     let ws = root.join("workspaces/default");
-    std::fs::create_dir_all(ws.join("sessions/default-evergreen/messages"))
+    // Chat-owned state lives in the independent Chat workspace, Agent resources in
+    // the Agent workspace.
+    let chats = root.join("chats");
+    std::fs::create_dir_all(chats.join("sessions/default-evergreen/messages"))
         .expect("seed evergreen session dir");
-    std::fs::create_dir_all(ws.join("sessions")).expect("seed flat sessions dir");
-    std::fs::create_dir_all(ws.join("media")).expect("seed media dir");
+    std::fs::create_dir_all(chats.join("sessions")).expect("seed flat sessions dir");
+    std::fs::create_dir_all(chats.join("media")).expect("seed media dir");
     std::fs::create_dir_all(ws.join("skills/full_export_skill")).expect("seed workspace skill dir");
-    std::fs::create_dir_all(ws.join("prompt-state")).expect("seed prompt-state dir");
+    std::fs::create_dir_all(chats.join("prompt-state")).expect("seed prompt-state dir");
     std::fs::create_dir_all(root.join("prompt_library")).expect("seed prompt library");
     std::fs::create_dir_all(root.join("sync")).expect("seed sync dir");
     std::fs::create_dir_all(root.join("secret/providers/providers")).expect("seed providers dir");
@@ -170,7 +173,7 @@ async fn seed_portable_state(tmp: &TempDir) {
         .expect("chat updated timestamp")
         .with_timezone(&chrono::Utc);
     chat_index::upsert(
-        &ws,
+        rua_core::RuaRoot::new(root).chat_workspace().as_path(),
         ChatIndexEntry {
             id: "full-export-chat".to_string(),
             name: "Full Export Chat".to_string(),
@@ -189,7 +192,7 @@ async fn seed_portable_state(tmp: &TempDir) {
     .await
     .expect("write chat index");
     std::fs::write(
-        ws.join("sessions/default-flat-session.json"),
+        chats.join("sessions/default-flat-session.json"),
         serde_json::to_vec_pretty(&json!({
             "id": "flat-session",
             "messages": [{"id": "m1", "role": "user", "content": "flat session marker"}]
@@ -198,7 +201,7 @@ async fn seed_portable_state(tmp: &TempDir) {
     )
     .expect("write flat session");
     std::fs::write(
-        ws.join("sessions/default-evergreen/session.json"),
+        chats.join("sessions/default-evergreen/session.json"),
         serde_json::to_vec_pretty(&json!({
             "id": "default-evergreen",
             "name": "Evergreen Full Export"
@@ -207,12 +210,12 @@ async fn seed_portable_state(tmp: &TempDir) {
     )
     .expect("write evergreen session");
     std::fs::write(
-        ws.join("sessions/default-evergreen/messages/000000000000.jsonl"),
+        chats.join("sessions/default-evergreen/messages/000000000000.jsonl"),
         "{\"id\":\"em1\",\"content\":\"evergreen message marker\"}\n",
     )
     .expect("write evergreen message log");
     std::fs::write(
-        ws.join("prompt-state/default-evergreen.json"),
+        chats.join("prompt-state/default-evergreen.json"),
         serde_json::to_vec_pretty(&json!({
             "text": "full export prompt-state marker",
             "files": []
@@ -226,11 +229,18 @@ async fn seed_portable_state(tmp: &TempDir) {
         "# Full export agent prompt marker\n",
     )
     .expect("write agent prompt file");
-    std::fs::write(
-        ws.join("media/00000000-0000-4000-8000-000000000501"),
-        "full export media marker\n",
+    let media_bytes = b"full export media marker\n";
+    let media = rua_session::chat_media::ChatMediaManifest::new(
+        uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000501").expect("media id"),
+        "full-export-chat",
+        "fixture-device",
+        "text/plain".into(),
+        media_bytes,
     )
-    .expect("write media");
+    .expect("media manifest");
+    media
+        .store_copy(&chats.join("media"), media_bytes)
+        .expect("write media");
     std::fs::write(
         ws.join("skills/full_export_skill/SKILL.md"),
         "# Full Export Skill\n\nUse this skill as a v4 full export marker.\n",
@@ -537,7 +547,7 @@ async fn full_export_v4_appends_opaque_changes_for_portable_domains() {
     assert_eq!(agent_template.kind, "snapshot");
     assert_eq!(agent_template.payload["name"], "Full Export Template");
 
-    let chat_index = find_change(&changes, "chat", "agent/default/chats/full-export-chat");
+    let chat_index = find_change(&changes, "chat", "chats/full-export-chat");
     assert_eq!(chat_index.kind, "index_upsert");
     assert_eq!(chat_index.payload["name"], "Full Export Chat");
 
@@ -553,7 +563,7 @@ async fn full_export_v4_appends_opaque_changes_for_portable_domains() {
     let evergreen_prompt_state = find_change(
         &changes,
         "evergreen_chat",
-        "agent/default/default-evergreen/prompt_state",
+        "chats/default-evergreen/prompt_state",
     );
     assert_eq!(evergreen_prompt_state.kind, "file_snapshot");
     assert_eq!(
@@ -587,23 +597,21 @@ async fn full_export_v4_appends_opaque_changes_for_portable_domains() {
     let media = find_change(
         &changes,
         "media",
-        "agent/default/00000000-0000-4000-8000-000000000501",
+        "00000000-0000-4000-8000-000000000501",
     );
     assert_eq!(media.kind, "upsert");
+    // Media travels as metadata only: bytes stay on the Device and are read on demand.
+    assert_eq!(media.payload["media_ref"], "media/00000000-0000-4000-8000-000000000501");
+    assert_eq!(media.payload["byte_size"], 25);
     assert_eq!(
-        media.payload["media_id"],
-        "00000000-0000-4000-8000-000000000501"
+        media.payload["chat_ids"],
+        json!(["full-export-chat"]),
+        "the Chat Media manifest keeps its authorized Chat references"
     );
-    assert_eq!(media.payload["size"], 25);
     assert!(
-        media
-            .payload
-            .get("inline_ciphertext_b64")
-            .and_then(|value| value.as_str())
-            .is_some_and(|value| !value.is_empty()),
-        "small media full export must inline encrypted file bytes"
+        media.payload.get("bytes").is_none() && media.payload.get("inline_ciphertext_b64").is_none(),
+        "full export must not inline media bytes; they are fetched on demand"
     );
-    assert!(media.payload.get("hash_ref").is_none());
 
     let skill = find_change(
         &changes,

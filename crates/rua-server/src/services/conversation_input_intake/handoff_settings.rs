@@ -13,6 +13,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+/// Portable global settings projections the target Device must hold before it can
+/// authorize like the current Authority. They travel inline with Prepare so a
+/// handoff never depends on a live Sync round trip, but an existing local value is
+/// never overwritten: a diverging target fails closed instead.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct HandoffSettingsPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_security: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_security: Option<Value>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct HandoffSettingsSnapshot {
     pub chat_rules: String,
@@ -84,6 +96,68 @@ pub(crate) fn with_unchanged<T>(
             ));
         }
         commit()
+    })
+}
+
+/// The current portable global projections, for inline delivery with Prepare.
+pub(crate) fn payload(
+    root: &Path,
+    address: &ChatAddress,
+    agent_id: &str,
+) -> io::Result<HandoffSettingsPayload> {
+    let paths = paths(root, address, agent_id)?;
+    rua_config::with_commit_barrier(&paths, || {
+        Ok(HandoffSettingsPayload {
+            agent_security: AgentSecuritySyncAdapter::new(root.to_path_buf(), "")
+                .snapshot_for_agent(agent_id)
+                .map_err(invalid)?
+                .map(|change| change.payload),
+            root_security: RootConfigSyncAdapter::new(root.to_path_buf(), root.join("secret"), "")
+                .security_snapshot()
+                .map_err(invalid)?
+                .map(|change| change.payload),
+        })
+    })
+}
+
+/// Install a delivered projection only where this Device has none. A Device that
+/// already carries its own Agent/root security keeps it; `matches` then reports the
+/// divergence and the handoff is refused rather than silently overridden.
+pub(crate) fn apply_missing(
+    root: &Path,
+    address: &ChatAddress,
+    agent_id: &str,
+    payload: &HandoffSettingsPayload,
+) -> io::Result<()> {
+    let paths = paths(root, address, agent_id)?;
+    rua_config::with_commit_barrier(&paths, || {
+        if let Some(security) = payload.agent_security.as_ref() {
+            let path = root.join("workspaces").join(agent_id).join("security.json");
+            if !path.exists() {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                rua_config::atomic_write_json(&path, security)?;
+            }
+        }
+        if let Some(security) = payload.root_security.as_ref() {
+            let path = root.join("config.json");
+            let mut config: Value = match std::fs::File::open(&path) {
+                Ok(file) => serde_json::from_reader(file).map_err(invalid)?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    Value::Object(Default::default())
+                }
+                Err(error) => return Err(error),
+            };
+            let object = config.as_object_mut().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "config.json root must be object")
+            })?;
+            if !object.contains_key("security") {
+                object.insert("security".into(), security.clone());
+                rua_config::atomic_write_json(&path, &config)?;
+            }
+        }
+        Ok(())
     })
 }
 
