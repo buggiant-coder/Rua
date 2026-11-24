@@ -1083,9 +1083,9 @@ impl SessionSyncEmitter {
             },
         )
         .await;
-        // Sync being disabled is not a handoff failure: the target Device already
-        // receives the settings inline in the handoff Prepare request, and this
-        // publication only keeps later peers caught up.
+        // Sync being disabled is not a handoff failure: the handoff itself carries no
+        // settings, but a Device without Sync keeps its own applied projections and
+        // the readiness check below still fails closed if they differ.
         match result.status {
             PublicationStatus::Published | PublicationStatus::SkippedDisabled => Ok(()),
             _ => Err(format!(

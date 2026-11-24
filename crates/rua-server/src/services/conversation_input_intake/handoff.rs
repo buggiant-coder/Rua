@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::handoff_history::{self, HandoffHistorySnapshot};
-use super::handoff_settings::{self, HandoffSettingsPayload, HandoffSettingsSnapshot};
+use super::handoff_settings::{self, HandoffSettingsSnapshot};
 use super::ConversationInputIntake;
 use crate::services::chat_metadata_store::{load_chat_record, ChatMetadataRecord};
 use crate::services::conversation_authority_placement::{
@@ -77,10 +77,6 @@ struct Requirements {
     history: Option<HandoffHistorySnapshot>,
     queue_paused: bool,
     settings: HandoffSettingsSnapshot,
-    // Delivered with Prepare so the target can hold the same global security
-    // projections even when Sync is not live. Absent in older journals.
-    #[serde(default)]
-    settings_payload: HandoffSettingsPayload,
     // Only immutable routing identity is required. A live Task may change its
     // status throughout handoff, including while its Device is unreachable.
     task_refs: BTreeMap<String, Value>,
@@ -226,6 +222,17 @@ impl ConversationInputIntake {
                 self.handoff_response(address, record).await
             }
         }
+    }
+
+    /// Activation rewrites the Session header outside the ordinary settings path,
+    /// so the Chat Index projection must be repaired for readers of Chat metadata.
+    async fn repair_chat_projection(&self, address: &ChatAddress) -> Result<(), String> {
+        let scope = ChatStore::resolve(self.session_sync.rua_root(), address.clone());
+        rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(scope.root()))
+            .repair_projection(address)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     fn handoff_store(&self, address: &ChatAddress) -> WorkspaceSessionStore {
@@ -559,6 +566,7 @@ impl ConversationInputIntake {
             .activate_chat_handoff(chat_id, &record.handoff_id)
             .await
             .map_err(|e| e.to_string())?;
+        self.repair_chat_projection(address).await?;
         self.publish_handoff_installed(address, &installed).await?;
         Ok(response)
     }
@@ -637,12 +645,6 @@ impl ConversationInputIntake {
             history: None,
             queue_paused: false,
             settings: handoff_settings::capture(
-                self.session_sync.rua_root(),
-                address,
-                &header.agent_id,
-            )
-            .map_err(|e| e.to_string())?,
-            settings_payload: handoff_settings::payload(
                 self.session_sync.rua_root(),
                 address,
                 &header.agent_id,
@@ -854,17 +856,6 @@ impl ConversationInputIntake {
         })
         .await?;
         self.sync_handoff_state(source).await?;
-        // The Prepare request also carries the portable global security projections.
-        // Install only what this Device does not have yet, so a Device with its own
-        // newer value keeps it and fails the readiness check below instead of being
-        // silently overridden by the old Authority.
-        handoff_settings::apply_missing(
-            self.session_sync.rua_root(),
-            address,
-            &requirements.agent_id,
-            &requirements.settings_payload,
-        )
-        .map_err(|error| error.to_string())?;
         let _project = self.project_work_admission(address).await?;
         // Bringing the selected Agent up is slow and publishes Agent state; it must
         // happen before this Chat's writer gate is taken, never while holding it.
@@ -896,6 +887,10 @@ impl ConversationInputIntake {
         {
             return Err("Target Chat authorization snapshot is not synchronized".into());
         }
+        // The target may only take over once the Authority's persisted settings for
+        // this Chat are actually applied here: its Chat permission rules plus the
+        // portable Agent/root security projections that decide how its first Turn is
+        // authorized. A concurrent newer local value therefore fails closed.
         if !handoff_settings::matches(
             self.session_sync.rua_root(),
             address,
@@ -1034,6 +1029,7 @@ impl ConversationInputIntake {
             .activate_chat_handoff(address.chat_id().as_str(), id)
             .await
             .map_err(|e| e.to_string())?;
+        self.repair_chat_projection(address).await?;
         self.publish_handoff_installed(address, &record).await?;
         self.handoff_response(address, record).await
     }

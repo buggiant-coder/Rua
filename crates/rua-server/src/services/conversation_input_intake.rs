@@ -1054,29 +1054,6 @@ impl ConversationInputIntake {
             .ok_or_else(|| "Conversation Authority is unavailable".to_string())?;
         // A Task may outlive its executor's selection. Choose its result Turn's
         // Agent under the same gate that accepts the input and switches the Chat.
-        // Claim the observation before waiting for that gate: the gate is held for a
-        // whole delivery, so a duplicate arriving meanwhile must join the in-flight
-        // receipt instead of queueing a second Turn once the gate is released.
-        let mut wake_receipt = if wait_for_watch || wait_for_persistence {
-            let receipt = self
-                .task_watch_wake_receipts
-                .register(observation_id.clone(), address.clone());
-            if !receipt.fresh {
-                // A terminal result is acknowledged exactly once, so an overlapping
-                // delivery joins the in-flight one and reports its outcome. Live watch
-                // output is not acknowledged; a duplicate is reported instead of
-                // silently waiting on a delivery it did not start.
-                if wait_for_persistence {
-                    return receipt.wait().await;
-                }
-                return Err(format!(
-                    "Runtime observation {observation_id} is already registered"
-                ));
-            }
-            Some(receipt)
-        } else {
-            None
-        };
         let gate = authority.transition_gate(&address);
         let transition = gate.lock().await;
         let (execution, header) = self
@@ -1152,7 +1129,20 @@ impl ConversationInputIntake {
         extra.insert(rua_chat::TURN_AGENT_ASSIGNMENT_META_KEY.into(), assignment);
         // The receipt travels with the enqueued input so a queue discard fails it
         // instead of leaving the sender waiting for an acknowledgement that can never
-        // arrive.
+        // arrive. It is claimed only once the durable input is ready to enqueue, and an
+        // overlapping delivery of the same observation joins the in-flight one.
+        let mut wake_receipt = if wait_for_watch || wait_for_persistence {
+            let receipt = self
+                .task_watch_wake_receipts
+                .register(observation_id.clone(), address.clone());
+            if !receipt.fresh {
+                drop(transition);
+                return receipt.wait().await;
+            }
+            Some(receipt)
+        } else {
+            None
+        };
         if let Some(receipt) = wake_receipt.as_ref() {
             extra.insert(
                 RUNTIME_OBSERVATION_RECEIPT_META_KEY.into(),

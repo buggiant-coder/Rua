@@ -81,6 +81,44 @@ fn invocation(device: &str, address: &ChatAddress, turn: &str, call: &ToolCall) 
     ctx
 }
 
+/// Device-level portable security projections. A handoff requires the target to
+/// hold the Authority's current Agent/root security, which normally arrive through
+/// ordinary Sync rather than a Chat snapshot.
+fn sync_device_security(sender: &AppState, sender_id: &str, receiver: &AppState) {
+    let agent = sender
+        .rua_root
+        .join("workspaces")
+        .join("default")
+        .join("security.json");
+    if agent.is_file() {
+        let target = receiver.rua_root.join("workspaces").join("default");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::copy(&agent, target.join("security.json"))
+            .expect("copy Agent security snapshot");
+    }
+    let root = match std::fs::read_to_string(sender.rua_root.join("config.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+    {
+        Some(Value::Object(mut object)) => object.remove("security"),
+        _ => None,
+    };
+    let Some(security) = root else { return };
+    let path = receiver.rua_root.join("config.json");
+    let mut config = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .unwrap_or_else(|| json!({}));
+    let Some(object) = config.as_object_mut() else {
+        return;
+    };
+    if !object.contains_key("security") {
+        object.insert("security".into(), security);
+        rua_config::atomic_write_json(&path, &config).expect("write root security snapshot");
+    }
+    let _ = (sender_id, receiver);
+}
+
 async fn sync_chat(
     sender: &AppState,
     sender_id: &str,
@@ -245,6 +283,9 @@ async fn read_after_handoff(desktop_was_synced: bool) {
                     .with_chat_media_root(state.rua_root.clone()),
             ));
     }
+    // Device-level security always arrives through ordinary Sync, independently of
+    // whether this Chat's rules were already replicated.
+    sync_device_security(phone, phone_id, desktop);
     if desktop_was_synced {
         sync_chat(phone, phone_id, desktop, desktop_id, &address).await;
     }
