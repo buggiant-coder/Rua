@@ -23,6 +23,12 @@ use crate::transport::{parse_sse_lines, HttpTransport, TransportConfig};
 
 pub const RESPONSES_SESSION_METADATA_KEY: &str = "rua_responses_session";
 const RESPONSES_SESSION_MAX_AGE_MS: u64 = 6 * 24 * 60 * 60 * 1_000;
+/// Stored Responses sessions keep provider-side copies of media references.
+/// DashScope re-downloads those URLs when the session is reused, and signed
+/// URLs can expire within hours (observed: HTTP 403 after ~2h while the stored
+/// session itself is still valid). Keep media-bearing prefixes on a short
+/// reuse window so the full request re-inlines fresh media instead.
+const RESPONSES_MEDIA_SESSION_MAX_AGE_MS: u64 = 30 * 60 * 1_000;
 const RESPONSES_SESSION_RETRY_DELAYS: [std::time::Duration; 4] = [
     std::time::Duration::from_millis(250),
     std::time::Duration::from_millis(500),
@@ -223,6 +229,7 @@ impl OpenAiResponsesProvider {
     ) -> Option<(MatchingSession, Option<InputFingerprint>)> {
         let model = request.model.as_deref()?;
         let now = unix_time_ms();
+        let media_before = media_presence_by_boundary(&request.messages);
         let mut candidates = request
             .messages
             .iter()
@@ -238,7 +245,12 @@ impl OpenAiResponsesProvider {
                     return None;
                 }
                 let created_at = session.get("created_at_unix_ms")?.as_u64()?;
-                if now.saturating_sub(created_at) > RESPONSES_SESSION_MAX_AGE_MS {
+                let max_age = if media_before[message_index] {
+                    RESPONSES_MEDIA_SESSION_MAX_AGE_MS
+                } else {
+                    RESPONSES_SESSION_MAX_AGE_MS
+                };
+                if now.saturating_sub(created_at) > max_age {
                     return None;
                 }
                 Some((
@@ -394,6 +406,32 @@ fn invalid_previous_response_id(error: &LlmError) -> bool {
         ]
         .iter()
         .any(|signal| message.contains(signal))
+}
+
+/// Whether any message strictly before `boundary` carries provider-fetched
+/// media (image/audio/video), including media promoted from tool results.
+fn media_presence_by_boundary(messages: &[ModelDialogueItem]) -> Vec<bool> {
+    let mut presence = Vec::with_capacity(messages.len() + 1);
+    let mut seen = false;
+    presence.push(false);
+    for message in messages {
+        seen |= message.content.iter().any(|part| match part {
+            ContentPart::Image { .. } | ContentPart::Audio { .. } | ContentPart::Video { .. } => {
+                true
+            }
+            ContentPart::ToolResult { result } => result.content.iter().any(|part| {
+                matches!(
+                    part,
+                    ContentPart::Image { .. }
+                        | ContentPart::Audio { .. }
+                        | ContentPart::Video { .. }
+                )
+            }),
+            _ => false,
+        });
+        presence.push(seen);
+    }
+    presence
 }
 
 fn normalize_responses_options(options: &mut serde_json::Map<String, serde_json::Value>) {
@@ -836,6 +874,8 @@ impl ChatModel for OpenAiResponsesChatModel {
                 metadata: serde_json::Value::Null,
             });
             let mut session_retry_count = 0_u64;
+            let mut fallback_used = false;
+            let mut full_input_sha256 = String::new();
             let byte_stream = loop {
                 match transport
                     .post_stream_traced("/responses", &body, &mut trace)
@@ -863,6 +903,12 @@ impl ChatModel for OpenAiResponsesChatModel {
                         trace.mark("fallback_body_build_started");
                         let mut fallback_body = provider.build_full_request_body(&request);
                         fallback_body["store"] = serde_json::Value::Bool(true);
+                        full_input_sha256 = format!(
+                            "{:x}",
+                            Sha256::digest(
+                                serde_json::to_vec(&fallback_body["input"]).unwrap_or_default()
+                            )
+                        );
                         trace.mark("fallback_body_built");
                         trace.set("responses_full_fallback_built", true);
                         trace.record_request(&provider_id, "/responses", &fallback_body);
@@ -870,7 +916,10 @@ impl ChatModel for OpenAiResponsesChatModel {
                             .post_stream_traced("/responses", &fallback_body, &mut trace)
                             .await
                         {
-                            Ok(stream) => break stream,
+                            Ok(stream) => {
+                                fallback_used = true;
+                                break stream;
+                            }
                             Err(e) => {
                                 key_selector.release(key_idx);
                                 trace.error(&e, "http_request");
@@ -887,18 +936,28 @@ impl ChatModel for OpenAiResponsesChatModel {
                     }
                 }
             };
-            key_selector.release(key_idx);
-            // The full logical request is needed only until the fallback decision.
-            drop(request);
-            drop(provider);
             tokio::pin!(byte_stream);
-            let mut buffer = String::new();
             let mut usage = None;
             let mut saw_tool_call = false;
-            let mut parse_state = ResponseStreamParseState::default();
             let mut completed = false;
             let mut response_id = None;
             let mut captured_events = capture_metadata.as_ref().map(|_| Vec::new());
+            let mut active_session_reused = has_previous_response_id && !fallback_used;
+            let mut active_input_sha256 = if fallback_used {
+                full_input_sha256.clone()
+            } else {
+                request_input_sha256
+            };
+            // A stored session can fail mid-stream: DashScope re-downloads the
+            // media stored in the reused prefix and returns a terminal SSE
+            // error (e.g. "Failed to download multimodal content: HTTP 403").
+            // Before any visible output is emitted, rebuild the full request
+            // once — without previous_response_id — so media is re-inlined.
+            let mut stream_session_fallback_done = false;
+            'attempt: loop {
+            let mut buffer = String::new();
+            let mut parse_state = ResponseStreamParseState::default();
+            let mut emitted_visible_output = false;
             'stream: while let Some(chunk) = byte_stream.next().await {
                 match chunk {
                     Ok(bytes) => {
@@ -943,17 +1002,91 @@ impl ChatModel for OpenAiResponsesChatModel {
                                                 | AgentEvent::ToolCall { .. }
                                         )
                                     });
+                                    // A reused stored session can fail mid-stream
+                                    // (e.g. DashScope re-downloading stale media:
+                                    // "Failed to download multimodal content:
+                                    // HTTP 403"). Before any visible output was
+                                    // emitted, discard the session and replay the
+                                    // full history once so media is re-inlined.
+                                    if is_terminal_error
+                                        && active_session_reused
+                                        && !stream_session_fallback_done
+                                        && !emitted_visible_output
+                                    {
+                                        if let Some(metadata) = capture_metadata.as_ref() {
+                                            crate::debug_capture::record_provider_response(
+                                                metadata,
+                                                &provider_id,
+                                                "/responses",
+                                                &serde_json::json!({
+                                                    "stream": true,
+                                                    "completed": false,
+                                                    "events": captured_events,
+                                                }),
+                                            );
+                                        }
+                                        stream_session_fallback_done = true;
+                                        trace.set("responses_stream_session_fallback", true);
+                                        trace.mark("fallback_body_build_started");
+                                        let mut fallback_body =
+                                            provider.build_full_request_body(&request);
+                                        fallback_body["store"] = serde_json::Value::Bool(true);
+                                        active_input_sha256 = format!(
+                                            "{:x}",
+                                            Sha256::digest(
+                                                serde_json::to_vec(&fallback_body["input"])
+                                                    .unwrap_or_default()
+                                            )
+                                        );
+                                        trace.mark("fallback_body_built");
+                                        trace.set("responses_full_fallback_built", true);
+                                        trace.record_request(
+                                            &provider_id,
+                                            "/responses",
+                                            &fallback_body,
+                                        );
+                                        match transport
+                                            .post_stream_traced(
+                                                "/responses",
+                                                &fallback_body,
+                                                &mut trace,
+                                            )
+                                            .await
+                                        {
+                                            Ok(stream) => {
+                                                active_session_reused = false;
+                                                usage = None;
+                                                saw_tool_call = false;
+                                                completed = false;
+                                                response_id = None;
+                                                if let Some(events) = captured_events.as_mut() {
+                                                    events.clear();
+                                                }
+                                                byte_stream.set(stream);
+                                                continue 'attempt;
+                                            }
+                                            Err(e) => {
+                                                key_selector.release(key_idx);
+                                                trace.error(&e, "http_request");
+                                                yield Err(e);
+                                                return;
+                                            }
+                                        }
+                                    }
                                     for event in parsed.events {
                                         match &event {
                                             AgentEvent::TextDelta { .. } => {
                                                 trace.checkpoint("first_text_delta");
+                                                emitted_visible_output = true;
                                             }
                                             AgentEvent::ThinkingDelta { .. } => {
                                                 trace.checkpoint("first_thinking_delta");
+                                                emitted_visible_output = true;
                                             }
                                             AgentEvent::ToolCallDelta { .. }
                                             | AgentEvent::ToolCall { .. } => {
                                                 trace.checkpoint("first_tool_call_delta");
+                                                emitted_visible_output = true;
                                             }
                                             _ => {}
                                         }
@@ -972,6 +1105,7 @@ impl ChatModel for OpenAiResponsesChatModel {
                                                 }),
                                             );
                                         }
+                                        trace.finish("terminal_error");
                                         return;
                                     }
                                     if stream_completed {
@@ -1003,6 +1137,9 @@ impl ChatModel for OpenAiResponsesChatModel {
                     }
                 }
             }
+            break 'attempt;
+            }
+            key_selector.release(key_idx);
             if let Some(metadata) = capture_metadata.as_ref() {
                 crate::debug_capture::record_provider_response(
                     metadata,
@@ -1042,7 +1179,7 @@ impl ChatModel for OpenAiResponsesChatModel {
                                 "provider_id": provider_id,
                                 "model": model,
                                 "response_id": response_id,
-                                "request_input_sha256": request_input_sha256,
+                                "request_input_sha256": active_input_sha256,
                                 "created_at_unix_ms": unix_time_ms(),
                             }
                         })
