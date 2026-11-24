@@ -916,7 +916,7 @@ impl ChatModel for GeminiChatModel {
             });
         };
 
-        Box::pin(stream)
+        crate::stream_sanitizer::SanitizedStream::wrap(Box::pin(stream))
     }
 
     fn model_info(&self) -> &ModelInfo {

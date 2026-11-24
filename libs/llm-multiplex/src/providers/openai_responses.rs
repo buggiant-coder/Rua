@@ -828,7 +828,7 @@ impl ChatModel for OpenAiResponsesChatModel {
             crate::debug_capture::CaptureTarget::from_metadata(&request.metadata)
                 .map(|_| request.metadata.clone());
 
-        Box::pin(async_stream::stream! {
+        let stream = async_stream::stream! {
             trace.mark("stream_polled");
             yield Ok(AgentEvent::Start {
                 run_id: run_id.clone(),
@@ -1048,7 +1048,9 @@ impl ChatModel for OpenAiResponsesChatModel {
                         })
                     })
             });
-        })
+        };
+
+        crate::stream_sanitizer::SanitizedStream::wrap(Box::pin(stream))
     }
 
     fn model_info(&self) -> &ModelInfo {
