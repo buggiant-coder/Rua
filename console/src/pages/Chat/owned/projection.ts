@@ -138,6 +138,10 @@ const TYPE_PLUGIN_CALL_OUTPUT = "plugin_call_output";
 const HIDDEN_RUNTIME_NOTE_KINDS = new Set([
   "memory_signal",
   "collaboration_result",
+  // Task terminal notes are model-facing observations: the agent reads the
+  // task result as a tool observation and reports it in its own reply, so a
+  // per-attempt "Task · bash completed" card is duplicate conversation noise.
+  "task_attempt_terminal",
 ]);
 const HIDDEN_MODEL_VISIBLE_MARKERS = new Set(["memory_signal"]);
 const TURN_ABORTED_MARKER = "turn_aborted";

@@ -1075,19 +1075,41 @@ describe("owned conversation stream adapter", () => {
         type: "runtime_note",
         runtime_note: {
           runtime_note_id: "note-1",
-          kind: "task_attempt_terminal",
+          kind: "capability_state",
           created_at: "2026-08-03T00:00:00Z",
           payload: {
-            task_id: "task-1",
-            terminal_status: "completed",
-            output: "done",
+            previous_generation: 1,
+            current_generation: 2,
+            changes: [],
           },
         },
       }),
     ]);
 
     expect(state.output[0].type).toBe("runtime_note");
-    expect(state.output[0].runtime_note?.payload.task_id).toBe("task-1");
+    expect(state.output[0].runtime_note?.kind).toBe("capability_state");
+  });
+
+  it("keeps task terminal notes out of stream output", () => {
+    const state = foldRaw([
+      JSON.stringify({
+        type: "runtime_note",
+        runtime_note: {
+          runtime_note_id: "task:task-1:attempt:1",
+          kind: "task_attempt_terminal",
+          created_at: "2026-08-03T00:00:00Z",
+          payload: {
+            task_id: "task-1",
+            attempt_no: 1,
+            terminal_status: "completed",
+            runner_name: "bash",
+            output: "done",
+          },
+        },
+      }),
+    ]);
+
+    expect(state).toEqual(initialConversationStreamFold);
   });
 
   it.each(["completed", "failed", "partial"])(

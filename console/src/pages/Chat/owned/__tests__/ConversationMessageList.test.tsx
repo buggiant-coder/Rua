@@ -784,9 +784,7 @@ describe("ConversationMessageList", () => {
     const scrollHeight = vi
       .spyOn(HTMLElement.prototype, "scrollHeight", "get")
       .mockImplementation(function (this: HTMLElement) {
-        return this.classList.contains("rua-chat-user-content-frame")
-          ? 120
-          : 0;
+        return this.classList.contains("rua-chat-user-content-frame") ? 120 : 0;
       });
     const projection = projectConversation("chat-1", {
       status: "idle",
@@ -812,9 +810,7 @@ describe("ConversationMessageList", () => {
     const bubble = container.querySelector(
       '[data-rua-chat-message-id="user-1"] .rua-chat-bubble--user',
     );
-    const contentFrame = bubble?.querySelector(
-      ".rua-chat-user-content-frame",
-    );
+    const contentFrame = bubble?.querySelector(".rua-chat-user-content-frame");
     const collapse = within(bubble as HTMLElement).getByRole("button", {
       name: "Collapse user input",
     });
@@ -917,9 +913,10 @@ describe("ConversationMessageList", () => {
     expect(content?.querySelectorAll(".rua-local-markdown")).toHaveLength(1);
     expect(content?.textContent).toContain("Before [Image #1] after");
     expect(link).toHaveAttribute("href", "#rua-image-1");
-    expect(
-      content?.querySelector(".rua-chat-user-images img"),
-    ).toHaveAttribute("src", "/preview/uploads/picture.png");
+    expect(content?.querySelector(".rua-chat-user-images img")).toHaveAttribute(
+      "src",
+      "/preview/uploads/picture.png",
+    );
 
     fireEvent.click(link);
     expect(screen.getByRole("dialog", { name: "picture.png" })).toBeVisible();
@@ -1697,9 +1694,7 @@ describe("ConversationMessageList", () => {
     const bubble = message?.querySelector(
       ".rua-chat-bubble--acp-history-preview",
     );
-    expect(bubble?.classList.contains("rua-chat-bubble--assistant")).toBe(
-      true,
-    );
+    expect(bubble?.classList.contains("rua-chat-bubble--assistant")).toBe(true);
     const preview = container.querySelector(
       ".rua-chat-acp-history-preview-scroll",
     );
@@ -2005,7 +2000,7 @@ describe("ConversationMessageList", () => {
     expect(container.querySelector(".rua-local-reasoning")).toBeNull();
   });
 
-  it("renders runtime notes and variant count without vendor cards", async () => {
+  it("keeps task terminal notes out of the visible conversation", async () => {
     const projection = projectConversation("chat-1", {
       status: "idle",
       messages: [
@@ -2051,13 +2046,9 @@ describe("ConversationMessageList", () => {
 
     render(<ConversationMessageList projection={projection} />);
 
-    fireEvent.click(screen.getByText("Task · Bash"));
-    await screen.findByText("finished");
-
     expect(screen.getByText("2/2")).toBeInTheDocument();
-    expect(screen.getByText("Task · Bash")).toBeInTheDocument();
-    expect(screen.getByText("completed")).toBeInTheDocument();
-    expect(screen.getByText("finished")).toBeInTheDocument();
+    expect(screen.queryByText("Task · Bash")).not.toBeInTheDocument();
+    expect(screen.queryByText("finished")).not.toBeInTheDocument();
   });
 
   it("renders task watch output records inside the runtime note", async () => {
@@ -2695,9 +2686,7 @@ describe("ConversationMessageList", () => {
       '.rua-chat-message--assistant[data-rua-chat-role="assistant"]',
     );
     const bubble = assistant?.querySelector(".rua-chat-bubble--assistant");
-    const footerRow = assistant?.querySelector(
-      ".rua-chat-response-footer-row",
-    );
+    const footerRow = assistant?.querySelector(".rua-chat-response-footer-row");
 
     expect(assistant).toBeTruthy();
     expect(bubble).toBeTruthy();
@@ -2733,9 +2722,7 @@ describe("ConversationMessageList", () => {
       <ConversationMessageList projection={projection} />,
     );
 
-    const footerRow = container.querySelector(
-      ".rua-chat-response-footer-row",
-    );
+    const footerRow = container.querySelector(".rua-chat-response-footer-row");
     expect(footerRow?.children[0]).toHaveClass("rua-local-bubble-footer");
     expect(footerRow?.children[1]).toHaveClass("rua-response-variant-pager");
   });
@@ -2775,9 +2762,7 @@ describe("ConversationMessageList", () => {
       <ConversationMessageList projection={withActiveTurn(projection)} />,
     );
 
-    const footerRow = container.querySelector(
-      ".rua-chat-response-footer-row",
-    );
+    const footerRow = container.querySelector(".rua-chat-response-footer-row");
     expect(footerRow).toBeNull();
     expect(container.querySelector(".rua-response-variant-pager")).toBeNull();
   });
@@ -3358,9 +3343,7 @@ describe("ConversationMessageList", () => {
     );
 
     fireEvent.click(screen.getByText("1 tool call"));
-    expect(
-      container.querySelector(".rua-tool-group.pinned-open"),
-    ).toBeTruthy();
+    expect(container.querySelector(".rua-tool-group.pinned-open")).toBeTruthy();
 
     rerender(
       <ConversationMessageList
@@ -3369,9 +3352,7 @@ describe("ConversationMessageList", () => {
       />,
     );
 
-    expect(
-      container.querySelector(".rua-tool-group.pinned-open"),
-    ).toBeTruthy();
+    expect(container.querySelector(".rua-tool-group.pinned-open")).toBeTruthy();
     expect(screen.getByLabelText("Input code block")).toBeInTheDocument();
   });
 
@@ -4758,9 +4739,7 @@ describe("ConversationMessageList", () => {
       screen.queryByRole("button", { name: "chat.backgroundTool" }),
     ).not.toBeInTheDocument();
     expect(container.querySelector(".rua-local-tool-spinner")).toBeNull();
-    expect(
-      container.querySelector(".rua-chat-inline-spinner"),
-    ).not.toBeNull();
+    expect(container.querySelector(".rua-chat-inline-spinner")).not.toBeNull();
   });
 
   it("shows one independent running indicator while active Turn content recovers", () => {
@@ -4784,9 +4763,7 @@ describe("ConversationMessageList", () => {
       <ConversationMessageList projection={project(null)} />,
     );
     const expectRunning = () => {
-      const indicators = container.querySelectorAll(
-        "[data-rua-chat-running]",
-      );
+      const indicators = container.querySelectorAll("[data-rua-chat-running]");
       expect(indicators).toHaveLength(1);
       expect(indicators[0].textContent).toBe("");
       expect(
@@ -4876,9 +4853,9 @@ describe("ConversationMessageList", () => {
     const { container } = render(
       <ConversationMessageList projection={restored} />,
     );
-    expect(
-      container.querySelectorAll("[data-rua-chat-running]"),
-    ).toHaveLength(1);
+    expect(container.querySelectorAll("[data-rua-chat-running]")).toHaveLength(
+      1,
+    );
     expect(screen.getByText("Partial response")).toBeInTheDocument();
   });
 
@@ -4920,12 +4897,8 @@ describe("ConversationMessageList", () => {
       kind: "active",
       responseId: "chat-1:assistant:user-shell",
     });
-    expect(
-      container.querySelector(".rua-chat-inline-spinner"),
-    ).not.toBeNull();
-    expect(
-      container.querySelector(".rua-chat-response-footer-row"),
-    ).toBeNull();
+    expect(container.querySelector(".rua-chat-inline-spinner")).not.toBeNull();
+    expect(container.querySelector(".rua-chat-response-footer-row")).toBeNull();
   });
 
   it("keeps generating tool cards visible for unregistered tool names", () => {
