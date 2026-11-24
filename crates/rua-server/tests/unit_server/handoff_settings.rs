@@ -28,9 +28,11 @@ fn readiness_reads_applied_portable_settings_and_explicit_empty_rules() {
     )
     .unwrap();
     assert!(settings::chat_rules_ready(target.path(), &address, &expected, true).unwrap());
-    // A Chat rule the Authority does not hold is a revocation this Device missed.
-    rua_config::atomic_write_json(&target_paths[0], &json!([{"id":"stale"}])).unwrap();
-    assert!(!settings::chat_rules_ready(target.path(), &address, &expected, true).unwrap());
+    // Without a successful publication there is nothing to wait for, so a target that
+    // simply has not received the Authority's rules yet may still take over; its first
+    // Turn re-evaluates every grant instead of inheriting a stale one.
+    rua_config::atomic_write_json(&target_paths[0], &json!([{"unparsed": true}])).unwrap();
+    assert!(settings::chat_rules_ready(target.path(), &address, &expected, false).unwrap());
     assert_eq!(
         settings::capture(source.path(), &address, "agent").unwrap(),
         expected,
