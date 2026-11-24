@@ -12,20 +12,25 @@ fn readiness_reads_applied_portable_settings_and_explicit_empty_rules() {
     let expected = settings::capture(source.path(), &address, "agent").unwrap();
     let target_paths = settings::paths(target.path(), &address, "agent").unwrap();
     rua_config::atomic_write_json(&target_paths[0], &json!([])).unwrap();
-    assert!(settings::matches(target.path(), &address, "agent", &expected).unwrap());
+    assert!(settings::chat_rules_ready(target.path(), &address, &expected, true).unwrap());
     for root in [source.path(), target.path()] {
         let paths = settings::paths(root, &address, "agent").unwrap();
         rua_config::atomic_write_json(&paths[1], &json!({"tool_guard":{"approval_mode":"ask_first"},"allow_no_auth_hosts":[root.to_string_lossy()]})).unwrap();
         rua_config::atomic_write_json(&paths[2], &json!({"user_timezone":root.to_string_lossy(),"security":{"skill_scanner":{"enabled":true},"allow_no_auth_hosts":[root.to_string_lossy()],"tool_guard":{"approval_mode":"different"}}})).unwrap();
     }
     let expected = settings::capture(source.path(), &address, "agent").unwrap();
-    assert!(settings::matches(target.path(), &address, "agent", &expected).unwrap());
+    assert!(settings::chat_rules_ready(target.path(), &address, &expected, true).unwrap());
+    // Agent/root security belongs to this Device: a difference there is not a stale
+    // Chat grant and must not block taking over the Chat.
     rua_config::atomic_write_json(
         &target_paths[1],
         &json!({"tool_guard":{"approval_mode":"hands_off"}}),
     )
     .unwrap();
-    assert!(!settings::matches(target.path(), &address, "agent", &expected).unwrap());
+    assert!(settings::chat_rules_ready(target.path(), &address, &expected, true).unwrap());
+    // A Chat rule the Authority does not hold is a revocation this Device missed.
+    rua_config::atomic_write_json(&target_paths[0], &json!([{"id":"stale"}])).unwrap();
+    assert!(!settings::chat_rules_ready(target.path(), &address, &expected, true).unwrap());
     assert_eq!(
         settings::capture(source.path(), &address, "agent").unwrap(),
         expected,

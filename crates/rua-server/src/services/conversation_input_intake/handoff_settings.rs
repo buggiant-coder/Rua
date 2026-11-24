@@ -85,16 +85,6 @@ pub(crate) fn chat_rules_ready(
     Ok(digest(rules)? == expected.chat_rules)
 }
 
-/// Full readiness: Chat rules plus the portable Agent/root security projections.
-pub(crate) fn matches(
-    root: &Path,
-    address: &ChatAddress,
-    agent_id: &str,
-    expected: &HandoffSettingsSnapshot,
-) -> io::Result<bool> {
-    Ok(capture(root, address, agent_id)? == *expected)
-}
-
 /// Reread the synchronized projections and commit Released under the same short
 /// path locks as every normal settings write/delete. The supplied closure must
 /// only synchronously write the separate handoff journal; never await/network.
