@@ -1035,6 +1035,28 @@ pub fn calibrated_model_input_token_estimate(
             previous_provider_prompt_tokens: None,
         };
     };
+    if !anchor_is_comparable(
+        previous.fast_estimate_tokens,
+        previous_provider_prompt_tokens,
+    ) {
+        // The anchor pair does not describe the same input, so applying its
+        // delta would silently understate a projection that is already over
+        // the provider limit. Fall back to the local estimate, which is a
+        // consistent measurement of the messages actually being sent.
+        return ModelInputTokenEstimate {
+            provider_id: Some(model.provider.clone()),
+            model: Some(model.model.clone()),
+            fast_estimate_divisor: divisor,
+            fast_estimate_tokens,
+            calibrated_estimate_tokens: fast_estimate_tokens,
+            conversation_estimate_tokens,
+            method: ModelInputTokenEstimateMethod::Fast,
+            calibration_source_provider_id: None,
+            calibration_source_model: None,
+            previous_fast_estimate_tokens: Some(previous.fast_estimate_tokens),
+            previous_provider_prompt_tokens: Some(previous_provider_prompt_tokens),
+        };
+    }
     ModelInputTokenEstimate {
         provider_id: Some(model.provider.clone()),
         model: Some(model.model.clone()),
@@ -1099,8 +1121,31 @@ fn apply_token_delta(base: u64, current_fast: u64, previous_fast: u64) -> u64 {
     if current_fast >= previous_fast {
         base.saturating_add(current_fast - previous_fast)
     } else {
-        base.saturating_sub(previous_fast - current_fast)
+        // A history replacement can shrink the projection far more than the
+        // calibration anchor, so this subtraction can underflow to 0. Zero
+        // would then read as "the request is empty" and disable compaction
+        // exactly when the real input is over the provider limit.
+        base.saturating_sub(previous_fast - current_fast).max(1)
     }
+}
+
+/// Provider prompt counts and local fast estimates measure the same request but
+/// drift apart badly when the anchor pair is not actually comparable: a
+/// `previous_response_id` turn reports only the delta, and the anchor may
+/// describe a projection from before tool-result truncation or a history
+/// replacement. Treat an anchor far below the local estimate as untrustworthy
+/// instead of letting it pull the measured value down.
+const MIN_TRUSTED_ANCHOR_RATIO: f64 = 0.5;
+
+fn anchor_is_comparable(previous_fast: u64, provider_prompt: u64) -> bool {
+    if previous_fast == 0 {
+        return false;
+    }
+    // The local estimator is compared against provider counts in the same
+    // request shape, so a sane anchor stays within the same order of
+    // magnitude. A provider count at half of it or below means the two
+    // numbers describe different inputs.
+    (provider_prompt as f64) >= (previous_fast as f64) * MIN_TRUSTED_ANCHOR_RATIO
 }
 
 fn internal_error(error: rua_core::RuaError) -> AgentError {

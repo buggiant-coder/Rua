@@ -137,3 +137,46 @@ fn context_length_errors_are_not_retried_with_same_provider() {
         assert!(!kind.is_retryable());
     }
 }
+
+#[test]
+fn dashscope_input_length_rejection_is_a_context_overflow() {
+    use rua_provider::error::is_context_overflow;
+
+    // The real rejection body this project hit:
+    // {"code":"InternalError.Algo.InvalidParameter",
+    //  "message":"Range of input length should be [1, 1048576]"}
+    // `InvalidParameter` used to short-circuit message inspection, so the
+    // request was treated as a generic bad request instead of an overflow.
+    assert!(is_context_overflow(
+        "Range of input length should be [1, 1048576]",
+        Some("InvalidParameter"),
+    ));
+    assert!(is_context_overflow(
+        "InternalError.Algo.InvalidParameter: Range of input length should be [1, 1048576]",
+        None,
+    ));
+    // A generic rejection code still defers to a clearly unrelated message.
+    assert!(!is_context_overflow(
+        "model not found",
+        Some("InvalidParameter"),
+    ));
+    // A specific non-context code still wins over a misleading message.
+    assert!(!is_context_overflow(
+        "Range of input length should be [1, 1048576]",
+        Some("rate_limit_exceeded"),
+    ));
+}
+
+#[test]
+fn dashscope_top_level_code_survives_error_message_extraction() {
+    // `safe_error_message` used to drop the top-level `code`, leaving only a
+    // message that names no length limit, so nothing downstream could tell
+    // this apart from a malformed request.
+    let body = r#"{"code":"InternalError.Algo.InvalidParameter","message":"Range of input length should be [1, 1048576]"}"#;
+    let error = LlmError::from_http_status("dashscope", 400, body, None);
+    assert!(
+        rua_provider::error::is_context_overflow(&error.to_string(), None),
+        "code was lost during extraction: {error}"
+    );
+    assert_eq!(ErrorKind::classify(&error), ErrorKind::ContextTooLong);
+}

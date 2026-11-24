@@ -8,28 +8,48 @@ pub fn is_context_overflow(message: &str, code: Option<&str>) -> bool {
         "prompt_too_long",
         "input_tokens_overflow",
     ];
+    // Provider-native codes that do not by themselves mean "too long", but are
+    // the generic bucket those providers put input-length rejections in.
+    const GENERIC_REJECTION_CODES: &[&str] = &[
+        "400",
+        "invalid_request_error",
+        "bad_request",
+        "invalidparameter",
+        "invalid_parameter",
+        "invalid_parameter_value",
+    ];
+    // An input-length rejection without a dedicated code still names the limit
+    // in its message, so these phrases are checked even for a generic code.
+    const LENGTH_PHRASES: &[&str] = &[
+        "maximum context length",
+        "exceeds the context window",
+        "exceeds context window",
+        "model's maximum context",
+        "prompt is too long",
+        "prompt too long",
+        "context overflow",
+        "range of input length",
+        "input length should be",
+        "input is too long",
+        "too many input tokens",
+    ];
     if let Some(code) = code {
         if CODES.iter().any(|known| code.eq_ignore_ascii_case(known)) {
             return true;
         }
         // A specific non-context code takes precedence over message heuristics.
-        if !matches!(code, "400" | "invalid_request_error" | "bad_request") {
+        // Generic rejection codes (including DashScope's `InvalidParameter`)
+        // still fall through so their message can be inspected below.
+        if !GENERIC_REJECTION_CODES
+            .iter()
+            .any(|generic| code.eq_ignore_ascii_case(generic))
+        {
             return false;
         }
     }
     let message = message.to_lowercase();
     CODES.iter().any(|code| message.contains(code))
-        || [
-            "maximum context length",
-            "exceeds the context window",
-            "exceeds context window",
-            "model's maximum context",
-            "prompt is too long",
-            "prompt too long",
-            "context overflow",
-        ]
-        .iter()
-        .any(|phrase| message.contains(phrase))
+        || LENGTH_PHRASES.iter().any(|phrase| message.contains(phrase))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
