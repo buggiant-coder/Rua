@@ -2787,6 +2787,7 @@ async fn authority_snapshot_is_per_attempt_and_stale_completion_is_suppressed() 
         device_name: Some("Desktop A".to_string()),
         host_profile: Some("desktop".to_string()),
         authority_epoch: Some("epoch-1".to_string()),
+        cwd_managed: None,
     }));
     let runtime = Arc::new(
         TaskRuntime::open_with_sink_and_authority(
@@ -2824,6 +2825,7 @@ async fn authority_snapshot_is_per_attempt_and_stale_completion_is_suppressed() 
             device_name: Some("Desktop A renamed".to_string()),
             host_profile: Some("desktop".to_string()),
             authority_epoch: Some("epoch-2".to_string()),
+            cwd_managed: None,
         })
         .await;
     runner.release.notify_one();

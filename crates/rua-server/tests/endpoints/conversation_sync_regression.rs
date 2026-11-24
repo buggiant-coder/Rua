@@ -214,7 +214,7 @@ async fn read_json(resp: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).expect("response json")
 }
 
-async fn materialize_local_chat(state: &AppState, tmp: &TempDir, chat_id: &str, name: &str) {
+async fn materialize_local_chat(state: &AppState, _tmp: &TempDir, chat_id: &str, name: &str) {
     let device_id = state
         .sync_device
         .read()
