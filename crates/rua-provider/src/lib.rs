@@ -13,6 +13,7 @@ pub mod idealab;
 pub mod idealab_anthropic;
 #[cfg(feature = "gemini")]
 pub mod idealab_vertex;
+pub mod input_guard;
 pub mod local_model_resume;
 pub mod manager;
 pub mod migrate;
@@ -32,6 +33,7 @@ pub use cells::{ProviderCell, ProviderCells};
 pub use config_loader::{DefaultModel, ProviderConfig, ProviderConfigLoader, ProviderModelEntry};
 pub use error::ErrorKind;
 pub use fallback::{FallbackChatModel, FallbackMode, FallbackPolicy, FallbackResolver};
+pub use input_guard::InputLimitChatModel;
 pub use llm_multiplex::ProbeResult;
 pub use local_model_resume::{resume_local_models, LocalModelStatus, ResumedLocalModel};
 pub use manager::{infer_context_window, ProviderManager};

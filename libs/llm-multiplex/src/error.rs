@@ -148,10 +148,23 @@ impl LlmError {
                 return Self::redact_secret_fragments(msg);
             }
             if let Some(msg) = v.get("message").and_then(|m| m.as_str()) {
-                return Self::redact_secret_fragments(msg);
+                let redacted = Self::redact_secret_fragments(msg);
+                // Some providers (for example DashScope) put the machine-readable
+                // reason in a top-level `code` and keep `message` free of it.
+                // Carry the code through so context-overflow classification and
+                // retry decisions can still see it.
+                return match v.get("code").and_then(|code| code.as_str()) {
+                    Some(code) if !code.is_empty() => format!("{code}: {redacted}"),
+                    _ => redacted,
+                };
             }
             if let Some(msg) = v.get("detail").and_then(|m| m.as_str()) {
                 return Self::redact_secret_fragments(msg);
+            }
+            if let Some(code) = v.get("code").and_then(|code| code.as_str()) {
+                if !code.is_empty() {
+                    return Self::redact_secret_fragments(code);
+                }
             }
         }
 

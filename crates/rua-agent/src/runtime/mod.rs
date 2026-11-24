@@ -2533,6 +2533,14 @@ impl AgentRuntime for ReactAgentRuntime {
             }
             None => self.model_factory.clone(),
         };
+        // Guard against the operator's declared input ceiling. The model's
+        // advertised context window is deliberately not used here: it is
+        // provider metadata that is frequently absent or wrong, and enforcing it
+        // would reject requests that the projection planner accepts.
+        let factory = match effective_running_config.as_deref() {
+            Some(config) => factory.with_max_input_tokens(config.max_input_length as u64),
+            None => factory,
+        };
         let chat_model = factory.build(raw_model, &provider_id);
 
         let model_name = chat_model.model_info().id.clone();

@@ -95,3 +95,7 @@ path = "tests/capability.rs"
 [[test]]
 name = "fallback"
 path = "tests/fallback.rs"
+
+[[test]]
+name = "unit_input_guard"
+path = "tests/unit_input_guard.rs"

@@ -29,7 +29,23 @@ use crate::{auth, state::AppState};
 const VERSION: u64 = 1;
 const MAX_CHANNELS: usize = 64;
 const FRAME_BYTES: usize = 16 * 1024;
+/// Largest single streamed payload chunk handed to this transport (conversation
+/// replay and checkpoint payloads are capped at this size upstream).
+const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
+/// Per-channel queue depth. It must hold one whole payload after splitting, plus
+/// one reserved slot so loss can always be signalled explicitly. A smaller queue
+/// cannot ever flush a maximum-size payload: the frames of one chunk would fill
+/// it and the channel would be killed on every burst, regardless of how fast the
+/// client reads.
+const CHANNEL_QUEUE_FRAMES: usize = MAX_PAYLOAD_BYTES / FRAME_BYTES + 2;
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
+// A maximum-size payload must fit with one slot to spare for the loss signal.
+// Breaking this invariant makes large bursts unflushable and kills the channel.
+const _: () = assert!(
+    MAX_PAYLOAD_BYTES.div_ceil(FRAME_BYTES) < CHANNEL_QUEUE_FRAMES,
+    "channel queue must hold one whole payload plus a reserved loss slot"
+);
 
 #[derive(Clone)]
 struct ConsoleTransport {
@@ -156,16 +172,44 @@ fn allowed(method: &str, path: &str) -> bool {
     )
 }
 
-fn enqueue(tx: &mpsc::Sender<Value>, frame: Value, id: &str) -> bool {
+fn enqueue(tx: &mpsc::Sender<Value>, frame: Value, id: &str, path: &str) -> bool {
     // Reserve one slot for explicit loss. A slow channel cannot block peers.
-    if tx.capacity() <= 1 {
-        let _ = tx.try_send(json!({"type":"gap", "id":id, "detail":"Console channel overflow; reconcile from cursor or snapshot"}));
+    let remaining = tx.capacity();
+    if remaining <= 1 {
+        // Server-side loss: this channel's WebSocket writer could not drain the
+        // queue. Distinct from the client dropping frames into its own read
+        // buffer, which reports [client-buffer] on the browser side.
+        tracing::warn!(
+            channel = id,
+            path,
+            remaining,
+            queue_frames = CHANNEL_QUEUE_FRAMES,
+            "console transport channel backlog: dropping frames for a slow channel"
+        );
+        let _ = tx.try_send(json!({
+            "type":"gap",
+            "id":id,
+            "code":"server_channel_backlog",
+            "detail":"Console channel overflow [server-backlog]; the server could not flush this channel (reconcile from cursor or snapshot)"
+        }));
         return false;
     }
     tx.try_send(frame).is_ok()
 }
 
+/// The server-initiated deadline signal. Exposed so the transport contract test
+/// can assert its discriminator without waiting out a real 30s deadline.
+pub fn server_deadline_frame(id: &str) -> Value {
+    json!({
+        "type":"error",
+        "id":id,
+        "code":"server_request_deadline",
+        "detail":"Console request deadline exceeded [server-deadline]; the server gave up on this operation (the page has its own independent timer)"
+    })
+}
+
 async fn dispatch(api: Router, request: Request<Body>, id: String, tx: mpsc::Sender<Value>) {
+    let path = request.uri().path().to_owned();
     let response = api.oneshot(request).await.expect("Router is infallible");
     let status = response.status().as_u16();
     let content_type = response
@@ -178,6 +222,7 @@ async fn dispatch(api: Router, request: Request<Body>, id: String, tx: mpsc::Sen
         &tx,
         json!({"type":"head", "id":id, "status":status, "content_type":content_type}),
         &id,
+        &path,
     ) {
         return;
     }
@@ -197,6 +242,7 @@ async fn dispatch(api: Router, request: Request<Body>, id: String, tx: mpsc::Sen
                 &tx,
                 json!({"type":"data", "id":id, "data":STANDARD.encode(bytes)}),
                 &id,
+                &path,
             ) {
                 return;
             }
@@ -301,17 +347,23 @@ async fn run(
                         }
                         *request.body_mut() = Body::from(body);
                         let is_stream = path.split('?').next().is_some_and(|p| p.ends_with("/activity") || p.ends_with("/conversation-activity") || p.ends_with("/live"));
-                        let (tx, rx) = mpsc::channel(8);
+                        let (tx, rx) = mpsc::channel(CHANNEL_QUEUE_FRAMES);
                         frames.push(futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|frame| (frame, rx)) }).boxed());
                         let token = cancellation.child_token();
                         channels.insert(id.clone(), token.clone());
                         let api = transport.api.clone();
+                        let log_path = path.clone();
                         tasks.spawn(async move {
                             tokio::select! {
                                 _ = token.cancelled() => {},
                                 _ = dispatch(api, request, id.clone(), tx.clone()) => {},
                                 _ = tokio::time::sleep(Duration::from_secs(30)), if !is_stream => {
-                                    let _ = tx.try_send(json!({"type":"error", "id":id, "detail":"Console request deadline exceeded"}));
+                                    tracing::warn!(
+                                        channel = %id,
+                                        path = %log_path,
+                                        "console transport request deadline exceeded on the server"
+                                    );
+                                    let _ = tx.try_send(server_deadline_frame(&id));
                                 }
                             }
                         });

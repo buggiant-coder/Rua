@@ -656,13 +656,12 @@ describe("projectConversation", () => {
   it("appends Runtime Notes from chat history onto the projection", () => {
     const note: ConversationRuntimeNote = {
       runtime_note_id: "note-1",
-      kind: "task_attempt_terminal",
+      kind: "capability_state",
       created_at: "2026-08-03T00:00:00Z",
       payload: {
-        task_id: "task-1",
-        runner_name: "Bash",
-        terminal_status: "completed",
-        output: "finished",
+        previous_generation: 1,
+        current_generation: 2,
+        changes: [],
       },
     };
     const history = {
@@ -683,8 +682,42 @@ describe("projectConversation", () => {
 
     const assistant = assistantAt(projection, 1);
     expect(assistant.output[0].type).toBe("runtime_note");
-    expect(assistant.output[0].runtime_note.payload.task_id).toBe("task-1");
-    expect(assistant.output[0].runtime_note.payload.output).toBe("finished");
+    expect(assistant.output[0].runtime_note.kind).toBe("capability_state");
+  });
+
+  it("keeps task terminal notes out of the projection", () => {
+    const note: ConversationRuntimeNote = {
+      runtime_note_id: "task:task-1:attempt:1",
+      kind: "task_attempt_terminal",
+      created_at: "2026-08-03T00:00:00Z",
+      payload: {
+        task_id: "task-1",
+        runner_name: "Bash",
+        terminal_status: "completed",
+        output: "finished",
+      },
+    };
+    const projection = projectConversation("chat-1", {
+      status: "idle",
+      messages: [
+        { role: "user", content: "Start task", turn_id: "turn-1" },
+        {
+          id: "note-1",
+          role: "system",
+          type: "runtime_note",
+          content: [],
+          turn_id: "turn-1",
+          runtime_note: note,
+        },
+      ],
+    } as ChatHistory);
+
+    const runtimeNotes = projection.items.flatMap((item) =>
+      item.kind === "assistant"
+        ? item.output.filter((msg) => msg.type === "runtime_note")
+        : [],
+    );
+    expect(runtimeNotes).toEqual([]);
   });
 
   it("projects conversation terminal runtime notes as visible interrupted responses", () => {

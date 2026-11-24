@@ -435,6 +435,249 @@ fn dashscope_session_request(response_id: &str) -> ChatRequest {
     .with_model("qwen3.8-max")
 }
 
+fn dashscope_media_session_request(response_id: &str, created_age_ms: u64) -> ChatRequest {
+    let mut request = dashscope_session_request(response_id);
+    let input = json!([{
+        "role": "user",
+        "content": [
+            {"type": "input_text", "text": "first"},
+            {"type": "input_image", "image_url": "https://example.test/picture.png"}
+        ]
+    }]);
+    let input_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&input).unwrap()));
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    request.messages[0]
+        .content
+        .push(agent_types::ContentPart::Image {
+            url: "https://example.test/picture.png".into(),
+            media_type: Some("image/png".into()),
+            alt: None,
+        });
+    let session = request.messages[1]
+        .metadata
+        .get_mut("rua_responses_session")
+        .unwrap();
+    session["request_input_sha256"] = json!(input_hash);
+    session["created_at_unix_ms"] = json!(now_ms.saturating_sub(created_age_ms));
+    request
+}
+
+/// A stored DashScope session whose prefix carries media can fail mid-stream:
+/// the provider re-downloads the stored media and returns a terminal SSE error
+/// (observed: `<400> InternalError.Algo ... Failed to download multimodal
+/// content: HTTP 403`). The provider must rebuild the full request once,
+/// without previous_response_id, and re-inline the media instead of failing.
+#[tokio::test]
+async fn dashscope_stream_terminal_error_on_reused_session_replays_full_history_once() {
+    let server = Server::start(vec![
+        Response::sse(vec![sse(json!({
+            "type": "error",
+            "error": {
+                "code": "InternalError.Algo",
+                "message": "<400> InternalError.Algo: An error occurred in model serving, error message is: [Failed to download multimodal content: HTTP 403]"
+            }
+        }))]),
+        Response::sse(vec![sse(json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp-fresh",
+                "usage": {"input_tokens": 10, "output_tokens": 1, "total_tokens": 11}
+            }
+        }))]),
+    ])
+    .await;
+    let model = server.responses_model();
+
+    let events = model
+        .chat_stream(dashscope_session_request("response-poisoned"))
+        .collect::<Vec<_>>()
+        .await;
+    let events: Vec<_> = events.into_iter().collect::<Result<_, _>>().unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Error { .. })),
+        "terminal error must be swallowed by the full-history replay: {events:?}"
+    );
+    let end_metadata = events
+        .iter()
+        .find_map(|event| match event {
+            AgentEvent::End { metadata, .. } => Some(metadata),
+            _ => None,
+        })
+        .expect("End event after replay");
+    assert_eq!(
+        end_metadata["rua_responses_session"]["response_id"],
+        "resp-fresh"
+    );
+
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2, "exactly one full-history replay");
+    assert_eq!(requests[0]["previous_response_id"], "response-poisoned");
+    assert!(requests[1].get("previous_response_id").is_none());
+    assert_eq!(requests[1]["store"], true);
+    assert_eq!(requests[1]["input"].as_array().unwrap().len(), 3);
+    // The persisted session fingerprint must describe the replayed full input,
+    // so later turns can keep chaining from the fresh response.
+    let replay_hash = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&requests[1]["input"]).unwrap())
+    );
+    assert_eq!(
+        end_metadata["rua_responses_session"]["request_input_sha256"],
+        replay_hash
+    );
+}
+
+/// Once visible output was already streamed to the caller, a mid-stream
+/// terminal error must not trigger a replay (it would duplicate output).
+#[tokio::test]
+async fn dashscope_stream_terminal_error_after_visible_output_does_not_replay() {
+    let server = Server::start(vec![
+        Response {
+            status: 200,
+            chunks: vec![
+                sse(json!({
+                    "type": "response.output_item.added",
+                    "output_index": 0,
+                    "item": {"type": "function_call", "id": "fc-1", "call_id": "call-1", "name": "demo", "arguments": ""}
+                })),
+                sse(json!({
+                    "type": "error",
+                    "error": {
+                        "code": "InternalError.Algo",
+                        "message": "Failed to download multimodal content: HTTP 403"
+                    }
+                })),
+            ],
+            keep_open: false,
+            first_chunk_gate: None,
+            headers_gate: None,
+            keep_connection: false,
+        },
+        Response::sse(vec![sse(json!({"id": "must-not-be-requested"}))]),
+    ])
+    .await;
+    let model = server.responses_model();
+
+    let events = model
+        .chat_stream(dashscope_session_request("response-poisoned"))
+        .collect::<Vec<_>>()
+        .await;
+    // A tool-call event was already delivered to the caller before the
+    // terminal error; replaying would duplicate output, so it must not happen.
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Ok(AgentEvent::ToolCallDelta { .. }) | Ok(AgentEvent::ToolCall { .. })
+    )));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, Ok(AgentEvent::End { .. }))));
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1, "no replay after visible output");
+}
+
+/// Without a reused session there is nothing to discard: terminal SSE errors
+/// on a full request must surface directly without any replay.
+#[tokio::test]
+async fn responses_stream_terminal_error_without_session_does_not_replay() {
+    let server = Server::start(vec![
+        Response::sse(vec![sse(json!({
+            "type": "error",
+            "error": {"code": "InternalError.Algo", "message": "model serving failed"}
+        }))]),
+        Response::sse(vec![sse(json!({"id": "must-not-be-requested"}))]),
+    ])
+    .await;
+    let model = server.responses_model();
+
+    let events = model
+        .chat_stream(
+            ChatRequest::streaming(vec![ModelDialogueItem::text(Role::User, "hi")])
+                .with_model("qwen3.8-max"),
+        )
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Ok(AgentEvent::Error { message, .. }) if message.contains("model serving failed")
+    )));
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].get("previous_response_id").is_none());
+}
+
+/// Media-bearing prefixes keep only a short reuse window: an old anchor must
+/// be skipped so the request re-inlines media instead of asking the provider
+/// to re-download stale stored URLs. Text-only sessions keep the long window.
+#[tokio::test]
+async fn dashscope_media_prefix_limits_session_reuse_window() {
+    let completed = || {
+        Response::sse(vec![sse(json!({
+            "type": "response.completed",
+            "response": {"id": "resp-new"}
+        }))])
+    };
+    let server = Server::start(vec![completed(), completed(), completed()]).await;
+    let model = server.responses_model();
+
+    // 2h old media session: skipped, full history with the image re-sent.
+    let events = model
+        .chat_stream(dashscope_media_session_request(
+            "response-media-old",
+            2 * 60 * 60 * 1_000,
+        ))
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.into_iter().all(|event| event.is_ok()));
+    {
+        let requests = server.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].get("previous_response_id").is_none());
+        let input = requests[0]["input"].as_array().unwrap();
+        assert_eq!(input.len(), 3);
+        assert!(input[0]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|part| part["type"] == "input_image"));
+    }
+
+    // Fresh media session (10 min): still reused.
+    let events = model
+        .chat_stream(dashscope_media_session_request(
+            "response-media-fresh",
+            10 * 60 * 1_000,
+        ))
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.into_iter().all(|event| event.is_ok()));
+    {
+        let requests = server.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1]["previous_response_id"], "response-media-fresh");
+    }
+
+    // Text-only session (2h): still reused under the long window.
+    let mut text_request = dashscope_session_request("response-text-old");
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    text_request.messages[1]
+        .metadata
+        .get_mut("rua_responses_session")
+        .unwrap()["created_at_unix_ms"] = json!(now_ms - 2 * 60 * 60 * 1_000);
+    let events = model.chat_stream(text_request).collect::<Vec<_>>().await;
+    assert!(events.into_iter().all(|event| event.is_ok()));
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[2]["previous_response_id"], "response-text-old");
+}
+
 #[tokio::test]
 async fn responses_session_fingerprint_matches_full_input_at_tool_and_override_boundaries() {
     use agent_types::{ContentPart, ToolCall, ToolResult};

@@ -72,6 +72,27 @@ impl Fixture {
                         .chain(futures::stream::pending()),
                     )
                 }),
+            )
+            // A body far larger than the socket buffer plus the per-channel
+            // queue, so a client that stops reading forces server-side backlog.
+            .route(
+                "/api/agents/a/chats/big/console/activity",
+                get(|| async {
+                    Body::from_stream(futures::stream::iter((0..2048).map(|_| {
+                        Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![b'x'; 16 * 1024]))
+                    })))
+                }),
+            )
+            // Exactly one maximum-size Console payload (256 KiB), delivered as a
+            // single body chunk. A channel queue that cannot hold one whole
+            // payload kills this stream even when the client reads normally.
+            .route(
+                "/api/agents/a/chats/payload/acp/permissions",
+                get(|| async {
+                    Body::from_stream(futures::stream::iter(vec![Ok::<_, std::io::Error>(
+                        axum::body::Bytes::from(vec![b'y'; 256 * 1024]),
+                    )]))
+                }),
             );
         let app = rua_server::console_transport::router(state.clone(), api)
             .route("/api/projects", get(|| async { Json(json!([])) }))
@@ -237,4 +258,106 @@ async fn unsupported_version_fails_explicitly_before_channel_admission() {
     let frame = receive(&mut socket).await;
     assert_eq!(frame["type"], "fatal");
     assert!(frame["detail"].as_str().unwrap().contains("version"));
+}
+
+#[tokio::test]
+async fn server_backlog_is_reported_as_server_side_loss_not_client_buffer_pressure() {
+    let fixture = Fixture::new(false).await;
+    let mut socket = fixture.socket().await;
+    send(&mut socket, json!({"type":"auth", "version":1, "token":""})).await;
+    assert_eq!(receive(&mut socket).await["type"], "ready");
+    send(
+        &mut socket,
+        json!({"type":"open","id":"big","method":"GET","path":"/agents/a/chats/big/console/activity"}),
+    )
+    .await;
+    // Stop reading so the WebSocket writer and the 8-slot channel queue fill up.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let gap = loop {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let mut found = None;
+        while let Ok(Some(Ok(Message::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(100), socket.next())
+                .await
+        {
+            let frame: Value = serde_json::from_str(&text).unwrap();
+            if frame["id"] == "big" && frame["type"] == "gap" {
+                found = Some(frame);
+                break;
+            }
+        }
+        if let Some(frame) = found {
+            break frame;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "server must report backlog for a channel the client stopped draining"
+        );
+    };
+    assert_eq!(gap["code"], "server_channel_backlog");
+    let detail = gap["detail"].as_str().unwrap();
+    assert!(detail.contains("[server-backlog]"), "detail: {detail}");
+    assert!(
+        !detail.contains("[client-buffer]"),
+        "server backlog must not be attributed to the client buffer: {detail}"
+    );
+}
+
+#[test]
+fn server_deadline_signal_is_distinguishable_from_the_client_timer() {
+    // The page runs its own deadline with the same user-facing wording. The
+    // machine-readable discriminator is what tells the two apart in the field.
+    let frame = rua_server::console_transport::server_deadline_frame("op-1");
+    assert_eq!(frame["type"], "error");
+    assert_eq!(frame["id"], "op-1");
+    assert_eq!(frame["code"], "server_request_deadline");
+    let detail = frame["detail"].as_str().unwrap();
+    assert!(detail.contains("[server-deadline]"), "detail: {detail}");
+    assert!(
+        !detail.contains("[client-deadline]"),
+        "server deadline must not be attributed to the page timer: {detail}"
+    );
+}
+
+#[tokio::test]
+async fn a_single_maximum_payload_is_delivered_completely_to_a_draining_client() {
+    // Regression: a channel queue smaller than one payload (16 frames at 16 KiB)
+    // cannot ever flush a maximum-size chunk. The old 8-slot queue let only 7
+    // frames (112 KiB) through, so an ordinary burst of one full payload killed
+    // the stream with a bogus "slow channel" backlog even though this client
+    // reads continuously.
+    let fixture = Fixture::new(false).await;
+    let mut socket = fixture.socket().await;
+    send(&mut socket, json!({"type":"auth", "version":1, "token":""})).await;
+    assert_eq!(receive(&mut socket).await["type"], "ready");
+    send(
+        &mut socket,
+        json!({"type":"open","id":"payload","method":"GET","path":"/agents/a/chats/payload/acp/permissions"}),
+    )
+    .await;
+
+    let mut body = Vec::new();
+    loop {
+        let frame = receive(&mut socket).await;
+        assert_eq!(frame["id"], "payload");
+        match frame["type"].as_str().unwrap() {
+            "head" => {}
+            "data" => {
+                use base64::Engine;
+                body.extend_from_slice(
+                    &base64::engine::general_purpose::STANDARD
+                        .decode(frame["data"].as_str().unwrap())
+                        .unwrap(),
+                );
+            }
+            "end" => break,
+            other => panic!("unexpected frame {other}: {frame}"),
+        }
+    }
+    assert_eq!(
+        body.len(),
+        256 * 1024,
+        "the whole payload must arrive instead of being truncated by a backlog"
+    );
+    assert!(body.iter().all(|byte| *byte == b'y'));
 }

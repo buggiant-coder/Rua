@@ -20,6 +20,7 @@ pin_project! {
         tag_parser: TagParser,
         pending_events: Vec<Result<AgentEvent, LlmError>>,
         tc_counter: u32,
+        text_metadata: serde_json::Value,
         saw_terminal: bool,
     }
 }
@@ -31,6 +32,7 @@ impl SanitizedStream {
             tag_parser: TagParser::new(),
             pending_events: Vec::new(),
             tc_counter: 0,
+            text_metadata: serde_json::Value::Null,
             saw_terminal: false,
         }
     }
@@ -56,7 +58,32 @@ impl Stream for SanitizedStream {
 
         match this.inner.poll_next(cx) {
             Poll::Ready(Some(Ok(event))) => match event {
-                AgentEvent::TextDelta { delta, .. } => {
+                AgentEvent::TextDelta { delta, metadata } => {
+                    // The provider message identity (Responses API output item,
+                    // phase updates) arrives as delta metadata. Buffered inline
+                    // tags are flushed later, so keep the latest one and stamp
+                    // it onto every text event this parser produces; dropping it
+                    // would split one provider message into several.
+                    if !metadata.is_null() {
+                        *this.text_metadata = metadata.clone();
+                    }
+                    if delta.is_empty() {
+                        // Metadata-only update: nothing to parse.
+                        if this.tag_parser.is_buffering_structured_segment() {
+                            if metadata.is_null() {
+                                cx.waker().wake_by_ref();
+                                return Poll::Pending;
+                            }
+                            // Carry the provider message identity through a
+                            // buffered inline tag block instead of dropping it.
+                            return Poll::Ready(Some(Ok(AgentEvent::TextDelta {
+                                delta,
+                                metadata,
+                            })));
+                        }
+                        this.tag_parser.clear_buffer();
+                        return Poll::Ready(Some(Ok(AgentEvent::TextDelta { delta, metadata })));
+                    }
                     this.tag_parser.push(&delta);
                     let segments = this.tag_parser.drain();
                     let consumed_structured_tag = this.tag_parser.take_consumed_structured_tag();
@@ -70,12 +97,10 @@ impl Stream for SanitizedStream {
                             return Poll::Pending;
                         }
                         this.tag_parser.clear_buffer();
-                        Poll::Ready(Some(Ok(AgentEvent::TextDelta {
-                            delta,
-                            metadata: serde_json::Value::Null,
-                        })))
+                        Poll::Ready(Some(Ok(AgentEvent::TextDelta { delta, metadata })))
                     } else {
                         let mut events = convert_segments(&segments, *this.tc_counter);
+                        stamp_text_metadata(&mut events, this.text_metadata);
                         *this.tc_counter += segments
                             .iter()
                             .filter(|s| matches!(s, TagSegment::ToolCall { .. }))
@@ -99,7 +124,8 @@ impl Stream for SanitizedStream {
                 AgentEvent::End { .. } | AgentEvent::Error { .. } => {
                     *this.saw_terminal = true;
                     let remaining = std::mem::take(this.tag_parser).finish();
-                    let flushed = convert_segments(&remaining, *this.tc_counter);
+                    let mut flushed = convert_segments(&remaining, *this.tc_counter);
+                    stamp_text_metadata(&mut flushed, this.text_metadata);
                     for e in flushed {
                         this.pending_events.push(Ok(e));
                     }
@@ -113,7 +139,8 @@ impl Stream for SanitizedStream {
                 if !*this.saw_terminal {
                     *this.saw_terminal = true;
                     let remaining = std::mem::take(this.tag_parser).finish();
-                    let flushed = convert_segments(&remaining, *this.tc_counter);
+                    let mut flushed = convert_segments(&remaining, *this.tc_counter);
+                    stamp_text_metadata(&mut flushed, this.text_metadata);
                     for e in flushed {
                         this.pending_events.push(Ok(e));
                     }
@@ -130,6 +157,19 @@ impl Stream for SanitizedStream {
 
 fn convert_segments(segments: &[TagSegment], tc_offset: u32) -> Vec<AgentEvent> {
     TagParser::segments_to_events(segments, tc_offset)
+}
+
+fn stamp_text_metadata(events: &mut [AgentEvent], metadata: &serde_json::Value) {
+    if metadata.is_null() {
+        return;
+    }
+    for event in events {
+        if let AgentEvent::TextDelta { metadata: slot, .. } = event {
+            if slot.is_null() {
+                *slot = metadata.clone();
+            }
+        }
+    }
 }
 
 pub fn sanitize_tool_call(mut call: ToolCall) -> ToolCall {

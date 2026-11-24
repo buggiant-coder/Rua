@@ -320,7 +320,7 @@ async fn unavailable_plugin_requirement_fails_without_invoking_the_adapter() {
 
 #[tokio::test]
 #[cfg(unix)]
-async fn command_handler_uses_exact_program_args_and_agent_resource_in_a_project_chat() {
+async fn command_handler_uses_exact_program_args_and_agent_resource_scope() {
     let temp = tempfile::tempdir().unwrap();
     let agent_root = temp.path().join("agent-root");
     let working_directory = agent_root.join("hooks");
@@ -371,7 +371,9 @@ async fn command_handler_uses_exact_program_args_and_agent_resource_in_a_project
     let received = &result.outcome["received"];
 
     assert_eq!(received["authority_device_id"], "device-authority");
-    assert_eq!(received["chat_address"]["scope"]["kind"], "project");
+    // A Chat is identified by its own ID; Project membership is not part of the
+    // address (ADR 0059). The handler resource scope is what carries the Agent.
+    assert_eq!(received["chat_address"], json!({"chat_id": "chat-a"}));
     assert_eq!(received["scope"]["kind"], "agent");
     assert_eq!(received["resource_id"], "agent:agent-a");
     assert_eq!(received["program"], "/bin/sh");

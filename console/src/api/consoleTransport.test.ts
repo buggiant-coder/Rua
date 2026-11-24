@@ -100,8 +100,16 @@ describe("Console shared transport", () => {
     const result = transport
       .fetch("/agents/a/chats/c/acp/permissions")
       .catch((e: Error) => e);
+    // The client deadline is deliberately later than the server's 30s one, so
+    // an expired server operation is reported by the server, not pre-empted.
     await vi.advanceTimersByTimeAsync(30001);
-    expect((await result) instanceof Error).toBe(true);
+    expect(Socket.instances.at(-1)?.frames ?? []).toEqual([]);
+    await vi.advanceTimersByTimeAsync(10000);
+    const failure = await result;
+    expect(failure instanceof Error).toBe(true);
+    expect((failure as Error).message).toContain("[client-deadline]");
+    expect((failure as Error).message).not.toContain("[server-deadline]");
+    expect(failure).toMatchObject({ code: "client_request_deadline" });
     const socket = Socket.instances.at(-1)!;
     socket.authenticate();
     expect(socket.frames.filter((f) => f.type === "open")).toHaveLength(0);
@@ -138,8 +146,62 @@ describe("Console shared transport", () => {
     const body = (await response).body!;
     for (let i = 0; i < 17; i++)
       socket.emit({ type: "data", id: "1", data: btoa("x".repeat(16 * 1024)) });
-    await expect(body.getReader().read()).rejects.toThrow("overflow");
+    // Local buffer pressure is distinguishable from server-side frame drops.
+    const reader = body.getReader();
+    const failure = await reader.read().catch((e: Error) => e);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("[client-buffer]");
+    expect((failure as Error).message).not.toContain("[server-backlog]");
+    expect(failure).toMatchObject({ code: "client_channel_overflow" });
     expect(socket.frames).toContainEqual({ type: "cancel", id: "1" });
+  });
+
+  it("preserves the server-side backlog signal instead of the client buffer one", async () => {
+    const response = transport.fetch("/agents/a/chats/c/console/activity");
+    const socket = Socket.instances[0];
+    socket.authenticate();
+    socket.emit({ type: "head", id: "1", status: 200 });
+    const body = (await response).body!;
+    const reader = body.getReader();
+    const pending = reader.read().catch(() => undefined);
+    socket.emit({
+      type: "gap",
+      id: "1",
+      code: "server_channel_backlog",
+      detail:
+        "Console channel overflow [server-backlog]; the server could not flush this channel",
+    });
+    const failure = await reader.read().catch((e: Error) => e);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("[server-backlog]");
+    expect((failure as Error).message).not.toContain("[client-buffer]");
+    expect(failure).toMatchObject({ code: "server_channel_backlog" });
+    await pending;
+  });
+
+  it("delivers the server deadline before the client timer pre-empts it", async () => {
+    const response = transport.fetch("/agents/a/chats/c/acp/permissions");
+    const socket = Socket.instances[0];
+    socket.authenticate();
+    socket.emit({ type: "head", id: "1", status: 200 });
+    const body = (await response).body!;
+    const reader = body.getReader();
+    const pending = reader.read().catch(() => undefined);
+    // The server gives up first; the page must surface the server's signal.
+    await vi.advanceTimersByTimeAsync(30001);
+    socket.emit({
+      type: "error",
+      id: "1",
+      code: "server_request_deadline",
+      detail:
+        "Console request deadline exceeded [server-deadline]; the server gave up on this operation",
+    });
+    const failure = await reader.read().catch((e: Error) => e);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("[server-deadline]");
+    expect((failure as Error).message).not.toContain("[client-deadline]");
+    expect(failure).toMatchObject({ code: "server_request_deadline" });
+    await pending;
   });
 
   it("treats version/auth rejection as terminal instead of falling back to streams", async () => {

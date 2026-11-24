@@ -1972,7 +1972,7 @@ describe("ConversationMessageList", () => {
     expect(container.querySelector(".rua-local-reasoning")).toBeNull();
   });
 
-  it("renders runtime notes and variant count without vendor cards", async () => {
+  it("keeps task terminal notes out of the visible conversation", async () => {
     const projection = projectConversation("chat-1", {
       status: "idle",
       messages: [
@@ -2018,13 +2018,9 @@ describe("ConversationMessageList", () => {
 
     render(<ConversationMessageList projection={projection} />);
 
-    fireEvent.click(screen.getByText("Task · Bash"));
-    await screen.findByText("finished");
-
     expect(screen.getByText("2/2")).toBeInTheDocument();
-    expect(screen.getByText("Task · Bash")).toBeInTheDocument();
-    expect(screen.getByText("completed")).toBeInTheDocument();
-    expect(screen.getByText("finished")).toBeInTheDocument();
+    expect(screen.queryByText("Task · Bash")).not.toBeInTheDocument();
+    expect(screen.queryByText("finished")).not.toBeInTheDocument();
   });
 
   it("renders task watch output records inside the runtime note", async () => {

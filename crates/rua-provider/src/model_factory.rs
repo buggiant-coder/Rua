@@ -5,6 +5,7 @@ use llm_multiplex::traits::ChatModel;
 use rua_contract::UsageRecorder;
 
 use crate::fallback::{FallbackChatModel, FallbackMode, FallbackPolicy, FallbackResolver};
+use crate::input_guard::InputLimitChatModel;
 use crate::retry::{RetryChatModel, RetryPolicy};
 use crate::usage_recording::UsageRecordingChatModel;
 
@@ -16,6 +17,7 @@ pub struct ModelFactory {
     usage_recorder: Option<Arc<dyn UsageRecorder>>,
     fallback_policy: Option<FallbackPolicy>,
     fallback_resolver: Option<Arc<dyn FallbackResolver>>,
+    max_input_tokens: Option<u64>,
 }
 
 impl ModelFactory {
@@ -27,7 +29,17 @@ impl ModelFactory {
             usage_recorder: None,
             fallback_policy: None,
             fallback_resolver: None,
+            max_input_tokens: None,
         }
+    }
+
+    /// Reject requests whose serialized input exceeds `max_input_tokens` before
+    /// they are sent. Projection normally keeps input inside the limit, so this
+    /// only fires when an estimate or a summary path has gone wrong. The limit
+    /// is the caller's declared ceiling, not the model's advertised window.
+    pub fn with_max_input_tokens(mut self, max_input_tokens: u64) -> Self {
+        self.max_input_tokens = Some(max_input_tokens);
+        self
     }
 
     pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
@@ -56,10 +68,20 @@ impl ModelFactory {
     }
 
     pub fn build(&self, base_model: Box<dyn ChatModel>, provider_id: &str) -> Box<dyn ChatModel> {
+        // Only guard when a caller states the limit explicitly. Deriving it from
+        // the model's context window would apply a different number than the
+        // projection planner uses and reject requests the caller intends to send.
+        let guarded: Box<dyn ChatModel> = match self.max_input_tokens {
+            Some(max_input_tokens) if max_input_tokens > 0 => {
+                Box::new(InputLimitChatModel::new(base_model, max_input_tokens))
+            }
+            _ => base_model,
+        };
+
         let rate_limited: Box<dyn ChatModel> = if let Some(ref config) = self.rate_limit_config {
             let key = format!(
                 "{provider_id}:{}:{}:{}:{}:{}:{}",
-                base_model.model_info().id,
+                guarded.model_info().id,
                 config.max_concurrent,
                 config.max_qpm,
                 config.pause_seconds.to_bits(),
@@ -67,9 +89,9 @@ impl ModelFactory {
                 config.acquire_timeout.to_bits()
             );
             let limiter = self.rate_limiter_registry.get_or_create(&key, config);
-            Box::new(RateLimitChatModel::new(base_model, limiter))
+            Box::new(RateLimitChatModel::new(guarded, limiter))
         } else {
-            base_model
+            guarded
         };
 
         let retried: Box<dyn ChatModel> =

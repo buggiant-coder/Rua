@@ -86,9 +86,9 @@ async fn fake_provider_pages(
 
             let captured = parse_request(&bytes);
             let response = format!(
-            "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-            body.len()
-        );
+                "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
             socket
                 .write_all(response.as_bytes())
                 .await
@@ -799,6 +799,82 @@ async fn openai_responses_incomplete_event_terminates_stream_without_http_eof() 
     assert!(!events
         .iter()
         .any(|event| matches!(event, AgentEvent::End { .. })));
+}
+
+#[tokio::test]
+async fn openai_responses_inline_think_text_becomes_reasoning_not_visible_text() {
+    let sse = [
+        serde_json::json!({
+            "type": "response.output_text.delta",
+            "output_index": 0,
+            "item_id": "msg_inline_think",
+            "delta": "<think>\nchecking the diff"
+        }),
+        serde_json::json!({
+            "type": "response.output_text.delta",
+            "output_index": 0,
+            "item_id": "msg_inline_think",
+            "delta": " before the fix\n</think>\nfinal answer"
+        }),
+        serde_json::json!({
+            "type": "response.completed",
+            "response": { "id": "response-inline-think" }
+        }),
+    ]
+    .into_iter()
+    .map(|event| format!("data: {event}\n\n"))
+    .collect::<String>();
+    let (base_url, release_server) = fake_open_sse_server(sse).await;
+    let provider = OpenAiResponsesProvider::new(openai_config(base_url, false, false))
+        .expect("responses provider");
+    let model = provider
+        .create_chat_model("configured-model")
+        .expect("chat model");
+
+    let events = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        model
+            .chat_stream(ChatRequest::streaming(vec![ModelDialogueItem::text(
+                Role::User,
+                "where is the leak?",
+            )]))
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .expect("response.completed must terminate the stream");
+    let _ = release_server.send(());
+    let events = events.into_iter().collect::<Result<Vec<_>, _>>().unwrap();
+
+    let mut thinking = String::new();
+    let mut text = String::new();
+    let mut text_metadata = Vec::new();
+    for event in &events {
+        match event {
+            AgentEvent::ThinkingDelta { delta, .. } => thinking.push_str(delta),
+            AgentEvent::TextDelta { delta, metadata } => {
+                text.push_str(delta);
+                text_metadata.push(metadata.clone());
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(thinking, "checking the diff before the fix");
+    assert_eq!(
+        text.trim(),
+        "final answer",
+        "inline think tags must not reach the visible answer"
+    );
+    assert!(
+        !text.contains("think"),
+        "no inline tag residue in text: {text:?}"
+    );
+    assert!(
+        text_metadata
+            .iter()
+            .all(|metadata| metadata["provider_message_id"] == "msg_inline_think"),
+        "provider message identity must survive inline tag parsing: {text_metadata:?}"
+    );
 }
 
 #[tokio::test]

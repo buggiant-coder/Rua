@@ -4,6 +4,11 @@ import { buildAuthHeaders } from "./authHeaders";
 const CHANNEL_BYTES = 256 * 1024;
 const TOTAL_BYTES = 2 * 1024 * 1024;
 const MAX_CHANNELS = 64;
+/** Strictly later than the server's 30s operation deadline so that an expired
+ * server operation is reported by the server ([server-deadline]) and reaches
+ * the page, instead of the page pre-empting it with its own timer. */
+const SERVER_DEADLINE_MS = 30_000;
+const CLIENT_DEADLINE_MS = SERVER_DEADLINE_MS + 10_000;
 type Channel = {
   frame: Record<string, unknown>;
   sent: boolean;
@@ -63,6 +68,7 @@ export class ConsoleTransport {
         content_type?: string;
         data?: string;
         detail?: string;
+        code?: string;
       };
       try {
         frame = JSON.parse(String(event.data));
@@ -117,12 +123,22 @@ export class ConsoleTransport {
             (channel.controller.desiredSize ?? 0) < bytes.length ||
             buffered + bytes.length > TOTAL_BYTES
           ) {
-            this.finish(
-              id,
+            // Client-side loss: the consumer of this channel's stream did not
+            // read fast enough, so the frame exceeded the local read buffer.
+            // The server reports [server-backlog] when it drops frames first.
+            const error = Object.assign(
               new Error(
-                "Console channel overflow; reconcile from cursor or snapshot",
+                "Console channel overflow [client-buffer]; the page did not drain this channel fast enough (reconcile from cursor or snapshot)",
               ),
+              { code: "client_channel_overflow", channelId: id },
             );
+            console.warn("[console-transport] client channel overflow", {
+              channelId: id,
+              frameBytes: bytes.length,
+              desiredSize: channel.controller.desiredSize ?? null,
+              totalBufferedBytes: buffered,
+            });
+            this.finish(id, error);
           } else channel.controller.enqueue(bytes);
           break;
         }
@@ -133,7 +149,13 @@ export class ConsoleTransport {
         case "error":
           this.finish(
             id,
-            new Error(frame.detail || "Console operation failed"),
+            Object.assign(
+              new Error(frame.detail || "Console operation failed"),
+              {
+                ...(frame.code ? { code: frame.code } : {}),
+                channelId: id,
+              },
+            ),
           );
           break;
         default:
@@ -188,9 +210,26 @@ export class ConsoleTransport {
       const deadline = persistent
         ? undefined
         : setTimeout(
-            () =>
-              this.finish(id, new Error("Console request deadline exceeded")),
-            30000,
+            () => {
+              // Independent client-side timer: the server has its own 30s
+              // deadline and reports [server-deadline]. This one fires when
+              // the reply never arrived, including a reply the server already
+              // dropped on its side.
+              console.warn("[console-transport] client request deadline", {
+                channelId: id,
+                path,
+              });
+              this.finish(
+                id,
+                Object.assign(
+                  new Error(
+                    "Console request deadline exceeded [client-deadline]; the page gave up waiting for this operation (the server has its own independent timer)",
+                  ),
+                  { code: "client_request_deadline", channelId: id, path },
+                ),
+              );
+            },
+            CLIENT_DEADLINE_MS,
           );
       const channel: Channel = {
         frame: {

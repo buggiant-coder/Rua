@@ -335,3 +335,149 @@ async fn sanitized_stream_preserves_text_after_tag_before_later_plain_chunk() {
     assert_eq!(tool_names, vec!["search"]);
     assert_eq!(text, "beforeafter later");
 }
+
+#[tokio::test]
+async fn sanitized_stream_preserves_text_delta_metadata() {
+    let metadata = serde_json::json!({"provider_message_id": "msg_abc123"});
+    let events = vec![
+        Ok(AgentEvent::TextDelta {
+            delta: "plain answer".to_string(),
+            metadata: metadata.clone(),
+        }),
+        Ok(AgentEvent::End {
+            finish_reason: agent_types::FinishReason::Stop,
+            usage: None,
+            metadata: serde_json::Value::Null,
+        }),
+    ];
+
+    let mut stream = SanitizedStream::wrap(make_event_stream(events));
+    let event = stream.next().await.unwrap().unwrap();
+    match event {
+        AgentEvent::TextDelta {
+            delta,
+            metadata: event_metadata,
+        } => {
+            assert_eq!(delta, "plain answer");
+            assert_eq!(
+                event_metadata, metadata,
+                "plain text must keep its provider message identity"
+            );
+        }
+        other => panic!("expected text delta, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn sanitized_stream_stamps_metadata_on_flushed_inline_think() {
+    let metadata = serde_json::json!({"provider_message_id": "msg_abc123"});
+    let events = vec![
+        Ok(AgentEvent::TextDelta {
+            delta: "before ".to_string(),
+            metadata: metadata.clone(),
+        }),
+        Ok(AgentEvent::TextDelta {
+            delta: "<think>trace".to_string(),
+            metadata: metadata.clone(),
+        }),
+        Ok(AgentEvent::TextDelta {
+            delta: " end".to_string(),
+            metadata: metadata.clone(),
+        }),
+        Ok(AgentEvent::TextDelta {
+            delta: "</think> answer".to_string(),
+            metadata: metadata.clone(),
+        }),
+        Ok(AgentEvent::End {
+            finish_reason: agent_types::FinishReason::Stop,
+            usage: None,
+            metadata: serde_json::Value::Null,
+        }),
+    ];
+
+    let mut stream = SanitizedStream::wrap(make_event_stream(events));
+    let mut text = String::new();
+    let mut thinking = String::new();
+    let mut text_metadata = Vec::new();
+
+    while let Some(Ok(event)) = stream.next().await {
+        match event {
+            AgentEvent::TextDelta {
+                delta,
+                metadata: event_metadata,
+            } => {
+                text.push_str(&delta);
+                text_metadata.push(event_metadata);
+            }
+            AgentEvent::ThinkingDelta { delta, .. } => thinking.push_str(&delta),
+            AgentEvent::End { .. } => break,
+            _ => {}
+        }
+    }
+
+    assert_eq!(thinking, "trace end");
+    assert_eq!(text, "before  answer");
+    assert_eq!(text_metadata.len(), 2);
+    for event_metadata in &text_metadata {
+        assert_eq!(
+            event_metadata, &metadata,
+            "provider message identity must survive inline tag parsing"
+        );
+    }
+}
+
+#[tokio::test]
+async fn sanitized_stream_forwards_metadata_only_text_delta_while_buffering() {
+    let metadata = serde_json::json!({"provider_message_id": "msg_abc123", "phase": "final"});
+    let events = vec![
+        Ok(AgentEvent::TextDelta {
+            delta: "<think>trace".to_string(),
+            metadata: serde_json::Value::Null,
+        }),
+        Ok(AgentEvent::TextDelta {
+            delta: String::new(),
+            metadata: metadata.clone(),
+        }),
+        Ok(AgentEvent::TextDelta {
+            delta: "</think> answer".to_string(),
+            metadata: metadata.clone(),
+        }),
+        Ok(AgentEvent::End {
+            finish_reason: agent_types::FinishReason::Stop,
+            usage: None,
+            metadata: serde_json::Value::Null,
+        }),
+    ];
+
+    let mut stream = SanitizedStream::wrap(make_event_stream(events));
+
+    match stream.next().await.unwrap().unwrap() {
+        AgentEvent::TextDelta {
+            delta,
+            metadata: event_metadata,
+        } => {
+            assert!(delta.is_empty(), "buffered tags must not leak as text");
+            assert_eq!(
+                event_metadata, metadata,
+                "metadata-only update must survive a buffered tag block"
+            );
+        }
+        other => panic!("expected metadata-only text delta, got {other:?}"),
+    }
+
+    match stream.next().await.unwrap().unwrap() {
+        AgentEvent::ThinkingDelta { delta, .. } => assert_eq!(delta, "trace"),
+        other => panic!("expected buffered thinking to flush, got {other:?}"),
+    }
+
+    match stream.next().await.unwrap().unwrap() {
+        AgentEvent::TextDelta {
+            delta,
+            metadata: event_metadata,
+        } => {
+            assert_eq!(delta, " answer");
+            assert_eq!(event_metadata, metadata);
+        }
+        other => panic!("expected visible answer text, got {other:?}"),
+    }
+}

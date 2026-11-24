@@ -16,7 +16,9 @@ fn apply_delta(base: u64, current: u64, previous: u64) -> u64 {
     if current >= previous {
         base + current - previous
     } else {
-        base - (previous - current)
+        // Mirrors the production clamp: a shrinking projection must never
+        // report zero tokens, because zero reads as "nothing to send".
+        base.saturating_sub(previous - current).max(1)
     }
 }
 
@@ -361,5 +363,55 @@ async fn projection_recovers_usage_from_the_closing_part_of_a_split_assistant_me
     assert_eq!(
         estimate.calibration_source_provider_id.as_deref(),
         Some("provider-a")
+    );
+}
+
+#[test]
+fn shrinking_projection_never_reports_zero_input() {
+    let identity = CheckpointModelIdentity {
+        provider: "test".into(),
+        model: "test".into(),
+    };
+    // A history replacement collapses the projection far below the anchor.
+    // Reporting 0 here made the projection planner believe the request was
+    // empty and skip compaction while the real input was far over the limit.
+    let messages = vec![previous_assistant(&identity, 4_527_466, 638_320, 638_433)];
+    let request = ChatRequest::streaming(messages.clone());
+
+    let estimate = rua_agent::projection_preparation::calibrated_model_input_token_estimate(
+        &request, &messages, &identity, 4.0,
+    );
+
+    assert!(
+        estimate.calibrated_estimate_tokens > 0,
+        "calibrated estimate collapsed to zero, which disables compaction"
+    );
+}
+
+#[test]
+fn incomparable_anchor_falls_back_to_the_local_estimate() {
+    let identity = CheckpointModelIdentity {
+        provider: "test".into(),
+        model: "test".into(),
+    };
+    // The provider reported 638_433 prompt tokens for a projection the local
+    // estimator sized at 4_527_466, because that turn reported only the delta
+    // of a reused provider session. Applying that delta pulled a genuinely
+    // oversized request down to ~638K and suppressed compaction.
+    let messages = vec![previous_assistant(&identity, 4_527_466, 638_320, 638_433)];
+    let request = ChatRequest::streaming(messages.clone());
+
+    let estimate = rua_agent::projection_preparation::calibrated_model_input_token_estimate(
+        &request, &messages, &identity, 4.0,
+    );
+
+    assert_eq!(
+        estimate.method,
+        ModelInputTokenEstimateMethod::Fast,
+        "an incomparable anchor must be discarded rather than trusted"
+    );
+    assert_eq!(
+        estimate.calibrated_estimate_tokens, estimate.fast_estimate_tokens,
+        "the local estimate is the only consistent measurement available"
     );
 }

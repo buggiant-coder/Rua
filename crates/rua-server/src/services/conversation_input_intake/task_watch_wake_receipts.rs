@@ -17,28 +17,27 @@ pub(crate) struct TaskWatchWakeRegistration {
     pub(crate) receipt_id: String,
     receipts: TaskWatchWakeReceipts,
     receiver: tokio::sync::watch::Receiver<Option<Result<(), String>>>,
-    pub(crate) fresh: bool,
     pub(crate) enqueued: bool,
 }
 
 impl TaskWatchWakeReceipts {
+    /// Claims the observation. Only one delivery may be in flight for a given
+    /// observation, so an overlapping caller is rejected rather than made to wait
+    /// behind work it cannot influence. A receipt is released once its delivery
+    /// resolves, which lets a genuinely new delivery retry after a failure.
     pub(crate) fn register(
         &self,
         notification_id: String,
         address: ChatAddress,
-    ) -> TaskWatchWakeRegistration {
+    ) -> Result<TaskWatchWakeRegistration, String> {
         let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(receipt) = inner.get(&notification_id) {
-            return TaskWatchWakeRegistration {
-                receipt_id: receipt.receipt_id.clone(),
-                receipts: self.clone(),
-                receiver: receipt.sender.subscribe(),
-                fresh: false,
-                enqueued: true,
-            };
+        if inner.contains_key(&notification_id) {
+            return Err(format!(
+                "Runtime observation '{notification_id}' is already registered"
+            ));
         }
         let receipt_id = format!("runtime-observation-{}", uuid::Uuid::new_v4());
         let (sender, receiver) = tokio::sync::watch::channel(None);
@@ -50,13 +49,12 @@ impl TaskWatchWakeReceipts {
                 sender,
             },
         );
-        TaskWatchWakeRegistration {
+        Ok(TaskWatchWakeRegistration {
             receipt_id,
             receipts: self.clone(),
             receiver,
-            fresh: true,
             enqueued: false,
-        }
+        })
     }
 
     fn resolve(&self, receipt_id: &str, result: Result<(), String>) {
@@ -120,7 +118,9 @@ impl TaskWatchWakeRegistration {
 
 impl Drop for TaskWatchWakeRegistration {
     fn drop(&mut self) {
-        if self.fresh && !self.enqueued {
+        // A registration that never reached the durable queue must not leave the
+        // observation claimed, or a later retry could never be admitted.
+        if !self.enqueued {
             self.receipts
                 .fail(&self.receipt_id, "Runtime observation was not enqueued");
         }

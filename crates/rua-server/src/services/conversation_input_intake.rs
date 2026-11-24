@@ -1052,6 +1052,19 @@ impl ConversationInputIntake {
             .conversation_authority
             .as_ref()
             .ok_or_else(|| "Conversation Authority is unavailable".to_string())?;
+        // Claim the observation before waiting for the Chat transition gate. An
+        // overlapping delivery of the same observation is therefore rejected instead
+        // of silently queueing behind this one. The receipt travels with the enqueued
+        // input so a queue discard fails it rather than leaving the sender waiting for
+        // an acknowledgement that can never arrive.
+        let mut wake_receipt = if wait_for_watch || wait_for_persistence {
+            Some(
+                self.task_watch_wake_receipts
+                    .register(observation_id.clone(), address.clone())?,
+            )
+        } else {
+            None
+        };
         // A Task may outlive its executor's selection. Choose its result Turn's
         // Agent under the same gate that accepts the input and switches the Chat.
         let gate = authority.transition_gate(&address);
@@ -1127,22 +1140,6 @@ impl ConversationInputIntake {
             .map_err(|error| error.to_string())?,
         };
         extra.insert(rua_chat::TURN_AGENT_ASSIGNMENT_META_KEY.into(), assignment);
-        // The receipt travels with the enqueued input so a queue discard fails it
-        // instead of leaving the sender waiting for an acknowledgement that can never
-        // arrive. It is claimed only once the durable input is ready to enqueue, and an
-        // overlapping delivery of the same observation joins the in-flight one.
-        let mut wake_receipt = if wait_for_watch || wait_for_persistence {
-            let receipt = self
-                .task_watch_wake_receipts
-                .register(observation_id.clone(), address.clone());
-            if !receipt.fresh {
-                drop(transition);
-                return receipt.wait().await;
-            }
-            Some(receipt)
-        } else {
-            None
-        };
         if let Some(receipt) = wake_receipt.as_ref() {
             extra.insert(
                 RUNTIME_OBSERVATION_RECEIPT_META_KEY.into(),
