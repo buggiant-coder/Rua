@@ -82,6 +82,17 @@ impl Fixture {
                         Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![b'x'; 16 * 1024]))
                     })))
                 }),
+            )
+            // Exactly one maximum-size Console payload (256 KiB), delivered as a
+            // single body chunk. A channel queue that cannot hold one whole
+            // payload kills this stream even when the client reads normally.
+            .route(
+                "/api/agents/a/chats/payload/acp/permissions",
+                get(|| async {
+                    Body::from_stream(futures::stream::iter(vec![Ok::<_, std::io::Error>(
+                        axum::body::Bytes::from(vec![b'y'; 256 * 1024]),
+                    )]))
+                }),
             );
         let app = rua_server::console_transport::router(state.clone(), api)
             .route("/api/projects", get(|| async { Json(json!([])) }))
@@ -283,4 +294,47 @@ fn server_deadline_signal_is_distinguishable_from_the_client_timer() {
         !detail.contains("[client-deadline]"),
         "server deadline must not be attributed to the page timer: {detail}"
     );
+}
+
+#[tokio::test]
+async fn a_single_maximum_payload_is_delivered_completely_to_a_draining_client() {
+    // Regression: a channel queue smaller than one payload (16 frames at 16 KiB)
+    // cannot ever flush a maximum-size chunk. The old 8-slot queue let only 7
+    // frames (112 KiB) through, so an ordinary burst of one full payload killed
+    // the stream with a bogus "slow channel" backlog even though this client
+    // reads continuously.
+    let fixture = Fixture::new(false).await;
+    let mut socket = fixture.socket().await;
+    send(&mut socket, json!({"type":"auth", "version":1, "token":""})).await;
+    assert_eq!(receive(&mut socket).await["type"], "ready");
+    send(
+        &mut socket,
+        json!({"type":"open","id":"payload","method":"GET","path":"/agents/a/chats/payload/acp/permissions"}),
+    )
+    .await;
+
+    let mut body = Vec::new();
+    loop {
+        let frame = receive(&mut socket).await;
+        assert_eq!(frame["id"], "payload");
+        match frame["type"].as_str().unwrap() {
+            "head" => {}
+            "data" => {
+                use base64::Engine;
+                body.extend_from_slice(
+                    &base64::engine::general_purpose::STANDARD
+                        .decode(frame["data"].as_str().unwrap())
+                        .unwrap(),
+                );
+            }
+            "end" => break,
+            other => panic!("unexpected frame {other}: {frame}"),
+        }
+    }
+    assert_eq!(
+        body.len(),
+        256 * 1024,
+        "the whole payload must arrive instead of being truncated by a backlog"
+    );
+    assert!(body.iter().all(|byte| *byte == b'y'));
 }

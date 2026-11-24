@@ -29,7 +29,23 @@ use crate::{auth, state::AppState};
 const VERSION: u64 = 1;
 const MAX_CHANNELS: usize = 64;
 const FRAME_BYTES: usize = 16 * 1024;
+/// Largest single streamed payload chunk handed to this transport (conversation
+/// replay and checkpoint payloads are capped at this size upstream).
+const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
+/// Per-channel queue depth. It must hold one whole payload after splitting, plus
+/// one reserved slot so loss can always be signalled explicitly. A smaller queue
+/// cannot ever flush a maximum-size payload: the frames of one chunk would fill
+/// it and the channel would be killed on every burst, regardless of how fast the
+/// client reads.
+const CHANNEL_QUEUE_FRAMES: usize = MAX_PAYLOAD_BYTES / FRAME_BYTES + 2;
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
+// A maximum-size payload must fit with one slot to spare for the loss signal.
+// Breaking this invariant makes large bursts unflushable and kills the channel.
+const _: () = assert!(
+    MAX_PAYLOAD_BYTES.div_ceil(FRAME_BYTES) < CHANNEL_QUEUE_FRAMES,
+    "channel queue must hold one whole payload plus a reserved loss slot"
+);
 
 #[derive(Clone)]
 struct ConsoleTransport {
@@ -168,14 +184,16 @@ fn allowed(method: &str, path: &str) -> bool {
 
 fn enqueue(tx: &mpsc::Sender<Value>, frame: Value, id: &str, path: &str) -> bool {
     // Reserve one slot for explicit loss. A slow channel cannot block peers.
-    if tx.capacity() <= 1 {
+    let remaining = tx.capacity();
+    if remaining <= 1 {
         // Server-side loss: this channel's WebSocket writer could not drain the
         // queue. Distinct from the client dropping frames into its own read
         // buffer, which reports [client-buffer] on the browser side.
         tracing::warn!(
             channel = id,
             path,
-            remaining = tx.capacity(),
+            remaining,
+            queue_frames = CHANNEL_QUEUE_FRAMES,
             "console transport channel backlog: dropping frames for a slow channel"
         );
         let _ = tx.try_send(json!({
@@ -339,7 +357,7 @@ async fn run(
                         }
                         *request.body_mut() = Body::from(body);
                         let is_stream = path.split('?').next().is_some_and(|p| p.ends_with("/activity") || p.ends_with("/conversation-activity") || p.ends_with("/live"));
-                        let (tx, rx) = mpsc::channel(8);
+                        let (tx, rx) = mpsc::channel(CHANNEL_QUEUE_FRAMES);
                         frames.push(futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|frame| (frame, rx)) }).boxed());
                         let token = cancellation.child_token();
                         channels.insert(id.clone(), token.clone());
