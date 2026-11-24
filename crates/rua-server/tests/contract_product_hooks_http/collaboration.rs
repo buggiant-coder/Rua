@@ -584,10 +584,18 @@ use super::support::{build_app, read_json, request, TestApp};
 async fn caller(test: &TestApp, name: &str) -> CollaborationCaller {
     let chat = super::support::seed_materialized_chat(test, "default", name).await;
     let address = ChatAddress::new(chat["id"].as_str().unwrap());
+    // Production rewrites the Caller's working directory to the source Chat's
+    // actual execution directory before the collaboration command runs, so the
+    // fixture has to do the same rather than inventing the Chat storage root.
     CollaborationCaller {
-        working_dir: ChatStore::resolve(&test.state.rua_root, address.clone())
-            .root()
-            .to_path_buf(),
+        working_dir: chat["meta"]["execution_directory"]["path"]
+            .as_str()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                ChatStore::resolve(&test.state.rua_root, address.clone())
+                    .root()
+                    .to_path_buf()
+            }),
         address,
         turn_id: "source-turn".into(),
         tool_call_id: name.into(),
@@ -596,6 +604,117 @@ async fn caller(test: &TestApp, name: &str) -> CollaborationCaller {
             .unwrap()
             .into(),
     }
+}
+
+#[tokio::test]
+async fn create_inherits_a_managed_execution_directory_without_taking_it_over() {
+    let test = build_app();
+    assert_eq!(
+        request(
+            &test.app,
+            Method::POST,
+            "/api/agents",
+            Some(json!({"id":"reviewer","name":"Reviewer"}))
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let source = caller(&test, "managed-source").await;
+    // Put the source on its own managed directory: an absolute path that is no
+    // longer the Caller working directory, and one the Chat does not own.
+    // Put the source on its own managed directory: an absolute path that is not the
+    // Caller working directory, so a child that merely copies the caller would fail.
+    let managed_path = test.state.rua_root.join("managed-collab-source");
+    tokio::fs::create_dir_all(&managed_path).await.unwrap();
+    let device_id =
+        rua_server::services::device_context::current_sync_device_id(&test.state.sync_device)
+            .expect("local Device");
+    let managed = test
+        .state
+        .conversation_input_intake
+        .set_execution_directory(&source.address, &device_id, Some(&managed_path))
+        .await
+        .expect("pin the source to a managed directory");
+    assert!(
+        !managed.managed,
+        "an explicit path is not a managed directory"
+    );
+    let managed_json = serde_json::json!(managed);
+    assert_eq!(
+        chat_execution_directory(&test, &source.address).await,
+        managed_json
+    );
+    // Pinning the directory publishes a new source configuration epoch, so the
+    // Caller must be refreshed exactly as a real Turn would be.
+    let mut source = source;
+    source.configuration_epoch = test
+        .state
+        .product_hooks
+        .chat_configuration(&source.address)
+        .await
+        .unwrap()
+        .epoch;
+
+    let created = test
+        .state
+        .collaboration
+        .create(source.clone(), "reviewer".into(), None, 0)
+        .await
+        .unwrap();
+    let child_store = WorkspaceSessionStore::new(
+        ChatStore::resolve(&test.state.rua_root, created.chat.clone()).root(),
+    );
+    let child_header = child_store
+        .load_chat_header(created.chat.chat_id().as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        child_header.extra[rua_session::EXECUTION_DIRECTORY_KEY],
+        managed_json,
+        "the child must run where its source runs, even in a managed directory"
+    );
+    // Shared path, separate ownership: the child must not claim the directory as its
+    // own managed directory, and the source still owns it.
+    let child_directory: rua_session::ChatExecutionDirectory =
+        serde_json::from_value(child_header.extra[rua_session::EXECUTION_DIRECTORY_KEY].clone())
+            .unwrap();
+    assert_eq!(child_directory.path, managed_path);
+    assert!(
+        managed_path.is_dir(),
+        "creating the child must not move or remove the shared directory"
+    );
+}
+
+/// Reads a Chat header's `extra` map.
+async fn chat_header_extra(test: &TestApp, address: &ChatAddress) -> serde_json::Value {
+    let store = WorkspaceSessionStore::new(
+        ChatStore::resolve(&test.state.rua_root, address.clone()).root(),
+    );
+    let header = store
+        .load_chat_header(address.chat_id().as_str())
+        .await
+        .unwrap()
+        .expect("Chat header");
+    serde_json::Value::Object(header.extra.into_iter().collect())
+}
+
+/// Reads the execution directory a Chat is recorded as running in.
+async fn chat_execution_directory(test: &TestApp, address: &ChatAddress) -> serde_json::Value {
+    let store = WorkspaceSessionStore::new(
+        ChatStore::resolve(&test.state.rua_root, address.clone()).root(),
+    );
+    let header = store
+        .load_chat_header(address.chat_id().as_str())
+        .await
+        .unwrap()
+        .expect("Chat header");
+    header
+        .extra
+        .get(rua_session::EXECUTION_DIRECTORY_KEY)
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -930,6 +1049,17 @@ async fn create_is_idempotent_isolated_and_inherits_source_environment() {
         header.extra["collaboration"]["working_dir"],
         json!(source.working_dir)
     );
+    // The child inherits the source's actual execution position, not the caller's
+    // convenience directory. A managed directory is shared by path, not by ownership.
+    let inherited_directory = &header.extra[rua_session::EXECUTION_DIRECTORY_KEY];
+    assert!(
+        inherited_directory.is_object(),
+        "the child must record the execution directory it inherited: {inherited_directory}"
+    );
+    assert_eq!(
+        inherited_directory,
+        &chat_execution_directory(&test, &source.address).await
+    );
     assert!(store
         .read_turn_range(created.chat.chat_id().as_str(), 1, 10)
         .await
@@ -1183,6 +1313,405 @@ async fn acp_collaboration_create_fixes_runner_inherits_cwd_and_creates_no_task(
         .await
         .unwrap();
     assert_eq!(targets_after, targets_before);
+}
+
+#[tokio::test]
+async fn child_next_turn_runs_at_its_own_directory_after_the_source_moves() {
+    let test = build_app();
+    let source = caller(&test, "source-move-next-turn").await;
+    let child = test
+        .state
+        .collaboration
+        .create(source.clone(), "default".into(), None, 0)
+        .await
+        .unwrap();
+    let child_directory = chat_execution_directory(&test, &child.chat).await;
+
+    let moved_path = test.state.rua_root.join("moved-source-next-turn");
+    tokio::fs::create_dir_all(&moved_path).await.unwrap();
+    let device_id =
+        rua_server::services::device_context::current_sync_device_id(&test.state.sync_device)
+            .expect("local Device");
+    test.state
+        .conversation_input_intake
+        .set_execution_directory(&source.address, &device_id, Some(&moved_path))
+        .await
+        .expect("the source moves");
+
+    // The child's own position is unchanged, so its next Turn must run there and
+    // must not wait for any inherited-position update.
+    assert_eq!(
+        chat_execution_directory(&test, &child.chat).await,
+        child_directory
+    );
+    let requests = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let release = Arc::new(tokio::sync::Notify::new());
+    test.state
+        .registry
+        .get_or_create("default")
+        .await
+        .unwrap()
+        .set_react_runtime(Arc::new(ControlledRuntime {
+            requests: requests.clone(),
+            release: Some(release.clone()),
+        }))
+        .await;
+    let mut refreshed = source;
+    refreshed.configuration_epoch = test
+        .state
+        .product_hooks
+        .chat_configuration(&refreshed.address)
+        .await
+        .unwrap()
+        .epoch;
+    refreshed.tool_call_id = "source-move-next-turn-send".into();
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        test.state.collaboration.send(
+            refreshed,
+            child.chat.clone(),
+            "carry on where you were".into(),
+            0,
+        ),
+    )
+    .await
+    .expect("the child must not wait for an inherited-position update")
+    .expect("the child accepts its next Turn");
+    assert_eq!(reply.state, "running");
+    wait_for_source_requests(&requests, 1).await;
+    assert_eq!(
+        requests.lock().await[0].working_dir.as_ref(),
+        Some(
+            &child_directory["path"]
+                .as_str()
+                .map(std::path::PathBuf::from)
+                .unwrap()
+        ),
+        "the child's next Turn must run at the directory it already had"
+    );
+    release.notify_one();
+}
+
+#[tokio::test]
+async fn source_move_while_child_is_busy_neither_blocks_itself_nor_clears_the_child() {
+    let test = build_app();
+    let source = caller(&test, "busy-child-source").await;
+    let child = test
+        .state
+        .collaboration
+        .create(source.clone(), "default".into(), None, 0)
+        .await
+        .unwrap();
+    let requests = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let release = Arc::new(tokio::sync::Notify::new());
+    test.state
+        .registry
+        .get_or_create("default")
+        .await
+        .unwrap()
+        .set_react_runtime(Arc::new(ControlledRuntime {
+            requests: requests.clone(),
+            release: Some(release.clone()),
+        }))
+        .await;
+
+    // Give the child a Turn that is genuinely in flight.
+    test.state
+        .collaboration
+        .send(
+            source.clone(),
+            child.chat.clone(),
+            "long child work".into(),
+            0,
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while requests.lock().await.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let child_turn = test
+        .state
+        .conversation_authority
+        .active_turn(&child.chat)
+        .await
+        .expect("the child has an active Turn");
+    let child_directory = chat_execution_directory(&test, &child.chat).await;
+
+    // The source is free to move: the child's busy state is not its admission gate.
+    let moved_path = test.state.rua_root.join("busy-moved-source");
+    tokio::fs::create_dir_all(&moved_path).await.unwrap();
+    let device_id =
+        rua_server::services::device_context::current_sync_device_id(&test.state.sync_device)
+            .expect("local Device");
+    let moved = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        test.state
+            .conversation_input_intake
+            .set_execution_directory(&source.address, &device_id, Some(&moved_path)),
+    )
+    .await
+    .expect("a busy child must not block the source's own directory change")
+    .expect("the source move must succeed");
+    assert_eq!(
+        chat_execution_directory(&test, &source.address).await,
+        json!(moved)
+    );
+
+    // ... and the child keeps its Turn, its directory and its queue entry.
+    let still_active = test
+        .state
+        .conversation_authority
+        .active_turn(&child.chat)
+        .await
+        .expect("the child Turn must not be cleared by a source move");
+    assert_eq!(still_active.turn_id, child_turn.turn_id);
+    assert_eq!(
+        chat_execution_directory(&test, &child.chat).await,
+        child_directory
+    );
+    // A position change publishes a new source configuration epoch, so the Caller
+    // must be refreshed exactly as a real Turn would be before it may read again.
+    let mut moved_caller = source;
+    moved_caller.configuration_epoch = test
+        .state
+        .product_hooks
+        .chat_configuration(&moved_caller.address)
+        .await
+        .unwrap()
+        .epoch;
+    assert_eq!(
+        test.state
+            .collaboration
+            .read(moved_caller, child.chat.clone(), 1)
+            .await
+            .unwrap()
+            .state,
+        "running",
+        "the child keeps running after the source moves"
+    );
+    release.notify_one();
+}
+
+#[tokio::test]
+async fn switching_the_source_agent_does_not_replace_the_child_executor() {
+    let test = build_app();
+    // A real second Agent is required: re-pointing the source must go through the
+    // same endpoint the Console uses, not a no-op selection.
+    request(
+        &test.app,
+        Method::POST,
+        "/api/agents",
+        Some(json!({"id":"child-switch-target","name":"Child switch target"})),
+    )
+    .await;
+    let source = caller(&test, "switch-agent-source").await;
+    let child = test
+        .state
+        .collaboration
+        .create(source.clone(), "default".into(), None, 0)
+        .await
+        .unwrap();
+    let executor_before: rua_session::collaboration::CollaborationExecutor =
+        serde_json::from_value(
+            chat_header_extra(&test, &child.chat).await["collaboration"]["executor"].clone(),
+        )
+        .unwrap();
+    let agent_before =
+        chat_header_extra(&test, &child.chat).await["collaboration"]["executor_agent_id"].clone();
+    let directory_before = chat_execution_directory(&test, &child.chat).await;
+
+    let selection = format!("/api/chats/{}/agent-selection", source.address.chat_id());
+    let switched = request(
+        &test.app,
+        Method::PATCH,
+        &selection,
+        Some(json!({"expected_agent_id":"default","agent_id":"child-switch-target"})),
+    )
+    .await;
+    assert!(
+        switched.status().is_success(),
+        "the source Agent switch must actually happen: {}",
+        switched.status()
+    );
+    let source_after = chat_header_extra(&test, &source.address).await;
+    assert_eq!(
+        source_after["hook_configuration"]["selected_agent_id"],
+        json!("child-switch-target"),
+        "the source really moved to another Agent"
+    );
+    assert_eq!(
+        source_after["agent_switch_events"]
+            .as_array()
+            .and_then(|events| events.last())
+            .map(|event| &event["selected_agent_id"]),
+        Some(&json!("child-switch-target"))
+    );
+
+    let after = chat_header_extra(&test, &child.chat).await;
+    let executor_after: rua_session::collaboration::CollaborationExecutor =
+        serde_json::from_value(after["collaboration"]["executor"].clone()).unwrap();
+    assert_eq!(executor_after, executor_before);
+    assert_eq!(
+        after["collaboration"]["executor_agent_id"], agent_before,
+        "a source Agent switch must not rewrite the child's fixed executor"
+    );
+    assert_eq!(
+        chat_execution_directory(&test, &child.chat).await,
+        directory_before
+    );
+}
+
+#[tokio::test]
+async fn child_own_directory_change_drives_its_next_turn_cwd() {
+    let test = build_app();
+    let source = caller(&test, "child-move-source").await;
+    let child = test
+        .state
+        .collaboration
+        .create(source.clone(), "default".into(), None, 0)
+        .await
+        .unwrap();
+    let inherited = chat_execution_directory(&test, &child.chat).await;
+    assert_eq!(inherited["path"], json!(source.working_dir));
+
+    let own_path = test.state.rua_root.join("child-own-directory");
+    tokio::fs::create_dir_all(&own_path).await.unwrap();
+    let device_id =
+        rua_server::services::device_context::current_sync_device_id(&test.state.sync_device)
+            .expect("local Device");
+    let own = test
+        .state
+        .conversation_input_intake
+        .set_execution_directory(&child.chat, &device_id, Some(&own_path))
+        .await
+        .expect("the child changes its own directory");
+    assert_eq!(
+        chat_execution_directory(&test, &child.chat).await,
+        json!(own)
+    );
+    assert_ne!(own.path, source.working_dir);
+
+    // The next Turn must run where the child now says it runs.
+    let requests = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let release = Arc::new(tokio::sync::Notify::new());
+    test.state
+        .registry
+        .get_or_create("default")
+        .await
+        .unwrap()
+        .set_react_runtime(Arc::new(ControlledRuntime {
+            requests: requests.clone(),
+            release: Some(release.clone()),
+        }))
+        .await;
+    let mut invocation = source.clone();
+    invocation.tool_call_id = "child-move-send".into();
+    test.state
+        .collaboration
+        .send(invocation, child.chat.clone(), "run where I say".into(), 0)
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while requests.lock().await.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        requests.lock().await[0].working_dir.as_ref(),
+        Some(&own.path),
+        "a child's own directory change must drive its next Turn"
+    );
+    release.notify_one();
+}
+
+#[tokio::test]
+async fn moving_the_source_leaves_an_acp_child_and_its_binding_untouched() {
+    let test = build_app();
+    let source = caller(&test, "acp-move-source").await;
+    let existing = test
+        .state
+        .acp_chat_registry
+        .get("default")
+        .expect("default ACP runtime");
+    let runner = existing
+        .service
+        .agent_configs()
+        .into_iter()
+        .find_map(|(name, config)| config.enabled.then_some(name))
+        .expect("enabled ACP runner fixture");
+    let manager = Arc::new(rua_command::AcpChatSessionManager::new(
+        std::time::Duration::from_secs(300),
+    ));
+    test.state.acp_chat_registry.register(
+        "default".into(),
+        Arc::new(
+            rua_server::services::acp_chat_registry::AcpChatRuntimeHandle {
+                service: Arc::clone(&existing.service),
+                manager: Arc::clone(&manager),
+                controller: Arc::new(TestAcpController {
+                    manager: Arc::clone(&manager),
+                    workspace_dir: source.working_dir.clone(),
+                }),
+                workspace_dir: source.working_dir.clone(),
+            },
+        ),
+    );
+
+    let created = test
+        .state
+        .collaboration
+        .create_acp(source.clone(), runner.clone(), None, 0)
+        .await
+        .unwrap();
+    let session_before = manager.get(created.chat.chat_id().as_str()).await.unwrap();
+    let binding_before = chat_header_extra(&test, &created.chat).await["acp_binding"].clone();
+    let directory_before = chat_execution_directory(&test, &created.chat).await;
+
+    // Moving the source must not reach into the child: no queue clearing, no
+    // approval resolution, no ACP exit and no waiting for a position update the
+    // child never needed.
+    let moved_path = test.state.rua_root.join("acp-moved-source");
+    tokio::fs::create_dir_all(&moved_path).await.unwrap();
+    let device_id =
+        rua_server::services::device_context::current_sync_device_id(&test.state.sync_device)
+            .expect("local Device");
+    let moved = test
+        .state
+        .conversation_input_intake
+        .set_execution_directory(&source.address, &device_id, Some(&moved_path))
+        .await
+        .expect("move the source");
+    assert_eq!(
+        chat_execution_directory(&test, &source.address).await,
+        serde_json::json!(moved)
+    );
+
+    let session_after = manager
+        .get(created.chat.chat_id().as_str())
+        .await
+        .expect("the ACP session must survive a source move");
+    assert_eq!(session_after.runner, session_before.runner);
+    assert_eq!(session_after.cwd, session_before.cwd);
+    assert_eq!(
+        session_after.runner_session_id, session_before.runner_session_id,
+        "moving the source must not respawn the child's ACP runner"
+    );
+    assert_eq!(
+        chat_header_extra(&test, &created.chat).await["acp_binding"],
+        binding_before,
+        "the fixed ACP binding must not be rewritten by a source position change"
+    );
+    assert_eq!(
+        chat_execution_directory(&test, &created.chat).await,
+        directory_before,
+        "the child must keep the directory it inherited"
+    );
 }
 
 #[tokio::test]
@@ -1526,6 +2055,12 @@ async fn explicit_source_configuration_update_propagates_inheritance_without_ove
         .create(source.clone(), "default".into(), None, 0)
         .await
         .unwrap();
+    let inherited_directory = chat_execution_directory(&test, &child.chat).await;
+    let inherited_executor: rua_session::collaboration::CollaborationExecutor =
+        serde_json::from_value(
+            chat_header_extra(&test, &child.chat).await["collaboration"]["executor"].clone(),
+        )
+        .expect("the child records its fixed executor");
     let before = test
         .state
         .product_hooks
@@ -1662,6 +2197,45 @@ async fn explicit_source_configuration_update_propagates_inheritance_without_ove
     let recovered_view = read_json(request(&test.app, Method::GET, &child_path, None).await).await;
     assert_eq!(recovered_view["collaboration"]["status"], "ready");
     assert!(recovered_view["collaboration"].get("error").is_none());
+
+    // Move the source somewhere else. This is a position change, not a security one,
+    // so it must leave the child exactly where it was.
+    let moved_path = test.state.rua_root.join("moved-source-directory");
+    tokio::fs::create_dir_all(&moved_path).await.unwrap();
+    let device_id =
+        rua_server::services::device_context::current_sync_device_id(&test.state.sync_device)
+            .expect("local Device");
+    let moved = test
+        .state
+        .conversation_input_intake
+        .set_execution_directory(&source.address, &device_id, Some(&moved_path))
+        .await
+        .expect("move the source");
+    assert_eq!(
+        chat_execution_directory(&test, &source.address).await,
+        serde_json::json!(moved),
+        "the source must actually have moved"
+    );
+    // Changing where the source executes must not drag the child to the new place,
+    // and must not clear its queue, approvals or fixed executor. The child keeps the
+    // directory it inherited at creation.
+    let child_directory = chat_execution_directory(&test, &child.chat).await;
+    assert_eq!(
+        child_directory, inherited_directory,
+        "the child must keep the position it inherited, not follow the source"
+    );
+    assert_ne!(
+        child_directory,
+        serde_json::json!(moved),
+        "the child must not have followed the source to its new directory"
+    );
+    let child_extra = chat_header_extra(&test, &child.chat).await;
+    let child_descriptor: rua_session::collaboration::CollaborationDescriptor =
+        serde_json::from_value(child_extra["collaboration"].clone()).unwrap();
+    assert_eq!(
+        child_descriptor.executor, inherited_executor,
+        "the fixed executor must not be replaced by a position update"
+    );
 
     let error = test
         .state
@@ -1817,6 +2391,10 @@ async fn deleting_source_preserves_ready_child_snapshot_for_direct_input() {
         .chat_configuration(&child.chat)
         .await
         .unwrap();
+    let inherited: rua_session::ChatExecutionDirectory = serde_json::from_value(
+        chat_header_extra(&test, &child.chat).await[rua_session::EXECUTION_DIRECTORY_KEY].clone(),
+    )
+    .unwrap();
     WorkspaceSessionStore::new(
         ChatStore::resolve(&test.state.rua_root, source.address.clone()).root(),
     )
@@ -1853,6 +2431,19 @@ async fn deleting_source_preserves_ready_child_snapshot_for_direct_input() {
             .await
             .unwrap(),
         before
+    );
+
+    // The child keeps a durable reference to the directory it shares with the
+    // deleted source, which is the retention evidence later cleanup relies on: it
+    // uses the same real path without owning it.
+    let child_directory: rua_session::ChatExecutionDirectory = serde_json::from_value(
+        chat_header_extra(&test, &child.chat).await[rua_session::EXECUTION_DIRECTORY_KEY].clone(),
+    )
+    .unwrap();
+    assert_eq!(child_directory, inherited);
+    assert!(
+        child_directory.host_path().unwrap().is_dir(),
+        "a directory still used by a live child must survive source deletion"
     );
 }
 

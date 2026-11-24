@@ -1155,20 +1155,38 @@ impl CollaborationService {
                 .insert("selected_agent_id".into(), serde_json::json!(agent_id));
             header.project_id = source_header.project_id.clone();
             let directory_key = rua_session::EXECUTION_DIRECTORY_KEY;
-            let path = match rua_core::runtime_layout::RuntimeLayout::from_current_process(None)
-                .linux_compat
-            {
-                Some(guest) => guest
-                    .map_host_path(&caller.working_dir)
-                    .ok_or("Caller directory is unavailable in the execution environment")?,
-                None => caller.working_dir.clone(),
+            // The child inherits where its source actually executes: the same Device
+            // and the same real working directory. That includes a managed directory
+            // the source merely uses. Sharing the path does not transfer ownership of
+            // the directory to the child. After creation the two positions are
+            // independent, so a later source change never moves the child.
+            let inherited = source_header
+                .extra
+                .get(directory_key)
+                .cloned()
+                .map(serde_json::from_value::<rua_session::ChatExecutionDirectory>)
+                .transpose()
+                .map_err(|error| format!("Invalid source execution directory: {error}"))?;
+            let directory = match inherited {
+                Some(directory) => serde_json::json!(directory),
+                None => {
+                    let path =
+                        match rua_core::runtime_layout::RuntimeLayout::from_current_process(None)
+                            .linux_compat
+                        {
+                            Some(guest) => guest.map_host_path(&caller.working_dir).ok_or(
+                                "Caller directory is unavailable in the execution environment",
+                            )?,
+                            None => caller.working_dir.clone(),
+                        };
+                    serde_json::json!(rua_session::ChatExecutionDirectory {
+                        extra: Default::default(),
+                        device_id: self.current_device_id(),
+                        path,
+                        managed: false,
+                    })
+                }
             };
-            let directory = serde_json::json!(rua_session::ChatExecutionDirectory {
-                extra: Default::default(),
-                device_id: self.current_device_id(),
-                path,
-                managed: false,
-            });
             configuration
                 .capability_configuration
                 .as_mut()
