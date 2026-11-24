@@ -265,7 +265,9 @@ async fn assert_background_result_behind_active_source(stop_queued: bool) {
                 depends_on: vec![],
                 origin: Default::default(),
             },
-            rua_task::TaskAttemptAuthorization::new("default").unwrap(),
+            rua_task::TaskAttemptAuthorization::new("default")
+                .unwrap()
+                .with_configuration_epoch(source.configuration_epoch.clone()),
         )
         .await
         .unwrap();
@@ -425,7 +427,9 @@ async fn assert_background_task_continuation(stop_before_result: bool) {
                 depends_on: Vec::new(),
                 origin: Default::default(),
             },
-            rua_task::TaskAttemptAuthorization::new("default").unwrap(),
+            rua_task::TaskAttemptAuthorization::new("default")
+                .unwrap()
+                .with_configuration_epoch(source.configuration_epoch.clone()),
         )
         .await
         .unwrap();
