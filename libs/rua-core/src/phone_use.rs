@@ -14,10 +14,24 @@ use tokio_util::sync::CancellationToken;
 const FRAME_LIMIT: usize = 64 * 1024;
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 const MEDIA_FRAME_LIMIT: usize = 1200 * 1024;
+/// Observation responses carry an accessibility tree, so they get their own frame budget:
+/// the plain request/response frame limit is sized for small control messages only.
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+const OBSERVATION_FRAME_LIMIT: usize = 256 * 1024;
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 static BRIDGE: OnceLock<PhoneBridge> = OnceLock::new();
 
+/// Upper bounds for one observation, shared by the tool schema, the bridge, and the APK.
+///
+/// These are contract ceilings, not tuning knobs: the caller may request fewer nodes or a
+/// shallower tree, never more. The APK mirrors these values in `PhoneObservations`.
+pub const MAX_OBSERVATION_NODES: u32 = 120;
+pub const MAX_OBSERVATION_DEPTH: u32 = 32;
+/// Defaults favor real content: with structural containers filtered out, a chat page
+/// needs well over the old ceiling of 30 to reach its composer.
+pub const DEFAULT_OBSERVATION_NODES: u32 = 60;
+pub const DEFAULT_OBSERVATION_DEPTH: u32 = 24;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PhoneStatus {
     pub generation: String,
@@ -142,12 +156,13 @@ impl PhoneObservation {
         }) {
             return Err("Invalid Phone Use screenshot".into());
         }
+        // An empty node list is valid: a screen may contain only non-actionable imagery after
+        // structural containers are filtered out. Coordinates remain usable in that case.
         if self.width == 0
             || self.height == 0
             || self.rotation > 3
             || self.package_name.is_empty()
             || self.nodes.len() > max_nodes as usize
-            || self.nodes.is_empty()
         {
             return Err("Invalid Phone Use observation geometry or nodes".into());
         }
@@ -347,6 +362,11 @@ impl PhoneBridge {
         max_depth: u32,
         cancel: &CancellationToken,
     ) -> Result<PhoneObservation, String> {
+        if !(1..=MAX_OBSERVATION_NODES).contains(&max_nodes)
+            || !(1..=MAX_OBSERVATION_DEPTH).contains(&max_depth)
+        {
+            return Err("Invalid Phone Use observation limits".into());
+        }
         let params = json!({"generation":self.generation,"invocation":session,"operation_id":operation_id,"max_nodes":max_nodes,"max_depth":max_depth});
         let mut guard = PhoneCallGuard {
             socket: self.socket.clone(),
@@ -374,7 +394,9 @@ impl PhoneBridge {
         max_depth: u32,
         cancel: &CancellationToken,
     ) -> Result<PhoneObservation, String> {
-        if !(1..=40).contains(&max_nodes) || !(1..=12).contains(&max_depth) {
+        if !(1..=MAX_OBSERVATION_NODES).contains(&max_nodes)
+            || !(1..=MAX_OBSERVATION_DEPTH).contains(&max_depth)
+        {
             return Err("Invalid Phone Use observation limits".into());
         }
         let params = json!({"generation":self.generation,"invocation":session,"operation_id":operation_id,"max_nodes":max_nodes,"max_depth":max_depth});
@@ -469,10 +491,12 @@ impl PhoneBridge {
                     .await
                     .map_err(|_| "Phone Use request delivery failed")?;
                 let mut response = Vec::new();
-                let response_limit = if matches!(method, "screenshot" | "take_photo") {
-                    MEDIA_FRAME_LIMIT
-                } else {
-                    FRAME_LIMIT
+                let response_limit = match method {
+                    "screenshot" | "take_photo" => MEDIA_FRAME_LIMIT,
+                    // Observations and action results both carry an accessibility tree.
+                    "observe" | "click" | "long_press" | "type_text" | "swipe" | "back"
+                    | "home" | "launch_app" => OBSERVATION_FRAME_LIMIT,
+                    _ => FRAME_LIMIT,
                 };
                 BufReader::new(stream)
                     .take((response_limit + 1) as u64)
@@ -573,7 +597,9 @@ pub fn revoke_native_token() {
 pub fn sanitize_action_observation(value: &mut Value) {
     let error = value.get("observation").and_then(|v| {
         match serde_json::from_value::<PhoneObservation>(v.clone()) {
-            Ok(observation) => observation.validate(30, 10).err(),
+            Ok(observation) => observation
+                .validate(MAX_OBSERVATION_NODES, MAX_OBSERVATION_DEPTH)
+                .err(),
             Err(_) => Some("Invalid post-action observation".into()),
         }
     });

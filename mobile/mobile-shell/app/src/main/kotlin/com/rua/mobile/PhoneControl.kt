@@ -210,7 +210,7 @@ internal class PhoneController(private val service: MobileAccessibilityService) 
                         op.result.complete(result); state.finish(op); return@postDelayed
                     }
                 }
-                runCatching { service.observe(op.owner, 30, 10) }.onSuccess { result.put("observation",it) }.onFailure { result.put("observation_error",it.message.orEmpty().take(300)) }
+                runCatching { service.observe(op.owner, PhoneObservations.DEFAULT_NODES, PhoneObservations.DEFAULT_DEPTH) }.onSuccess { result.put("observation",it) }.onFailure { result.put("observation_error",it.message.orEmpty().take(300)) }
             }
             op.result.complete(result); state.finish(op)
         }, 100)

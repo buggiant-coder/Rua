@@ -101,7 +101,7 @@ stable identifiers, and existing identifiers are not reassigned.
 | [0052 - Owned Console and Conversation View Runtime](0052-owned-console-and-conversation-view-runtime.md) | Accepted | Keeps Console state subordinate to Rust and centralizes scoped projection and shell UI; the 2026-11-05 shared transport/local-first amendment awaits implementation. |
 | [0055 - Bounded Conversation Rendering and History Residency](0055-bounded-conversation-rendering-and-history-residency.md) | Withdrawn | Withdrawn after scrolling regressions; ADR-0056 defines the accepted replacement. |
 | [0056 - Whole-Turn Conversation DOM Residency](0056-whole-turn-conversation-dom-residency.md) | Accepted | Bounds mounted whole Turns with generous retention, independent view state, stable reading anchors and identity-based history location. |
-| [0057 - Phone Use native capabilities and private execution](0057-phone-use-native-capabilities-and-private-execution.md) | Accepted | Embeds Android accessibility and visible single-photo capture in the APK, with private authenticated Runtime access, bounded observed interactions, and a persistent Chat-owned Phone Use Session with explicit release and user Stop. |
+| [0057 - Phone Use native capabilities and private execution](0057-phone-use-native-capabilities-and-private-execution.md) | Accepted | Embeds Android accessibility and visible single-photo capture in the APK, with private authenticated Runtime access, bounded observed interactions listing only readable or actionable nodes under caller-chosen quotas, and a persistent Chat-owned Phone Use Session with explicit release and user Stop. |
 
 ## Testing and release
 

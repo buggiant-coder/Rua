@@ -415,7 +415,7 @@ internal class PhoneUseSession(private val state: PhoneUseBridgeState) {
                     reservation=active
                     try {
                     val service = MobileAccessibilityService.instance ?: throw IllegalStateException("accessibility permission is required")
-                    val result=service.observe(invocation.owner, params.optInt("max_nodes", 30), params.optInt("max_depth", 10))
+                    val result=service.observe(invocation.owner, params.optInt("max_nodes", PhoneObservations.DEFAULT_NODES), params.optInt("max_depth", PhoneObservations.DEFAULT_DEPTH))
                     check(!active.cancelled.get()) {"Phone observation cancelled"}
                     result
                     } catch (error: Exception) { PhoneDeviceControl.fail(active); throw error }
@@ -447,7 +447,7 @@ internal class PhoneUseSession(private val state: PhoneUseBridgeState) {
                 try {
                     val params=request.params ?: error("Missing params")
                     val service=MobileAccessibilityService.instance ?: error("Accessibility service not connected")
-                    val result=PhoneScreenshot.capture(service,invocation!!,params.getString("operation_id"),params.optInt("max_nodes",30),params.optInt("max_depth",10),state.generation).get(4,java.util.concurrent.TimeUnit.SECONDS)
+                    val result=PhoneScreenshot.capture(service,invocation!!,params.getString("operation_id"),params.optInt("max_nodes",PhoneObservations.DEFAULT_NODES),params.optInt("max_depth",PhoneObservations.DEFAULT_DEPTH),state.generation).get(4,java.util.concurrent.TimeUnit.SECONDS)
                     write(writer,PhoneUseProtocol.resultEnvelope(request.id,result))
                 } catch(e:Exception) {
                     PhoneDeviceControl.fail(invocation!!, request.params?.optString("operation_id").orEmpty(), state.generation)

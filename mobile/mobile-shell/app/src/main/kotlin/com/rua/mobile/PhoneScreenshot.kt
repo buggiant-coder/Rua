@@ -43,6 +43,8 @@ internal object PhoneScreenshot {
                             val bytes = ByteArrayOutputStream()
                             scaled.compress(Bitmap.CompressFormat.JPEG,65,bytes)
                             check(bytes.size() <= 768 * 1024) { "Screenshot exceeds size limit" }
+                            // The base64 image and the tree share one media response frame.
+                            PhoneTreeCapture.trimToPayloadLimit(before, before.getJSONArray("nodes"), PhoneObservations.MAX_SCREENSHOT_PAYLOAD_BYTES)
                             before.put("screenshot",JSONObject().put("mime_type","image/jpeg").put("width",scaled.width).put("height",scaled.height)
                                 .put("data",android.util.Base64.encodeToString(bytes.toByteArray(),android.util.Base64.NO_WRAP)))
                             operation.result.complete(before)

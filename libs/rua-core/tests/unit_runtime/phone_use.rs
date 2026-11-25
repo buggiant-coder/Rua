@@ -228,6 +228,112 @@ async fn oversized_frame_and_wrong_response_id_are_rejected() {
     }
 }
 
+async fn observation_fixture(listener: UnixListener, nodes: usize) {
+    for step in 0..2 {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut line = String::new();
+        BufReader::new(&mut socket)
+            .read_line(&mut line)
+            .await
+            .unwrap();
+        let input: Value = serde_json::from_str(&line).unwrap();
+        let result = if step == 0 {
+            json!({"protocol_version":2,"generation":"first","auth_token":"a".repeat(64)})
+        } else {
+            assert_eq!(input["method"], "observe");
+            let id = uuid::Uuid::new_v4();
+            let nodes: Vec<Value> = (0..nodes)
+                .map(|index| {
+                    json!({"token":format!("{id}:{index}"),"path":[index],"text":format!("项目 {index}"),
+                        "description":"","view_id":"row","class_name":"TextView",
+                        "bounds":[0,index as i32 * 10,100,index as i32 * 10 + 9],
+                        "clickable":true,"editable":false,"scrollable":false,
+                        "enabled":true,"visible":true,"password":false})
+                })
+                .collect();
+            json!({"observation_id":id,"service_generation":uuid::Uuid::new_v4(),
+                "package_name":"test.app","window_id":1,"width":1080,"height":2400,
+                "rotation":0,"truncated":false,"nodes":nodes})
+        };
+        let response = format!("{}\n", json!({"id":input["id"],"result":result}));
+        socket.write_all(response.as_bytes()).await.unwrap();
+    }
+}
+
+async fn hello_fixture(listener: UnixListener) {
+    let (mut socket, _) = listener.accept().await.unwrap();
+    let mut line = String::new();
+    BufReader::new(&mut socket)
+        .read_line(&mut line)
+        .await
+        .unwrap();
+    let input: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(input["method"], "hello");
+    let result = json!({"protocol_version":2,"generation":"first","auth_token":"a".repeat(64)});
+    socket
+        .write_all(format!("{}\n", json!({"id":input["id"],"result":result})).as_bytes())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn observe_accepts_a_large_tree_and_rejects_limits_above_the_contract_ceiling() {
+    use rua_core::phone_use::{
+        PhoneSessionContext, DEFAULT_OBSERVATION_DEPTH, DEFAULT_OBSERVATION_NODES,
+        MAX_OBSERVATION_NODES,
+    };
+    const { assert!(MAX_OBSERVATION_NODES > 40) };
+    let temp = tempfile::Builder::new()
+        .prefix("phone-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let path = temp.path().join("bridge.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    // Well past the plain 64 KiB control frame limit: tree responses need their own budget.
+    let server = tokio::spawn(observation_fixture(listener, 100));
+    let cancel = CancellationToken::new();
+    let bridge = PhoneBridge::connect(path, std::process::id(), &cancel)
+        .await
+        .unwrap();
+    let session = PhoneSessionContext::from_metadata("agent", &session_metadata()).unwrap();
+    let observation = bridge
+        .observe(
+            &session,
+            "operation",
+            MAX_OBSERVATION_NODES,
+            DEFAULT_OBSERVATION_DEPTH,
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(observation.nodes.len(), 100);
+    server.await.unwrap();
+
+    // The ceilings are still enforced before dispatch.
+    let temp = tempfile::Builder::new()
+        .prefix("phone-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let path = temp.path().join("bridge.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    let server = tokio::spawn(hello_fixture(listener));
+    let bridge = PhoneBridge::connect(path, std::process::id(), &cancel)
+        .await
+        .unwrap();
+    server.await.unwrap();
+    for (nodes, depth) in [
+        (MAX_OBSERVATION_NODES + 1, DEFAULT_OBSERVATION_DEPTH),
+        (DEFAULT_OBSERVATION_NODES, u32::from(u8::MAX)),
+        (0, DEFAULT_OBSERVATION_DEPTH),
+    ] {
+        assert!(bridge
+            .observe(&session, "operation", nodes, depth, &cancel)
+            .await
+            .unwrap_err()
+            .contains("limits"));
+    }
+}
+
 fn session_metadata() -> std::collections::HashMap<String, Value> {
     std::collections::HashMap::from([
         (

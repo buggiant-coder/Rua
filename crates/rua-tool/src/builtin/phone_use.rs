@@ -1,8 +1,19 @@
+use crate::result_store::estimate_text_tokens;
 use crate::{annotations::ExtendedToolAnnotations, schema::ToolSpec};
 use async_trait::async_trait;
 use rua_contract::Tool;
+use rua_core::phone_use::{
+    DEFAULT_OBSERVATION_DEPTH, DEFAULT_OBSERVATION_NODES, MAX_OBSERVATION_DEPTH,
+    MAX_OBSERVATION_NODES,
+};
 use rua_core::tool::{ToolContext, ToolResult, ToolSchema};
 use rua_core::{Result, RuaError};
+
+/// Model-visible budget for one observation result, in estimated tokens.
+///
+/// Deliberately below `DEFAULT_TOOL_EXECUTION_OUTPUT_MAX_TOKENS` so a full tree observation is
+/// trimmed by this function instead of by the generic line/byte compressor.
+pub const DEFAULT_OBSERVATION_RESULT_TOKENS: usize = 6_000;
 
 pub struct PhoneStatusTool;
 pub struct PhoneReleaseTool;
@@ -287,10 +298,11 @@ impl Tool for PhoneActionTool {
         } else {
             request.await
         };
-        Ok(ToolResult::text(
+        action_result(
             self.name(),
-            serde_json::to_string(&result.map_err(invalid)?).map_err(|e| invalid(e.to_string()))?,
-        ))
+            result.map_err(invalid)?,
+            observation_budget(&ctx),
+        )
     }
 }
 
@@ -420,10 +432,11 @@ impl Tool for PhoneClickTool {
         } else {
             request.await
         };
-        Ok(ToolResult::text(
+        action_result(
             self.name(),
-            serde_json::to_string(&result.map_err(invalid)?).map_err(|e| invalid(e.to_string()))?,
-        ))
+            result.map_err(invalid)?,
+            observation_budget(&ctx),
+        )
     }
 }
 
@@ -431,8 +444,8 @@ impl PhoneObserveTool {
     pub fn spec() -> ToolSpec {
         ToolSpec {
             name: "phone_observe".into(),
-            description: "Observe the Android execution device's foreground App/window and bounded accessibility tree. Returns Chat-owned node tokens and an optional screenshot for image-capable models on Android 11+. Input coordinates use the observation's full display dimensions, not a resized screenshot. Requires user-enabled accessibility; no phone input.".into(),
-            parameters: serde_json::json!({"type":"object","properties":{"max_nodes":{"type":"integer","minimum":1,"maximum":40,"default":30},"max_depth":{"type":"integer","minimum":1,"maximum":12,"default":10},"include_screenshot":{"type":"boolean","default":false}},"additionalProperties":false}),
+            description: "Observe the Android execution device's foreground App/window and bounded accessibility tree. Returns Chat-owned node tokens and an optional screenshot for image-capable models on Android 11+. Only readable or actionable nodes are listed; layout containers are traversed but never counted, so raise max_nodes when a page reports truncated and you still need to reach deeper controls. Input coordinates use the observation's full display dimensions, not a resized screenshot. Requires user-enabled accessibility; no phone input.".into(),
+            parameters: serde_json::json!({"type":"object","properties":{"max_nodes":{"type":"integer","minimum":1,"maximum":MAX_OBSERVATION_NODES,"default":DEFAULT_OBSERVATION_NODES},"max_depth":{"type":"integer","minimum":1,"maximum":MAX_OBSERVATION_DEPTH,"default":DEFAULT_OBSERVATION_DEPTH},"include_screenshot":{"type":"boolean","default":false}},"additionalProperties":false}),
             annotations: ExtendedToolAnnotations::read_only(),
             namespace: "builtin".into(),
         }
@@ -471,7 +484,7 @@ impl Tool for PhoneObserveTool {
                     .as_u64()
                     .filter(|v| (1..=u64::from(max)).contains(v))
                     .map(|v| v as u32)
-                    .ok_or_else(|| invalid("Invalid observation limit")),
+                    .ok_or_else(|| invalid(format!("{key} must be an integer in 1..={max}"))),
             }
         };
         let session = invocation_session(&ctx)?;
@@ -493,8 +506,16 @@ impl Tool for PhoneObserveTool {
         let bridge =
             rua_core::phone_use::bridge().ok_or_else(|| invalid("Phone Use is not connected"))?;
         let cancel = tokio_util::sync::CancellationToken::new();
-        let max_nodes = limit("max_nodes", 30, 40)?;
-        let max_depth = limit("max_depth", 10, 12)?;
+        let max_nodes = limit(
+            "max_nodes",
+            DEFAULT_OBSERVATION_NODES,
+            MAX_OBSERVATION_NODES,
+        )?;
+        let max_depth = limit(
+            "max_depth",
+            DEFAULT_OBSERVATION_DEPTH,
+            MAX_OBSERVATION_DEPTH,
+        )?;
         let result = async {
             if capture {
                 bridge
@@ -541,7 +562,7 @@ impl Tool for PhoneObserveTool {
         } else {
             None
         };
-        let mut output = observation_result(observation)?;
+        let mut output = observation_result(observation, observation_budget(&ctx))?;
         if let Some(media) = media {
             output.metadata.insert(
                 "display_media".into(),
@@ -557,7 +578,9 @@ impl Tool for PhoneObserveTool {
 
 pub fn observation_result(
     mut observation: rua_core::phone_use::PhoneObservation,
+    max_tokens: usize,
 ) -> Result<ToolResult> {
+    fit_observation_to_model_budget(&mut observation, max_tokens);
     let image = observation.screenshot.take();
     let mut output = ToolResult::text(
         "phone_observe",
@@ -584,6 +607,78 @@ pub fn observation_result(
         });
     }
     Ok(output)
+}
+
+/// Model-visible budget for one observation, tied to the Agent's configured tool-output limit.
+///
+/// The generic compressor still runs afterwards, so staying under the configured limit is what
+/// keeps a single-line JSON body from being byte-cut mid-object.
+fn observation_budget(ctx: &ToolContext) -> usize {
+    ctx.execution_output_max_tokens
+        .min(DEFAULT_OBSERVATION_RESULT_TOKENS)
+}
+
+/// Serializes an action result, trimming its embedded post-action observation if needed.
+///
+/// Action responses embed a fresh observation, so they hit the same generic-compressor hazard
+/// as `phone_observe` itself: a byte-cut single-line JSON body.
+pub fn action_result(
+    name: &str,
+    mut value: serde_json::Value,
+    max_tokens: usize,
+) -> Result<ToolResult> {
+    if let Some(observation) = value.get_mut("observation") {
+        let mut parsed: rua_core::phone_use::PhoneObservation =
+            serde_json::from_value(observation.clone()).map_err(|e| invalid(e.to_string()))?;
+        fit_observation_to_model_budget(&mut parsed, max_tokens);
+        *observation = serde_json::to_value(parsed).map_err(|e| invalid(e.to_string()))?;
+    }
+    Ok(ToolResult::text(
+        name,
+        serde_json::to_string(&value).map_err(|e| invalid(e.to_string()))?,
+    ))
+}
+
+/// The generic result compressor cuts a single-line JSON body wherever the byte budget runs
+/// out, which would hand the model malformed JSON. Observation payloads therefore trim their
+/// own trailing nodes first (ADR-0010: tool-owned semantic pagination comes before the
+/// execution-time token limit). Tokens are estimated the same way as the compressor.
+pub fn fit_observation_to_model_budget(
+    observation: &mut rua_core::phone_use::PhoneObservation,
+    max_tokens: usize,
+) {
+    // Fast path: a payload that already fits is left byte-for-byte untouched.
+    if serde_json::to_string(&*observation).is_ok_and(|json| {
+        estimate_text_tokens(&json, rua_core::tool::DEFAULT_TOKEN_ESTIMATE_DIVISOR) <= max_tokens
+    }) {
+        return;
+    }
+    let original = std::mem::take(&mut observation.nodes);
+    let was_truncated = observation.truncated;
+    let size = |observation: &mut rua_core::phone_use::PhoneObservation, keep: usize| {
+        observation.nodes = original[..keep].to_vec();
+        serde_json::to_string(observation)
+            .map(|json| estimate_text_tokens(&json, rua_core::tool::DEFAULT_TOKEN_ESTIMATE_DIVISOR))
+            .unwrap_or(usize::MAX)
+    };
+    // Payload size is monotonic in the retained count, so binary search for the largest fit
+    // instead of re-serializing once per dropped node.
+    let (mut low, mut high) = (0usize, original.len());
+    let mut keep = 0usize;
+    while low <= high {
+        let middle = (low + high) / 2;
+        if size(observation, middle) <= max_tokens {
+            keep = middle;
+            low = middle + 1;
+        } else if middle == 0 {
+            break;
+        } else {
+            high = middle - 1;
+        }
+    }
+    observation.nodes = original[..keep].to_vec();
+    // Never clear a truncation flag the APK already set.
+    observation.truncated = was_truncated || keep < original.len();
 }
 
 impl PhoneStatusTool {

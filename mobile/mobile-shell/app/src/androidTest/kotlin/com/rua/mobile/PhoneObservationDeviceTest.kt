@@ -23,7 +23,7 @@ class PhoneObservationDeviceTest {
             instrumentation.runOnMainSync {
                 val service = MobileAccessibilityService.instance
                 if (service != null) {
-                    val captured = runCatching { service.observe("device-test-a", 30, 10) }
+                    val captured = runCatching { service.observe("device-test-a", PhoneObservations.DEFAULT_NODES, PhoneObservations.DEFAULT_DEPTH) }
                     observation = captured.getOrNull()
                     captured.exceptionOrNull()?.let { lastFailure = it.message ?: it.javaClass.simpleName }
                 }
@@ -33,7 +33,7 @@ class PhoneObservationDeviceTest {
         val result = observation ?: throw AssertionError("Phone observation unavailable: $lastFailure")
         assertTrue(result.getString("package_name").isNotBlank())
         assertTrue(result.getInt("width") > 0)
-        assertTrue(result.getJSONArray("nodes").length() in 1..30)
+        assertTrue(result.getJSONArray("nodes").length() in 1..PhoneObservations.DEFAULT_NODES)
         val id = result.getString("observation_id")
         instrumentation.runOnMainSync {
             val service = MobileAccessibilityService.instance!!

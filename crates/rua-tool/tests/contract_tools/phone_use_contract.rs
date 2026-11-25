@@ -41,11 +41,19 @@ async fn observation_requires_trusted_chat_and_bounded_options() {
     }
     assert_eq!(
         tool.schema().parameters["properties"]["max_nodes"]["maximum"],
-        40
+        rua_core::phone_use::MAX_OBSERVATION_NODES
     );
     assert_eq!(
         tool.schema().parameters["properties"]["max_depth"]["maximum"],
-        12
+        rua_core::phone_use::MAX_OBSERVATION_DEPTH
+    );
+    assert_eq!(
+        tool.schema().parameters["properties"]["max_nodes"]["default"],
+        rua_core::phone_use::DEFAULT_OBSERVATION_NODES
+    );
+    assert_eq!(
+        tool.schema().parameters["properties"]["max_depth"]["default"],
+        rua_core::phone_use::DEFAULT_OBSERVATION_DEPTH
     );
 }
 
@@ -146,6 +154,89 @@ async fn navigation_rejects_arbitrary_intents_and_requires_new_observation() {
 }
 
 #[test]
+fn action_result_keeps_valid_json_when_its_embedded_observation_is_oversized() {
+    use rua_core::phone_use::PhoneObservation;
+    let id = uuid::Uuid::new_v4();
+    let nodes: Vec<serde_json::Value> = (0..rua_core::phone_use::MAX_OBSERVATION_NODES)
+        .map(|index| {
+            json!({"token":format!("{id}:{index}"),"path":[index],"text":"消息文本内容".repeat(6),
+                "description":"","view_id":"com.example.market:id/message","class_name":"android.widget.TextView",
+                "bounds":[0,index as i32 * 20,1080,index as i32 * 20 + 19],
+                "clickable":false,"editable":false,"scrollable":false,
+                "enabled":true,"visible":true,"password":false})
+        })
+        .collect();
+    let observation: PhoneObservation = serde_json::from_value(json!({
+        "observation_id":id,"service_generation":uuid::Uuid::new_v4(),"package_name":"fixture",
+        "window_id":1,"width":1080,"height":2400,"rotation":0,"truncated":false,"nodes":nodes
+    }))
+    .unwrap();
+    let result = rua_tool::builtin::phone_use::action_result(
+        "phone_type_text",
+        json!({"state":"submitted","submitted":true,"effect_confirmed":false,"observation":observation}),
+        rua_tool::builtin::phone_use::DEFAULT_OBSERVATION_RESULT_TOKENS,
+    )
+    .unwrap();
+    let projected: serde_json::Value = serde_json::from_str(&result.text_content()).unwrap();
+    // The outcome fields survive verbatim; only the embedded tree is trimmed.
+    assert_eq!(projected["state"], "submitted");
+    assert_eq!(projected["submitted"], true);
+    assert_eq!(projected["observation"]["truncated"], true);
+    assert!(!projected["observation"]["nodes"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn oversized_observation_is_trimmed_to_valid_json_before_the_generic_compressor() {
+    use rua_core::phone_use::PhoneObservation;
+    let id = uuid::Uuid::new_v4();
+    let nodes: Vec<serde_json::Value> = (0..rua_core::phone_use::MAX_OBSERVATION_NODES)
+        .map(|index| {
+            json!({"token":format!("{id}:{index}"),"path":[index],"text":"可点击的项目文本".repeat(4),
+                "description":"","view_id":"com.example.market:id/row","class_name":"android.widget.TextView",
+                "bounds":[0,index as i32 * 20,1080,index as i32 * 20 + 19],
+                "clickable":true,"editable":false,"scrollable":false,
+                "enabled":true,"visible":true,"password":false})
+        })
+        .collect();
+    let observation: PhoneObservation = serde_json::from_value(json!({
+        "observation_id":id,"service_generation":uuid::Uuid::new_v4(),"package_name":"fixture",
+        "window_id":1,"width":1080,"height":2400,"rotation":0,"truncated":false,"nodes":nodes
+    }))
+    .unwrap();
+    let result = rua_tool::builtin::phone_use::observation_result(
+        observation.clone(),
+        rua_tool::builtin::phone_use::DEFAULT_OBSERVATION_RESULT_TOKENS,
+    )
+    .unwrap();
+    let text = result.text_content();
+    // Still parseable JSON, trimmed and flagged, rather than a byte-cut mid-object.
+    let projected: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(projected["truncated"], true);
+    let kept = projected["nodes"].as_array().unwrap().len();
+    assert!(kept > 0 && kept < observation.nodes.len(), "{kept}");
+    assert!(
+        rua_tool::result_store::estimate_text_tokens(
+            &text,
+            rua_core::tool::DEFAULT_TOKEN_ESTIMATE_DIVISOR
+        ) <= rua_tool::builtin::phone_use::DEFAULT_OBSERVATION_RESULT_TOKENS
+    );
+
+    // The shared helper is a no-op when the payload already fits.
+    let mut small = observation.clone();
+    small.nodes.truncate(3);
+    small.truncated = false;
+    rua_tool::builtin::phone_use::fit_observation_to_model_budget(
+        &mut small,
+        rua_tool::builtin::phone_use::DEFAULT_OBSERVATION_RESULT_TOKENS,
+    );
+    assert_eq!(small.nodes.len(), 3);
+    assert!(!small.truncated);
+}
+
+#[test]
 fn screenshot_projection_is_image_content_not_base64_json_text() {
     use rua_core::message::ContentPart;
     use rua_core::phone_use::PhoneObservation;
@@ -155,7 +246,11 @@ fn screenshot_projection_is_image_content_not_base64_json_text() {
         "nodes":[{"token":format!("{id}:0"),"path":[],"text":"","description":"","view_id":"","class_name":"View","bounds":[0,0,20,20],"clickable":false,"editable":false,"scrollable":false,"enabled":true,"visible":true,"password":false}],
         "screenshot":{"mime_type":"image/jpeg","width":576,"height":1280,"data":"/9j/2Q=="}
     })).unwrap();
-    let result = rua_tool::builtin::phone_use::observation_result(observation).unwrap();
+    let result = rua_tool::builtin::phone_use::observation_result(
+        observation,
+        rua_tool::builtin::phone_use::DEFAULT_OBSERVATION_RESULT_TOKENS,
+    )
+    .unwrap();
     assert!(result.content.iter().any(
         |p| matches!(p,ContentPart::Image{url,..} if url.starts_with("data:image/jpeg;base64,"))
     ));

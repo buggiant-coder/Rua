@@ -44,9 +44,42 @@ class PhoneObservationTest {
 
     @Test fun limitsAreBoundedBeforeTraversingAndroidNodes() {
         val service = MobileAccessibilityService()
-        assertTrue(runCatching { PhoneTreeCapture.capture(service, 41, 10) }.isFailure)
-        assertTrue(runCatching { PhoneTreeCapture.capture(service, 30, 13) }.isFailure)
+        assertTrue(runCatching { PhoneTreeCapture.capture(service, PhoneObservations.MAX_NODES + 1, 10) }.isFailure)
+        assertTrue(runCatching { PhoneTreeCapture.capture(service, 30, PhoneObservations.MAX_DEPTH + 1) }.isFailure)
         assertTrue(runCatching { PhoneTreeCapture.capture(service, 0, 10) }.isFailure)
+    }
+
+    @Test fun structuralContainersDoNotEarnAnObservationSlot() {
+        // A layout wrapper with only an id and no readable or actionable state is noise.
+        assertFalse(PhoneNodeFilter.isMeaningful("", "", false, false, false, false, false))
+        assertFalse(PhoneNodeFilter.isMeaningful("  ", "", false, false, false, false, false))
+        // Any readable text, description, or actionable state earns a slot.
+        assertTrue(PhoneNodeFilter.isMeaningful("发送", "", false, false, false, false, false))
+        assertTrue(PhoneNodeFilter.isMeaningful("", "搜索", false, false, false, false, false))
+        assertTrue(PhoneNodeFilter.isMeaningful("", "", true, false, false, false, false))
+        assertTrue(PhoneNodeFilter.isMeaningful("", "", false, true, false, false, false))
+        assertTrue(PhoneNodeFilter.isMeaningful("", "", false, false, true, false, false))
+        assertTrue(PhoneNodeFilter.isMeaningful("", "", false, false, false, true, false))
+        assertTrue(PhoneNodeFilter.isMeaningful("", "", false, false, false, false, true))
+    }
+
+    @Test fun payloadTrimDropsTrailingNodesAndFlagsTruncation() {
+        val nodes = JSONArray()
+        repeat(20) { nodes.put(JSONObject().put("text", "消息$it")) }
+        val result = JSONObject().put("nodes", nodes).put("truncated", false)
+        val limit = result.toString().toByteArray(Charsets.UTF_8).size / 2
+        PhoneTreeCapture.trimToPayloadLimit(result, nodes, limit)
+        assertTrue(result.getBoolean("truncated"))
+        assertTrue(nodes.length() in 1 until 20)
+        assertTrue(result.toString().toByteArray(Charsets.UTF_8).size <= limit)
+    }
+
+    @Test fun observationCeilingIsRaisedAboveTheOldFortyNodeLimit() {
+        assertEquals(120, PhoneObservations.MAX_NODES)
+        assertTrue(PhoneObservations.DEFAULT_NODES < PhoneObservations.MAX_NODES)
+        // The serialized tree must stay inside the resident's observe response frame.
+        assertTrue(PhoneObservations.MAX_PAYLOAD_BYTES < 256 * 1024)
+        assertTrue(PhoneObservations.MAX_SCREENSHOT_PAYLOAD_BYTES < PhoneObservations.MAX_PAYLOAD_BYTES)
     }
 
     @Test fun returnedMediaDoesNotMutateStoredObservation() {
