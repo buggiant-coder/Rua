@@ -40,17 +40,46 @@ pub(crate) fn saved_working_directory(
     Ok(Some(path))
 }
 
+/// The directory this Chat works in on `device_id`.
+///
+/// A saved execution directory wins. A Chat that has not recorded one still
+/// works in its own managed directory rather than borrowing another owner's
+/// workspace: the fallback is keyed by Chat and Device exactly like an explicit
+/// managed selection (D38), so it stays stable across restarts and never mixes
+/// two Chats' files.
 pub(crate) async fn working_directory_on_device(
+    rua_root: &Path,
     scope: &Path,
-    chat_id: &str,
+    address: &rua_core::ChatAddress,
     device_id: &str,
-    default: std::path::PathBuf,
 ) -> Result<std::path::PathBuf, String> {
     let header = WorkspaceSessionStore::new(scope)
-        .load_stored_chat_header(chat_id)
+        .load_stored_chat_header(address.chat_id().as_str())
         .await
         .map_err(|e| e.to_string())?;
-    Ok(saved_working_directory(header.as_ref(), device_id)?.unwrap_or(default))
+    if let Some(saved) = saved_working_directory(header.as_ref(), device_id)? {
+        return Ok(saved);
+    }
+    managed_working_directory(rua_root, address, device_id)
+}
+
+/// The managed Chat directory for this Chat and Device, resolved for the current
+/// execution environment without creating it.
+pub(crate) fn managed_working_directory(
+    rua_root: &Path,
+    address: &rua_core::ChatAddress,
+    device_id: &str,
+) -> Result<std::path::PathBuf, String> {
+    let host_path = rua_core::RuaRoot::new(rua_root)
+        .managed_chat_directory(address.chat_id().as_str(), device_id)
+        .map_err(|error| error.to_string())?;
+    let layout = rua_core::runtime_layout::RuntimeLayout::from_current_process(None);
+    match layout.linux_compat {
+        Some(guest) => guest.map_host_path(&host_path).ok_or_else(|| {
+            "Managed Chat directory is unavailable in this execution environment".to_string()
+        }),
+        None => Ok(host_path),
+    }
 }
 
 /// The name of a managed directory depends only on the Chat and Device.
@@ -63,18 +92,7 @@ pub(crate) async fn select_execution_directory(
     let managed = path.is_none();
     let path = match path {
         Some(path) => super::execution_directory::validate(path, rua_root).await?,
-        None => {
-            let host_path = rua_core::RuaRoot::new(rua_root)
-                .managed_chat_directory(address.chat_id().as_str(), device_id)
-                .map_err(|error| error.to_string())?;
-            let layout = rua_core::runtime_layout::RuntimeLayout::from_current_process(None);
-            match layout.linux_compat {
-                Some(guest) => guest
-                    .map_host_path(&host_path)
-                    .ok_or("Managed Chat directory is unavailable in this execution environment")?,
-                None => host_path,
-            }
-        }
+        None => managed_working_directory(rua_root, address, device_id)?,
     };
     Ok(rua_session::ChatExecutionDirectory {
         extra: Default::default(),

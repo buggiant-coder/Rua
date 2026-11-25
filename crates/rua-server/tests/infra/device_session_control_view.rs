@@ -1270,10 +1270,38 @@ async fn seed_project_chat_state(
     header.project_id = Some(project_id.to_string());
     rua_chat::apply_chat_defaults(&mut header);
     seed_configuration(&mut header, device_id);
+    // Production materialization always records the Chat's own execution
+    // directory. It is the managed Chat directory here, never the Project's
+    // resource directory: a resource location is only a possible cwd, not the
+    // Chat's working directory (D9/D10, D38).
+    let managed = managed_chat_directory(scope_root, address, device_id);
+    std::fs::create_dir_all(&managed).expect("seed managed Chat directory");
+    header.extra.insert(
+        rua_session::EXECUTION_DIRECTORY_KEY.into(),
+        serde_json::json!({
+            "device_id": device_id,
+            "path": managed.to_string_lossy(),
+            "managed": true,
+        }),
+    );
     WorkspaceSessionStore::new(scope_root)
         .save_chat_header(&header)
         .await
         .expect("seed Project Chat header");
+}
+
+/// `<rua_root>/chat-workdirs/<device>/<chat>`; `scope_root` is `<rua_root>/chats`.
+fn managed_chat_directory(
+    scope_root: &std::path::Path,
+    address: &ChatAddress,
+    device_id: &str,
+) -> std::path::PathBuf {
+    let rua_root = scope_root
+        .parent()
+        .expect("Chat store lives under the Rua root");
+    rua_core::RuaRoot::new(rua_root)
+        .managed_chat_directory(address.chat_id().as_str(), device_id)
+        .expect("managed Chat directory")
 }
 
 fn seed_configuration(header: &mut ChatSessionHeader, device_id: &str) {
@@ -2713,6 +2741,8 @@ async fn remote_project_approval_and_acp_use_resource_authority_without_controll
     let chat_id = "00000000-0000-4000-8000-000000000431";
     let address = ChatAddress::new(chat_id);
     let target_scope = rua_core::ChatStore::resolve(&target_state.rua_root, address.clone());
+    let managed_directory =
+        managed_chat_directory(target_scope.root(), &address, &target_device_id);
     seed_project_chat_state(
         target_scope.root(),
         &project.project_id,
@@ -2942,7 +2972,16 @@ async fn remote_project_approval_and_acp_use_resource_authority_without_controll
     );
     let sessions: serde_json::Value = serde_json::from_slice(&sessions_body).unwrap();
     assert_eq!(sessions[0]["session_id"], "fixture-listed-session");
-    assert_eq!(sessions[0]["cwd"], target_repo.to_string_lossy().as_ref());
+    // The controller's requested cwd is ignored: ACP runs where the Chat runs.
+    assert_eq!(
+        sessions[0]["cwd"],
+        managed_directory.to_string_lossy().as_ref()
+    );
+    assert_ne!(
+        sessions[0]["cwd"],
+        target_repo.to_string_lossy().as_ref(),
+        "a Project resource directory is not the Chat's execution directory"
+    );
 
     let entered = source_app
         .clone()
@@ -2977,11 +3016,16 @@ async fn remote_project_approval_and_acp_use_resource_authority_without_controll
     assert_eq!(entered["status"]["active"], true);
     assert_eq!(
         entered["status"]["cwd"],
-        target_repo.to_string_lossy().as_ref()
+        managed_directory.to_string_lossy().as_ref()
     );
     assert_eq!(
         entered["status"]["workspace_dir"],
-        target_repo.to_string_lossy().as_ref()
+        managed_directory.to_string_lossy().as_ref()
+    );
+    assert_ne!(
+        entered["status"]["cwd"],
+        target_repo.to_string_lossy().as_ref(),
+        "entering ACP must not move the Chat into the Project's resource directory"
     );
     let switch_state = rua_server::services::project_chat::chat_agent_state(
         target_scope.root(),
@@ -3122,7 +3166,12 @@ async fn remote_project_approval_and_acp_use_resource_authority_without_controll
     assert_eq!(resumed["history_preview"], "history preview");
     assert_eq!(
         resumed["status"]["cwd"],
-        target_repo.to_string_lossy().as_ref()
+        managed_directory.to_string_lossy().as_ref()
+    );
+    assert_ne!(
+        resumed["status"]["cwd"],
+        target_repo.to_string_lossy().as_ref(),
+        "resuming an ACP session must not move the Chat into the resource directory"
     );
     let reexited = source_app
         .clone()

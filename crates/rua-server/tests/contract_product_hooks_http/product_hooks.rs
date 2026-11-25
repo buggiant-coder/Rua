@@ -794,7 +794,10 @@ async fn deleting_agent_default_file_preserves_materialized_chat_configuration()
         .await
         .unwrap()
         .unwrap();
-    tokio::fs::remove_file(scope.root().join("agent.json"))
+    // The Agent default file lives in the Agent workspace, not in the Chat store.
+    // Removing it must not invalidate a Chat's already materialized configuration.
+    let runtime = test.state.registry.get_or_create(agent_id).await.unwrap();
+    tokio::fs::remove_file(runtime.workspace_dir().join("agent.json"))
         .await
         .unwrap();
     assert_eq!(

@@ -17,27 +17,35 @@ pub(crate) struct TaskWatchWakeRegistration {
     pub(crate) receipt_id: String,
     receipts: TaskWatchWakeReceipts,
     receiver: tokio::sync::watch::Receiver<Option<Result<(), String>>>,
+    /// False only for the caller that created the receipt.
+    pub(crate) fresh: bool,
     pub(crate) enqueued: bool,
 }
 
 impl TaskWatchWakeReceipts {
-    /// Claims the observation. Only one delivery may be in flight for a given
-    /// observation, so an overlapping caller is rejected rather than made to wait
-    /// behind work it cannot influence. A receipt is released once its delivery
-    /// resolves, which lets a genuinely new delivery retry after a failure.
+    /// Claims the observation, or joins the delivery already in flight for it.
+    ///
+    /// Duplicate deliveries of one observation observe the same durable outcome,
+    /// so the later one waits on the existing receipt instead of admitting a
+    /// second copy. Rejecting duplicates here would surface as a spurious
+    /// delivery error and lose the shared acknowledgement.
     pub(crate) fn register(
         &self,
         notification_id: String,
         address: ChatAddress,
-    ) -> Result<TaskWatchWakeRegistration, String> {
+    ) -> TaskWatchWakeRegistration {
         let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if inner.contains_key(&notification_id) {
-            return Err(format!(
-                "Runtime observation '{notification_id}' is already registered"
-            ));
+        if let Some(receipt) = inner.get(&notification_id) {
+            return TaskWatchWakeRegistration {
+                receipt_id: receipt.receipt_id.clone(),
+                receipts: self.clone(),
+                receiver: receipt.sender.subscribe(),
+                fresh: false,
+                enqueued: true,
+            };
         }
         let receipt_id = format!("runtime-observation-{}", uuid::Uuid::new_v4());
         let (sender, receiver) = tokio::sync::watch::channel(None);
@@ -49,12 +57,13 @@ impl TaskWatchWakeReceipts {
                 sender,
             },
         );
-        Ok(TaskWatchWakeRegistration {
+        TaskWatchWakeRegistration {
             receipt_id,
             receipts: self.clone(),
             receiver,
+            fresh: true,
             enqueued: false,
-        })
+        }
     }
 
     fn resolve(&self, receipt_id: &str, result: Result<(), String>) {
@@ -119,8 +128,9 @@ impl TaskWatchWakeRegistration {
 impl Drop for TaskWatchWakeRegistration {
     fn drop(&mut self) {
         // A registration that never reached the durable queue must not leave the
-        // observation claimed, or a later retry could never be admitted.
-        if !self.enqueued {
+        // observation claimed, or a later retry could never be admitted. A caller
+        // that merely joined an existing receipt does not own it.
+        if self.fresh && !self.enqueued {
             self.receipts
                 .fail(&self.receipt_id, "Runtime observation was not enqueued");
         }

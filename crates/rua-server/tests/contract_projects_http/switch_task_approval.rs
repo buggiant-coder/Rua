@@ -384,20 +384,19 @@ async fn watch_arriving_during_switch_uses_the_committed_agent(
         }],
     };
     let intake = &state.conversation_input_intake;
-    // An overlapping delivery of the same notification is rejected after the
-    // first registers. This places its admission inside the switch deterministically.
-    let delivery = intake.deliver_task_watch_output(note.clone());
-    let duplicate = intake.deliver_task_watch_output(note);
-    tokio::pin!(delivery, duplicate);
-    let (early, remaining) = tokio::time::timeout(Duration::from_secs(10), async {
-        tokio::select! {
-            result = &mut delivery => (result, &mut duplicate),
-            result = &mut duplicate => (result, &mut delivery),
-        }
-    })
-    .await
-    .expect("the second delivery detects the registered watch");
-    assert!(early.unwrap_err().contains("already registered"));
+    // `change` holds the Chat transition gate, so the delivery must stop there
+    // instead of resolving early. Observing that it is still pending places its
+    // admission inside the switch deterministically, without relying on how a
+    // duplicate is reported.
+    let delivery = tokio::spawn({
+        let intake = intake.clone();
+        async move { intake.deliver_task_watch_output(note).await }
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !delivery.is_finished(),
+        "the Watch delivery must wait for the in-progress Agent switch"
+    );
     next_config.epoch = uuid::Uuid::new_v4().to_string();
     change
         .commit(&next_config, &local_device_id(state))
@@ -408,9 +407,10 @@ async fn watch_arriving_during_switch_uses_the_committed_agent(
         .adopt_chat_configuration(address, next_config)
         .await;
     drop(change);
-    tokio::time::timeout(Duration::from_secs(10), remaining)
+    tokio::time::timeout(Duration::from_secs(10), delivery)
         .await
         .expect("the new executor finishes the waiting Watch Turn")
+        .unwrap()
         .unwrap();
 
     let id = address.chat_id().as_str();

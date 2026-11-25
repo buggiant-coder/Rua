@@ -282,20 +282,32 @@ async fn assert_background_result_behind_active_source(stop_queued: bool) {
     .await
     .unwrap();
     assert_eq!(requests.lock().await.len(), 1);
+    // The result is accepted into the source's input queue, but it is not
+    // acknowledged: acknowledgement means the owning Turn durably recorded the
+    // result, which cannot happen while the source's earlier Turn still runs.
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while !test
+        while test
             .state
-            .task_runtime
-            .pending_terminal_deliveries(Some(&owner))
+            .conversation_authority
+            .queue_snapshot(&source.address)
             .await
-            .unwrap()
             .is_empty()
         {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
     .await
-    .unwrap();
+    .expect("the result must be accepted into the source's queue");
+    assert_eq!(
+        test.state
+            .task_runtime
+            .pending_terminal_deliveries(Some(&owner))
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "a queued result stays undelivered until its own Turn persists it"
+    );
     assert_eq!(
         requests.lock().await.len(),
         1,

@@ -76,7 +76,7 @@ impl Fixture {
             // A body far larger than the socket buffer plus the per-channel
             // queue, so a client that stops reading forces server-side backlog.
             .route(
-                "/api/agents/a/chats/big/console/activity",
+                "/api/chats/big/console/activity",
                 get(|| async {
                     Body::from_stream(futures::stream::iter((0..2048).map(|_| {
                         Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![b'x'; 16 * 1024]))
@@ -87,7 +87,7 @@ impl Fixture {
             // single body chunk. A channel queue that cannot hold one whole
             // payload kills this stream even when the client reads normally.
             .route(
-                "/api/agents/a/chats/payload/acp/permissions",
+                "/api/chats/payload/acp/permissions",
                 get(|| async {
                     Body::from_stream(futures::stream::iter(vec![Ok::<_, std::io::Error>(
                         axum::body::Bytes::from(vec![b'y'; 256 * 1024]),
@@ -268,7 +268,7 @@ async fn server_backlog_is_reported_as_server_side_loss_not_client_buffer_pressu
     assert_eq!(receive(&mut socket).await["type"], "ready");
     send(
         &mut socket,
-        json!({"type":"open","id":"big","method":"GET","path":"/agents/a/chats/big/console/activity"}),
+        json!({"type":"open","id":"big","method":"GET","path":"/chats/big/console/activity"}),
     )
     .await;
     // Stop reading so the WebSocket writer and the 8-slot channel queue fill up.
@@ -332,7 +332,7 @@ async fn a_single_maximum_payload_is_delivered_completely_to_a_draining_client()
     assert_eq!(receive(&mut socket).await["type"], "ready");
     send(
         &mut socket,
-        json!({"type":"open","id":"payload","method":"GET","path":"/agents/a/chats/payload/acp/permissions"}),
+        json!({"type":"open","id":"payload","method":"GET","path":"/chats/payload/acp/permissions"}),
     )
     .await;
 
