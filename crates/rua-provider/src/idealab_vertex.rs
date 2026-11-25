@@ -13,7 +13,9 @@ use llm_multiplex::providers::gemini::{
 use llm_multiplex::traits::{
     ChatModel, ConnectionStatus, EventStream, ModelInfo, Provider, ProviderInfo,
 };
-use llm_multiplex::transport::{parse_sse_lines, HttpTransport, TransportConfig};
+use llm_multiplex::transport::{
+    parse_sse_lines, HttpTransport, TransportConfig, Utf8StreamBuffer,
+};
 
 use crate::idealab::{is_valid_base64, strip_anyof_null};
 
@@ -281,7 +283,7 @@ impl ChatModel for IdealabVertexChatModel {
                 }
             };
 
-            let mut buffer = String::new();
+            let mut buffer = Utf8StreamBuffer::new();
             let mut final_finish_reason: Option<FinishReason> = None;
             let mut emitted_content = false;
             let mut completed = false;
@@ -291,9 +293,9 @@ impl ChatModel for IdealabVertexChatModel {
             'stream: while let Some(result) = byte_stream.next().await {
                 match result {
                     Ok(bytes) => {
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
-                        let (lines, remaining) = parse_sse_lines(&buffer);
-                        buffer = remaining;
+                        let text = buffer.push_bytes(&bytes);
+                        let (lines, remaining) = parse_sse_lines(text);
+                        buffer.set_remaining(remaining);
 
                         for line in lines {
                             if line == "[DONE]" {

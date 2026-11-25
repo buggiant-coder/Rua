@@ -14,7 +14,9 @@ use llm_multiplex::providers::anthropic::{AnthropicConfig, AnthropicProvider};
 use llm_multiplex::traits::{
     ChatModel, ConnectionStatus, EventStream, ModelInfo, Provider, ProviderInfo,
 };
-use llm_multiplex::transport::{parse_anthropic_sse, HttpTransport, TransportConfig};
+use llm_multiplex::transport::{
+    parse_anthropic_sse, HttpTransport, TransportConfig, Utf8StreamBuffer,
+};
 
 pub struct IdealabAnthropicProvider {
     transport: Arc<HttpTransport>,
@@ -182,7 +184,7 @@ impl ChatModel for IdealabAnthropicChatModel {
                 }
             };
 
-            let mut buffer = String::new();
+            let mut buffer = Utf8StreamBuffer::new();
             let mut tool_identities: std::collections::HashMap<usize, String> =
                 std::collections::HashMap::new();
             let mut final_finish_reason: Option<FinishReason> = None;
@@ -193,9 +195,9 @@ impl ChatModel for IdealabAnthropicChatModel {
             'stream: while let Some(result) = byte_stream.next().await {
                 match result {
                     Ok(bytes) => {
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
-                        let (sse_events, remaining) = parse_anthropic_sse(&buffer);
-                        buffer = remaining;
+                        let text = buffer.push_bytes(&bytes);
+                        let (sse_events, remaining) = parse_anthropic_sse(text);
+                        buffer.set_remaining(remaining);
 
                         for (event_type, data) in sse_events {
                             if event_type == "content_block_start" {

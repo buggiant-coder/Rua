@@ -16,7 +16,7 @@ use agent_types::{
 use crate::error::LlmError;
 use crate::event_parser::parse_openai_chunk;
 use crate::traits::{ChatModel, ConnectionStatus, EventStream, ModelInfo, Provider, ProviderInfo};
-use crate::transport::{parse_sse_lines, HttpTransport, TransportConfig};
+use crate::transport::{parse_sse_lines, HttpTransport, TransportConfig, Utf8StreamBuffer};
 
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatibleConfig {
@@ -1044,8 +1044,7 @@ impl ChatModel for OpenAiCompatibleChatModel {
             };
             key_selector.release(key_idx);
 
-            let mut buffer = String::new();
-            let mut pending_utf8 = Vec::new();
+            let mut buffer = Utf8StreamBuffer::new();
             let mut tool_call_index_map: std::collections::HashMap<usize, String> =
                 std::collections::HashMap::new();
             let mut final_finish_reason: Option<FinishReason> = None;
@@ -1072,9 +1071,9 @@ impl ChatModel for OpenAiCompatibleChatModel {
                             bytes = bytes.len(),
                             "openai_compatible: TCP chunk arrived"
                         );
-                        append_utf8_chunk(&mut buffer, &mut pending_utf8, &bytes);
-                        let (lines, remaining) = parse_sse_lines(&buffer);
-                        buffer = remaining;
+                        let text = buffer.push_bytes(&bytes);
+                        let (lines, remaining) = parse_sse_lines(text);
+                        buffer.set_remaining(remaining);
 
                         for line in lines {
                             trace.checkpoint("first_sse_data");
@@ -1179,31 +1178,6 @@ impl ChatModel for OpenAiCompatibleChatModel {
 
     fn model_info(&self) -> &ModelInfo {
         &self.model_info
-    }
-}
-
-fn append_utf8_chunk(output: &mut String, pending: &mut Vec<u8>, chunk: &[u8]) {
-    pending.extend_from_slice(chunk);
-
-    match std::str::from_utf8(pending) {
-        Ok(text) => {
-            output.push_str(text);
-            pending.clear();
-        }
-        Err(error) if error.error_len().is_none() => {
-            let valid_up_to = error.valid_up_to();
-            if valid_up_to > 0 {
-                let valid = std::str::from_utf8(&pending[..valid_up_to])
-                    .expect("UTF-8 validator reported a valid prefix")
-                    .to_string();
-                output.push_str(&valid);
-                pending.drain(..valid_up_to);
-            }
-        }
-        Err(_) => {
-            output.push_str(&String::from_utf8_lossy(pending));
-            pending.clear();
-        }
     }
 }
 

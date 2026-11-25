@@ -19,7 +19,7 @@ use crate::error::{is_retryable_provider_error, LlmError};
 use crate::key_selector::KeySelector;
 use crate::providers::openai_compatible::{OpenAiCompatibleConfig, OpenAiCompatibleProvider};
 use crate::traits::{ChatModel, ConnectionStatus, EventStream, ModelInfo, Provider, ProviderInfo};
-use crate::transport::{parse_sse_lines, HttpTransport, TransportConfig};
+use crate::transport::{parse_sse_lines, HttpTransport, TransportConfig, Utf8StreamBuffer};
 
 pub const RESPONSES_SESSION_METADATA_KEY: &str = "rua_responses_session";
 const RESPONSES_SESSION_MAX_AGE_MS: u64 = 6 * 24 * 60 * 60 * 1_000;
@@ -955,7 +955,7 @@ impl ChatModel for OpenAiResponsesChatModel {
             // once — without previous_response_id — so media is re-inlined.
             let mut stream_session_fallback_done = false;
             'attempt: loop {
-            let mut buffer = String::new();
+            let mut buffer = Utf8StreamBuffer::new();
             let mut parse_state = ResponseStreamParseState::default();
             let mut emitted_visible_output = false;
             'stream: while let Some(chunk) = byte_stream.next().await {
@@ -963,9 +963,9 @@ impl ChatModel for OpenAiResponsesChatModel {
                     Ok(bytes) => {
                         trace.received_bytes(bytes.len());
                         trace.checkpoint("first_response_byte");
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
-                        let (lines, remaining) = parse_sse_lines(&buffer);
-                        buffer = remaining;
+                        let text = buffer.push_bytes(&bytes);
+                        let (lines, remaining) = parse_sse_lines(text);
+                        buffer.set_remaining(remaining);
                         for line in lines {
                             trace.checkpoint("first_sse_data");
                             if line == "[DONE]" {

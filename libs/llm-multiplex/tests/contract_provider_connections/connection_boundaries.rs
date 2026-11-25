@@ -426,6 +426,57 @@ async fn openai_compatible_stream_preserves_utf8_split_across_http_chunks() {
 }
 
 #[tokio::test]
+async fn openai_responses_stream_preserves_utf8_split_across_http_chunks() {
+    // Regression: a multi-byte character split across two transport chunks used
+    // to be decoded per-chunk, leaving U+FFFD in the streamed text. The
+    // replacement characters also inflated `response.completed`, so the byte
+    // cursor in `push_response_message` sliced into the middle of the already
+    // streamed text and re-emitted its tail ("…遗留。留。").
+    let final_text = "我倾向于先修那条稳定失败的测试，因为同一个 WIP 遗留。";
+    let sse = format!(
+        concat!(
+            "data: {{\"type\":\"response.output_text.delta\",\"output_index\":0,",
+            "\"delta\":\"{text}\"}}\n\n",
+            "data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"r1\",",
+            "\"output\":[{{\"type\":\"message\",\"id\":\"m1\",\"role\":\"assistant\",",
+            "\"content\":[{{\"type\":\"output_text\",\"text\":\"{text}\"}}]}}]}}}}\n\n"
+        ),
+        text = final_text
+    );
+    // Send the stream in small chunks so several of them necessarily cut a
+    // multi-byte character in half. Fixed-size slicing matters: a single split
+    // point may be coalesced into one TCP read, which would silently skip the
+    // path this test exists to guard.
+    let base_url = fake_chunked_sse_server(
+        sse.as_bytes()
+            .chunks(7)
+            .map(<[u8]>::to_vec)
+            .collect::<Vec<_>>(),
+    )
+    .await;
+    let provider =
+        OpenAiResponsesProvider::new(openai_config(base_url, false, false)).expect("provider");
+    let model = provider.create_chat_model("gpt-test").expect("chat model");
+    let mut stream = model.chat_stream(ChatRequest::streaming(vec![ModelDialogueItem::text(
+        Role::User,
+        "explain",
+    )]));
+    let mut text = String::new();
+
+    while let Some(event) = stream.next().await {
+        if let AgentEvent::TextDelta { delta, .. } = event.expect("stream event") {
+            text.push_str(&delta);
+        }
+    }
+
+    assert!(!text.contains('\u{FFFD}'), "streamed text was corrupted: {text:?}");
+    assert_eq!(
+        text, final_text,
+        "the completed event must not re-emit already streamed text"
+    );
+}
+
+#[tokio::test]
 async fn openai_compatible_disconnect_before_headers_is_retryable_connection_error() {
     let base_url = fake_disconnect_before_headers_server().await;
     let provider =

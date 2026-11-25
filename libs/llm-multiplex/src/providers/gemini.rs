@@ -14,7 +14,7 @@ use agent_types::{
 use crate::error::LlmError;
 use crate::event_parser::parse_gemini_chunk;
 use crate::traits::{ChatModel, ConnectionStatus, EventStream, ModelInfo, Provider, ProviderInfo};
-use crate::transport::{HttpTransport, TransportConfig};
+use crate::transport::{HttpTransport, TransportConfig, Utf8StreamBuffer};
 
 pub use super::gemini_schema::{
     lower_tool_parameters as lower_gemini_tool_parameters,
@@ -847,7 +847,7 @@ impl ChatModel for GeminiChatModel {
                 }
             };
 
-            let mut buffer = String::new();
+            let mut buffer = Utf8StreamBuffer::new();
             let mut final_finish_reason: Option<FinishReason> = None;
             let mut completed = false;
 
@@ -856,11 +856,9 @@ impl ChatModel for GeminiChatModel {
             'stream: while let Some(result) = byte_stream.next().await {
                 match result {
                     Ok(bytes) => {
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-
-                        let (lines, remaining) = crate::transport::parse_sse_lines(&buffer);
-                        buffer = remaining;
+                        let text = buffer.push_bytes(&bytes);
+                        let (lines, remaining) = crate::transport::parse_sse_lines(text);
+                        buffer.set_remaining(remaining);
 
                         for line in lines {
                             if line == "[DONE]" {

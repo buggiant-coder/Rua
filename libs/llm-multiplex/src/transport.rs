@@ -407,6 +407,73 @@ impl HttpTransport {
     }
 }
 
+/// Incrementally decodes an SSE byte stream into text.
+///
+/// HTTP transports deliver bytes on TCP boundaries, not character boundaries:
+/// a multi-byte UTF-8 character can be split across two chunks. Decoding each
+/// chunk independently would corrupt every split character, so incomplete
+/// trailing bytes must be carried into the next chunk instead of replaced.
+///
+/// This is the only place in the workspace allowed to call
+/// `String::from_utf8_lossy`, and only for bytes that no continuation could
+/// ever repair. An incomplete sequence at end of stream is dropped, matching the
+/// previous behaviour for residual text that no parser consumed.
+#[derive(Debug, Default)]
+pub struct Utf8StreamBuffer {
+    text: String,
+    pending: Vec<u8>,
+}
+
+impl Utf8StreamBuffer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Appends one transport chunk and returns the whole pending text.
+    ///
+    /// Any incomplete trailing UTF-8 sequence is held back instead of being
+    /// replaced, so the returned text never ends with a broken character.
+    pub fn push_bytes(&mut self, chunk: &[u8]) -> &str {
+        self.pending.extend_from_slice(chunk);
+
+        match std::str::from_utf8(&self.pending) {
+            Ok(text) => {
+                self.text.push_str(text);
+                self.pending.clear();
+            }
+            Err(error) if error.error_len().is_none() => {
+                // Truncated character at the end of this chunk: keep the valid
+                // prefix and carry the remainder to the next chunk.
+                let valid_up_to = error.valid_up_to();
+                if valid_up_to > 0 {
+                    self.text.push_str(
+                        std::str::from_utf8(&self.pending[..valid_up_to])
+                            .expect("UTF-8 validator reported a valid prefix"),
+                    );
+                    self.pending.drain(..valid_up_to);
+                }
+            }
+            Err(_) => {
+                // Genuinely invalid bytes: no continuation can repair them.
+                self.text.push_str(&String::from_utf8_lossy(&self.pending));
+                self.pending.clear();
+            }
+        }
+
+        &self.text
+    }
+
+    /// Replaces the pending text with the not-yet-consumed suffix reported by a
+    /// line/event parser, mirroring `buffer = remaining`.
+    pub fn set_remaining(&mut self, remaining: String) {
+        debug_assert!(
+            remaining.len() <= self.text.len(),
+            "remaining text cannot exceed the buffered text"
+        );
+        self.text = remaining;
+    }
+}
+
 pub fn parse_sse_lines(buffer: &str) -> (Vec<String>, String) {
     let mut data_events = Vec::new();
     let mut event_start = 0;

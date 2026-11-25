@@ -14,7 +14,7 @@ use agent_types::{
 use crate::error::LlmError;
 use crate::event_parser::parse_ollama_chunk;
 use crate::traits::{ChatModel, ConnectionStatus, EventStream, ModelInfo, Provider, ProviderInfo};
-use crate::transport::{HttpTransport, TransportConfig};
+use crate::transport::{HttpTransport, TransportConfig, Utf8StreamBuffer};
 
 pub const OLLAMA_DEFAULT_URL: &str = "http://localhost:11434";
 
@@ -446,7 +446,7 @@ impl ChatModel for OllamaChatModel {
                 }
             };
 
-            let mut buffer = String::new();
+            let mut buffer = Utf8StreamBuffer::new();
             let mut final_finish_reason: Option<FinishReason> = None;
             let mut completed = false;
 
@@ -455,13 +455,20 @@ impl ChatModel for OllamaChatModel {
             'stream: while let Some(result) = byte_stream.next().await {
                 match result {
                     Ok(bytes) => {
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
+                        let (lines, remaining) = {
+                            let text = buffer.push_bytes(&bytes);
+                            let mut lines = Vec::new();
+                            let mut consumed = 0usize;
+                            while let Some(offset) = text[consumed..].find('\n') {
+                                let newline_pos = consumed + offset;
+                                lines.push(text[consumed..newline_pos].trim().to_string());
+                                consumed = newline_pos + 1;
+                            }
+                            (lines, text[consumed..].to_string())
+                        };
+                        buffer.set_remaining(remaining);
 
-
-                        while let Some(newline_pos) = buffer.find('\n') {
-                            let line = buffer[..newline_pos].trim().to_string();
-                            buffer = buffer[newline_pos + 1..].to_string();
-
+                        for line in lines {
                             if line.is_empty() {
                                 continue;
                             }

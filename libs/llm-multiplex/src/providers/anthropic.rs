@@ -13,7 +13,7 @@ use agent_types::{
 use crate::error::LlmError;
 use crate::event_parser::{extract_reasoning_tokens, parse_anthropic_event};
 use crate::traits::{ChatModel, ConnectionStatus, EventStream, ModelInfo, Provider, ProviderInfo};
-use crate::transport::{parse_anthropic_sse, HttpTransport, TransportConfig};
+use crate::transport::{parse_anthropic_sse, HttpTransport, TransportConfig, Utf8StreamBuffer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AuthMode {
@@ -829,7 +829,7 @@ impl ChatModel for AnthropicChatModel {
                 }
             };
 
-            let mut buffer = String::new();
+            let mut buffer = Utf8StreamBuffer::new();
             let mut tool_identities: std::collections::HashMap<usize, String> =
                 std::collections::HashMap::new();
             let mut final_finish_reason: Option<FinishReason> = None;
@@ -840,9 +840,9 @@ impl ChatModel for AnthropicChatModel {
             'stream: while let Some(result) = byte_stream.next().await {
                 match result {
                     Ok(bytes) => {
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
-                        let (sse_events, remaining) = parse_anthropic_sse(&buffer);
-                        buffer = remaining;
+                        let text = buffer.push_bytes(&bytes);
+                        let (sse_events, remaining) = parse_anthropic_sse(text);
+                        buffer.set_remaining(remaining);
 
                         for (event_type, data) in sse_events {
 
