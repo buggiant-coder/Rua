@@ -174,10 +174,6 @@ impl SecurityModule {
                 Ok(None) => {}
                 Err(reason) => return SecurityVerdict::Deny { reason },
             }
-            let result = self.evaluate_context(operation).await;
-            if result.decision == GuardDecision::RequiresApproval {
-                operation_approval = Some(trigger_from_finding(primary_finding(&result.findings)));
-            }
             let config = operation
                 .security_snapshot
                 .as_deref()
@@ -188,6 +184,15 @@ impl SecurityModule {
                         .unwrap_or_default()
                 });
             let mode = canonical_approval_mode_preset(&config.tool_guard.approval_mode);
+            let result = self.evaluate_context(operation).await;
+            // A leaf Tool Guard hit only interrupts modes that still ask. Under
+            // `just_do_it` the user opted into full automation, so the leaf hit
+            // is recorded by the engine audit trail without pausing the Turn.
+            if result.decision == GuardDecision::RequiresApproval
+                && mode != ApprovalModePreset::JustDoIt
+            {
+                operation_approval = Some(trigger_from_finding(primary_finding(&result.findings)));
+            }
             if mode == ApprovalModePreset::AskFirst
                 || mode == ApprovalModePreset::Balanced
                     && mode.requires_approval_for_tool(&operation.tool_name)
@@ -316,6 +321,15 @@ impl SecurityModule {
                     };
                 }
                 GuardDecision::RequiresApproval => {
+                    // `just_do_it` promises full automation apart from tools the
+                    // user explicitly disabled. A Tool Guard hit is advice, not a
+                    // disable switch, so record it without interrupting the Turn.
+                    // Engine Deny and permission-rule Deny still win above.
+                    if mode == ApprovalModePreset::JustDoIt {
+                        return SecurityVerdict::AuditOnly {
+                            findings: result.findings,
+                        };
+                    }
                     let request = self
                         .approval_authority
                         .create_request(approval_input_from_ctx(

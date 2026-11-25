@@ -1057,3 +1057,163 @@ async fn composite_checks_leaf_policy_even_when_parent_has_reusable_allow() {
         SecurityVerdict::Deny { .. }
     ));
 }
+
+// --- Approval Mode semantics --------------------------------------------
+// The four presets form a ladder of increasing autonomy. `hands_off` still
+// stops on a Tool Guard hit; `just_do_it` promises full automation except for
+// tools the user explicitly disabled, which is the Deny permission-rule and
+// engine-Deny path rather than a Tool Guard NeedsApproval finding.
+
+#[tokio::test]
+async fn just_do_it_does_not_interrupt_on_tool_guard_hit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let module = make_module(tmp.path());
+    let mut config = SecurityConfig::default();
+    config.tool_guard.approval_mode = "just_do_it".into();
+    module.config_store().save("agent-1", &config).unwrap();
+
+    // `rm` trips the builtin TOOL_CMD_DANGEROUS_RM rule. Under just_do_it the
+    // user asked for full automation, so the hit must be recorded, not asked.
+    let verdict = module.enforce(&make_bash_ctx("rm -rf build/"), &[]).await;
+
+    assert!(
+        !verdict.requires_approval(),
+        "just_do_it must not interrupt on a Tool Guard hit, got {verdict:?}"
+    );
+    assert!(
+        !verdict.is_deny(),
+        "just_do_it must not deny a Tool Guard hit outright, got {verdict:?}"
+    );
+}
+
+#[tokio::test]
+async fn hands_off_still_interrupts_on_tool_guard_hit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let module = make_module(tmp.path());
+    let mut config = SecurityConfig::default();
+    config.tool_guard.approval_mode = "hands_off".into();
+    module.config_store().save("agent-1", &config).unwrap();
+
+    // Same hit as the just_do_it case: under hands_off the user asked to be
+    // interrupted when a safety rule fires, so the approval must still happen.
+    let verdict = module.enforce(&make_bash_ctx("rm -rf build/"), &[]).await;
+
+    assert!(
+        verdict.requires_approval(),
+        "hands_off must still interrupt on a Tool Guard hit, got {verdict:?}"
+    );
+}
+
+#[tokio::test]
+async fn just_do_it_still_honours_explicit_deny_permission_rule() {
+    let tmp = tempfile::tempdir().unwrap();
+    let module = make_module(tmp.path());
+    let mut config = SecurityConfig::default();
+    config.tool_guard.approval_mode = "just_do_it".into();
+    module.config_store().save("agent-1", &config).unwrap();
+    module
+        .approval_authority()
+        .create_agent_rule(
+            "agent-1",
+            PermissionRuleInput {
+                effect: PermissionRuleEffect::Deny,
+                enabled: true,
+                label: "Never touch secrets".into(),
+                matcher: ApprovalReuseMatcher::ToolCall {
+                    tool_name: "bash".into(),
+                    input_params: None,
+                },
+            },
+        )
+        .await
+        .expect("create deny rule");
+
+    // "except explicitly disabled tools": a Deny permission rule is the
+    // explicit disable switch and must survive full automation.
+    let verdict = module.enforce(&make_bash_ctx("ls -la"), &[]).await;
+
+    assert!(
+        verdict.is_deny(),
+        "just_do_it must still deny where the user disabled the tool, got {verdict:?}"
+    );
+}
+
+#[tokio::test]
+async fn just_do_it_composite_leaf_hit_does_not_interrupt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let module = make_module(tmp.path());
+    let mut config = SecurityConfig::default();
+    config.tool_guard.approval_mode = "just_do_it".into();
+    config.tool_guard.custom_rules = vec![custom_command_rule(
+        "review-copy",
+        "NeedsApproval",
+        vec!["bash"],
+        vec!["cp"],
+    )];
+    module.save_and_invalidate("agent-1", &config).unwrap();
+    let parent = make_ctx("composite");
+    let operation = make_bash_ctx("cp a b");
+
+    // A composite (MCP) call reaches the same Tool Guard verdict through the
+    // leaf operations. just_do_it must keep that path automation-friendly too.
+    let verdict = module
+        .enforce_composite(&parent, std::slice::from_ref(&operation))
+        .await;
+
+    assert!(
+        !verdict.requires_approval(),
+        "just_do_it must not interrupt a composite call on a leaf Tool Guard hit, got {verdict:?}"
+    );
+}
+
+#[tokio::test]
+async fn just_do_it_composite_leaf_deny_still_wins() {
+    let tmp = tempfile::tempdir().unwrap();
+    let module = make_module(tmp.path());
+    let mut config = SecurityConfig::default();
+    config.tool_guard.approval_mode = "just_do_it".into();
+    config.tool_guard.custom_rules = vec![custom_command_rule(
+        "hard-deny-cp",
+        "Deny",
+        vec!["bash"],
+        vec!["cp"],
+    )];
+    module.save_and_invalidate("agent-1", &config).unwrap();
+    let parent = make_ctx("composite");
+    let operation = make_bash_ctx("cp a b");
+
+    // A leaf Deny is not advice; full automation must not turn it into a pass.
+    let verdict = module
+        .enforce_composite(&parent, std::slice::from_ref(&operation))
+        .await;
+
+    assert!(
+        verdict.is_deny(),
+        "just_do_it must still deny a composite call whose leaf is denied, got {verdict:?}"
+    );
+}
+
+#[tokio::test]
+async fn just_do_it_records_tool_guard_hit_as_audit_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let module = make_module(tmp.path());
+    let mut config = SecurityConfig::default();
+    config.tool_guard.approval_mode = "just_do_it".into();
+    module.config_store().save("agent-1", &config).unwrap();
+
+    // "Full automation" must not mean "silently ignore": the hit stays visible
+    // to the audit trail so the user can still see what ran unattended.
+    let verdict = module.enforce(&make_bash_ctx("rm -rf build/"), &[]).await;
+
+    match verdict {
+        SecurityVerdict::AuditOnly { findings } => {
+            assert!(
+                findings
+                    .iter()
+                    .any(|finding| finding.rule_id == "TOOL_CMD_DANGEROUS_RM"),
+                "audit trail should keep the rule that fired: {findings:?}"
+            );
+        }
+        other => panic!("expected the hit to be recorded as AuditOnly, got {other:?}"),
+    }
+}

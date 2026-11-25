@@ -54,6 +54,25 @@ Security Module。Deferred Bridge call 必须先 unwrap 为真实 tool name/args
 
 hard deny 不得被 allow rule、Approval Mode 或 Hook 覆盖。
 
+#### Approval Mode 的四档自主度
+
+Approval Mode 只决定「第 4 步的 safety finding 是否打断用户」，不改变
+规则命中本身，也不越过 hard deny。四档按自主度递增：
+
+| Mode | safety finding 命中时 | 语义 |
+|---|---|---|
+| `ask_first` | 中断 | 每次工具调用前都询问 |
+| `balanced` | 中断 | 仅对 bash/MCP 等高影响 Tool 询问 |
+| `hands_off` | 中断 | 命中安全规则时询问 |
+| `just_do_it` | **记录为 audit，不中断** | 全自动，只有显式 Deny 才拦 |
+
+`hands_off` 与 `just_do_it` 的区别是「命中规则是否打断」：前者打断，后者
+只留下 audit 记录。`just_do_it` 的「已明确禁用的工具除外」指第 1、2 步的
+permission rule Deny 与 engine Deny，不是 safety finding。
+
+高自主度模式因此把安全判断的最终责任交给用户：`rm -rf` 一类
+`NeedsApproval` finding 在 `just_do_it` 下不打断执行，但会进入 audit 记录。
+
 ### 3. Approval Service 由进程级 `ApprovalAuthority` 实现
 
 一个 kernel process 只有一个 Approval Service 实例；当前 Rust 类型是
