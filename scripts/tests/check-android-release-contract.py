@@ -145,10 +145,15 @@ elif Path(sys.argv[0]).name == 'gradlew':
         self.script("bin/npm", probe)
         self.script("mobile/mobile-shell/gradlew", probe)
         (self.root / "console").mkdir()
+        # Pin the Gradle entry point. The packaging script prefers RUA_GRADLE,
+        # then whatever `gradle` is on PATH, then the repository wrapper; on a
+        # host that has Gradle installed, PATH would win and this stub (the only
+        # thing that reports buildDir and writes the fixture APK) never runs.
+        env = {**self.env, "RUA_GRADLE": str(mobile / "gradlew")}
         result = subprocess.run(
             ["bash", str(self.root / "scripts/package-mobile-apk.sh"),
              "--release", "--skip-runtime-build", "--out-dir", str(self.root / "APK output")],
-            cwd=self.root, env=self.env, text=True, capture_output=True, timeout=20,
+            cwd=self.root, env=env, text=True, capture_output=True, timeout=20,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = self.calls("console-lock")
