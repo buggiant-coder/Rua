@@ -80,6 +80,7 @@ android-signing.properties
 
 # Maintainer-local deployment, validation, credentials and release preparation.
 /docs/local-prod-dev-isolation.md
+/docs/android-proot-dev-environment.md
 /docs/sync-v4-e2e-smoke.md
 /docs/android-sync-*.md
 /docs/desktop-release*.md
