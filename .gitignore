@@ -140,3 +140,7 @@ android-signing.properties
 
 # Checks of maintainer-only device harnesses.
 /console/src/terminal/androidEvidence.test.ts
+
+# Generated per-host Android SDK path (local.properties style).
+local.properties
+**/local.properties
