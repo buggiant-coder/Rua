@@ -57,7 +57,7 @@ Details: [Agent resolution](docs/adr/0005-agent-profile-running-config-and-resol
 | **Workspace Prompt Directory** | Per-Agent `workspaces/{agent}/prompts/` containing ordinary prompt files. Prompt selections are relative to it; the workspace root is not scanned as prompt context. |
 | **Agent Prompt File Sync** | Committed per-Agent prompt Markdown publication, separate from global Prompt Library and Structured Memory. Explicit deletion/rename facts remain recoverable through Full Export. |
 | **Prompt Library File Commit** | Global library owns per-file Markdown writes/publication, including explicit builtin restoration. Bulk operations validate first but commit per file; startup seed and non-Markdown attachments retain local-only semantics. |
-| **Chat Running Config / Chat Configuration Snapshot** | Complete materialized Chat-owned configuration: Harness, Hook revisions, model/reasoning, tools, authorization, and environment binding. Immutable snapshots have one coherent current head/Configuration Epoch; they are not sparse live Agent overrides. |
+| **Chat Running Config / Chat Configuration Snapshot** | Complete materialized Chat-owned configuration: Harness, Hook revisions, model/reasoning, tools, authorization, and environment binding. Each Chat holds exactly one complete current configuration, replaced as a whole and stored inline in its Session File; a snapshot here is one self-contained copy, not a retained addressable version. They are not sparse live Agent overrides. |
 | **Effective Turn Running Config** | The immutable snapshot captured when Authority claims a Turn. Model calls, tools, retries, and projection share it; configuration edits affect later claimed Turns, including queued inputs. |
 | **Harness Configuration** | Chat-owned declarative selection/composition of existing execution capabilities. Slots, Contributions, and settings cannot create canonical state, own resource lifecycle, or weaken Authority/Security. Explicit invalid selections fail. |
 | **Effective Harness** | Resolved immutable implementation handles for frozen Turn inputs. Keeping a handle callable does not transfer ownership of the implementation's lifecycle; mutable execution state is separate. |
@@ -207,9 +207,10 @@ its actual execution Device manages authoritative execution state and results.
 Eligible foreground work can transfer into a Task on that Device without being
 restarted. Accepted background work survives network disconnection and Chat Stop;
 Task Runtime restart interrupts unfinished Attempts without automatic replay.
-Chat configuration changes leave existing Tasks' captured configuration,
-execution Device, working directory, and output locations intact; subsequent
-result processing uses the Chat's current runtime Device and selected Agent.
+Chat configuration changes leave an existing Task's execution Device, working
+directory, and output locations intact, while its Tool runs under the Chat's
+current configuration; subsequent result processing uses the Chat's current
+runtime Device and selected Agent.
 Explicit Retry retains the Task's original resolved Device and working directory
 while checking current effective authorization; a different location requires a
 new Task.
@@ -280,7 +281,7 @@ Details: [address and lazy materialization](docs/adr/0018-chat-address-scope-and
 | **Console Conversation Navigation / Conversation Navigation Activity** | Route transitions and pending navigation presentation, separate from backend Turn and queue state. |
 | **Chat Drawer** | Scoped Chat-list/navigation presentation; does not own history or execution. |
 | **Chat Metadata / Chat List Order** | Durable title, times, pin/archive state, preview, and list-facing ordering. Browser navigation hints do not change these facts. |
-| **Session File** | Small authoritative Chat header: identity, metadata, control/configuration heads, and durable-history pointers. It does not contain a growing full transcript. |
+| **Session File** | Small authoritative Chat header: identity, metadata, the current complete configuration, control heads, and durable-history pointers. It does not contain a growing full transcript. |
 | **Message Log** | Append-only raw chronology with stable message IDs and monotonic sequence numbers. Source for history, Recall, and Context Projection tail reads. |
 | **Turn Index / Turn Metadata** | Durable Turn/variant boundaries and lifecycle metadata, including selected response path and timing. |
 | **Message Metadata** | Message-level identity, Turn, role, timing/status, and provider/tool linkage for exact retrieval and audit. |
@@ -433,7 +434,7 @@ Details: [collaboration Chats](docs/adr/0053-collaboration-chats-and-background-
 | **Task Record / Task Attempt / Task Result** | Immutable Task specification and dependencies, ordered executions, and preserved terminal results. Retry appends an Attempt under the same Task ID without rewriting prior outcomes or side effects. |
 | **Task Runner / Tool Runner / Runner Session** | Adapter executing Tool work and its live process/session. Adoption preserves one already-running Tool Call rather than launching a duplicate. |
 | **Task Execution / Task Cancellation** | Execution-device-owned work and its cancellation subtree. It may outlive the source Turn; viewer detachment does not cancel it. Runtime loss interrupts without automatic replay. |
-| **Effective Task Authorization** | Attempt snapshot of submitting Chat/Turn configuration and authorization. Agent IDs are provenance, not live policy lookup; new Attempts/Retry must pass inherited-configuration admission. |
+| **Effective Task Authorization** | Attempt record of the authorizing Agent and Turn/ToolCall that created or retried it. Agent IDs are provenance, not live policy lookup; the Tool itself runs under the Chat's configuration at execution time, and new Attempts/Retry must pass that current-configuration admission. |
 | **Task Control Surface** | `task_create`, `task_read`, `task_list`, `task_cancel`, `task_send_input`, `task_retry`. Read is bounded state/output with cursor and optional finite wait; wait expiry never cancels execution. |
 | **Foreground Tool Wait Limit / Tool Transfer Policy** | Optional synchronous wait and transferability contract. Expiry adopts the same still-running eligible execution exactly once, without cancellation/replay; completion versus adoption has one foreground result. Wait time is not an execution deadline. |
 | **Task Input / Task Input Capability** | Real Tool/process stdin or EOF supported by the Runner Session, not Agent steering or a second conversation. |

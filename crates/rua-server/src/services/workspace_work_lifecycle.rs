@@ -7,6 +7,7 @@
 //! durable Turn Index, and the Task Runtime's Attempt store — never a mirrored
 //! counter, and termination is confirmed from the same source that records it.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -22,7 +23,17 @@ pub struct WorkspaceWorkAuthority {
     authority: Arc<ConversationAuthority>,
     streams: Arc<ActiveStreamRegistry>,
     task_runtime: Arc<rua_task::TaskRuntime>,
+    approvals: Arc<rua_security::approval_authority::ApprovalAuthority>,
     root: RuaRoot,
+    /// The Chat Addresses each Agent actually fenced, recorded by the same call
+    /// that fenced them.
+    ///
+    /// The fence must be released by whoever took it. Recomputing the Address
+    /// set at release time would silently strand every Address that stopped
+    /// matching in between — a Turn that ended, a queued input that drained, or
+    /// a Chat that switched Agent while the deletion was refused — and a
+    /// stranded Address refuses all later input for the life of the process.
+    fenced: tokio::sync::Mutex<HashMap<String, Vec<ChatAddress>>>,
 }
 
 impl WorkspaceWorkAuthority {
@@ -30,13 +41,16 @@ impl WorkspaceWorkAuthority {
         authority: Arc<ConversationAuthority>,
         streams: Arc<ActiveStreamRegistry>,
         task_runtime: Arc<rua_task::TaskRuntime>,
+        approvals: Arc<rua_security::approval_authority::ApprovalAuthority>,
         root: RuaRoot,
     ) -> Self {
         Self {
             authority,
             streams,
             task_runtime,
+            approvals,
             root,
+            fenced: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -111,6 +125,71 @@ impl WorkspaceWorkAuthority {
         }
     }
 
+    /// Task references this Agent started that no local Attempt accounts for.
+    ///
+    /// A Chat can have switched to another Agent, and the Task can be running on
+    /// another Device: neither removes the authorizing Agent's responsibility for
+    /// it. A reference without terminal evidence is unresolved rather than
+    /// finished, because missing evidence is not a completion fact.
+    async fn unresolved_referenced_tasks(
+        &self,
+        agent_id: &str,
+        described: &[WorkUnit],
+    ) -> Result<Vec<WorkUnit>, WorkspaceError> {
+        let workspace = self.root.chat_workspace();
+        if !workspace.chat_index_path().try_exists().unwrap_or(false) {
+            return Ok(Vec::new());
+        }
+        let chats = crate::services::chat_index::list_all(workspace.as_path())
+            .await
+            .map_err(WorkspaceError::internal)?;
+        let mut units = Vec::new();
+        for chat in chats {
+            let address = ChatAddress::new(chat.id);
+            let references = match rua_session::task_refs::ChatTaskRef::list(
+                &workspace.sessions_dir().join(address.chat_id().as_str()),
+                address.chat_id().as_str(),
+            ) {
+                Ok(references) => references,
+                Err(_) => continue,
+            };
+            for reference in references {
+                if reference.origin.agent_id != agent_id {
+                    continue;
+                }
+                if reference.not_accepted && reference.last_target_evidence.is_none() {
+                    // The start was confirmed as never accepted: there is no
+                    // execution to account for.
+                    continue;
+                }
+                if described.iter().any(|unit| {
+                    unit.kind == WorkKind::Task
+                        && unit.id == reference.task_id
+                        && unit.chat == address
+                }) {
+                    continue;
+                }
+                if reference
+                    .last_target_evidence
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.record.state.is_terminal())
+                {
+                    continue;
+                }
+                units.push(WorkUnit {
+                    attempt_no: reference
+                        .last_target_evidence
+                        .as_ref()
+                        .map(|evidence| evidence.record.attempt_no),
+                    kind: WorkKind::Task,
+                    chat: address.clone(),
+                    id: reference.task_id,
+                });
+            }
+        }
+        Ok(units)
+    }
+
     /// Running Attempts and terminal notification tails, with their real owner.
     async fn outstanding_tasks(&self) -> Result<Vec<rua_task::TaskRecord>, WorkspaceError> {
         self.task_runtime
@@ -124,7 +203,24 @@ impl WorkspaceWorkAuthority {
         let mut work = AgentWork {
             units: Vec::new(),
             queued_inputs: 0,
+            pending_approvals: 0,
+            unanswered_prompts: 0,
         };
+
+        // Approvals and open questions outlive the Turn that raised them, so a
+        // stop that only looked at Turns would call the Agent idle while a
+        // decision is still owed to it. They are already attributed to an Agent,
+        // so no Chat filter is applied on top.
+        work.pending_approvals = self.approvals.list_pending_for_agent(agent_id).await.len();
+        for address in &addresses {
+            if rua_tool::extended::ask_user::AskUserService::global()
+                .get_pending_by_session(address.chat_id().as_str())
+                .await
+                .is_some()
+            {
+                work.unanswered_prompts += 1;
+            }
+        }
 
         for address in &addresses {
             work.queued_inputs += self.authority.queue_snapshot(address).await.len();
@@ -141,6 +237,19 @@ impl WorkspaceWorkAuthority {
         // A Task keeps its authorizing Agent even if its Chat selects another.
         for record in self.outstanding_tasks().await? {
             let owner = record.spec.owner.chat_address.clone();
+            // The Attempt store can still list a record whose terminal fact was
+            // just committed while its execution handle is being released. A
+            // terminal Attempt with no live execution is finished work, not a
+            // reason to call the Agent busy.
+            if record.state.is_terminal()
+                && !self.task_runtime.attempt_execution_active(
+                    &record.spec.owner,
+                    &record.task_id,
+                    record.attempt_no,
+                )
+            {
+                continue;
+            }
             let attempt = record
                 .attempts
                 .iter()
@@ -159,6 +268,14 @@ impl WorkspaceWorkAuthority {
             });
         }
 
+        // A Task the Chat no longer selects this Agent for still belongs to the
+        // Agent that started it, including one running on another Device whose
+        // local Attempt this process cannot see.
+        work.units.extend(
+            self.unresolved_referenced_tasks(agent_id, &work.units)
+                .await?,
+        );
+
         work.units.sort_by(|left, right| {
             left.chat
                 .identity_key()
@@ -173,7 +290,15 @@ impl WorkspaceWorkAuthority {
 #[async_trait]
 impl AgentWorkAuthority for WorkspaceWorkAuthority {
     async fn resume(&self, agent_id: &str) -> Result<(), WorkspaceError> {
-        let addresses = self.agent_addresses(agent_id).await?;
+        // Release exactly the fence this Agent took. Falling back to a fresh
+        // enumeration only covers a caller that resumed without a matching
+        // `begin_shutdown`; that set is a superset of nothing, never a
+        // replacement for the recorded one.
+        let recorded = self.fenced.lock().await.remove(agent_id);
+        let addresses = match recorded {
+            Some(addresses) => addresses,
+            None => self.agent_addresses(agent_id).await?,
+        };
         self.authority.resume_agent(agent_id, &addresses).await;
         self.task_runtime.resume_agent_admission(agent_id).await;
         Ok(())
@@ -182,9 +307,14 @@ impl AgentWorkAuthority for WorkspaceWorkAuthority {
     async fn begin_shutdown(&self, agent_id: &str) -> Result<(), WorkspaceError> {
         self.task_runtime.pause_agent_admission(agent_id).await;
         self.authority.begin_draining(agent_id).await;
-        for address in self.agent_addresses(agent_id).await? {
-            self.authority.begin_chat_shutdown(&address).await;
+        let addresses = self.agent_addresses(agent_id).await?;
+        for address in &addresses {
+            self.authority.begin_chat_shutdown(address).await;
         }
+        self.fenced
+            .lock()
+            .await
+            .insert(agent_id.to_string(), addresses);
         Ok(())
     }
 

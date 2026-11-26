@@ -259,9 +259,7 @@ async fn assert_background_result_behind_active_source(stop_queued: bool) {
                 depends_on: vec![],
                 origin: Default::default(),
             },
-            rua_task::TaskAttemptAuthorization::new("default")
-                .unwrap()
-                .with_configuration_epoch(source.configuration_epoch.clone()),
+            rua_task::TaskAttemptAuthorization::new("default").unwrap(),
         )
         .await
         .unwrap();
@@ -433,9 +431,7 @@ async fn assert_background_task_continuation(stop_before_result: bool) {
                 depends_on: Vec::new(),
                 origin: Default::default(),
             },
-            rua_task::TaskAttemptAuthorization::new("default")
-                .unwrap()
-                .with_configuration_epoch(source.configuration_epoch.clone()),
+            rua_task::TaskAttemptAuthorization::new("default").unwrap(),
         )
         .await
         .unwrap();
@@ -611,10 +607,6 @@ async fn caller(test: &TestApp, name: &str) -> CollaborationCaller {
         address,
         turn_id: "source-turn".into(),
         tool_call_id: name.into(),
-        configuration_epoch: chat["meta"]["hook_configuration"]["epoch"]
-            .as_str()
-            .unwrap()
-            .into(),
     }
 }
 
@@ -657,16 +649,8 @@ async fn create_inherits_a_managed_execution_directory_without_taking_it_over() 
         chat_execution_directory(&test, &source.address).await,
         managed_json
     );
-    // Pinning the directory publishes a new source configuration epoch, so the
-    // Caller must be refreshed exactly as a real Turn would be.
-    let mut source = source;
-    source.configuration_epoch = test
-        .state
-        .product_hooks
-        .chat_configuration(&source.address)
-        .await
-        .unwrap()
-        .epoch;
+    // Pinning the directory only changes where the source runs; the Caller keeps
+    // addressing the same Chat.
 
     let created = test
         .state
@@ -853,10 +837,6 @@ async fn live_registered_tool_checks(test: &TestApp) -> serde_json::Value {
     ctx.metadata
         .insert("security_chat_address".into(), json!(source.address));
     ctx.metadata.insert("turn_id".into(), json!(source.turn_id));
-    ctx.metadata.insert(
-        "chat_configuration_epoch".into(),
-        json!(source.configuration_epoch),
-    );
     async fn call(
         toolkit: &react_agent::AgentToolkit,
         ctx: &rua_core::tool::ToolContext,
@@ -1087,10 +1067,6 @@ async fn create_is_idempotent_isolated_and_inherits_source_environment() {
         .contains("another source"));
     let child_caller = CollaborationCaller {
         address: created.chat,
-        configuration_epoch: header.extra["hook_configuration"]["epoch"]
-            .as_str()
-            .unwrap()
-            .into(),
         ..source
     };
     assert!(test
@@ -1113,7 +1089,7 @@ async fn create_inherits_source_model_when_executor_default_is_null() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
-    let mut source = caller(&test, "inherit-model").await;
+    let source = caller(&test, "inherit-model").await;
     let source_scope = ChatStore::resolve(&test.state.rua_root, source.address.clone());
     rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(source_scope.root()))
         .update_setting(
@@ -1128,10 +1104,6 @@ async fn create_inherits_source_model_when_executor_default_is_null() {
         .unwrap()
         .unwrap();
     let source_model = rua_chat::model_slot_from_header(&source_header).unwrap();
-    source.configuration_epoch = source_header.extra["hook_configuration"]["epoch"]
-        .as_str()
-        .unwrap()
-        .to_string();
     let created = test
         .state
         .collaboration
@@ -1174,7 +1146,7 @@ async fn create_prefers_configured_executor_model_over_source_model() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
-    let mut source = caller(&test, "executor-model-priority").await;
+    let source = caller(&test, "executor-model-priority").await;
     let source_scope = ChatStore::resolve(&test.state.rua_root, source.address.clone());
     rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(source_scope.root()))
         .update_setting(
@@ -1183,15 +1155,6 @@ async fn create_prefers_configured_executor_model_over_source_model() {
         )
         .await
         .unwrap();
-    let source_header = WorkspaceSessionStore::new(source_scope.root())
-        .load_chat_header(source.address.chat_id().as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    source.configuration_epoch = source_header.extra["hook_configuration"]["epoch"]
-        .as_str()
-        .unwrap()
-        .to_string();
     let created = test
         .state
         .collaboration
@@ -1369,13 +1332,6 @@ async fn child_next_turn_runs_at_its_own_directory_after_the_source_moves() {
         }))
         .await;
     let mut refreshed = source;
-    refreshed.configuration_epoch = test
-        .state
-        .product_hooks
-        .chat_configuration(&refreshed.address)
-        .await
-        .unwrap()
-        .epoch;
     refreshed.tool_call_id = "source-move-next-turn-send".into();
     let reply = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -1485,16 +1441,9 @@ async fn source_move_while_child_is_busy_neither_blocks_itself_nor_clears_the_ch
         chat_execution_directory(&test, &child.chat).await,
         child_directory
     );
-    // A position change publishes a new source configuration epoch, so the Caller
-    // must be refreshed exactly as a real Turn would be before it may read again.
-    let mut moved_caller = source;
-    moved_caller.configuration_epoch = test
-        .state
-        .product_hooks
-        .chat_configuration(&moved_caller.address)
-        .await
-        .unwrap()
-        .epoch;
+    // A position change leaves the source readable without re-claiming a
+    // configuration version.
+    let moved_caller = source;
     assert_eq!(
         test.state
             .collaboration
@@ -2249,13 +2198,16 @@ async fn explicit_source_configuration_update_propagates_inheritance_without_ove
         "the fixed executor must not be replaced by a position update"
     );
 
-    let error = test
+    // A position change is not a configuration change that invalidates the
+    // caller, and the Chat has one current configuration rather than a pinned
+    // version. So the same source may keep working with the child afterwards.
+    let reply = test
         .state
         .collaboration
-        .send(source, child.chat, "must use a new source Turn".into(), 0)
+        .send(source, child.chat.clone(), "keep working".into(), 0)
         .await
-        .unwrap_err();
-    assert!(error.contains("Source Chat configuration changed"));
+        .expect("a source position change does not invalidate later collaboration work");
+    assert_eq!(reply.chat, child.chat);
 }
 
 #[tokio::test]
@@ -2320,10 +2272,6 @@ async fn failed_child_configuration_rejects_chat_and_task_admission_until_recove
             if detail.contains("not ready")
     ));
 
-    let current_epoch = header.extra["hook_configuration"]["epoch"]
-        .as_str()
-        .unwrap()
-        .to_string();
     let task_error = test
         .state
         .task_runtime
@@ -2339,9 +2287,7 @@ async fn failed_child_configuration_rejects_chat_and_task_admission_until_recove
                 depends_on: Vec::new(),
                 origin: Default::default(),
             },
-            rua_task::TaskAttemptAuthorization::new("default")
-                .unwrap()
-                .with_configuration_epoch(current_epoch.clone()),
+            rua_task::TaskAttemptAuthorization::new("default").unwrap(),
         )
         .await
         .unwrap_err();
@@ -2363,13 +2309,17 @@ async fn failed_child_configuration_rejects_chat_and_task_admission_until_recove
         .ensure_configuration_ready(&child.chat)
         .await
         .unwrap();
-    let stale_error = test
+    // Once the child is ready, Task admission is open again. The Attempt no longer
+    // pins a configuration version: it carries the authorization Agent, and the
+    // execution reads the Chat's current configuration. A stale-epoch rejection
+    // cannot exist because there is no epoch to be stale.
+    let task = test
         .state
         .task_runtime
         .create(
             rua_task::TaskSpec {
                 owner: rua_task::TaskOwner::from_address(child.chat.clone()),
-                instruction: "stale epoch must not persist".into(),
+                instruction: "admission recovered".into(),
                 runner: rua_task::TaskRunnerSpec::Tool {
                     tool_name: "Fixture_Stale".into(),
                     arguments: json!({}),
@@ -2378,13 +2328,11 @@ async fn failed_child_configuration_rejects_chat_and_task_admission_until_recove
                 depends_on: Vec::new(),
                 origin: Default::default(),
             },
-            rua_task::TaskAttemptAuthorization::new("default")
-                .unwrap()
-                .with_configuration_epoch(current_epoch),
+            rua_task::TaskAttemptAuthorization::new("default").unwrap(),
         )
         .await
-        .unwrap_err();
-    assert!(stale_error.to_string().contains("stale"));
+        .expect("a ready child accepts Task admission again");
+    assert!(!task.is_empty(), "the accepted Task has an identity");
 }
 
 #[tokio::test]
@@ -2958,7 +2906,7 @@ async fn chat_lists_separate_user_and_collaboration_views_and_keep_deleted_sourc
 #[tokio::test]
 async fn chat_read_progress_summary_is_bounded_private_incremental_and_singleflight() {
     let test = build_app();
-    let mut source = caller(&test, "progress-source").await;
+    let source = caller(&test, "progress-source").await;
     let source_scope = ChatStore::resolve(&test.state.rua_root, source.address.clone());
     rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(source_scope.root()))
         .update_setting(
@@ -2967,15 +2915,6 @@ async fn chat_read_progress_summary_is_bounded_private_incremental_and_singlefli
         )
         .await
         .unwrap();
-    let source_header = WorkspaceSessionStore::new(source_scope.root())
-        .load_chat_header(source.address.chat_id().as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    source.configuration_epoch = source_header.extra["hook_configuration"]["epoch"]
-        .as_str()
-        .unwrap()
-        .to_string();
     let child = test
         .state
         .collaboration
@@ -3438,13 +3377,12 @@ async fn send_yields_without_cancelling_and_deduplicates_execution() {
         ChatStore::resolve(&test.state.rua_root, source.address.clone()).root(),
     );
     let source_config = source_store
-        .load_configuration_snapshot(
-            source.address.chat_id().as_str(),
-            &source.configuration_epoch,
-        )
+        .load_chat_header(source.address.chat_id().as_str())
         .await
         .unwrap()
-        .unwrap();
+        .unwrap()
+        .extra["hook_configuration"]
+        .clone();
     assert_eq!(
         requests.lock().await[0].metadata
             [rua_security::models::EFFECTIVE_SECURITY_CONFIG_METADATA_KEY],
@@ -3680,10 +3618,6 @@ async fn registered_tools_create_and_send_using_trusted_call_context() {
     context
         .metadata
         .insert("turn_id".into(), json!(source.turn_id));
-    context.metadata.insert(
-        "chat_configuration_epoch".into(),
-        json!(source.configuration_epoch),
-    );
     let requests = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     runtime
         .set_react_runtime(Arc::new(ControlledRuntime {
@@ -3727,10 +3661,6 @@ async fn registered_tools_create_and_send_using_trusted_call_context() {
     context
         .metadata
         .insert("turn_id".into(), json!(other.turn_id));
-    context.metadata.insert(
-        "chat_configuration_epoch".into(),
-        json!(other.configuration_epoch),
-    );
     let read = toolkit.get_executor("chat_read").unwrap();
     let rejected = read
         .execute(
@@ -3988,12 +3918,14 @@ async fn collaboration_presets_enforce_permissions_through_real_task_execution()
             .create(invocation, agent.into(), None, 0)
             .await
             .unwrap();
+        // The collaboration's own configuration is what a Task executes under.
         let configuration = test
             .state
             .product_hooks
             .chat_configuration(&child.chat)
             .await
             .unwrap();
+        assert_eq!(configuration.selected_agent_id, agent);
         let workspace = test
             .state
             .registry
@@ -4015,7 +3947,6 @@ async fn collaboration_presets_enforce_permissions_through_real_task_execution()
                 public_cwd: Some(workspace.to_string_lossy().into_owned()),
                 ..Default::default()
             },
-            configuration_epoch: Some(configuration.epoch),
             tool_name: "edit".into(),
             arguments: json!({"patch":format!("*** Begin Patch\n*** Add File: {}\n+verified\n*** End Patch", target.display())}),
             origin_turn_id: None,
@@ -4037,31 +3968,6 @@ async fn collaboration_presets_enforce_permissions_through_real_task_execution()
             let readable = workspace.join("read-fixture.txt");
             rua_config::atomic_write_json(&readable, &json!("research can inspect evidence"))
                 .unwrap();
-            let missing_epoch = execution
-                .execute(rua_tool::ToolTaskExecutionRequest {
-                    task_id: "missing-epoch".into(),
-                    attempt_no: 1,
-                    owner: rua_task::TaskOwner::from_address(child.chat.clone()),
-                    authorization_agent_id: agent.into(),
-                    authorization_origin: Default::default(),
-                    device: rua_task::TaskDeviceContext {
-                        device_id: rua_server::services::device_context::current_sync_device_id(
-                            &test.state.sync_device,
-                        ),
-                        public_cwd: Some(workspace.to_string_lossy().into_owned()),
-                        ..Default::default()
-                    },
-                    configuration_epoch: None,
-                    tool_name: "read".into(),
-                    arguments: json!({"file_path":readable}),
-                    origin_turn_id: None,
-                    dependencies: Vec::new(),
-                    cancel: tokio_util::sync::CancellationToken::new(),
-                    session: rua_task::TaskRunnerSession::bound("missing-epoch", 1),
-                })
-                .await
-                .unwrap_err();
-            assert!(missing_epoch.contains("no captured Chat configuration epoch"));
             let read = execution
                 .execute(rua_tool::ToolTaskExecutionRequest {
                     task_id: "research-read".into(),
@@ -4076,14 +3982,6 @@ async fn collaboration_presets_enforce_permissions_through_real_task_execution()
                         public_cwd: Some(workspace.to_string_lossy().into_owned()),
                         ..Default::default()
                     },
-                    configuration_epoch: Some(
-                        test.state
-                            .product_hooks
-                            .chat_configuration(&child.chat)
-                            .await
-                            .unwrap()
-                            .epoch,
-                    ),
                     tool_name: "read".into(),
                     arguments: json!({"file_path":readable}),
                     origin_turn_id: None,
@@ -4114,7 +4012,6 @@ async fn collaboration_presets_enforce_permissions_through_real_task_execution()
                     public_cwd: Some(workspace.to_string_lossy().into_owned()),
                     ..Default::default()
                 },
-                configuration_epoch: Some(test.state.product_hooks.chat_configuration(&child.chat).await.unwrap().epoch),
                 tool_name: "bash".into(), arguments: json!({"command":"test -f controlled-test.txt && printf 'verification passed'", "cwd": workspace}),
                 origin_turn_id: None, dependencies: Vec::new(), cancel: tokio_util::sync::CancellationToken::new(),
                 session: rua_task::TaskRunnerSession::bound("implementation-verify", 1),
@@ -4166,7 +4063,6 @@ async fn task_approval_wait_is_visible_and_decision_preserves_write_boundary() {
             session_id: child.chat.chat_id().as_str().into(),
             working_dir: target.parent().unwrap().into(),
             metadata: std::collections::HashMap::from([
-                ("chat_configuration_epoch".into(), json!(config.epoch)),
                 ("turn_id".into(), json!("task-approval-turn")),
                 ("tool_use_id".into(), json!(format!("create-{decision}"))),
             ]),
@@ -5309,10 +5205,6 @@ async fn explicit_resume_batches_all_deferred_results_into_one_source_turn() {
     context
         .metadata
         .insert("turn_id".into(), json!(source.turn_id));
-    context.metadata.insert(
-        "chat_configuration_epoch".into(),
-        json!(source.configuration_epoch),
-    );
     for reference in &result.results {
         let mut cursor = json!(reference.result);
         let mut text = String::new();
@@ -5546,10 +5438,6 @@ async fn project_collaboration_keeps_resource_root_and_rejects_archived_project(
         working_dir: cwd.clone(),
         turn_id: "source-turn".into(),
         tool_call_id: "project-collaboration".into(),
-        configuration_epoch: source_history["meta"]["hook_configuration"]["epoch"]
-            .as_str()
-            .unwrap()
-            .into(),
     };
     let child = test
         .state
@@ -5631,7 +5519,6 @@ async fn project_collaboration_keeps_resource_root_and_rejects_archived_project(
                 public_cwd: Some(cwd.to_string_lossy().into_owned()),
                 ..Default::default()
             },
-            configuration_epoch: Some(configuration.epoch),
             tool_name: "read".into(),
             arguments: json!({"file_path":"task-resource.json"}),
             origin_turn_id: None,

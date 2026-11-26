@@ -745,88 +745,45 @@ pub struct ProjectionBoundary {
 
 use crate::AGENT_SWITCH_EVENTS_KEY;
 
-/// The selected Agent and its configuration share one atomic publication point.
-#[derive(Clone, Serialize, Deserialize)]
-struct ChatConfigurationHead {
-    epoch: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    execution_directory: Option<crate::ChatExecutionDirectory>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    agent_switch_events: Vec<Value>,
-    #[serde(flatten)]
-    extra: serde_json::Map<String, Value>,
-}
-
-impl ChatConfigurationHead {
-    fn from_header(epoch: &str, header: &ChatSessionHeader) -> Result<Self> {
-        let events = header
-            .extra
-            .get(AGENT_SWITCH_EVENTS_KEY)
-            .map(|events| {
-                events
-                    .as_array()
-                    .cloned()
-                    .ok_or_else(|| rua_core::RuaError::Validation {
-                        message: "Invalid Chat Agent selection history".into(),
-                    })
-            })
-            .transpose()?
-            .unwrap_or_default();
-        Ok(Self {
-            epoch: epoch.to_owned(),
-            execution_directory: header
+/// Chat settings that appear both inside the configuration and at the top of the
+/// header for indexed reads. The configuration is authoritative, so the copies are
+/// derived from it instead of being written independently.
+fn project_configuration(header: &mut ChatSessionHeader) {
+    let Some(configuration) = header.extra.get("hook_configuration").cloned() else {
+        return;
+    };
+    for key in ["model", "thinking"] {
+        match configuration.get(key).filter(|value| !value.is_null()) {
+            Some(value) => {
+                header.extra.insert(key.into(), value.clone());
+            }
+            None => {
+                header.extra.remove(key);
+            }
+        }
+    }
+    // The execution position is configuration too: a handoff moves it together
+    // with the configuration rather than as a separate record.
+    match configuration
+        .get("capability_configuration")
+        .and_then(|capabilities| capabilities.get(crate::EXECUTION_DIRECTORY_KEY))
+    {
+        Some(directory) => {
+            // Normalise through the typed value so every writer produces one shape.
+            // Some paths record the directory as a bare selection, others serialise
+            // the typed value, and a reader must not see two spellings of the same
+            // position depending on who wrote it last.
+            let directory =
+                serde_json::from_value::<crate::ChatExecutionDirectory>(directory.clone())
+                    .ok()
+                    .and_then(|directory| serde_json::to_value(directory).ok())
+                    .unwrap_or_else(|| directory.clone());
+            header
                 .extra
-                .get(crate::EXECUTION_DIRECTORY_KEY)
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|e| rua_core::RuaError::Validation {
-                    message: format!("Invalid execution directory: {e}"),
-                })?,
-            agent_id: Some(header.agent_id.clone()),
-            agent_switch_events: events,
-            extra: Default::default(),
-        })
-    }
-
-    fn validate_configuration(&self, configuration: &Value) -> Result<()> {
-        if let (Some(agent), Some(selected)) = (
-            &self.agent_id,
-            configuration
-                .get("selected_agent_id")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty()),
-        ) {
-            if agent != selected {
-                return Err(rua_core::RuaError::Validation {
-                    message: "Changing the selected Agent requires a complete Chat Agent switch"
-                        .into(),
-                });
-            }
+                .insert(crate::EXECUTION_DIRECTORY_KEY.into(), directory);
         }
-        Ok(())
-    }
-
-    fn apply_selection(&self, header: &mut ChatSessionHeader) {
-        if let Some(directory) = &self.execution_directory {
-            header.extra.insert(
-                crate::EXECUTION_DIRECTORY_KEY.into(),
-                serde_json::json!(directory),
-            );
-        }
-        if let Some(agent_id) = &self.agent_id {
-            header.agent_id.clone_from(agent_id);
-            header.metadata.agent_id.clone_from(agent_id);
-            if self.agent_switch_events.is_empty() {
-                header.extra.remove(AGENT_SWITCH_EVENTS_KEY);
-            } else {
-                header.extra.insert(
-                    AGENT_SWITCH_EVENTS_KEY.into(),
-                    Value::Array(self.agent_switch_events.clone()),
-                );
-            }
+        None => {
+            header.extra.remove(crate::EXECUTION_DIRECTORY_KEY);
         }
     }
 }
@@ -1179,17 +1136,14 @@ impl WorkspaceSessionStore {
         Ok(())
     }
 
-    /// Reads the durable header without resolving the Agent configuration snapshot.
+    /// Reads the durable header without deriving the projected Chat configuration.
     pub async fn load_stored_chat_header(
         &self,
         chat_id: &str,
     ) -> Result<Option<ChatSessionHeader>> {
-        let Some(mut header) = self.read_session_header(chat_id).await? else {
+        let Some(header) = self.read_session_header(chat_id).await? else {
             return Ok(None);
         };
-        if let Some(head) = self.read_configuration_head(chat_id).await? {
-            head.apply_selection(&mut header);
-        }
         Ok(Some(header))
     }
 
@@ -1197,6 +1151,9 @@ impl WorkspaceSessionStore {
         read_header_file(&self.chat_header_path(chat_id)).await
     }
 
+    /// The Chat header is the single durable record of the Chat's current
+    /// configuration. It is one file, written atomically, so a reader never
+    /// observes a selection without the configuration it belongs to.
     pub async fn load_chat_header(&self, chat_id: &str) -> Result<Option<ChatSessionHeader>> {
         let Some(mut header) = self.read_session_header(chat_id).await? else {
             return Ok(None);
@@ -1208,70 +1165,95 @@ impl WorkspaceSessionStore {
                 "discarded unsupported legacy Session-header Runtime Notes during pre-release migration"
             );
         }
-        header.extra.remove("hook_configuration");
-        if let Some(head) = self.read_configuration_head(chat_id).await? {
-            head.apply_selection(&mut header);
-            let epoch = &head.epoch;
-            let configuration = self
-                .load_configuration_snapshot(chat_id, epoch)
-                .await?
-                .ok_or_else(|| rua_core::RuaError::Validation {
-                    message: format!("Chat configuration snapshot {epoch} is unavailable"),
-                })?;
-            head.validate_configuration(&configuration)?;
-            for key in ["model", "thinking"] {
-                match configuration.get(key).filter(|value| !value.is_null()) {
-                    Some(value) => {
-                        header.extra.insert(key.into(), value.clone());
-                    }
-                    None => {
-                        header.extra.remove(key);
-                    }
-                }
-            }
-            header
-                .extra
-                .insert("hook_configuration".to_string(), configuration);
-        }
+        project_configuration(&mut header);
         Ok(Some(header))
     }
 
+    /// Establishes the Chat's configuration when the record is created. Later
+    /// changes go through [`Self::replace_chat_configuration`] or a complete Agent
+    /// switch, so an ordinary header write cannot publish a stale configuration.
+    pub async fn create_chat_header_with_configuration(
+        &self,
+        header: &ChatSessionHeader,
+    ) -> Result<()> {
+        if self.read_session_header(&header.chat_id).await?.is_some() {
+            return Err(rua_core::RuaError::Validation {
+                message: "Chat already exists".to_string(),
+            });
+        }
+        self.save_chat_header_inner(header, true).await
+    }
+
+    /// Persists the whole Chat record atomically. The header carries the Chat's
+    /// current configuration, so an ordinary history update can never publish a
+    /// configuration whose selected Agent disagrees with the Chat's selection;
+    /// only a complete Agent switch may change both together.
+    ///
+    /// An existing Chat's configuration is replaced only by the explicit
+    /// configuration APIs; this call establishes the first configuration of a
+    /// new Chat and otherwise keeps the stored one.
     pub async fn save_chat_header(&self, header: &ChatSessionHeader) -> Result<()> {
-        let head_lock = chat_write_lock_for_path(self.configuration_head_path(&header.chat_id));
-        let _head_guard = head_lock.lock().await;
+        let existing = self.read_session_header(&header.chat_id).await?;
+        self.save_chat_header_inner(header, existing.is_none())
+            .await
+    }
+
+    /// Replaces the Chat's stored configuration. Configuration changes are their
+    /// own explicit step, so an ordinary header write cannot roll it back to a
+    /// value the caller happened to read earlier.
+    pub async fn save_chat_header_with_configuration(
+        &self,
+        header: &ChatSessionHeader,
+    ) -> Result<()> {
+        self.save_chat_header_inner(header, true).await
+    }
+
+    async fn save_chat_header_inner(
+        &self,
+        header: &ChatSessionHeader,
+        accept_configuration: bool,
+    ) -> Result<()> {
         let mut header = header.clone();
-        let mut head = self.read_configuration_head(&header.chat_id).await?;
-        if let Some(configuration) = header.extra.get("hook_configuration") {
-            self.save_configuration_snapshot(&header.chat_id, configuration)
-                .await?;
-            if head.is_none() {
-                let epoch = configuration["epoch"]
-                    .as_str()
-                    .expect("validated configuration epoch");
-                let initial = ChatConfigurationHead::from_header(epoch, &header)?;
-                initial.validate_configuration(configuration)?;
-                write_json_atomic(&self.configuration_head_path(&header.chat_id), &initial).await?;
-                head = Some(initial);
+        if !accept_configuration {
+            let stored = self
+                .read_session_header(&header.chat_id)
+                .await?
+                .and_then(|stored| stored.extra.get("hook_configuration").cloned());
+            match stored {
+                Some(configuration) => {
+                    header
+                        .extra
+                        .insert("hook_configuration".to_string(), configuration);
+                }
+                None => {
+                    header.extra.remove("hook_configuration");
+                }
             }
         }
-        if let Some(head) = head {
-            head.apply_selection(&mut header);
-            let epoch = &head.epoch;
-            let configuration = self
-                .load_configuration_snapshot(&header.chat_id, epoch)
-                .await?
-                .ok_or_else(|| rua_core::RuaError::Validation {
-                    message: format!("Chat configuration snapshot {epoch} is unavailable"),
-                })?;
-            header
-                .extra
-                .insert("hook_configuration".to_string(), configuration);
+        if let Some(selected) = header
+            .extra
+            .get("hook_configuration")
+            .and_then(|configuration| configuration.get("selected_agent_id"))
+            .and_then(Value::as_str)
+            .filter(|selected| !selected.is_empty())
+        {
+            if selected != header.agent_id {
+                return Err(rua_core::RuaError::Validation {
+                    message: "Changing the selected Agent requires a complete Chat Agent switch"
+                        .into(),
+                });
+            }
         }
+        // The top-level copies are derived from the configuration, so every write
+        // refreshes them. A writer that replaced the configuration would otherwise
+        // leave the stored projection describing the previous one, and the next
+        // read of the raw record would disagree with what was just published.
+        project_configuration(&mut header);
         let path = self.chat_header_path(&header.chat_id);
         write_json_atomic(&path, &header).await
     }
 
-    /// Applies a replicated header without publishing or changing configuration heads.
+    /// Applies a replicated header without republishing its configuration.
     pub async fn merge_replicated_chat_header<F>(
         &self,
         chat_id: &str,
@@ -1283,8 +1265,6 @@ impl WorkspaceSessionStore {
     {
         let write_lock = self.chat_write_lock(chat_id);
         let _write_guard = write_lock.lock().await;
-        let head_lock = chat_write_lock_for_path(self.configuration_head_path(chat_id));
-        let _head_guard = head_lock.lock().await;
         let path = self.chat_header_path(chat_id);
         let current = match tokio::fs::read(&path).await {
             Ok(bytes) => Some(serde_json::from_slice::<Value>(&bytes).map_err(|error| {
@@ -1309,165 +1289,7 @@ impl WorkspaceSessionStore {
     ) -> T {
         let write_lock = self.chat_write_lock(chat_id);
         let _write_guard = write_lock.lock().await;
-        let head_lock = chat_write_lock_for_path(self.configuration_head_path(chat_id));
-        let _head_guard = head_lock.lock().await;
         apply()
-    }
-
-    pub fn validate_replicated_configuration_head(
-        &self,
-        chat_id: &str,
-        value: &Value,
-    ) -> Result<()> {
-        let head: ChatConfigurationHead =
-            serde_json::from_value(value.clone()).map_err(|error| {
-                rua_core::RuaError::Validation {
-                    message: format!("invalid replicated Chat configuration head: {error}"),
-                }
-            })?;
-        self.configuration_snapshot_path(chat_id, &head.epoch)?;
-        Ok(())
-    }
-
-    pub fn configuration_head_path(&self, chat_id: &str) -> PathBuf {
-        self.chat_dir(chat_id).join("configuration_head.json")
-    }
-
-    async fn load_configuration_head(&self, chat_id: &str) -> Result<Option<String>> {
-        Ok(self
-            .read_configuration_head(chat_id)
-            .await?
-            .map(|head| head.epoch))
-    }
-
-    async fn read_configuration_head(
-        &self,
-        chat_id: &str,
-    ) -> Result<Option<ChatConfigurationHead>> {
-        let bytes = match tokio::fs::read(self.configuration_head_path(chat_id)).await {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(rua_core::RuaError::Io {
-                    message: format!("read Chat configuration head: {error}"),
-                })
-            }
-        };
-        let head: ChatConfigurationHead =
-            serde_json::from_slice(&bytes).map_err(|error| rua_core::RuaError::Validation {
-                message: format!("invalid Chat configuration head: {error}"),
-            })?;
-        self.configuration_snapshot_path(chat_id, &head.epoch)?;
-        Ok(Some(head))
-    }
-
-    async fn publish_configuration_head(
-        &self,
-        chat_id: &str,
-        expected_epoch: Option<&str>,
-        configuration: &Value,
-    ) -> Result<()> {
-        let lock = chat_write_lock_for_path(self.configuration_head_path(chat_id));
-        let _guard = lock.lock().await;
-        let current = self.read_configuration_head(chat_id).await?;
-        if current.as_ref().map(|head| head.epoch.as_str()) != expected_epoch {
-            return Err(rua_core::RuaError::Validation {
-                message: "Chat configuration changed; reload before updating".to_string(),
-            });
-        }
-        self.save_configuration_snapshot(chat_id, configuration)
-            .await?;
-        let epoch = configuration["epoch"].as_str().expect("validated epoch");
-        let mut head = match current {
-            Some(head) => head,
-            None => {
-                let header = self.read_session_header(chat_id).await?.ok_or_else(|| {
-                    rua_core::RuaError::NotFound {
-                        resource: "Chat".into(),
-                        id: chat_id.into(),
-                    }
-                })?;
-                ChatConfigurationHead::from_header(epoch, &header)?
-            }
-        };
-        head.validate_configuration(configuration)?;
-        if let Some(directory) = configuration
-            .get("capability_configuration")
-            .and_then(|c| c.get(crate::EXECUTION_DIRECTORY_KEY))
-        {
-            head.execution_directory =
-                Some(serde_json::from_value(directory.clone()).map_err(|e| {
-                    rua_core::RuaError::Validation {
-                        message: format!("Invalid execution directory: {e}"),
-                    }
-                })?);
-        }
-        head.epoch = epoch.to_owned();
-        write_json_atomic(&self.configuration_head_path(chat_id), &head).await
-    }
-
-    pub fn configuration_snapshot_path(&self, chat_id: &str, epoch: &str) -> Result<PathBuf> {
-        if epoch.is_empty()
-            || epoch.len() > 128
-            || !epoch
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        {
-            return Err(rua_core::RuaError::Validation {
-                message: "invalid Chat configuration epoch".to_string(),
-            });
-        }
-        Ok(self
-            .chat_dir(chat_id)
-            .join("configurations")
-            .join(format!("{epoch}.json")))
-    }
-
-    pub async fn load_configuration_snapshot(
-        &self,
-        chat_id: &str,
-        epoch: &str,
-    ) -> Result<Option<Value>> {
-        let path = self.configuration_snapshot_path(chat_id, epoch)?;
-        let bytes = match tokio::fs::read(&path).await {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(rua_core::RuaError::Io {
-                    message: format!("read Chat configuration snapshot: {error}"),
-                })
-            }
-        };
-        serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|error| rua_core::RuaError::Validation {
-                message: format!("invalid Chat configuration snapshot: {error}"),
-            })
-    }
-
-    async fn save_configuration_snapshot(
-        &self,
-        chat_id: &str,
-        configuration: &Value,
-    ) -> Result<()> {
-        let epoch = configuration
-            .get("epoch")
-            .and_then(Value::as_str)
-            .ok_or_else(|| rua_core::RuaError::Validation {
-                message: "Chat configuration epoch is required".to_string(),
-            })?;
-        let path = self.configuration_snapshot_path(chat_id, epoch)?;
-        let lock = chat_write_lock_for_path(path.clone());
-        let _guard = lock.lock().await;
-        if let Some(existing) = self.load_configuration_snapshot(chat_id, epoch).await? {
-            if existing != *configuration {
-                return Err(rua_core::RuaError::Validation {
-                    message: format!("Chat configuration epoch {epoch} is immutable"),
-                });
-            }
-            return Ok(());
-        }
-        write_json_atomic(&path, configuration).await
     }
 
     pub async fn update_chat_header(
@@ -1494,14 +1316,13 @@ impl WorkspaceSessionStore {
         };
         let previous = header.extra.get("hook_configuration").cloned();
         update(&mut header)?;
-        if header.extra.get("hook_configuration") != previous.as_ref() {
-            if let Some(configuration) = header.extra.get("hook_configuration") {
-                let expected = self.load_configuration_head(chat_id).await?;
-                self.publish_configuration_head(chat_id, expected.as_deref(), configuration)
-                    .await?;
-            }
+        // A caller that rewrote the configuration is making an explicit change;
+        // everyone else leaves the stored configuration alone.
+        if header.extra.get("hook_configuration") == previous.as_ref() {
+            self.save_chat_header(&header).await?;
+        } else {
+            self.save_chat_header_with_configuration(&header).await?;
         }
-        self.save_chat_header(&header).await?;
         Ok(true)
     }
 
@@ -1517,23 +1338,20 @@ impl WorkspaceSessionStore {
     ) -> Result<()> {
         let lock = self.chat_write_lock(chat_id);
         let session_guard = lock.lock_owned().await;
-        let head_path = self.configuration_head_path(chat_id);
-        let head_lock = chat_write_lock_for_path(head_path.clone());
-        let head_guard = head_lock.lock_owned().await;
+        let header_path = self.chat_header_path(chat_id);
         let mut header = self.read_session_header(chat_id).await?.ok_or_else(|| {
             rua_core::RuaError::NotFound {
                 resource: "Chat".into(),
                 id: chat_id.into(),
             }
         })?;
-        let head = self
-            .read_configuration_head(chat_id)
-            .await?
-            .ok_or_else(|| rua_core::RuaError::Validation {
-                message: "Chat configuration head is missing".into(),
-            })?;
-        head.apply_selection(&mut header);
-        if header.agent_id != expected_agent_id || Some(head.epoch.as_str()) != expected_epoch {
+        let current_epoch = header
+            .extra
+            .get("hook_configuration")
+            .and_then(|configuration| configuration.get("epoch"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if header.agent_id != expected_agent_id || current_epoch.as_deref() != expected_epoch {
             return Err(rua_core::RuaError::Validation {
                 message: "Chat configuration changed; reload before updating".into(),
             });
@@ -1551,7 +1369,7 @@ impl WorkspaceSessionStore {
             .and_then(Value::as_str)
             .unwrap_or_default();
         if epoch.is_empty()
-            || epoch == head.epoch
+            || Some(epoch) == current_epoch.as_deref()
             || configuration
                 .get("selected_agent_id")
                 .and_then(Value::as_str)
@@ -1566,18 +1384,25 @@ impl WorkspaceSessionStore {
             });
         }
 
-        let mut next = ChatConfigurationHead::from_header(epoch, &header)?;
-        next.extra.clone_from(&head.extra);
-        next.agent_id = Some(new_agent_id.to_owned());
-        next.agent_switch_events.push(event);
-        // Immutable snapshots are written first. Until the head moves, every reader sees
-        // the previous Agent and configuration, including after a crash or failed write.
-        self.save_configuration_snapshot(chat_id, configuration)
-            .await?;
-        let previous = serde_json::to_vec_pretty(&head).map_err(|e| rua_core::RuaError::Io {
+        let previous = serde_json::to_vec_pretty(&header).map_err(|e| rua_core::RuaError::Io {
             message: e.to_string(),
         })?;
-        let next = serde_json::to_vec_pretty(&next).map_err(|e| rua_core::RuaError::Io {
+        header.agent_id = new_agent_id.to_owned();
+        header.metadata.agent_id = new_agent_id.to_owned();
+        let events = header
+            .extra
+            .entry(AGENT_SWITCH_EVENTS_KEY)
+            .or_insert_with(|| Value::Array(Vec::new()));
+        let events = events
+            .as_array_mut()
+            .ok_or_else(|| rua_core::RuaError::Validation {
+                message: "Invalid Chat Agent selection history".into(),
+            })?;
+        events.push(event);
+        header
+            .extra
+            .insert("hook_configuration".to_string(), configuration.clone());
+        let next = serde_json::to_vec_pretty(&header).map_err(|e| rua_core::RuaError::Io {
             message: e.to_string(),
         })?;
         let workspace = self
@@ -1589,12 +1414,12 @@ impl WorkspaceSessionStore {
         let new_agent_id = new_agent_id.to_owned();
         tokio::task::spawn_blocking(move || {
             // A cancelled HTTP future must not drop these locks during the disk commit.
-            let _guards = (session_guard, head_guard);
+            let _guards = (session_guard,);
             crate::chat_index::publish_agent_switch(
                 &workspace,
                 &chat_id,
                 &new_agent_id,
-                &head_path,
+                &header_path,
                 &previous,
                 &next,
             )
@@ -1643,24 +1468,25 @@ impl WorkspaceSessionStore {
                 message: "Chat configuration changed; reload before updating".to_string(),
             });
         }
+        // A configuration whose selected Agent disagrees with the Chat's
+        // selection is not a standalone change; it must go through a complete
+        // Agent switch that republishes both together.
+        if let Some(selected) = configuration
+            .get("selected_agent_id")
+            .and_then(Value::as_str)
+            .filter(|selected| !selected.is_empty())
+        {
+            if selected != header.agent_id {
+                return Err(rua_core::RuaError::Validation {
+                    message: "Changing the selected Agent requires a complete Chat Agent switch"
+                        .to_string(),
+                });
+            }
+        }
         header
             .extra
             .insert("hook_configuration".to_string(), configuration);
-        let expected = self.load_configuration_head(chat_id).await?;
-        if expected
-            .as_deref()
-            .is_some_and(|epoch| epoch != expected_epoch)
-        {
-            return Err(rua_core::RuaError::Validation {
-                message: "Chat configuration changed; reload before updating".to_string(),
-            });
-        }
-        self.publish_configuration_head(
-            chat_id,
-            expected.as_deref(),
-            &header.extra["hook_configuration"],
-        )
-        .await
+        self.save_chat_header_with_configuration(&header).await
     }
 
     pub async fn load_chat_running_config(
@@ -1704,12 +1530,11 @@ impl WorkspaceSessionStore {
             .validate()
             .map_err(|message| rua_core::RuaError::Validation { message })?;
         if let Some(configuration) = header.extra.get_mut("hook_configuration") {
-            let expected = self.load_configuration_head(chat_id).await?;
             let configuration =
                 configuration
                     .as_object_mut()
                     .ok_or_else(|| rua_core::RuaError::Validation {
-                        message: "Chat configuration snapshot must be an object".to_string(),
+                        message: "Chat configuration must be an object".to_string(),
                     })?;
             configuration.insert(
                 "running_config".to_string(),
@@ -1723,16 +1548,11 @@ impl WorkspaceSessionStore {
                 "epoch".to_string(),
                 serde_json::json!(format!("hook-config-{}", uuid::Uuid::new_v4())),
             );
-            self.publish_configuration_head(
-                chat_id,
-                expected.as_deref(),
-                &header.extra["hook_configuration"],
-            )
-            .await?;
+            self.save_chat_header_with_configuration(&header).await?;
             return Ok(true);
         }
         Err(rua_core::RuaError::Validation {
-            message: "Chat configuration snapshot is unavailable".into(),
+            message: "Chat configuration is unavailable".into(),
         })
     }
 
@@ -5645,12 +5465,9 @@ impl WorkspaceSessionStore {
                 continue;
             }
             // Read the entry by its actual path (directory names can be encoded).
-            let Some(mut header) = read_header_file(&path.join("session.json")).await? else {
+            let Some(header) = read_header_file(&path.join("session.json")).await? else {
                 continue;
             };
-            if let Some(head) = self.read_configuration_head(&header.chat_id).await? {
-                head.apply_selection(&mut header);
-            }
             headers.push(header);
         }
 

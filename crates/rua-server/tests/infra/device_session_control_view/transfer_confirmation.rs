@@ -18,10 +18,6 @@ fn transfer_confirmation_wait_is_owned_by_foreground_chat_for_local_or_remote_en
                 serde_json::json!(ChatAddress::new("chat")),
             ),
             ("turn_id".into(), serde_json::json!("turn")),
-            (
-                "chat_configuration_epoch".into(),
-                serde_json::json!("epoch"),
-            ),
         ]
         .into(),
         ..Default::default()
@@ -54,12 +50,6 @@ fn transfer_confirmation_wait_is_owned_by_foreground_chat_for_local_or_remote_en
         &ctx,
         &serde_json::json!({"source_device_id":"phone"})
     ));
-    ctx.metadata.remove("chat_configuration_epoch");
-    assert!(!access.manages_operation_confirmation_wait(
-        "sync_send",
-        &ctx,
-        &serde_json::json!({"source_device_id":"phone","target_device_id":"desktop"})
-    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -75,7 +65,7 @@ async fn remote_transfer_participant_claims_original_chat_decision_once_after_lo
         ToolCall::new("transfer-once", "sync_send", args.clone()),
         ToolCall::new("waiting-transfer", "sync_send", args.clone()),
     ];
-    let (address, turn, _, _) = prepare_running_file_calls(&fixture, &calls, &release).await;
+    let (address, turn, _) = prepare_running_file_calls(&fixture, &calls, &release).await;
     let approvals = owner.security.approval_authority();
     let request = |call: &ToolCall| ApprovalRequestInput {
         agent_id: "default".into(),

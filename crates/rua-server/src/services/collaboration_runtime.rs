@@ -109,7 +109,6 @@ impl rua_tool::extended::collaboration::CollaborationRuntime for CollaborationRu
             address: invocation.source,
             turn_id: invocation.turn_id,
             tool_call_id: invocation.tool_call_id,
-            configuration_epoch: invocation.configuration_epoch,
             working_dir: invocation.working_dir,
         };
         match request {

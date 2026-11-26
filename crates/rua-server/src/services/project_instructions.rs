@@ -79,10 +79,9 @@ impl RuntimeAgentsInstructionLoader {
         cancellation: CancellationToken,
     ) -> Result<AgentsInstructionDiscovery> {
         let field = |name: &str| ctx.metadata.get(name).and_then(serde_json::Value::as_str);
-        let (Some(local), Some(turn), Some(configuration_epoch), Some(authority)) = (
+        let (Some(local), Some(turn), Some(authority)) = (
             ctx.local_device_id.as_deref(),
             field("turn_id"),
-            field("chat_configuration_epoch"),
             self.authority.upgrade(),
         ) else {
             return Ok(skipped(
@@ -112,7 +111,6 @@ impl RuntimeAgentsInstructionLoader {
             agent_id: ctx.agent_id.clone(),
             address: address.clone(),
             authority_epoch: active.authority_epoch,
-            configuration_epoch: configuration_epoch.into(),
             turn_id: turn.into(),
             tool_call_id: field("tool_call_id").unwrap_or_default().into(),
             confirmation: None,

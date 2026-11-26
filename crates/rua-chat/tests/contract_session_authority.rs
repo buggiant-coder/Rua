@@ -81,19 +81,20 @@ async fn rebuilt_index_exposes_saved_listing_while_agent_configuration_is_unavai
     header.user_id = "photographer".into();
     header.channel = "photos".into();
     header.pin_order = 17;
+    // The Agent this Chat selected is not installed on this Device, so the Chat's
+    // configuration cannot be resolved; its durable listing must still project.
+    header.agent_id = "not-installed-agent".into();
+    header.extra.insert(
+        "hook_configuration".into(),
+        serde_json::json!({"epoch":"config-unknown", "selected_agent_id":"not-installed-agent"}),
+    );
     let address = ChatAddress::new(&header.chat_id);
     let workspace = ChatStore::resolve(root.path(), address);
     let store = WorkspaceSessionStore::new(workspace.root());
-    store.save_chat_header(&header).await.unwrap();
-    // A replica can receive the Session and configuration head before its snapshot.
-    tokio::fs::write(
-        store.configuration_head_path(&header.chat_id),
-        br#"{"epoch":"snapshot-in-transit"}"#,
-    )
-    .await
-    .unwrap();
-    assert!(store.load_chat_header(&header.chat_id).await.is_err());
-
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
     let service = ChatService::new(root.path());
     for _ in 0..2 {
         service.rebuild_index().await.unwrap();
@@ -301,7 +302,10 @@ async fn model_selection_uses_current_configuration_for_both_chat_scopes() {
         header
             .extra
             .insert("hook_configuration".into(), original_configuration.clone());
-        store.save_chat_header(&header).await.unwrap();
+        store
+            .save_chat_header_with_configuration(&header)
+            .await
+            .unwrap();
         let chat = service.load(&address).await.unwrap().unwrap();
         assert_eq!(chat.model().unwrap()["model"], "original");
         assert_eq!(chat.model().unwrap()["thinking_strength"], "high");
@@ -315,7 +319,9 @@ async fn model_selection_uses_current_configuration_for_both_chat_scopes() {
             .replace_chat_configuration(chat_id, "configuration-original", current)
             .await
             .unwrap();
-        // A late header save cannot replace the published configuration head.
+        // An ordinary header save — the shape a late history writer takes — keeps
+        // the configuration the Chat now carries instead of republishing the one
+        // this caller last read.
         store.save_chat_header(&header).await.unwrap();
         let header_bytes = std::fs::read(store.chat_header_path(chat_id)).unwrap();
         let page = service
@@ -330,12 +336,16 @@ async fn model_selection_uses_current_configuration_for_both_chat_scopes() {
             std::fs::read(store.chat_header_path(chat_id)).unwrap(),
             header_bytes
         );
+        // The Session File itself carries the configuration that is in force, so
+        // there is no second record a reader could see ahead of it.
+        let persisted = store.load_chat_header(chat_id).await.unwrap().unwrap();
         assert_eq!(
-            store
-                .load_configuration_snapshot(chat_id, "configuration-original")
-                .await
-                .unwrap(),
-            Some(original_configuration)
+            persisted.extra["hook_configuration"],
+            serde_json::json!({
+                "epoch": "configuration-current",
+                "running_config": {},
+                "model": {"provider_id": "fixture", "model": "current", "thinking_strength": "medium"},
+            })
         );
     }
 }
@@ -363,7 +373,10 @@ async fn model_selection_does_not_resurrect_legacy_fields_when_configuration_has
             "epoch": "configuration-no-model", "running_config": {},
         }),
     );
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
     let chat = ChatService::new(root.path())
         .load(&address)
         .await
@@ -1360,12 +1373,30 @@ async fn selection_audit_configuration_and_discovery_recover_together_after_inte
         .unwrap();
     assert_eq!(rebuilt.meta["agent_id"], "agent-b");
     let reopened_store = WorkspaceSessionStore::new(reopened.storage_root());
-    reopened_store.save_chat_header(&original).await.unwrap();
+    // The Session File is now the only record of the Chat's configuration, so a
+    // late writer holding the pre-switch header cannot roll the selection back:
+    // an ordinary save keeps the switched configuration, and its Agent therefore
+    // disagrees with the header's stale one.
+    assert!(reopened_store.save_chat_header(&original).await.is_err());
+    assert_eq!(
+        reopened_store
+            .load_chat_header(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .agent_id,
+        "agent-b"
+    );
+    // The late header write kept the switched configuration; it is the Chat's only
+    // configuration record, so a further change reads it straight from the Session.
     let mut config = reopened_store
-        .load_configuration_snapshot(id, "switched")
+        .load_chat_header(id)
         .await
         .unwrap()
-        .unwrap();
+        .unwrap()
+        .extra["hook_configuration"]
+        .clone();
+    assert_eq!(config["epoch"], "switched");
     config["epoch"] = serde_json::json!("refreshed");
     reopened_store
         .replace_chat_configuration(id, "switched", config)

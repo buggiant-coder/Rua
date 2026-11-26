@@ -282,7 +282,6 @@ fn read_check_request(
         address: rua_core::ChatAddress::new(uuid::Uuid::new_v4().to_string()),
         agent_id: "agent".into(),
         authority_epoch: ConversationAuthorityEpoch::next_for_device(source, None),
-        configuration_epoch: "config".into(),
         turn_id: "turn".into(),
         tool_call_id: "call".into(),
         confirmation: None,

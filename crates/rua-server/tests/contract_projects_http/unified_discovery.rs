@@ -178,10 +178,6 @@ async fn discovery_survives_agent_switch_and_projection_rebuild_without_rewritin
                 address: rua_core::ChatAddress::new(PHOTOS),
                 turn_id: history["messages"][0]["turn_id"].as_str().unwrap().into(),
                 tool_call_id: "inspect-proof".into(),
-                configuration_epoch: history["meta"]["hook_configuration"]["epoch"]
-                    .as_str()
-                    .unwrap()
-                    .into(),
                 working_dir: test._temp.path().join("Photos"),
             },
             "default".into(),

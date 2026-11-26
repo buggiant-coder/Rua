@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -140,6 +141,12 @@ pub struct SyncRuntimeController {
     inner: Mutex<RuntimeInner>,
     transition: Mutex<()>,
     trigger: Arc<RwLock<Option<SyncTriggerHandle>>>,
+    /// Monotonic counter of explicit suspend decisions (warm suspend, grace
+    /// expiry, terminal shutdown). A resident resume that was requested before
+    /// such a decision must not activate the runtime afterwards, otherwise a
+    /// host that suspends right after asking for residency would silently
+    /// recreate the Device Network Runtime it just tore down.
+    suspend_epoch: AtomicU64,
 }
 
 impl Default for SyncRuntimeController {
@@ -154,6 +161,7 @@ impl SyncRuntimeController {
             inner: Mutex::new(RuntimeInner::default()),
             transition: Mutex::new(()),
             trigger,
+            suspend_epoch: AtomicU64::new(0),
         }
     }
 
@@ -185,6 +193,16 @@ impl SyncRuntimeController {
         }
     }
 
+    /// Snapshot this before scheduling a resume whose request point precedes
+    /// the task's first poll, such as a detached startup task.
+    pub fn suspend_epoch(&self) -> u64 {
+        self.suspend_epoch.load(Ordering::SeqCst)
+    }
+
+    fn record_suspend_decision(&self) {
+        self.suspend_epoch.fetch_add(1, Ordering::SeqCst);
+    }
+
     pub async fn trigger_handle(&self) -> Option<SyncTriggerHandle> {
         self.trigger.read().await.clone()
     }
@@ -202,7 +220,23 @@ impl SyncRuntimeController {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<SyncRuntimeParts, SyncRuntimeError>>,
     {
+        self.ensure_active_since(start, self.suspend_epoch()).await
+    }
+
+    /// `ensure_active` for a request whose decision point precedes this call.
+    async fn ensure_active_since<F, Fut>(
+        &self,
+        start: F,
+        requested_epoch: u64,
+    ) -> Result<(), SyncRuntimeError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<SyncRuntimeParts, SyncRuntimeError>>,
+    {
         let _transition = self.transition.lock().await;
+        if self.suspend_epoch() != requested_epoch {
+            return Ok(());
+        }
         self.ensure_active_inner(start).await
     }
 
@@ -267,6 +301,7 @@ impl SyncRuntimeController {
         S: FnOnce() -> SuspendFut,
         SuspendFut: Future<Output = ()>,
     {
+        self.record_suspend_decision();
         let (scheduler, liveactor, cancel) = {
             let mut inner = self.inner.lock().await;
             inner.background_grace_generation = inner.background_grace_generation.wrapping_add(1);
@@ -395,6 +430,7 @@ impl SyncRuntimeController {
             if inner.background_grace_generation != generation {
                 return;
             }
+            self.record_suspend_decision();
             match inner.state {
                 SyncRuntimeState::WarmSuspended {
                     pending_grace: true,
@@ -430,6 +466,21 @@ impl SyncRuntimeController {
         self.resume_resident(start).await
     }
 
+    /// `resume_foreground` for a request whose decision point precedes its
+    /// first poll. Detached startup work captures [`Self::suspend_epoch`] and
+    /// passes it here so a later explicit suspend wins.
+    pub async fn resume_foreground_since<F, Fut>(
+        &self,
+        start: F,
+        requested_epoch: u64,
+    ) -> Result<(), SyncRuntimeError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<SyncRuntimeParts, SyncRuntimeError>>,
+    {
+        self.resume_resident_since(start, requested_epoch).await
+    }
+
     pub async fn retain_for_foreground_operation<F, Fut>(
         &self,
         start: F,
@@ -446,7 +497,26 @@ impl SyncRuntimeController {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<SyncRuntimeParts, SyncRuntimeError>>,
     {
+        self.resume_resident_since(start, self.suspend_epoch())
+            .await
+    }
+
+    /// `resume_resident` for a request whose decision point precedes this call.
+    /// The startup resume is detached, so its request point must be captured by
+    /// the spawning task rather than by its first poll.
+    async fn resume_resident_since<F, Fut>(
+        &self,
+        start: F,
+        requested_epoch: u64,
+    ) -> Result<(), SyncRuntimeError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<SyncRuntimeParts, SyncRuntimeError>>,
+    {
         let _transition = self.transition.lock().await;
+        if self.suspend_epoch() != requested_epoch {
+            return Ok(());
+        }
         let (state, cancel) = {
             let mut inner = self.inner.lock().await;
             inner.residency_generation = inner.residency_generation.wrapping_add(1);
@@ -634,6 +704,7 @@ impl SyncRuntimeController {
 
     async fn shutdown_to_state(&self, state: SyncRuntimeState) {
         let _transition = self.transition.lock().await;
+        self.record_suspend_decision();
         let (scheduler, liveactor, cancel) = {
             let mut inner = self.inner.lock().await;
             inner.background_grace_generation = inner.background_grace_generation.wrapping_add(1);

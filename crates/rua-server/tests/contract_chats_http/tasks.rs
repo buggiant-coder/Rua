@@ -39,18 +39,6 @@ async fn wait_for_terminal(
     .expect("Task should reach terminal state")
 }
 
-async fn chat_configuration_epoch(workspace: &std::path::Path, chat_id: &str) -> String {
-    WorkspaceSessionStore::new(workspace)
-        .load_chat_header(chat_id)
-        .await
-        .unwrap()
-        .unwrap()
-        .extra["hook_configuration"]["epoch"]
-        .as_str()
-        .unwrap()
-        .to_string()
-}
-
 async fn enable_agent_tool(state: &rua_server::AppState, agent_id: &str, tool_name: &str) {
     let mut tools = rua_config::types::tools::default_builtin_tools();
     for (name, config) in &mut tools {
@@ -146,6 +134,7 @@ async fn workspace_shutdown_cancels_only_the_authorized_agent_tasks_in_a_project
         app.state.conversation_authority.clone(),
         app.state.streams.clone(),
         runtime.clone(),
+        app.state.security.approval_authority().clone(),
         rua_workspace::RuaRoot::new(temp.path()),
     );
     authority.begin_shutdown("agent-a").await.unwrap();
@@ -321,11 +310,7 @@ async fn task_input_http_routes_by_chat_and_preserves_submission_identity() {
                 depends_on: Vec::new(),
                 origin: Default::default(),
             },
-            rua_task::TaskAttemptAuthorization::new("task-input-agent")
-                .unwrap()
-                .with_configuration_epoch(
-                    chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id).await,
-                ),
+            rua_task::TaskAttemptAuthorization::new("task-input-agent").unwrap(),
         )
         .await
         .unwrap();
@@ -447,8 +432,6 @@ async fn watched_shell_output_starts_runtime_only_notification_turn() {
         }
     }
     let owner = TaskOwner::new(&chat_id);
-    let configuration_epoch =
-        chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id).await;
     let created = TaskCreateTool
         .call(
             serde_json::json!({
@@ -465,10 +448,7 @@ async fn watched_shell_output_starts_runtime_only_notification_turn() {
                 session_id: chat_id.clone(),
                 working_dir: workspace.clone(),
                 tool_result_store_dir: Some(tool_result_store_dir),
-                metadata: std::collections::HashMap::from([(
-                    "chat_configuration_epoch".to_string(),
-                    serde_json::Value::String(configuration_epoch),
-                )]),
+                metadata: std::collections::HashMap::from([]),
                 task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
                     &test.state.task_runtime,
                 )))),
@@ -655,8 +635,6 @@ async fn scoped_task_http_reads_real_tool_task_and_hides_cross_chat_access() {
     let workspace_dir = test.state.rua_root.join("workspaces").join("task-agent");
     let session_store = WorkspaceSessionStore::new(test.state.rua_root.join("chats"));
     seed_runtime_note_turn(&session_store, &chat_id, "turn-task-http").await;
-    let configuration_epoch =
-        chat_configuration_epoch(&test.state.rua_root.join("chats"), &chat_id).await;
 
     let created = TaskCreateTool
         .call(
@@ -680,10 +658,6 @@ async fn scoped_task_http_reads_real_tool_task_and_hides_cross_chat_access() {
                     (
                         "tool_use_id".to_string(),
                         serde_json::Value::String("call-task-http".to_string()),
-                    ),
-                    (
-                        "chat_configuration_epoch".to_string(),
-                        serde_json::Value::String(configuration_epoch),
                     ),
                 ]),
                 task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
@@ -889,12 +863,7 @@ async fn process_task_runtime_isolates_two_agents_and_multiple_chats() {
                 ToolContext {
                     agent_id: agent_id.clone(),
                     session_id: chat_id.clone(),
-                    metadata: std::collections::HashMap::from([(
-                        "chat_configuration_epoch".into(),
-                        chat_configuration_epoch(test.state.chat_workspace().as_path(), chat_id)
-                            .await
-                            .into(),
-                    )]),
+                    metadata: std::collections::HashMap::from([]),
                     working_dir: test.state.rua_root.join("workspaces").join(agent_id),
                     task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
                         &test.state.task_runtime,
@@ -1037,8 +1006,6 @@ async fn tool_task_preserves_real_name_and_arguments_for_tool_guard() {
         .rua_root
         .join("workspaces")
         .join("task-guard-agent");
-    let configuration_epoch =
-        chat_configuration_epoch(&test.state.rua_root.join("chats"), &chat_id).await;
     let created = TaskCreateTool
         .call(
             serde_json::json!({
@@ -1055,10 +1022,7 @@ async fn tool_task_preserves_real_name_and_arguments_for_tool_guard() {
                 agent_id: "task-guard-agent".to_string(),
                 session_id: chat_id,
                 working_dir: workspace_dir,
-                metadata: std::collections::HashMap::from([(
-                    "chat_configuration_epoch".to_string(),
-                    serde_json::Value::String(configuration_epoch),
-                )]),
+                metadata: std::collections::HashMap::from([]),
                 task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
                     &test.state.task_runtime,
                 )))),
@@ -1137,12 +1101,7 @@ async fn task_creation_uses_captured_execution_device_independently_of_chat_auth
             ToolContext {
                 agent_id: "remote-authority-agent".to_string(),
                 session_id: chat_id.clone(),
-                metadata: std::collections::HashMap::from([(
-                    "chat_configuration_epoch".into(),
-                    chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id)
-                        .await
-                        .into(),
-                )]),
+                metadata: std::collections::HashMap::from([]),
                 task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
                     &test.state.task_runtime,
                 )))),
@@ -1310,15 +1269,10 @@ async fn authority_transfer_preserves_running_task_on_its_original_device() {
             ToolContext {
                 agent_id: "transfer-task-agent".to_string(),
                 session_id: chat_id.clone(),
-                metadata: std::collections::HashMap::from([
-                    ("turn_id".into(), "turn-transfer-task".into()),
-                    (
-                        "chat_configuration_epoch".into(),
-                        chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id)
-                            .await
-                            .into(),
-                    ),
-                ]),
+                metadata: std::collections::HashMap::from([(
+                    "turn_id".into(),
+                    "turn-transfer-task".into(),
+                )]),
                 task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
                     &test.state.task_runtime,
                 )))),
@@ -1392,12 +1346,7 @@ async fn task_activity_reconnects_with_snapshot_and_chat_delete_removes_tasks() 
             ToolContext {
                 agent_id: "task-lifecycle-agent".to_string(),
                 session_id: chat_id.clone(),
-                metadata: std::collections::HashMap::from([(
-                    "chat_configuration_epoch".into(),
-                    chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id)
-                        .await
-                        .into(),
-                )]),
+                metadata: std::collections::HashMap::from([]),
                 task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
                     &test.state.task_runtime,
                 )))),
@@ -1483,12 +1432,7 @@ async fn task_activity_reconnects_with_snapshot_and_chat_delete_removes_tasks() 
             ToolContext {
                 agent_id: "task-lifecycle-agent".to_string(),
                 session_id: chat_id.clone(),
-                metadata: std::collections::HashMap::from([(
-                    "chat_configuration_epoch".into(),
-                    chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id)
-                        .await
-                        .into(),
-                )]),
+                metadata: std::collections::HashMap::from([]),
                 task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
                     &test.state.task_runtime,
                 )))),
@@ -1576,15 +1520,10 @@ async fn task_retry_http_preserves_attempt_history_under_same_id() {
             ToolContext {
                 agent_id: "task-retry-agent".to_string(),
                 session_id: chat_id.clone(),
-                metadata: std::collections::HashMap::from([
-                    ("turn_id".into(), "turn-task-retry".into()),
-                    (
-                        "chat_configuration_epoch".into(),
-                        chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id)
-                            .await
-                            .into(),
-                    ),
-                ]),
+                metadata: std::collections::HashMap::from([(
+                    "turn_id".into(),
+                    "turn-task-retry".into(),
+                )]),
                 task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
                     &test.state.task_runtime,
                 )))),
@@ -1639,12 +1578,6 @@ async fn task_retry_http_preserves_attempt_history_under_same_id() {
         "{}",
         read_json(changed_directory).await
     );
-    let current_epoch =
-        chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id).await;
-    assert_ne!(
-        original.attempts[0].configuration_epoch.as_deref(),
-        Some(current_epoch.as_str())
-    );
 
     let retry = request(
         &test.app,
@@ -1668,10 +1601,6 @@ async fn task_retry_http_preserves_attempt_history_under_same_id() {
     assert_eq!(
         completed.attempts[1].authorization_agent_id,
         "task-retry-next-agent"
-    );
-    assert_eq!(
-        completed.attempts[1].configuration_epoch.as_deref(),
-        Some(current_epoch.as_str())
     );
     assert_eq!(
         completed.attempts[1].authorization_origin,
@@ -1717,12 +1646,7 @@ async fn task_http_exposes_derived_blocked_dependency_state() {
     let ctx = ToolContext {
         agent_id: "task-graph-agent".to_string(),
         session_id: chat_id.clone(),
-        metadata: std::collections::HashMap::from([(
-            "chat_configuration_epoch".into(),
-            chat_configuration_epoch(test.state.chat_workspace().as_path(), &chat_id)
-                .await
-                .into(),
-        )]),
+        metadata: std::collections::HashMap::from([]),
         task_runtime: Some(Arc::new(TaskRuntimeHandle::new(Arc::clone(
             &test.state.task_runtime,
         )))),
@@ -1824,7 +1748,6 @@ async fn task_http_keeps_unconfirmed_and_cached_remote_tasks_unknown_and_chat_sc
             turn_id: None,
             tool_call_id: None,
             agent_id: "task-offline-agent".into(),
-            configuration_epoch: None,
             extra: Default::default(),
         },
         last_target_evidence: None,

@@ -15,7 +15,7 @@ import org.robolectric.shadows.ShadowSettings
 @LooperMode(LooperMode.Mode.PAUSED)
 class PhoneDeviceControlGenerationTest {
     private fun invocation(turn: String) = PhoneInvocation(
-        "owner", PhoneChatAddress("chat"), turn, "authority", "configuration",
+        "owner", PhoneChatAddress("chat"), turn, "authority",
     )
 
     @Test fun aQueuedOldGenerationCannotAcquireOrReplaceTheNewGenerationsSession() {

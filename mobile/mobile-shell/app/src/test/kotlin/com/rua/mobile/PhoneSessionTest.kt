@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit
 @RunWith(RobolectricTestRunner::class)
 class PhoneSessionTest {
     private fun invocation(turn: String = "turn-1") = PhoneInvocation(
-        "owner", PhoneChatAddress("chat"), turn, "authority", "configuration",
+        "owner", PhoneChatAddress("chat"), turn, "authority",
     )
 
     @Test fun invocationRequiresTheCurrentNestedProtocolAndEncodesOnlyCanonicalChatPaths() {
@@ -22,7 +22,7 @@ class PhoneSessionTest {
         assertEquals("/chats/chat", invocation().chatAddress.apiPath())
         assertEquals(setOf("chat_id"), current.toJson().getJSONObject("chat_address").keys().asSequence().toSet())
         assertTrue(runCatching { PhoneInvocation.fromParams(current.toJson()) }.isFailure)
-        for (key in listOf("owner", "turn_id", "authority_epoch", "chat_configuration_epoch")) {
+        for (key in listOf("owner", "turn_id", "authority_epoch")) {
             val json = current.toJson().put(key, " ")
             assertTrue(key, runCatching { PhoneInvocation.fromParams(JSONObject().put("invocation", json)) }.isFailure)
         }
@@ -65,7 +65,6 @@ class PhoneSessionTest {
         val first = state.activate(invocation())
         for (changed in listOf(
             invocation().copy(authorityEpoch = "changed"),
-            invocation().copy(configurationEpoch = "changed"),
         )) {
             assertTrue(runCatching { state.activate(changed) }.isFailure)
             assertTrue(runCatching { state.bindTurn(changed) }.isFailure)

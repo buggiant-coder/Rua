@@ -71,7 +71,7 @@ fn build_state(sync_enabled: bool, with_network: bool) -> (AppState, TempDir) {
     (state, tmp)
 }
 
-async fn seed_task_chat(state: &AppState, data_dir: &std::path::Path, chat_id: &str) -> String {
+async fn seed_task_chat(state: &AppState, data_dir: &std::path::Path, chat_id: &str) {
     use rua_server::services::conversation_authority_placement::{
         ConversationAuthorityEpoch, ConversationAuthorityPlacement,
     };
@@ -167,7 +167,6 @@ async fn seed_task_chat(state: &AppState, data_dir: &std::path::Path, chat_id: &
         )
         .await
         .unwrap();
-    let epoch = configuration.epoch.clone();
     let store = WorkspaceSessionStore::new(&workspace_dir);
     let mut header = store.load_chat_header(chat_id).await.unwrap().unwrap();
     header
@@ -177,7 +176,10 @@ async fn seed_task_chat(state: &AppState, data_dir: &std::path::Path, chat_id: &
         "hook_configuration".into(),
         serde_json::to_value(configuration).unwrap(),
     );
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
     let now = Utc::now().to_rfc3339();
     store
         .append_conversation_turn(
@@ -205,7 +207,6 @@ async fn seed_task_chat(state: &AppState, data_dir: &std::path::Path, chat_id: &
         )
         .await
         .expect("seed task publication Turn");
-    epoch
 }
 
 async fn collect_v4_changes(state: &AppState) -> Vec<rua_sync::opaque_replica_log::SyncChange> {
@@ -268,7 +269,7 @@ async fn collect_v4_frame_stats(
 async fn terminal_task_runtime_note_is_published_as_evergreen_chat_state() {
     let (state, tmp) = build_state(true, true);
     let chat_id = "00000000-0000-0000-0000-000000001003";
-    let configuration_epoch = seed_task_chat(&state, tmp.path(), chat_id).await;
+    seed_task_chat(&state, tmp.path(), chat_id).await;
     state
         .task_runtime
         .register_runner(Arc::new(ImmediateTaskRunner));
@@ -287,9 +288,7 @@ async fn terminal_task_runtime_note_is_published_as_evergreen_chat_state() {
                 depends_on: Vec::new(),
                 origin: Default::default(),
             },
-            rua_task::TaskAttemptAuthorization::new("default")
-                .unwrap()
-                .with_configuration_epoch(configuration_epoch.clone()),
+            rua_task::TaskAttemptAuthorization::new("default").unwrap(),
         )
         .await
         .expect("create task");
@@ -299,10 +298,6 @@ async fn terminal_task_runtime_note_is_published_as_evergreen_chat_state() {
         .await
         .expect("task terminal");
     assert_eq!(completed.state, rua_task::TaskState::Completed);
-    assert_eq!(
-        completed.attempts[0].configuration_epoch.as_deref(),
-        Some(configuration_epoch.as_str())
-    );
     assert!(completed.attempts[0].device.public_cwd.is_some());
 
     let published_note = tokio::time::timeout(Duration::from_secs(2), async {
@@ -1470,8 +1465,7 @@ async fn publication_seam_preserves_large_daily_change_sets() {
     assert!(
         changes.iter().any(|change| {
             change.domain == "evergreen_chat"
-                && change.record_id
-                    == format!("chats/{chat_id}/messages/000000000099.jsonl")
+                && change.record_id == format!("chats/{chat_id}/messages/000000000099.jsonl")
                 && change.payload.to_string().contains("daily batch 99")
         }),
         "expanded batch should preserve ordinary Evergreen Chat changes"

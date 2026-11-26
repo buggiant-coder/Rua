@@ -387,14 +387,6 @@ impl Tool for TaskCreateTool {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned),
         });
-        let authorization = match ctx
-            .metadata
-            .get("chat_configuration_epoch")
-            .and_then(serde_json::Value::as_str)
-        {
-            Some(epoch) => authorization.with_configuration_epoch(epoch.to_string()),
-            None => authorization,
-        };
         let task_id = runtime.create(spec, authorization).await.map_err(|error| {
             rua_core::RuaError::Tool {
                 tool: "task_create".into(),
@@ -885,14 +877,6 @@ impl Tool for TaskRetryTool {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned),
         });
-        let authorization = match ctx
-            .metadata
-            .get("chat_configuration_epoch")
-            .and_then(serde_json::Value::as_str)
-        {
-            Some(epoch) => authorization.with_configuration_epoch(epoch.to_string()),
-            None => authorization,
-        };
         let record = runtime
             .retry(&task_owner_from_context(&ctx), &args.task_id, authorization)
             .await

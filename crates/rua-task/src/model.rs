@@ -315,8 +315,6 @@ pub struct TaskAttempt {
     pub authorization_agent_id: String,
     #[serde(default)]
     pub authorization_origin: TaskOrigin,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub configuration_epoch: Option<String>,
     #[serde(default)]
     pub device: TaskDeviceContext,
     pub created_at: DateTime<Utc>,
@@ -334,8 +332,6 @@ pub struct TaskAttemptAuthorization {
     pub agent_id: String,
     #[serde(default)]
     pub origin: TaskOrigin,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub configuration_epoch: Option<String>,
 }
 
 impl TaskAttemptAuthorization {
@@ -347,13 +343,7 @@ impl TaskAttemptAuthorization {
         Ok(Self {
             agent_id,
             origin: TaskOrigin::default(),
-            configuration_epoch: None,
         })
-    }
-
-    pub fn with_configuration_epoch(mut self, epoch: String) -> Self {
-        self.configuration_epoch = Some(epoch);
-        self
     }
 
     pub fn with_origin(mut self, origin: TaskOrigin) -> Self {

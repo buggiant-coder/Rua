@@ -348,7 +348,7 @@ async fn seed_chat_authority(app: &super::support::TestApp, agent_id: &str, chat
         serde_json::to_value(configuration).unwrap(),
     );
     rua_session::WorkspaceSessionStore::new(&workspace_dir)
-        .save_chat_header(&header)
+        .save_chat_header_with_configuration(&header)
         .await
         .expect("seed Chat Session authority");
 }
@@ -363,13 +363,19 @@ async fn ordinary_remote_chat_has_no_acp_permissions_without_contacting_its_devi
     let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let mut header = store.load_chat_header(chat_id).await.unwrap().unwrap();
     header.extra.get_mut("authority_placement").unwrap()["device_id"] = json!("51e8e7811446d40d");
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
     for active in [false, true] {
         if active {
             header
                 .extra
                 .insert("acp_binding".into(), json!({"runner": "codex"}));
-            store.save_chat_header(&header).await.unwrap();
+            store
+                .save_chat_header_with_configuration(&header)
+                .await
+                .unwrap();
         }
         let response = request(
             &app.app,
@@ -1749,7 +1755,10 @@ async fn acp_permission_relay_routes_are_chat_scoped_and_validate_option_ids() {
     header
         .extra
         .insert("acp_binding".into(), json!({"runner": "codex"}));
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
     let active_turn = app
         .state
         .conversation_authority

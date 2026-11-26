@@ -8,7 +8,7 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class PhoneControlTest {
     private fun invocation(owner: String) = PhoneInvocation(
-        owner, PhoneChatAddress("chat"), "turn", "authority", "configuration",
+        owner, PhoneChatAddress("chat"), "turn", "authority",
     )
 
     @Test fun operationCancellationKeepsTheReservationUntilFinish() {

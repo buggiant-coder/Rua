@@ -46,7 +46,7 @@ async fn complete_pending(
 async fn blocked_chat_result_keeps_its_outbox_without_starving_later_chat_recovery() {
     let mut fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
     let busy_release = Arc::new(Notify::new());
-    let (busy, busy_turn, _, _) = prepare_running_file_calls(
+    let (busy, busy_turn, _) = prepare_running_file_calls(
         &fixture,
         &[ToolCall::new(
             "busy-origin",
@@ -59,7 +59,7 @@ async fn blocked_chat_result_keeps_its_outbox_without_starving_later_chat_recove
     fixture.chat_id = uuid::Uuid::new_v4().to_string();
     fixture.submission_id = uuid::Uuid::new_v4().to_string();
     let ready_release = Arc::new(Notify::new());
-    let (ready, ready_turn, _, _) = prepare_running_file_calls(
+    let (ready, ready_turn, _) = prepare_running_file_calls(
         &fixture,
         &[ToolCall::new(
             "ready-origin",

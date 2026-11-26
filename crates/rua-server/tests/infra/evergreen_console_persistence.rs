@@ -87,7 +87,10 @@ async fn materialize_local_chat(
     let store = rua_session::WorkspaceSessionStore::new(workspace_dir);
     let mut header = store.load_chat_header(chat_id).await.unwrap().unwrap();
     seed_runtime_configuration(state, agent_id, &mut header).await;
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
 }
 
 async fn targeted_chat_header(
@@ -1089,7 +1092,14 @@ async fn console_chat_turn_mode_override_does_not_replace_chat_default() {
         )
         .collect()
         .await;
-    assert!(first_events.iter().all(Result::is_ok));
+    assert!(
+        first_events.iter().all(Result::is_ok),
+        "{:?}",
+        first_events
+            .iter()
+            .filter(|event| event.is_err())
+            .collect::<Vec<_>>()
+    );
     let first_request = captured.lock().await.take().expect("first runtime request");
     assert_eq!(
         first_request
@@ -1725,7 +1735,10 @@ async fn device_delivery_chat_stream_materializes_targeted_chat_and_metadata() {
     let store = rua_session::WorkspaceSessionStore::new(runtime.chat_workspace_dir());
     let mut header = store.load_chat_header(chat_id).await.unwrap().unwrap();
     seed_runtime_configuration(&state, "default", &mut header).await;
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
     extra.insert(
         "device_delivery".to_string(),
         json!({
@@ -3069,7 +3082,10 @@ async fn console_chat_projects_durable_runtime_notes_from_message_log() {
         "hook_configuration".into(),
         serde_json::to_value(configuration).unwrap(),
     );
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
     store
         .append_runtime_note(chat_id, "turn-1", runtime_note())
         .await
@@ -3359,7 +3375,10 @@ async fn assert_memory_signal_disabled(policy: serde_json::Value, capture_policy
                 .unwrap();
         rua_config::atomic_write_json(&runtime.workspace_dir().join("agent.json"), &agent).unwrap();
     }
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
 
     let mut extra = serde_json::Map::new();
     if capture_policy {

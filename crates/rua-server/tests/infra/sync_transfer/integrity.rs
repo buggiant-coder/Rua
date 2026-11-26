@@ -38,7 +38,6 @@ fn chat_context() -> ChatTransferContext {
             agent_id: "agent".into(),
             address: ChatAddress::new("chat"),
             authority_epoch: ConversationAuthorityEpoch::from_parts(1, 0, [0; 8]),
-            configuration_epoch: "config".into(),
             turn_id: "turn".into(),
             tool_call_id: "call".into(),
             confirmation: None,

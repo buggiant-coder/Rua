@@ -15,7 +15,7 @@ perform several model calls, Tool calls, retries, and projections. Resolving
 settings independently at each step would make one Turn internally inconsistent.
 
 The current API and control view expose Chat-addressed running configuration,
-while session storage owns the complete configuration snapshot and current head.
+while session storage owns the single current complete configuration.
 
 ## Decision
 
@@ -47,11 +47,11 @@ Running Config. It contains every option exposed as Chat runtime behavior and
 consumed per Turn.
 
 The config is not a sparse override. Execution never overlays current Agent
-defaults onto a saved snapshot. New Chat creation follows D9 and completes before
+defaults onto a saved configuration. New Chat creation follows D9 and completes before
 execution. Materialize Harness,
 Hook revisions, model/reasoning, Tool Selection Policy and external source selections,
-security policy and environment binding in one complete immutable snapshot; a coherent
-current head identifies its epoch. Under ADR-0058, complete Tool configuration freezes
+security policy and environment binding in one complete snapshot that the Chat
+replaces as a whole. Under ADR-0058, complete Tool configuration freezes
 selection intent, not an expanded inventory of the current product catalog.
 
 ### D3 - Both Chat scopes use the same rule
@@ -77,7 +77,7 @@ source Chat Running Config to preserve behavioral continuity.
 ### D5 - Turn claim creates an immutable effective snapshot
 
 When Conversation Authority claims an input and creates the Active Turn, it
-captures the complete Chat configuration epoch, including effective authorization.
+captures the complete Chat configuration, including effective authorization.
 Every model call, Tool call, retry, context projection, and runtime decision in
 that Turn uses this same immutable value. ADR-0058 permits product catalog and
 Device-readiness changes to affect later Model Call capability snapshots under
@@ -92,14 +92,24 @@ history records the compact Agent/model/thinking provenance required by its
 own contracts rather than serializing a second full copy of
 Chat configuration into every Turn.
 
-### D6 - Complete immutable snapshots and a coherent current head
+### D6 - One complete current configuration per Chat
 
-Chat storage owns immutable complete snapshots and a separately identified
-current head/epoch, written atomically. Core fields are typed and
-validated; unknown fields are preserved. Materialization completes before the
-Chat can execute. Exact storage layout follows the session publication contract.
+Chat storage owns exactly one complete configuration: the latest accepted one,
+stored inline in the Chat's session record and written atomically with it. Core
+fields are typed and validated; unknown fields are preserved. Materialization
+completes before the Chat can execute. A claimed Turn keeps the value it
+captured, so nothing needs an immutable historical chain of configuration
+files.
 
-The snapshot is portable Conversation State and synchronizes with the Chat.
+"Snapshot" here means one complete self-contained copy of the configuration, not
+a retained version that can be addressed again.
+
+Configuration changes carry a fresh epoch so a concurrent writer can detect
+that it edited a stale value. That epoch version is not an addressing scheme:
+nothing resolves an older configuration by epoch, and Task attempts, Tool
+authorization, and device-read admission do not pin one.
+
+The configuration is portable Conversation State and synchronizes with the Chat.
 Skill configuration records the selected name, description, source and resource-relative
 directory, not the Skill body. Agent and Project Skill bodies are read from their
 resource at runtime and enter model context through the `skill` Tool Result.
@@ -111,11 +121,11 @@ non-portable infrastructure values are excluded.
 
 Chat model selection shown by history responses and live control views is a
 projection of this same current configuration, including the separate Thinking
-selection. Other Session fields cannot override a complete snapshot or fill an
+selection. Other Session fields cannot override the complete configuration or fill an
 intentionally absent selection. A previously claimed Active Turn keeps its captured model, while a
 later Turn uses the current configuration.
 
-### D7 - Explicit updates publish epochs and inherited configuration
+### D7 - Explicit updates replace the current configuration
 
 Chat configuration APIs read and replace the complete Chat Running Config.
 Agent configuration APIs edit only the template for future Chats.
@@ -124,19 +134,21 @@ A Chat may explicitly replace its config with a fresh copy of current Agent
 defaults. That is a one-time copy, not restored inheritance. Route naming and
 response shape must not imply Chat ownership while mutating Agent-wide state.
 
-UpdateChatConfiguration validates all categories and atomically publishes a new
-epoch. Source Chat security/environment changes propagate to its collaborations;
-child executor-specific model/prompt/Tools are not replaced by the source's.
-Children must confirm the inherited revision before new execution. Do not solve
-divergence by extra permission-difference approvals or merging two profiles.
-Active Turns keep their captured epoch; update admission and new execution are
+UpdateChatConfiguration validates all categories and atomically replaces the
+stored configuration with a fresh epoch, which fences a writer that edited a
+value it read before someone else's update. Source Chat security/environment
+changes propagate to its collaborations; child executor-specific
+model/prompt/Tools are not replaced by the source's. Children confirm the
+inherited configuration before new execution. Do not solve divergence by extra
+permission-difference approvals or merging two profiles. Active Turns keep the
+configuration they captured; update admission and new execution are
 coordinated. Deleting the source leaves retained children with their last
 materialized configuration, not a live Agent-default dependency.
 
 ### D8 - Current configuration must be complete
 
-A materialized Chat reads one complete configuration snapshot. Missing snapshots,
-invalid data and unresolved heads fail through normal validation. Reads never
+A materialized Chat reads its one complete current configuration. Missing
+configuration and invalid data fail through normal validation. Reads never
 reset settings or fill missing fields from current Agent defaults.
 
 ### D9 - Creation materializes the complete configuration
@@ -149,11 +161,11 @@ inputs; it does not persist, publish or adopt a configuration. Those effects
 remain with the existing operation and its authority/commit ordering. This shared
 assembly is not a cross-store transactional read guarantee.
 
-Create the complete snapshot and head during Chat creation on its Authority
+Create the complete configuration during Chat creation on its Authority
 Device. A Lazy Chat waits for its first accepted stateful operation. Project
 draft creation also captures the complete configuration, and branching inherits
 the source configuration. Running-config APIs project or replace the running
-section within that complete snapshot; there is no standalone running file.
+section within that complete configuration; there is no standalone running file.
 
 For an Agent Lazy Chat, both model and target Device remain local draft choices.
 Neither choice creates a Session or transfers Authority. Sending input, uploading
@@ -167,7 +179,7 @@ the outcome is confirmed, including across a reload: timeout is not proof the
 target did not create the Chat. The same target can be retried idempotently.
 
 Only a materialized Chat may use the Authority migration endpoint; a zero-message
-Chat is still materialized once it has its complete snapshot. A model-only header
+Chat is still materialized once it has its complete configuration. A model-only header
 is not a materialized Chat. Subsequent input reads the existing Chat without
 rewriting its scope or rebuilding its defaults. Project resource binding remains
 fixed and is not an Agent draft target selection.
@@ -224,11 +236,12 @@ old-format compatibility is not retained.
 - One Active Turn uses one immutable configuration/policy snapshot; each Model Call
   resolves its own immutable capability snapshot from that policy.
 - Mid-Turn edits never change in-flight behavior.
-- Immutable complete snapshots and current head are portable Chat state;
-  device-local credentials and resource paths are resolved by explicit bindings.
+- The complete current configuration travels with the Chat as portable Chat
+  state; device-local credentials and resource paths are resolved by explicit
+  bindings.
 - Agent Running Config remains device-local template state.
 - The full Effective Turn Running Config is not duplicated into Turn history.
-- Device-local paths and credentials never enter the snapshot.
+- Device-local paths and credentials never enter the configuration.
 
 ## Authority, persistence, concurrency, and failure boundaries
 
@@ -236,7 +249,7 @@ old-format compatibility is not retained.
 Authority. Agent services own templates. Turn execution reads only the snapshot
 captured at claim time.
 
-**Persistence.** Complete config is atomically stored beside the Session File
+**Persistence.** Complete config is atomically stored with the Session File
 and synchronized with the Chat. Chat Index may project list-visible summaries
 but cannot become configuration authority.
 
@@ -246,12 +259,14 @@ complete config, never a field-wise mixture.
 
 **Failure.** Invalid candidates are rejected before replacement. Source/child
 publication has recoverable version evidence and blocks new stale execution
-until coherent. Missing or invalid snapshots fail closed without default fallback.
+until coherent. Missing or invalid configuration fails closed without default
+fallback.
 
 ## Consequences
 
 - Existing Chats remain stable when Agent defaults change.
-- Explicit Project Agent switches publish complete epochs, not silent overlays.
+- Explicit Project Agent switches replace the complete configuration, not
+  field-wise overlays.
 - Config changes have a clear next-Turn activation point.
 - Runtime construction becomes simpler because it consumes one complete value.
 - Configuration duplication per Chat is intentional and portable.
@@ -268,11 +283,10 @@ until coherent. Missing or invalid snapshots fail closed without default fallbac
 
 ## Implementation and verification
 
-**ADR-0053 amendment gaps:** ChatRunningConfig::resolve currently clones Agent
-defaults and overwrites selected fields. Complete security snapshots, epoch/head
-storage, and inherited child publication/admission must be implemented and tested.
-A configuration_epoch test name or running_config JSON is not proof of these
-semantics. Existing implementation anchors below are not a conformance claim.
+**ADR-0053 amendment gaps:** complete security snapshots and inherited child
+publication/admission must be implemented and tested. A configuration_epoch test
+name or running_config JSON is not proof of these semantics. Existing
+implementation anchors below are not a conformance claim.
 
 Current implementation anchors include:
 
@@ -283,13 +297,13 @@ Current implementation anchors include:
 - `crates/rua-server/src/services/conversation_authority.rs`;
 - `console/src/components/RunningConfigOptions/index.tsx`.
 
-### Current implementation gaps
+### Current implementation
 
 ADR-0058's policy representation, current-format Agent/Chat edits, and product
 catalog growth now use the same configuration epoch and capability snapshot paths.
 
-The current storage uses immutable complete snapshots and a current head.
-Running-config reads project that snapshot, and writes publish a new epoch.
+Storage keeps one complete configuration per Chat.
+Running-config reads project that value, and writes replace it with a new epoch.
 New Agent/Project Chats and branches must supply the complete configuration;
 there is no standalone running-config writer, migration initializer, or sync record.
 This storage cleanup does not itself prove every execution/backfill path captures

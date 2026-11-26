@@ -24,7 +24,6 @@ pub struct TargetChatRead<'a> {
     pub agent_id: &'a str,
     pub authority_device_id: &'a str,
     pub authority_epoch: ConversationAuthorityEpoch,
-    pub configuration_epoch: &'a str,
     pub turn_id: &'a str,
     pub tool_call_id: &'a str,
     pub tool_name: &'a str,
@@ -128,7 +127,6 @@ impl TargetFileReadContext {
                         agent_id: context.agent_id,
                         authority_device_id: context.authority_device_id,
                         authority_epoch: context.authority_epoch,
-                        configuration_epoch: context.configuration_epoch,
                         turn_id: context.turn_id,
                         tool_call_id: context.tool_call_id,
                         tool_name: "read",
@@ -800,12 +798,8 @@ impl TargetFileReadContext {
             ));
         }
         let captured = ChatHookConfiguration::from_persisted(configuration).map_err(Unavailable)?;
-        if captured.selected_agent_id != request.agent_id
-            || captured.epoch != request.configuration_epoch
-        {
-            return Err(Unavailable(
-                "Captured Chat Agent or configuration epoch has changed".into(),
-            ));
+        if captured.selected_agent_id != request.agent_id {
+            return Err(Unavailable("Captured Chat Agent has changed".into()));
         }
         let agent_enabled = self
             .agent_service

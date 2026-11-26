@@ -46,6 +46,15 @@ async fn task_retains_original_executor_and_cwd_while_result_and_approval_follow
         Some(json!({"id":"next","name":"Next"})),
     )
     .await;
+    // The waiting Task runs under the Chat's current configuration, so the
+    // switched-to Agent also has to gate its Tools for the approval branch of
+    // this contract to be exercised at all.
+    let mut next_policy = state.security.config_store().load("next").unwrap();
+    next_policy.tool_guard.approval_mode = "ask_first".into();
+    state
+        .security
+        .save_and_invalidate("next", &next_policy)
+        .unwrap();
     let external = tempfile::tempdir().unwrap();
     let device = local_device_id(state);
     let id = uuid::Uuid::new_v4().to_string();
@@ -116,9 +125,7 @@ async fn task_retains_original_executor_and_cwd_while_result_and_approval_follow
                 depends_on: vec![],
                 context_refs: vec![],
             },
-            TaskAttemptAuthorization::new("default")
-                .unwrap()
-                .with_configuration_epoch(config.epoch.clone()),
+            TaskAttemptAuthorization::new("default").unwrap(),
             TaskAdoptedExecution::new(
                 async {
                     let _ = waiting.await;
@@ -136,7 +143,6 @@ async fn task_retains_original_executor_and_cwd_while_result_and_approval_follow
         metadata: std::collections::HashMap::from([
             ("turn_id".into(), json!(origin_turn)),
             ("tool_use_id".into(), json!("original-call")),
-            ("chat_configuration_epoch".into(), json!(config.epoch)),
         ]),
         task_runtime: Some(Arc::new(TaskRuntimeHandle::new(tasks.clone()))),
         ..Default::default()
@@ -150,10 +156,6 @@ async fn task_retains_original_executor_and_cwd_while_result_and_approval_follow
     let before = tasks.get(&owner, task_id).await.unwrap();
     let attempt = &before.attempts[0];
     assert_eq!(attempt.authorization_agent_id, "default");
-    assert_eq!(
-        attempt.configuration_epoch.as_deref(),
-        Some(config.epoch.as_str())
-    );
 
     let switched = call(
         &test.app,
@@ -283,11 +285,9 @@ async fn task_retains_original_executor_and_cwd_while_result_and_approval_follow
         record.spec.origin.turn_id.as_deref(),
         Some(origin_turn.as_str())
     );
+    // The Attempt keeps the execution position and the authorization Agent it
+    // was created with, even though the Chat has since switched both.
     assert_eq!(record.attempts[0].device, attempt.device);
-    assert_eq!(
-        record.attempts[0].configuration_epoch,
-        attempt.configuration_epoch
-    );
     assert_eq!(
         record.attempts[0].authorization_agent_id,
         attempt.authorization_agent_id

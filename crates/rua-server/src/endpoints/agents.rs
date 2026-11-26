@@ -212,60 +212,123 @@ async fn update_agent(
     }
 }
 
+/// Names the unfinished work that blocks an Agent deletion.
+///
+/// A generic "busy" answer would not tell the user which control to use, so the
+/// refusal carries the Chat, the Turn or Task and the counts the user has to
+/// resolve. This is not a shutdown report: nothing was stopped to produce it.
+fn delete_refusal_detail(agent_id: &str, report: &rua_workspace::ShutdownReport) -> String {
+    let mut blockers: Vec<String> = report
+        .blocking_work
+        .iter()
+        .map(|unit| {
+            let kind = match unit.kind {
+                rua_workspace::WorkKind::Turn => "turn",
+                rua_workspace::WorkKind::Task => "task",
+            };
+            match unit.attempt_no {
+                Some(attempt_no) => {
+                    format!(
+                        "{kind} {} in Chat {} (attempt {attempt_no})",
+                        unit.id, unit.chat
+                    )
+                }
+                None => format!("{kind} {} in Chat {}", unit.id, unit.chat),
+            }
+        })
+        .collect();
+    if report.turns_unresolved > blockers.len() {
+        blockers.push(format!(
+            "{} more running Turn(s)",
+            report.turns_unresolved - blockers.len()
+        ));
+    }
+    if report.queued_inputs_unresolved > 0 {
+        blockers.push(format!(
+            "{} queued input(s)",
+            report.queued_inputs_unresolved
+        ));
+    }
+    if report.pending_approvals_unresolved > 0 {
+        blockers.push(format!(
+            "{} pending approval(s)",
+            report.pending_approvals_unresolved
+        ));
+    }
+    if report.unanswered_prompts_unresolved > 0 {
+        blockers.push(format!(
+            "{} unanswered question(s)",
+            report.unanswered_prompts_unresolved
+        ));
+    }
+    if !report.failed_components.is_empty() {
+        blockers.push(format!(
+            "unreadable work state: {}",
+            report.failed_components.join(", ")
+        ));
+    }
+    if blockers.is_empty() {
+        blockers.push("work state could not be confirmed idle".to_string());
+    }
+    format!(
+        "Agent '{agent_id}' still has unfinished work: {}",
+        blockers.join("; ")
+    )
+}
+
 async fn delete_agent(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     if id == "default" {
         return ApiError::BadRequest("Cannot delete the default agent".into()).into_response();
     }
 
-    if let Err(error) = state
-        .conversation_input_intake
-        .cleanup_deleted_project_agent(&id)
+    // Deletion is an admission decision, not a shutdown. The Agent may only be
+    // removed once it holds nothing unfinished, and a refusal has to leave every
+    // Turn, queue entry, approval and open question exactly as the user left it,
+    // so the runtime stops under `RejectUnfinished`. This runs even for an Agent
+    // that never assembled a runtime: its Task Attempts can outlive that.
+    match state
+        .registry
+        .remove_with_policy(
+            &id,
+            rua_workspace::ShutdownPolicy::RejectUnfinished {
+                timeout: std::time::Duration::from_secs(30),
+            },
+        )
         .await
     {
-        return ApiError::Conflict(format!(
-            "Failed to stop Project work before deleting Agent '{id}': {error}"
-        ))
-        .into_response();
-    }
-    if state.registry.get(&id).await.is_some() {
-        // The shutdown outcome decides whether the Agent record may be deleted:
-        // removing it after a leak would leave processes, sessions and work with
-        // no owner to stop them. Only a clean report lets deletion continue.
-        match state
-            .registry
-            .remove_with_policy(&id, rua_workspace::ShutdownPolicy::default())
-            .await
-        {
-            Ok(report) if report.is_clean() => {}
-            Ok(report) => {
-                tracing::warn!(
-                    agent_id = %id,
-                    failed = ?report.failed_components,
-                    timed_out = ?report.timed_out_components,
-                    turns_unresolved = report.turns_unresolved,
-                    tasks_unresolved = report.tasks_unresolved,
-                    queued_inputs_unresolved = report.queued_inputs_unresolved,
-                    authority_confirmed = report.authority_confirmed,
-                    "refusing to delete an Agent whose runtime did not stop cleanly"
-                );
-                return ApiError::Conflict(format!(
-                    "Agent runtime did not stop cleanly: failed=[{}] timed_out=[{}] unresolved_turns={} unresolved_tasks={} unresolved_inputs={}",
-                    report.failed_components.join(", "),
-                    report.timed_out_components.join(", "),
-                    report.turns_unresolved,
-                    report.tasks_unresolved,
-                    report.queued_inputs_unresolved,
-                ))
-                .into_response();
-            }
-            Err(error) => {
-                return ApiError::Internal(format!(
-                    "Failed to remove Agent runtime before deletion: {error}"
-                ))
-                .into_response();
-            }
+        Ok(report) if report.is_clean() => {}
+        Ok(report) => {
+            tracing::info!(
+                agent_id = %id,
+                refused = report.refused_unfinished,
+                turns_unresolved = report.turns_unresolved,
+                tasks_unresolved = report.tasks_unresolved,
+                queued_inputs_unresolved = report.queued_inputs_unresolved,
+                pending_approvals = report.pending_approvals_unresolved,
+                unanswered_prompts = report.unanswered_prompts_unresolved,
+                "refusing to delete an Agent that still holds unfinished work"
+            );
+            return ApiError::Conflict(delete_refusal_detail(&id, &report)).into_response();
+        }
+        // The registry holds no runtime for this Agent: the refusal above was
+        // answered by the work owner, so reaching here with "not found" means
+        // there is nothing to stop.
+        Err(error) if error.kind == rua_workspace::WorkspaceErrorKind::AgentNotFound => {}
+        Err(error) => {
+            return ApiError::Internal(format!(
+                "Failed to remove Agent runtime before deletion: {error}"
+            ))
+            .into_response();
         }
     }
+
+    // Only an admitted deletion reaches here: nothing was cancelled to get past
+    // the check, and the Chats, media and configuration this Agent contributed
+    // stay readable. Dropping its ACP runtime handle is process cleanup, not
+    // history.
+    state
+        .conversation_input_intake
+        .release_agent_acp_runtime(&id);
 
     let store = state.security.config_store();
     if let Err(e) = store.delete(&id) {

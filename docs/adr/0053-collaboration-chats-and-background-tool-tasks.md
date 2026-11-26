@@ -594,7 +594,8 @@ the executor contributes its selected execution configuration and available
 Tools, while authorization is copied from the creating source execution's
 effective configuration, not from a freshly loaded Agent default or the target
 executor's more permissive profile. Store these contributions coherently in one
-configuration epoch alongside the Chat's execution environment.
+complete configuration alongside the Chat's execution environment, identified by
+the epoch of its latest accepted revision.
 
 Later edits to, reassignment of, or deletion of the source Agent do not silently
 change or invalidate the existing Chat's materialized configuration. Agent IDs
@@ -633,13 +634,14 @@ independent security snapshot after A's security update takes effect for new
 execution. Do not solve that divergence with another permission-difference
 approval or by merging two Agent Security Profiles.
 
-Materialized snapshots remain immutable; propagation produces updated Chat
-configuration epochs rather than mutating existing snapshots or rereading Agent
-defaults. Preserve the existing claimed-Turn epoch semantics. Coherent publication
-and execution admission across affected Chats must be specified so stale child
+A claimed Turn keeps the configuration it captured; propagation otherwise
+replaces the recipient Chat's single current configuration with a fresh epoch
+rather than rereading Agent defaults per execution. Coherent publication and
+execution admission across affected Chats must be specified so stale child
 configuration cannot authorize new execution after the source update. Behavior
-of already-running work remains governed by explicit Stop and epoch contracts,
-not a claim that configuration propagation rolls back side effects.
+of already-running work remains governed by explicit Stop and its captured
+configuration, not a claim that configuration propagation rolls back side
+effects.
 
 Propagation applies to source-inherited configuration, including security and
 the inherited execution environment, not indiscriminate replacement of B's

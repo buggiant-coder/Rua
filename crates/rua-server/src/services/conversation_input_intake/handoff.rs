@@ -441,14 +441,8 @@ impl ConversationInputIntake {
                 if !manifest.compare(&requirements.manifest).matches
                     || task_ref_identities(&store, chat_id)? != requirements.task_refs
                     || authority.is_queue_drain_paused(address).await != requirements.queue_paused
-                    || Some(
-                        handoff_history::capture(
-                            scope.root(),
-                            chat_id,
-                            &record.candidate_configuration_epoch,
-                        )
-                        .await?,
-                    ) != requirements.history
+                    || Some(handoff_history::capture(scope.root(), chat_id).await?)
+                        != requirements.history
                 {
                     return Err(
                         "Chat history or Task references changed before handoff release".into(),
@@ -663,8 +657,10 @@ impl ConversationInputIntake {
             chat_id: address.chat_id().to_string(),
             old_placement: serde_json::json!(expected),
             new_placement: serde_json::json!(next),
-            expected_configuration_epoch: configuration.epoch,
-            candidate_configuration_epoch: format!("config-{}", uuid::Uuid::new_v4()),
+            configuration: Some(
+                serde_json::to_value(&configuration).map_err(|error| error.to_string())?,
+            ),
+            candidate_configuration: None,
             requirements: serde_json::json!(requirements),
             phase: ChatHandoffPhase::Prepared,
             extra: Default::default(),
@@ -689,14 +685,8 @@ impl ConversationInputIntake {
             .ok_or("Approval Authority unavailable")?;
         // Prepared already fences history writers, including delayed checkpoint
         // publication. Capture after that fence, before exporting the records.
-        requirements.history = Some(
-            handoff_history::capture(
-                scope.root(),
-                address.chat_id().as_str(),
-                &record.candidate_configuration_epoch,
-            )
-            .await?,
-        );
+        requirements.history =
+            Some(handoff_history::capture(scope.root(), address.chat_id().as_str()).await?);
         self.session_sync
             .emit_evergreen_chat_snapshot(scope.root(), address)
             .await;
@@ -731,13 +721,11 @@ impl ConversationInputIntake {
                 .map_err(|e| e.to_string())?;
         }
         let configuration = store
-            .load_configuration_snapshot(
-                address.chat_id().as_str(),
-                &record.expected_configuration_epoch,
-            )
+            .load_chat_header(address.chat_id().as_str())
             .await
             .map_err(|e| e.to_string())?
-            .ok_or("Chat configuration snapshot unavailable")?;
+            .and_then(|header| header.extra.get("hook_configuration").cloned())
+            .ok_or("Chat configuration unavailable")?;
         let response = match self
             .handoff_rpc(
                 address,
@@ -769,7 +757,11 @@ impl ConversationInputIntake {
                 _ => return Err(error),
             },
         };
-        if response.record != *record {
+        // The target resolves the candidate this intent left open once it knows
+        // its own directory, so compare the frozen facts without it.
+        let mut prepared = response.record.clone();
+        prepared.candidate_configuration = record.candidate_configuration.clone();
+        if prepared != *record {
             return Err("Target prepared different Chat handoff facts".into());
         }
         let candidate = response
@@ -788,7 +780,6 @@ impl ConversationInputIntake {
         {
             return Err("Target prepared a different execution location".into());
         }
-        expected.epoch = record.candidate_configuration_epoch.clone();
         expected
             .capability_configuration
             .as_mut()
@@ -888,9 +879,7 @@ impl ConversationInputIntake {
             .load_chat_configuration_locked(address, &requirements.agent_id, scope.root())
             .await?
             .ok_or("Target Chat configuration unavailable")?;
-        if persisted.epoch != record.expected_configuration_epoch
-            || serde_json::json!(persisted) != configuration
-        {
+        if serde_json::json!(persisted) != configuration {
             return Err("Target Chat authorization snapshot is not synchronized".into());
         }
         // The target may take over only once the Chat permission rules the Authority
@@ -913,13 +902,9 @@ impl ConversationInputIntake {
             .history
             .as_ref()
             .ok_or("Handoff history proof missing")?;
-        if !handoff_history::capture(
-            scope.root(),
-            address.chat_id().as_str(),
-            &record.candidate_configuration_epoch,
-        )
-        .await?
-        .contains(history)
+        if !handoff_history::capture(scope.root(), address.chat_id().as_str())
+            .await?
+            .contains(history)
         {
             return Err("Target Chat history has not been applied".into());
         }
@@ -939,7 +924,6 @@ impl ConversationInputIntake {
         )
         .await?;
         let mut candidate: ChatHookConfiguration = decode(&configuration)?;
-        candidate.epoch = record.candidate_configuration_epoch.clone();
         candidate
             .capability_configuration
             .as_mut()
@@ -959,8 +943,6 @@ impl ConversationInputIntake {
                 && previous.phase == ChatHandoffPhase::Prepared
                 && previous.old_placement == record.old_placement
                 && previous.new_placement == record.new_placement
-                && previous.expected_configuration_epoch == record.expected_configuration_epoch
-                && previous.candidate_configuration_epoch == record.candidate_configuration_epoch
                 && previous.requirements != record.requirements
             {
                 store
@@ -1045,14 +1027,9 @@ impl ConversationInputIntake {
         record: &ChatHandoffRecord,
     ) -> Result<(), String> {
         let scope = ChatStore::resolve(self.session_sync.rua_root(), address.clone());
-        let value = self
-            .handoff_store(address)
-            .load_configuration_snapshot(
-                address.chat_id().as_str(),
-                &record.candidate_configuration_epoch,
-            )
-            .await
-            .map_err(|e| e.to_string())?
+        let value = record
+            .candidate_configuration
+            .clone()
             .ok_or("Handoff configuration missing")?;
         let candidate: ChatHookConfiguration = decode(&value)?;
         super::configuration_update::publish_handoff_configuration_locked(
@@ -1069,14 +1046,7 @@ impl ConversationInputIntake {
         address: &ChatAddress,
         record: ChatHandoffRecord,
     ) -> Result<ChatHandoffResponse, String> {
-        let store = self.handoff_store(address);
-        let candidate = store
-            .load_configuration_snapshot(
-                address.chat_id().as_str(),
-                &record.candidate_configuration_epoch,
-            )
-            .await
-            .map_err(|e| e.to_string())?;
+        let candidate = record.candidate_configuration.clone();
         let scope = ChatStore::resolve(self.session_sync.rua_root(), address.clone());
         let chat = if record.phase == ChatHandoffPhase::Activated {
             load_chat_record(scope.root(), address.chat_id().as_str())

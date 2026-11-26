@@ -719,7 +719,11 @@ impl SecurityModule {
 }
 
 fn validate_snapshot_context(ctx: &ToolCallContext) -> Result<(), String> {
-    if ctx.metadata.contains_key("chat_configuration_epoch") && ctx.security_snapshot.is_none() {
+    if ctx
+        .metadata
+        .contains_key(crate::models::EFFECTIVE_SECURITY_CONFIG_METADATA_KEY)
+        && ctx.security_snapshot.is_none()
+    {
         return Err("Captured Chat execution is missing its security snapshot".to_string());
     }
     Ok(())

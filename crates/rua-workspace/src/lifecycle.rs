@@ -84,6 +84,17 @@ pub enum ShutdownPolicy {
         timeout: Duration,
     },
 
+    /// Stops the Agent only if it holds no unfinished work.
+    ///
+    /// Unlike the draining policies this never cancels anything: work observed
+    /// under the same admission fence either is already terminal and the stop
+    /// proceeds, or it is reported and the Agent is left running. It exists for
+    /// callers that must refuse rather than interrupt, such as Agent deletion.
+    RejectUnfinished {
+        #[serde(with = "humantime_serde")]
+        timeout: Duration,
+    },
+
     Immediate,
 }
 
@@ -103,9 +114,9 @@ impl ShutdownPolicy {
     /// attempted.
     pub fn deadline(&self) -> tokio::time::Instant {
         let timeout = match self {
-            ShutdownPolicy::Graceful { timeout } | ShutdownPolicy::CancelActive { timeout } => {
-                *timeout
-            }
+            ShutdownPolicy::Graceful { timeout }
+            | ShutdownPolicy::CancelActive { timeout }
+            | ShutdownPolicy::RejectUnfinished { timeout } => *timeout,
             ShutdownPolicy::Immediate => Duration::from_millis(250),
         };
         tokio::time::Instant::now() + timeout
@@ -155,11 +166,24 @@ pub struct AgentWork {
     /// reported stopped.
     #[serde(default)]
     pub queued_inputs: usize,
+
+    /// Approvals this Agent's work is still waiting on. They are held by the
+    /// approval authority rather than by the Turn, so a Turn that already ended
+    /// can leave one behind.
+    #[serde(default)]
+    pub pending_approvals: usize,
+
+    /// Questions this Agent's work is still waiting for an answer to.
+    #[serde(default)]
+    pub unanswered_prompts: usize,
 }
 
 impl AgentWork {
     pub fn is_empty(&self) -> bool {
-        self.units.is_empty() && self.queued_inputs == 0
+        self.units.is_empty()
+            && self.queued_inputs == 0
+            && self.pending_approvals == 0
+            && self.unanswered_prompts == 0
     }
 
     pub fn count(&self, kind: WorkKind) -> usize {
@@ -229,6 +253,22 @@ pub struct ShutdownReport {
     /// Tasks the owner did not confirm terminal.
     pub tasks_unresolved: usize,
 
+    /// Approvals this Agent's work was still waiting on.
+    ///
+    /// They outlive the Turn that raised them, so a stop that only looked at
+    /// Turns would call an Agent idle while a decision is still owed to it.
+    #[serde(default)]
+    pub pending_approvals_unresolved: usize,
+
+    /// Questions this Agent's work was still waiting for an answer to.
+    #[serde(default)]
+    pub unanswered_prompts_unresolved: usize,
+
+    /// The exact work that made a stop refuse, so a caller can point the user at
+    /// it instead of reporting a generic busy state.
+    #[serde(default)]
+    pub blocking_work: Vec<WorkUnit>,
+
     /// Components whose stop reported a failure. Cleanup continues past them.
     pub failed_components: Vec<String>,
 
@@ -238,6 +278,13 @@ pub struct ShutdownReport {
 
     /// The work authority was reached and confirmed it holds nothing.
     pub authority_confirmed: bool,
+
+    /// The stop was refused because the Agent still held unfinished work.
+    ///
+    /// This is an admission decision, not a partial stop: nothing was
+    /// interrupted, cleanup did not run, and the Agent stays usable.
+    #[serde(default)]
+    pub refused_unfinished: bool,
 
     /// Every owned component was confirmed stopped. Independent of any time
     /// bound, and distinct from `finished_within_timeout`.
@@ -266,12 +313,15 @@ impl ShutdownReport {
     pub fn is_clean(&self) -> bool {
         self.cleanup_completed
             && self.finished_within_timeout
+            && !self.refused_unfinished
             && self.failed_components.is_empty()
             && self.timed_out_components.is_empty()
             && self.authority_confirmed
             && self.turns_unresolved == 0
             && self.tasks_unresolved == 0
             && self.queued_inputs_unresolved == 0
+            && self.pending_approvals_unresolved == 0
+            && self.unanswered_prompts_unresolved == 0
     }
 }
 

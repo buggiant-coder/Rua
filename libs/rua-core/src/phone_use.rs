@@ -36,7 +36,6 @@ pub struct PhoneSessionContext {
     pub chat_address: crate::ChatAddress,
     pub turn_id: String,
     pub authority_epoch: String,
-    pub chat_configuration_epoch: String,
 }
 
 impl PhoneSessionContext {
@@ -71,7 +70,6 @@ impl PhoneSessionContext {
             chat_address,
             turn_id: field("turn_id")?,
             authority_epoch: field("authority_epoch")?,
-            chat_configuration_epoch: field("chat_configuration_epoch")?,
         })
     }
 }

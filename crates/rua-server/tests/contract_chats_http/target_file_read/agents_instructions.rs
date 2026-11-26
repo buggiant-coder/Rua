@@ -146,10 +146,6 @@ async fn wrong_device_stale_chat_context_and_cancellation_never_return_instructi
             ..f.request(&Value::Null)
         },
         TargetChatRead {
-            configuration_epoch: "obsolete",
-            ..f.request(&Value::Null)
-        },
-        TargetChatRead {
             agent_id: "other-agent",
             ..f.request(&Value::Null)
         },

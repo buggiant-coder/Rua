@@ -277,8 +277,7 @@ async fn server_backlog_is_reported_as_server_side_loss_not_client_buffer_pressu
         tokio::time::sleep(Duration::from_millis(250)).await;
         let mut found = None;
         while let Ok(Some(Ok(Message::Text(text)))) =
-            tokio::time::timeout(Duration::from_millis(100), socket.next())
-                .await
+            tokio::time::timeout(Duration::from_millis(100), socket.next()).await
         {
             let frame: Value = serde_json::from_str(&text).unwrap();
             if frame["id"] == "big" && frame["type"] == "gap" {

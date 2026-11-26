@@ -44,16 +44,6 @@ async fn unrelated_offline_device_inbox_retry_does_not_block_ready_chat_handoff(
     let chat = uuid::Uuid::new_v4().to_string();
     source.submit(&chat, "own a remote background Task").await;
     executor.synchronize(&source).await;
-    let header = executor
-        .store()
-        .load_chat_header(&chat)
-        .await
-        .unwrap()
-        .unwrap();
-    let configuration_epoch = header.extra["hook_configuration"]["epoch"]
-        .as_str()
-        .unwrap()
-        .to_owned();
     let cwd = executor.state.rua_root.canonicalize().unwrap();
     let owner = rua_task::TaskOwner::new(chat.clone());
     executor
@@ -77,9 +67,7 @@ async fn unrelated_offline_device_inbox_retry_does_not_block_ready_chat_handoff(
                 depends_on: vec![],
                 origin: Default::default(),
             },
-            rua_task::TaskAttemptAuthorization::new("default")
-                .unwrap()
-                .with_configuration_epoch(configuration_epoch),
+            rua_task::TaskAttemptAuthorization::new("default").unwrap(),
         )
         .await
         .unwrap();

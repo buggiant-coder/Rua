@@ -2,7 +2,7 @@ use axum::http::{Method, StatusCode};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use futures::StreamExt;
 use rua_provider::config_loader::{DefaultModel, ProviderConfig, ProviderModelEntry};
-use rua_security::{ApprovalRequestInput, ApprovalTrigger, ToolCallSnapshot};
+use rua_security::{ApprovalDecision, ApprovalRequestInput, ApprovalTrigger, ToolCallSnapshot};
 use rua_server::services::chat_index::{self, ChatIndexEntry};
 use rua_server::services::chat_metadata_store::{
     persist_acp_binding, update_authority_placement, AcpBindingMetadata,
@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use super::support::{
     build_app, create_agent, delete_agent, read_json, request, seed_materialized_chat,
+    wait_for_chat_idle,
 };
 
 fn ids(payload: &Value) -> Vec<String> {
@@ -226,28 +227,17 @@ async fn await_task_settled(state: &rua_server::AppState, task_id: &str) {
     .expect("cancelled Task settles before Agent cleanup");
 }
 
-/// Build Task Attempt authorization carrying the Chat's current configuration epoch.
+/// Build Task Attempt authorization for work requested through a Chat Turn.
 ///
-/// A Task Attempt is admitted against the configuration captured when the work was
-/// requested; omitting the epoch fails that admission as stale.
-async fn task_authorization_for_chat(
-    state: &rua_server::AppState,
+/// A Task Attempt is authorized by its Agent and origin; the Chat's current
+/// configuration is read when the Attempt actually runs.
+fn task_authorization_for_chat(
     agent_id: &str,
-    chat_id: &str,
+    origin: rua_task::TaskOrigin,
 ) -> rua_task::TaskAttemptAuthorization {
-    let scope = rua_core::ChatStore::resolve(&state.rua_root, rua_core::ChatAddress::new(chat_id));
-    let header = rua_session::WorkspaceSessionStore::new(scope.root())
-        .load_chat_header(chat_id)
-        .await
-        .unwrap()
-        .expect("Task owning Chat header");
-    let epoch = header.extra["hook_configuration"]["epoch"]
-        .as_str()
-        .expect("Chat configuration epoch")
-        .to_string();
     rua_task::TaskAttemptAuthorization::new(agent_id)
         .unwrap()
-        .with_configuration_epoch(epoch)
+        .with_origin(origin)
 }
 
 async fn create_blocking_task(
@@ -275,7 +265,7 @@ async fn create_blocking_task(
                 depends_on: Vec::new(),
                 origin: Default::default(),
             },
-            task_authorization_for_chat(state, agent_id, chat_id).await,
+            task_authorization_for_chat(agent_id, Default::default()),
         )
         .await
         .unwrap();
@@ -934,7 +924,12 @@ async fn chat_model_slot_preserves_thinking_strength() {
     )
     .await;
 
-    assert_eq!(updated.status(), StatusCode::OK);
+    assert_eq!(
+        updated.status(),
+        StatusCode::OK,
+        "{}",
+        read_json(updated).await
+    );
     let body = read_json(updated).await;
     assert_eq!(body["model"]["provider_id"], "dashscope");
     assert_eq!(body["model"]["model"], "qwen3.7-plus");
@@ -1129,8 +1124,12 @@ async fn chat_options_are_snapshotted_at_creation_and_owned_by_each_chat() {
         .await
         .expect("agent runtime");
     assert!(WorkspaceSessionStore::new(runtime.chat_workspace_dir())
-        .configuration_head_path(chat_a_id)
-        .is_file());
+        .load_chat_header(chat_a_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .extra
+        .contains_key("hook_configuration"));
     assert!(std::sync::Arc::ptr_eq(&original_runtime, &runtime));
     assert!(std::sync::Arc::ptr_eq(
         &original_memory,
@@ -1310,6 +1309,9 @@ async fn materializing_draft_on_selected_device_preserves_selected_model() {
     assert_eq!(history_body["model"]["provider_id"], "dashscope");
     assert_eq!(history_body["model"]["model"], "qwen3.7-plus");
 
+    // The Turn this Chat started is still executing: deletion must be refused
+    // until it is terminal, which is what the fixture now waits for.
+    wait_for_chat_idle(&app.state, &chat_id.to_string()).await;
     delete_agent(&app.app, agent_id).await;
 }
 
@@ -1371,6 +1373,7 @@ async fn first_input_without_model_uses_default_after_missing_put_is_rejected() 
     assert_eq!(history_body["model"]["model"], "qwen-plus");
     assert_eq!(history_body["model"]["thinking_strength"], "auto");
 
+    wait_for_chat_idle(&app.state, chat_id).await;
     delete_agent(&app.app, agent_id).await;
 }
 
@@ -2553,7 +2556,7 @@ async fn chat_history_projects_pending_ask_user_as_answer_request_not_approval()
         "status": "waiting"
     }));
     store
-        .save_chat_header(&header)
+        .save_chat_header_with_configuration(&header)
         .await
         .expect("save pending ask_user header");
 
@@ -2614,7 +2617,7 @@ async fn chat_history_does_not_project_tool_approval_cards_from_header_or_author
         "status": "waiting"
     }));
     store
-        .save_chat_header(&header)
+        .save_chat_header_with_configuration(&header)
         .await
         .expect("save stale tool approval header");
 
@@ -2699,6 +2702,21 @@ async fn chat_history_does_not_project_tool_approval_cards_from_header_or_author
         "approval queue state stays available through ApprovalAuthority snapshot"
     );
 
+    // A pending approval is unfinished work, so the fixture resolves both through
+    // the same user decision path before the Agent can be deleted.
+    for request in [&first, &second] {
+        app.state
+            .security
+            .approval_authority()
+            .decide(
+                &request.id,
+                ApprovalDecision::RunOnce {
+                    decided_by: "fixture-user".into(),
+                },
+            )
+            .await
+            .expect("resolve approval before Agent deletion");
+    }
     delete_agent(&app.app, agent_id).await;
 }
 
@@ -4345,7 +4363,7 @@ async fn branch_copies_evergreen_selected_prefix_to_new_chat_directory() {
                 depends_on: Vec::new(),
                 origin: Default::default(),
             },
-            task_authorization_for_chat(&app.state, agent_id, &chat_id).await,
+            task_authorization_for_chat(agent_id, Default::default()),
         )
         .await
         .expect("create source live Task");
@@ -4416,7 +4434,10 @@ async fn branch_copies_evergreen_selected_prefix_to_new_chat_directory() {
         )
         .await
         .unwrap();
-    store.save_chat_header(&source_header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&source_header)
+        .await
+        .unwrap();
     let checkpoint_state = store
         .checkpoint_projection_state(&chat_id, 3)
         .await
@@ -4638,6 +4659,9 @@ async fn branch_copies_evergreen_selected_prefix_to_new_chat_directory() {
         .await
         .expect("clean up source live Task");
     await_task_settled(&app.state, &source_task_id).await;
+    // Cancelling the Task delivers its terminal notification as a fresh Turn in
+    // the source Chat. Deletion is admitted only once that Turn is terminal too.
+    wait_for_chat_idle(&app.state, &chat_id).await;
     delete_agent(&app.app, agent_id).await;
 }
 
@@ -5056,7 +5080,7 @@ async fn chat_history_title_falls_back_to_index_when_header_is_placeholder_id() 
         .expect("chat header");
     header.metadata.title = chat_id.clone();
     store
-        .save_chat_header(&header)
+        .save_chat_header_with_configuration(&header)
         .await
         .expect("save placeholder title header");
 
@@ -5612,6 +5636,7 @@ async fn idle_chat_shutdown_does_not_persist_background_continuation_stop() {
         app.state.conversation_authority.clone(),
         app.state.streams.clone(),
         app.state.task_runtime.clone(),
+        app.state.security.approval_authority().clone(),
         rua_workspace::RuaRoot::new(&app.state.rua_root),
     );
     work.begin_shutdown("default").await.unwrap();

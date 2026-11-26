@@ -4,7 +4,7 @@ use super::*;
 async fn watch_waits_for_durable_completion_and_failed_persistence_can_retry() {
     let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
     let release = Arc::new(Notify::new());
-    let (address, turn, _, _) = prepare_running_file_calls(
+    let (address, turn, _) = prepare_running_file_calls(
         &fixture,
         &[ToolCall::new(
             "watch-receipt-origin",

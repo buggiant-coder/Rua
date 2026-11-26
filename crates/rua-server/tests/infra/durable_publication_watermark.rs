@@ -197,4 +197,3 @@ async fn stores_watermarks_under_device_local_sync_state() {
     assert!(path.starts_with(root.path().join("sync/conversation-publication-watermarks")));
     assert!(!path.starts_with(root.path().join("conversation-publication-watermarks")));
 }
-

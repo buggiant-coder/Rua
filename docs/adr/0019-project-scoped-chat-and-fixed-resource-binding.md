@@ -260,7 +260,8 @@ The Chat's selected Agent may change for later Turns. Every claimed Turn freezes
 its own Agent assignment. Agent changes do not create another Chat, rewrite
 historical Turn assignments, move storage, or change the resource Device or
 working-directory selection.
-The explicit switch publishes a complete configuration epoch under ADR-0028.
+The explicit switch publishes the new Agent's complete configuration under
+ADR-0028, with a fresh epoch that fences stale configuration writers.
 Collaboration Chats are the exception: executor identity and driver kind are
 fixed at creation; replacing them requires a new Chat (ADR-0053).
 

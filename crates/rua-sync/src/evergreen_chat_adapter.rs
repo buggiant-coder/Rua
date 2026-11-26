@@ -423,31 +423,6 @@ impl DomainSyncAdapter for EvergreenChatSyncAdapter {
             return Ok(history_apply_outcome(change.hlc, true, None));
         }
 
-        if let Some(name) = relative.strip_prefix("configurations/") {
-            let epoch = name.strip_suffix(".json").ok_or_else(|| {
-                SyncError::InvalidPayload("invalid configuration snapshot filename".to_string())
-            })?;
-            if change
-                .payload
-                .get("epoch")
-                .and_then(serde_json::Value::as_str)
-                != Some(epoch)
-            {
-                return Err(SyncError::InvalidPayload(
-                    "configuration epoch does not match record identity".to_string(),
-                ));
-            }
-            if path.exists() {
-                let existing = read_json_file(&path).ok_or_else(|| {
-                    SyncError::Store("invalid existing Chat configuration snapshot".to_string())
-                })?;
-                if existing != change.payload {
-                    return Err(SyncError::Store(
-                        "Chat configuration epoch is immutable".to_string(),
-                    ));
-                }
-            }
-        }
         if relative == "session" || relative == "session.json" {
             let scope = ChatStore::resolve(&self.data_dir, address.clone());
             rua_session::WorkspaceSessionStore::new(scope.root())
@@ -617,15 +592,6 @@ pub fn collect_evergreen_chat_file_snapshots(
         });
     }
 
-    let configuration_head_path = chat_dir.join("configuration_head.json");
-    if let Some(payload) = read_json_file(&configuration_head_path) {
-        items.push(EvergreenChatFileSnapshot {
-            relative: "configuration_head".to_string(),
-            payload,
-            hlc: export_hlc(&configuration_head_path, device_id),
-            is_delete: false,
-        });
-    }
     let projection_exclusions_path = chat_dir.join("projection_exclusions.json");
     if let Some(payload) = read_json_file(&projection_exclusions_path) {
         items.push(EvergreenChatFileSnapshot {
@@ -663,12 +629,6 @@ pub fn collect_evergreen_chat_file_snapshots(
         &mut items,
         &chat_dir.join("checkpoints"),
         "checkpoints",
-        device_id,
-    );
-    collect_json_dir(
-        &mut items,
-        &chat_dir.join("configurations"),
-        "configurations",
         device_id,
     );
     collect_history_replacement_dir(
@@ -729,9 +689,6 @@ fn evergreen_chat_file_path(
         return Some(chat_dir.join("session.json"));
     }
 
-    if relative == "configuration_head" {
-        return Some(chat_dir.join("configuration_head.json"));
-    }
     if relative == "projection_exclusions" || relative == "projection_exclusions.json" {
         return Some(chat_dir.join("projection_exclusions.json"));
     }
@@ -760,9 +717,6 @@ fn evergreen_chat_file_path(
     }
     if let Some(name) = relative.strip_prefix("checkpoints/") {
         return safe_leaf_file(name).map(|name| chat_dir.join("checkpoints").join(name));
-    }
-    if let Some(name) = relative.strip_prefix("configurations/") {
-        return safe_leaf_file(name).map(|name| chat_dir.join("configurations").join(name));
     }
     if let Some(name) = relative.strip_prefix("history_replacements/") {
         return safe_history_replacement_file(name)

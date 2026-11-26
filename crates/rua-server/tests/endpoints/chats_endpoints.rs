@@ -132,7 +132,10 @@ async fn get_chat_draft_is_not_materialized_until_first_turn() {
     let (state, _guard) = build_state();
     let app = build_app(state);
 
-    let create_req = json_post("/chats", serde_json::json!({"name": "existing chat", "agent_id": "default"}));
+    let create_req = json_post(
+        "/chats",
+        serde_json::json!({"name": "existing chat", "agent_id": "default"}),
+    );
     let create_resp = app.clone().oneshot(create_req).await.expect("create");
     assert_eq!(create_resp.status(), StatusCode::OK);
     let created = read_json(create_resp).await;
@@ -167,7 +170,10 @@ async fn get_chat_deleted_returns_404() {
     let (state, _guard) = build_state();
     let app = build_app(state.clone());
 
-    let create_req = json_post("/chats", serde_json::json!({"name": "to-delete", "agent_id": "default"}));
+    let create_req = json_post(
+        "/chats",
+        serde_json::json!({"name": "to-delete", "agent_id": "default"}),
+    );
     let create_resp = app.clone().oneshot(create_req).await.expect("create");
     let created = read_json(create_resp).await;
     let chat_id = created["id"].as_str().expect("chat id");

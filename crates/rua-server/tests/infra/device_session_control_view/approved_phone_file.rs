@@ -93,8 +93,7 @@ fn sync_device_security(sender: &AppState, sender_id: &str, receiver: &AppState)
     if agent.is_file() {
         let target = receiver.rua_root.join("workspaces").join("default");
         std::fs::create_dir_all(&target).unwrap();
-        std::fs::copy(&agent, target.join("security.json"))
-            .expect("copy Agent security snapshot");
+        std::fs::copy(&agent, target.join("security.json")).expect("copy Agent security snapshot");
     }
     let root = match std::fs::read_to_string(sender.rua_root.join("config.json"))
         .ok()
@@ -178,7 +177,7 @@ async fn read_after_handoff(desktop_was_synced: bool) {
         .unwrap();
     let local = ToolCall::new("phone-initial-read", "read", json!({"file_path":approved}));
     let phone_finish = Arc::new(Notify::new());
-    let (address, first, _, phone_request) =
+    let (address, first, phone_request) =
         prepare_running_file_calls(&fixture, std::slice::from_ref(&local), &phone_finish).await;
     let ctx = invocation(phone_id, &address, &first.turn_id, &local)
         .with_security_snapshot(Arc::new(policy));
@@ -398,10 +397,6 @@ async fn read_after_handoff(desktop_was_synced: bool) {
             ),
             ("turn_id".into(), json!(turn.turn_id)),
             ("tool_call_id".into(), json!(call.id)),
-            (
-                "chat_configuration_epoch".into(),
-                header.extra["hook_configuration"]["epoch"].clone(),
-            ),
         ]
         .into(),
         ..Default::default()

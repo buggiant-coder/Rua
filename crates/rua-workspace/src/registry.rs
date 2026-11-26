@@ -6,7 +6,9 @@ use tokio::sync::RwLock;
 
 use crate::context::WorkspaceContext;
 use crate::error::WorkspaceError;
-use crate::lifecycle::{AgentWorkAuthority, PlatformProfile, ShutdownPolicy, ShutdownReport};
+use crate::lifecycle::{
+    AgentWork, AgentWorkAuthority, PlatformProfile, ShutdownPolicy, ShutdownReport, WorkKind,
+};
 use crate::root::RuaRoot;
 use crate::runtime::{WorkspaceRuntime, WorkspaceSummary};
 
@@ -303,6 +305,78 @@ impl DefaultWorkspaceRegistry {
             .find(|(id, _)| id == agent_id)
             .map(|(_, name)| name.clone())
     }
+
+    /// Answers "may this Agent be deleted?" when it never had a runtime.
+    ///
+    /// The work owner is still consulted under its own admission fence: an Agent
+    /// that was never used answers idle, an Agent whose Tasks outlived their
+    /// runtime reports them, and a missing authority is never read as idle.
+    async fn refuse_unstarted_agent(
+        &self,
+        agent_id: &str,
+        timeout: std::time::Duration,
+    ) -> Result<ShutdownReport, WorkspaceError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut report = ShutdownReport {
+            cleanup_completed: true,
+            ..ShutdownReport::default()
+        };
+        let authority = self
+            .work_authority
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        let Some(authority) = authority else {
+            // No owner means no evidence. A deletion must not be inferred from
+            // the absence of a runtime.
+            tracing::warn!(
+                agent_id,
+                "no work authority attached; Agent deletion cannot be admitted"
+            );
+            report.fail("work_authority");
+            report.authority_confirmed = false;
+            report.finished_within_timeout = tokio::time::Instant::now() <= deadline;
+            return Ok(report);
+        };
+        if tokio::time::timeout_at(deadline, authority.begin_shutdown(agent_id))
+            .await
+            .is_err()
+        {
+            report.fail("work_authority_admission");
+        }
+        let observed =
+            match tokio::time::timeout_at(deadline, authority.outstanding_work(agent_id)).await {
+                Ok(Ok(work)) => work,
+                Ok(Err(error)) => {
+                    tracing::error!(agent_id, %error, "work authority could not report Agent work");
+                    report.fail("work_authority");
+                    AgentWork::default()
+                }
+                Err(_) => {
+                    report.fail("work_authority");
+                    AgentWork::default()
+                }
+            };
+        let admitted = observed.is_empty() && report.failed_components.is_empty();
+        // The fence is handed back either way: a refused deletion must leave the
+        // Agent accepting work exactly as it was.
+        if tokio::time::timeout_at(deadline, authority.resume(agent_id))
+            .await
+            .is_err()
+        {
+            report.fail("work_authority_resume");
+        }
+        report.turns_unresolved = observed.count(WorkKind::Turn);
+        report.tasks_unresolved = observed.count(WorkKind::Task);
+        report.queued_inputs_unresolved = observed.queued_inputs;
+        report.pending_approvals_unresolved = observed.pending_approvals;
+        report.unanswered_prompts_unresolved = observed.unanswered_prompts;
+        report.blocking_work = observed.units;
+        report.authority_confirmed = admitted;
+        report.refused_unfinished = !admitted;
+        report.finished_within_timeout = tokio::time::Instant::now() <= deadline;
+        Ok(report)
+    }
 }
 
 #[async_trait]
@@ -532,10 +606,19 @@ impl WorkspaceRegistry for DefaultWorkspaceRegistry {
             })?;
         let rt = {
             let runtimes = self.runtimes.read().await;
-            runtimes
-                .get(agent_id)
-                .cloned()
-                .ok_or_else(|| WorkspaceError::agent_not_found(agent_id))?
+            runtimes.get(agent_id).cloned()
+        };
+        let Some(rt) = rt else {
+            // No runtime was ever assembled for this Agent, so there is nothing
+            // to stop — but the work owner can still hold Turns, Task Attempts,
+            // approvals or queued input for it. A refusal policy has to answer
+            // that question here; other policies keep the old "not found".
+            return match policy {
+                ShutdownPolicy::RejectUnfinished { timeout } => {
+                    self.refuse_unstarted_agent(agent_id, timeout).await
+                }
+                _ => Err(WorkspaceError::agent_not_found(agent_id)),
+            };
         };
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -543,6 +626,9 @@ impl WorkspaceRegistry for DefaultWorkspaceRegistry {
             ShutdownPolicy::Graceful { .. } => ShutdownPolicy::Graceful { timeout: remaining },
             ShutdownPolicy::CancelActive { .. } => {
                 ShutdownPolicy::CancelActive { timeout: remaining }
+            }
+            ShutdownPolicy::RejectUnfinished { .. } => {
+                ShutdownPolicy::RejectUnfinished { timeout: remaining }
             }
             ShutdownPolicy::Immediate => ShutdownPolicy::Immediate,
         };
@@ -555,6 +641,28 @@ impl WorkspaceRegistry for DefaultWorkspaceRegistry {
                 .is_some_and(|current| Arc::ptr_eq(current, &rt))
             {
                 runtimes.remove(agent_id);
+            }
+            drop(runtimes);
+            // An admitted deletion still took the admission fence, and that
+            // fence belongs to the Agent, not to the Chats it happened to hold.
+            // Releasing it after the runtime is gone is what keeps a retained
+            // Chat able to accept input once it selects another Agent; leaving
+            // it taken would fence the Chat for the life of the process.
+            let authority = self
+                .work_authority
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            if let Some(authority) = authority {
+                if tokio::time::timeout_at(deadline, authority.resume(agent_id))
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!(
+                        agent_id,
+                        "Agent workspace removed but its admission fence did not release"
+                    );
+                }
             }
             tracing::info!(
                 agent_id,
@@ -628,6 +736,11 @@ impl WorkspaceRegistry for DefaultWorkspaceRegistry {
                 ShutdownPolicy::CancelActive { .. } => {
                     ShutdownPolicy::CancelActive { timeout: remaining }
                 }
+                // An aggregate stop must not turn a refusal into cancellation:
+                // each Agent keeps its own admission decision.
+                ShutdownPolicy::RejectUnfinished { .. } => {
+                    ShutdownPolicy::RejectUnfinished { timeout: remaining }
+                }
                 ShutdownPolicy::Immediate => ShutdownPolicy::CancelActive { timeout: remaining },
             };
             let agent_report = rt.shutdown(agent_policy).await;
@@ -648,6 +761,7 @@ impl WorkspaceRegistry for DefaultWorkspaceRegistry {
             report.tasks_unresolved += agent_report.tasks_unresolved;
             report.queued_inputs_discarded += agent_report.queued_inputs_discarded;
             report.queued_inputs_unresolved += agent_report.queued_inputs_unresolved;
+            report.refused_unfinished |= agent_report.refused_unfinished;
             all_within_timeout &= agent_report.finished_within_timeout;
             all_cleanup_completed &= agent_report.cleanup_completed;
             if agent_report

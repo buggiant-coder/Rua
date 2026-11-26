@@ -1009,7 +1009,10 @@ async fn project_agent_switch_replaces_stale_agent_hook_bindings() {
         "hook_configuration".to_string(),
         serde_json::to_value(&previous).unwrap(),
     );
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
 
     let candidate = hooks
         .resolve_complete_chat_configuration(&address, materialization("code"))
@@ -1487,11 +1490,6 @@ async fn project_turns_capture_resources_at_claim_and_keep_their_execution_direc
     )
     .unwrap();
     let owner = rua_task::TaskOwner::from_address(ChatAddress::new(id.as_str()));
-    let configuration = state
-        .product_hooks
-        .chat_configuration(&owner.chat_address)
-        .await
-        .unwrap();
     let (release_task, waiting) = tokio::sync::oneshot::channel::<()>();
     let dependency = state
         .task_runtime
@@ -1508,9 +1506,7 @@ async fn project_turns_capture_resources_at_claim_and_keep_their_execution_direc
                 depends_on: vec![],
                 context_refs: vec![],
             },
-            rua_task::TaskAttemptAuthorization::new("default")
-                .unwrap()
-                .with_configuration_epoch(configuration.epoch.clone()),
+            rua_task::TaskAttemptAuthorization::new("default").unwrap(),
             rua_task::TaskAdoptedExecution::new(
                 async {
                     let _ = waiting.await;
@@ -1528,10 +1524,6 @@ async fn project_turns_capture_resources_at_claim_and_keep_their_execution_direc
         metadata: std::collections::HashMap::from([
             ("turn_id".into(), serde_json::json!(first_turn.turn_id)),
             ("tool_use_id".into(), serde_json::json!("original-read")),
-            (
-                "chat_configuration_epoch".into(),
-                serde_json::json!(configuration.epoch),
-            ),
         ]),
         task_runtime: Some(std::sync::Arc::new(
             rua_tool::extended::task_tools::TaskRuntimeHandle::new(state.task_runtime.clone()),

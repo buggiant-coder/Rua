@@ -28,11 +28,17 @@ impl Fixture {
         header
             .extra
             .insert("authority_placement".into(), old.clone());
-        header.extra.insert("hook_configuration".into(), json!({
+        let configuration = json!({
             "epoch":"config-old", "selected_agent_id":"agent-a", "approval_mode":"ask_first",
             "capability_configuration":{"execution_directory":{"device_id":"device-a", "path":"/a/photos", "managed":false}},
-        }));
-        store.save_chat_header(&header).await.unwrap();
+        });
+        header
+            .extra
+            .insert("hook_configuration".into(), configuration.clone());
+        store
+            .save_chat_header_with_configuration(&header)
+            .await
+            .unwrap();
         Self {
             root,
             store,
@@ -41,8 +47,8 @@ impl Fixture {
                 chat_id: "handoff-chat".into(),
                 old_placement: old,
                 new_placement: next,
-                expected_configuration_epoch: "config-old".into(),
-                candidate_configuration_epoch: "config-next".into(),
+                configuration: Some(configuration),
+                candidate_configuration: None,
                 requirements: json!({"manifest":"original", "permissions":[]}),
                 phase: ChatHandoffPhase::Prepared,
                 extra: Default::default(),
@@ -89,9 +95,11 @@ async fn preparation_freezes_one_identity_before_directory_resolution_without_pu
     );
     assert_eq!(
         f.store
-            .load_configuration_snapshot("handoff-chat", "config-next")
+            .load_chat_handoff("handoff-chat")
             .await
-            .unwrap(),
+            .unwrap()
+            .unwrap()
+            .candidate_configuration,
         Some(f.candidate.clone())
     );
     let mut changed = f.candidate.clone();
@@ -101,12 +109,17 @@ async fn preparation_freezes_one_identity_before_directory_resolution_without_pu
         .prepare_chat_handoff(&f.record, Some(&changed))
         .await
         .is_err());
+    // Repeating the same intent with the same candidate is idempotent.
     assert_eq!(
         f.store
             .prepare_chat_handoff(&f.record, Some(&f.candidate))
             .await
             .unwrap(),
-        f.record
+        f.store
+            .load_chat_handoff("handoff-chat")
+            .await
+            .unwrap()
+            .unwrap()
     );
 }
 
@@ -280,23 +293,22 @@ async fn release_survives_restart_cannot_abort_and_activation_reuses_captured_ep
         .unwrap();
     assert_eq!(header.extra["authority_placement"], f.record.new_placement);
     assert_eq!(header.extra["hook_configuration"], f.candidate);
-    assert_eq!(header.extra["execution_directory"]["path"], "/c/work");
+    assert_eq!(
+        header.extra["hook_configuration"]["capability_configuration"]["execution_directory"]
+            ["path"],
+        "/c/work"
+    );
 }
 
 #[tokio::test]
-async fn released_commit_recovers_after_each_head_and_placement_disk_boundary() {
-    for committed_files in 0..=2 {
+async fn released_commit_recovers_whatever_the_new_writer_already_published() {
+    for published in 0..=1 {
         let f = Fixture::new().await;
         f.release().await;
-        if committed_files >= 1 {
-            let path = f.store.configuration_head_path("handoff-chat");
-            let mut head: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-            head["epoch"] = json!("config-next");
-            head["execution_directory"] =
-                f.candidate["capability_configuration"]["execution_directory"].clone();
-            rua_config::atomic_write_json(&path, &head).unwrap();
-        }
-        if committed_files >= 2 {
+        if published >= 1 {
+            // The new writer published its own placement and configuration
+            // before acknowledging. Its configuration may be later than the
+            // handoff candidate; recovery must keep it, not restore the candidate.
             let mut header = f
                 .store
                 .load_chat_header("handoff-chat")
@@ -306,6 +318,9 @@ async fn released_commit_recovers_after_each_head_and_placement_disk_boundary() 
             header
                 .extra
                 .insert("authority_placement".into(), f.record.new_placement.clone());
+            header
+                .extra
+                .insert("hook_configuration".into(), f.candidate.clone());
             rua_config::atomic_write_json(
                 &f.store.chat_header_path("handoff-chat"),
                 &json!(header),
@@ -406,14 +421,18 @@ async fn delayed_activation_receipt_preserves_new_writers_later_configuration_af
         .unwrap()
         .unwrap();
     assert_eq!(header.extra["hook_configuration"], later);
-    assert_eq!(header.extra["execution_directory"]["path"], "/c/another");
+    assert_eq!(
+        header.extra["hook_configuration"]["capability_configuration"]["execution_directory"]
+            ["path"],
+        "/c/another"
+    );
     assert_eq!(header.extra["authority_placement"], f.record.new_placement);
     let next = ChatHandoffRecord {
         handoff_id: "return-to-a".into(),
         old_placement: f.record.new_placement,
         new_placement: json!({"device_id":"device-a", "authority_epoch":"000003-a", "base_manifest_hash":"sha256:original"}),
-        expected_configuration_epoch: "config-after-activation".into(),
-        candidate_configuration_epoch: "config-return".into(),
+        configuration: Some(later),
+        candidate_configuration: None,
         ..f.record
     };
     reopened.prepare_chat_handoff(&next, None).await.unwrap();
@@ -475,7 +494,7 @@ async fn only_prepared_requirements_can_refresh_and_unknown_journal_fields_survi
         )
         .await
         .unwrap();
-    assert_eq!(refreshed.candidate_configuration_epoch, "config-next");
+    assert_eq!(refreshed.candidate_configuration, Some(f.candidate.clone()));
     assert_eq!(refreshed.extra, f.record.extra);
     f.store
         .release_chat_handoff("handoff-chat", "handoff-1")

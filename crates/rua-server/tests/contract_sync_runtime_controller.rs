@@ -393,3 +393,84 @@ async fn pairing_during_unpaired_grace_starts_real_sync_parts() {
     assert!(controller.trigger_handle().await.is_some());
     controller.warm_suspend().await.unwrap();
 }
+
+/// A detached startup resume captures its request epoch before its first poll.
+/// If the host suspends in between, that newer decision must win: the startup
+/// resume must not rebuild the Device Network Runtime the host just tore down.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_resume_requested_before_a_suspend_does_not_reactivate_the_runtime() {
+    let controller = Arc::new(SyncRuntimeController::default());
+    controller
+        .ensure_active({
+            let controller = Arc::clone(&controller);
+            move || async move {
+                let _ = &controller;
+                Ok(runtime_parts(
+                    Arc::new(AtomicUsize::new(0)),
+                    Arc::new(AtomicUsize::new(0)),
+                ))
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(controller.state().await, SyncRuntimeState::Active);
+
+    // Request point: captured before the explicit suspend happens.
+    let requested_epoch = controller.suspend_epoch();
+
+    controller.warm_suspend().await.unwrap();
+    assert_eq!(
+        controller.state().await,
+        SyncRuntimeState::WarmSuspended {
+            pending_grace: false
+        }
+    );
+
+    controller
+        .resume_foreground_since(
+            || async { panic!("a resume requested before the suspend must not start parts") },
+            requested_epoch,
+        )
+        .await
+        .expect("superseded resume is a no-op, not an error");
+
+    assert_eq!(
+        controller.state().await,
+        SyncRuntimeState::WarmSuspended {
+            pending_grace: false
+        },
+        "the later suspend decision must survive the stale startup resume"
+    );
+    assert!(controller.trigger_handle().await.is_none());
+}
+
+/// The same request issued after the suspend is a genuine resume and activates.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_requested_after_a_suspend_still_reactivates_the_runtime() {
+    let controller = Arc::new(SyncRuntimeController::default());
+    controller
+        .ensure_active({
+            let liveactors = Arc::new(AtomicUsize::new(0));
+            move || async move { Ok(runtime_parts(Arc::new(AtomicUsize::new(0)), liveactors)) }
+        })
+        .await
+        .unwrap();
+    controller.warm_suspend().await.unwrap();
+
+    controller
+        .resume_foreground_since(
+            || async {
+                Ok(runtime_parts(
+                    Arc::new(AtomicUsize::new(0)),
+                    Arc::new(AtomicUsize::new(0)),
+                ))
+            },
+            controller.suspend_epoch(),
+        )
+        .await
+        .expect("a resume after the suspend is not superseded");
+
+    assert_eq!(controller.state().await, SyncRuntimeState::Active);
+    assert!(controller.trigger_handle().await.is_some());
+    controller.warm_suspend().await.unwrap();
+}

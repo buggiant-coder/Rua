@@ -28,11 +28,7 @@ impl HandoffHistorySnapshot {
     }
 }
 
-pub(super) async fn capture(
-    root: &Path,
-    chat_id: &str,
-    candidate_epoch: &str,
-) -> Result<HandoffHistorySnapshot, String> {
+pub(super) async fn capture(root: &Path, chat_id: &str) -> Result<HandoffHistorySnapshot, String> {
     let store = WorkspaceSessionStore::new(root);
     let header = store
         .load_chat_header(chat_id)
@@ -40,12 +36,10 @@ pub(super) async fn capture(
         .map_err(|error| error.to_string())?
         .ok_or("Chat history header unavailable")?;
     let mut files = BTreeMap::from([
-        ("configuration_head".into(), None),
         ("projection_exclusions".into(), None),
         ("turn_index".into(), None),
         ("prompt_state".into(), None),
     ]);
-    let candidate = format!("configurations/{candidate_epoch}.json");
     // The ordinary sync exporter tolerates malformed records so one broken
     // Chat cannot stop all synchronization. Handoff readiness must distinguish
     // absent records from existing records the next Turn cannot read.
@@ -53,10 +47,7 @@ pub(super) async fn capture(
     for snapshot in
         rua_sync::evergreen_chat_adapter::collect_evergreen_chat_file_snapshots(root, chat_id, "")
     {
-        if snapshot.relative == "session"
-            || snapshot.relative == candidate
-            || snapshot.relative.starts_with("task_refs/")
-        {
+        if snapshot.relative == "session" || snapshot.relative.starts_with("task_refs/") {
             continue;
         }
         let digest = if snapshot.is_delete {
@@ -88,9 +79,6 @@ pub(super) async fn capture(
         };
         files.insert(snapshot.relative, digest);
     }
-    if files.get("configuration_head").is_none_or(Option::is_none) {
-        return Err("Chat configuration head unavailable".into());
-    }
     Ok(HandoffHistorySnapshot {
         files,
         header: json!({
@@ -110,11 +98,7 @@ pub(super) async fn capture(
 
 fn validate_readable_records(root: &Path, chat_id: &str) -> Result<(), String> {
     let chat = root.join("sessions").join(chat_id);
-    for name in [
-        "configuration_head.json",
-        "projection_exclusions.json",
-        "turn_index.json",
-    ] {
+    for name in ["projection_exclusions.json", "turn_index.json"] {
         validate_record(&chat.join(name), false)?;
     }
     validate_record(
@@ -125,7 +109,6 @@ fn validate_readable_records(root: &Path, chat_id: &str) -> Result<(), String> {
         "messages",
         "media_refs",
         "checkpoints",
-        "configurations",
         "history_replacements",
     ] {
         let entries = match std::fs::read_dir(chat.join(directory)) {

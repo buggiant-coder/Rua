@@ -36,7 +36,6 @@ pub struct CollaborationCaller {
     pub address: ChatAddress,
     pub turn_id: String,
     pub tool_call_id: String,
-    pub configuration_epoch: String,
     pub working_dir: PathBuf,
 }
 
@@ -661,7 +660,6 @@ impl CollaborationService {
         &self,
         caller: &CollaborationCaller,
     ) -> Result<ChatHookConfiguration, String> {
-        let store = self.store(&caller.address);
         let header = crate::services::chat_context::load_live_chat_header(
             &self.root,
             caller.address.chat_id().as_str(),
@@ -672,26 +670,11 @@ impl CollaborationService {
         if header.extra.contains_key(COLLABORATION_META_KEY) {
             return Err("Collaboration Chats cannot delegate another level".into());
         }
-        let current_epoch = header
-            .extra
-            .get("hook_configuration")
-            .and_then(|configuration| configuration.get("epoch"))
-            .and_then(serde_json::Value::as_str)
-            .ok_or("Source configuration head is unavailable")?;
-        if current_epoch != caller.configuration_epoch {
-            return Err(format!(
-                "Source Chat configuration changed from epoch {} to {current_epoch}; start a new Turn before creating collaboration work",
-                caller.configuration_epoch
-            ));
-        }
         let configuration: ChatHookConfiguration = serde_json::from_value(
-            store
-                .load_configuration_snapshot(
-                    caller.address.chat_id().as_str(),
-                    &caller.configuration_epoch,
-                )
-                .await
-                .map_err(|e| e.to_string())?
+            header
+                .extra
+                .get("hook_configuration")
+                .cloned()
                 .ok_or("Source configuration is unavailable")?,
         )
         .map_err(|e| e.to_string())?;
@@ -865,19 +848,11 @@ impl CollaborationService {
             self.save_descriptor(&target, &descriptor).await?;
 
             let result = async {
-                let child_value = store
-                    .load_configuration_snapshot(
-                        target.chat_id().as_str(),
-                        header
-                            .extra
-                            .get("hook_configuration")
-                            .and_then(|value| value.get("epoch"))
-                            .and_then(serde_json::Value::as_str)
-                            .ok_or("Child configuration epoch is unavailable")?,
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .ok_or("Child configuration snapshot is unavailable")?;
+                let child_value = header
+                    .extra
+                    .get("hook_configuration")
+                    .cloned()
+                    .ok_or("Child configuration is unavailable")?;
                 let mut child = ChatHookConfiguration::from_persisted(child_value)?;
                 if child
                     .extra

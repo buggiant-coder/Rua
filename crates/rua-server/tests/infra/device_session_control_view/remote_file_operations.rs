@@ -18,7 +18,7 @@ struct FileOperations {
 impl FileOperations {
     async fn start(fixture: RemoteInputConfirmationFixture, calls: &[ToolCall]) -> Self {
         let release = Arc::new(Notify::new());
-        let (address, turn, epoch, _) = prepare_running_file_calls(&fixture, calls, &release).await;
+        let (address, turn, _) = prepare_running_file_calls(&fixture, calls, &release).await;
         let owner = &fixture.target_state;
         let phone = &fixture.source_state;
         let mut policy = phone.security.config_store().load("default").unwrap();
@@ -68,7 +68,6 @@ impl FileOperations {
                     json!(address),
                 ),
                 ("turn_id".into(), json!(turn.turn_id)),
-                ("chat_configuration_epoch".into(), json!(epoch)),
             ]
             .into(),
             ..Default::default()

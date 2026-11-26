@@ -952,10 +952,6 @@ async fn computer_sequence_enforces_captured_tool_selection_for_each_leaf() {
     let id = McpServerId::new(SERVER_ID);
     let mut captured = context("a");
     captured.metadata.insert(
-        "chat_configuration_epoch".into(),
-        json!("captured-restricted"),
-    );
-    captured.metadata.insert(
         rua_core::tool::EFFECTIVE_DISABLED_TOOLS_METADATA_KEY.into(),
         json!([]),
     );

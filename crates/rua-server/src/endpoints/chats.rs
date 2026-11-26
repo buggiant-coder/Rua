@@ -2802,10 +2802,8 @@ async fn update_chat_core(
                 variant_selected_remotely = true;
             }
             Ok(Some(_)) => {
-                return ApiError::Internal(
-                    "unexpected remote Chat variant response".to_string(),
-                )
-                .into_response()
+                return ApiError::Internal("unexpected remote Chat variant response".to_string())
+                    .into_response()
             }
             Ok(None) => {}
             Err(error) => return error.into_response(),
@@ -2815,9 +2813,8 @@ async fn update_chat_core(
     let configuration_gate = state
         .conversation_authority
         .transition_gate(&configuration_address);
-    let selects_variant_locally = !variant_selected_remotely
-        && body.turn_id.is_some()
-        && body.selected_variant_id.is_some();
+    let selects_variant_locally =
+        !variant_selected_remotely && body.turn_id.is_some() && body.selected_variant_id.is_some();
     let changes_authority_state = body.collaboration_mode.is_some() || selects_variant_locally;
     let _configuration_transition = if changes_authority_state {
         Some(configuration_gate.lock().await)
@@ -2832,7 +2829,9 @@ async fn update_chat_core(
     }
     if let (Some(turn_id), Some(selected_variant_id)) = (
         body.turn_id.as_deref().filter(|_| selects_variant_locally),
-        body.selected_variant_id.as_deref().filter(|_| selects_variant_locally),
+        body.selected_variant_id
+            .as_deref()
+            .filter(|_| selects_variant_locally),
     ) {
         let address = rua_core::ChatAddress::new(chat_id);
         match rua_chat::ChatService::from_workspace(rua_core::WorkspaceRoot::new(ws_dir))

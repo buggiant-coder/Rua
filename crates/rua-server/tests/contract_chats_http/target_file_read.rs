@@ -94,7 +94,6 @@ impl Fixture {
             agent_id: AGENT,
             authority_device_id: AUTHORITY,
             authority_epoch: self.epoch,
-            configuration_epoch: &self.config_epoch,
             turn_id: "turn-1",
             tool_call_id: "tool-1",
             tool_name: "read",
@@ -217,10 +216,6 @@ async fn metadata_rejects_only_after_checking_the_replica_without_probing_the_fi
             ..f.request(&args)
         },
         TargetChatRead {
-            configuration_epoch: "obsolete",
-            ..f.request(&args)
-        },
-        TargetChatRead {
             agent_id: "other",
             ..f.request(&args)
         },
@@ -336,13 +331,6 @@ async fn only_current_live_chat_and_matching_authority_can_use_the_target_policy
                 ..f.request(&args)
             },
             "epoch",
-        ),
-        (
-            TargetChatRead {
-                configuration_epoch: "obsolete",
-                ..f.request(&args)
-            },
-            "configuration epoch",
         ),
         (
             TargetChatRead {
@@ -545,10 +533,7 @@ async fn disabling_the_agent_or_a_captured_assignment_disables_its_target_read()
         .replace_chat_configuration(id, &f.config_epoch, captured)
         .await
         .unwrap();
-    let updated = TargetChatRead {
-        configuration_epoch: epoch,
-        ..f.request(&args)
-    };
+    let updated = TargetChatRead { ..f.request(&args) };
     assert!(f
         .context
         .inspect_opened(&updated, &file)

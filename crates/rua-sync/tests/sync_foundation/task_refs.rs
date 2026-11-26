@@ -26,7 +26,7 @@ fn reference(attempt: u32, revision: u64, state: &str) -> ChatTaskRef {
     serde_json::from_value(json!({
         "task_id":"task-one","owner":owner,
         "execution":{"device_id":"phone","public_cwd":"/photos"},
-        "origin":{"turn_id":"original-turn","tool_call_id":"original-call","agent_id":"original-agent","configuration_epoch":"original-epoch"},
+        "origin":{"turn_id":"original-turn","tool_call_id":"original-call","agent_id":"original-agent"},
         "last_target_evidence": if revision == 0 { serde_json::Value::Null } else { json!({
             "revision":revision,"record":{
                 "task_id":"task-one","spec":{"owner":owner,"instruction":"Photos",
@@ -34,7 +34,7 @@ fn reference(attempt: u32, revision: u64, state: &str) -> ChatTaskRef {
                     "context_refs":[],"depends_on":[],"origin":origin},
                 "state":state,"attempt_no":attempt,"created_at":"2026-11-21T00:00:00Z","updated_at":"2026-11-21T00:00:00Z",
                 "attempts":[{"attempt_no":attempt,"state":state,"authorization_agent_id":format!("agent-{attempt}"),
-                    "configuration_epoch":format!("epoch-{attempt}"),"device":{"device_id":"phone","public_cwd":"/photos"},
+                    "device":{"device_id":"phone","public_cwd":"/photos"},
                     "created_at":"2026-11-21T00:00:00Z","updated_at":"2026-11-21T00:00:00Z"}]
             }
         })},"future_ref_field":{"retained":true}

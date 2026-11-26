@@ -236,7 +236,6 @@ fn session_metadata() -> std::collections::HashMap<String, Value> {
         ),
         ("turn_id".into(), json!("turn")),
         ("authority_epoch".into(), json!("epoch")),
-        ("chat_configuration_epoch".into(), json!("configuration")),
     ])
 }
 
@@ -247,12 +246,7 @@ fn session_identity_requires_trusted_turn_and_keeps_chat_ownership_across_turns(
     let session = PhoneSessionContext::from_metadata("agent", &metadata).unwrap();
     assert_eq!(session.turn_id, "turn");
     assert_eq!(session.authority_epoch, "epoch");
-    for key in [
-        "security_chat_address",
-        "turn_id",
-        "authority_epoch",
-        "chat_configuration_epoch",
-    ] {
+    for key in ["security_chat_address", "turn_id", "authority_epoch"] {
         let mut missing = metadata.clone();
         missing.remove(key);
         assert!(

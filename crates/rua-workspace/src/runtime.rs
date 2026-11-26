@@ -560,6 +560,18 @@ impl WorkspaceRuntime {
         }
     }
 
+    /// Undoes [`Self::begin_drain`] after a stop that was refused.
+    ///
+    /// A refusal is an admission decision, not a partial stop: leaving the Agent
+    /// drained would make the next submission look like a shutdown to every
+    /// caller, so the lifecycle state is restored exactly as it was.
+    async fn resume_admission(&self, prior: WorkspaceLifecycleState) {
+        let mut state = self.state.write().await;
+        if *state == WorkspaceLifecycleState::Draining {
+            *state = prior;
+        }
+    }
+
     pub async fn wait_drain(&self, timeout: std::time::Duration) -> bool {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
@@ -600,6 +612,9 @@ impl WorkspaceRuntime {
     /// shutdown did not finish inside its bound.
     pub async fn shutdown(&self, policy: ShutdownPolicy) -> ShutdownReport {
         let deadline = policy.deadline();
+        // Captured before draining so a stop that is refused can hand the Agent
+        // back in the lifecycle state it was actually in.
+        let prior_state = self.state.read().await.clone();
         self.begin_drain().await;
         let _operation = match tokio::time::timeout_at(deadline, self.operation_gate.lock()).await {
             Ok(operation) => operation,
@@ -654,6 +669,7 @@ impl WorkspaceRuntime {
         };
 
         let mut cancelled = false;
+        let mut refused = false;
         if let Some(authority) = authority.as_ref() {
             match policy {
                 ShutdownPolicy::Graceful { .. } => {
@@ -671,11 +687,54 @@ impl WorkspaceRuntime {
                         self.cancel_bounded(authority, &mut report, deadline).await;
                     }
                 }
+                ShutdownPolicy::RejectUnfinished { .. } => {
+                    // The admission fence taken above is what makes this check
+                    // race-free: nothing new can start while the observation is
+                    // read. Work that is already terminal leaves the stop free to
+                    // continue; anything else refuses without interrupting it.
+                    refused = !before.is_empty() || !report.failed_components.is_empty();
+                }
                 ShutdownPolicy::CancelActive { .. } | ShutdownPolicy::Immediate => {
                     cancelled = true;
                     self.cancel_bounded(authority, &mut report, deadline).await;
                 }
             }
+        }
+
+        if refused {
+            // A refusal must not leave the Agent fenced: its admission is handed
+            // back before the report names the work the caller has to resolve.
+            if let Some(authority) = authority.as_ref() {
+                if tokio::time::timeout_at(deadline, authority.resume(&self.agent_id))
+                    .await
+                    .is_err()
+                {
+                    report.fail("work_authority_resume");
+                }
+            }
+            self.resume_admission(prior_state).await;
+            let observed = match authority.as_ref() {
+                Some(authority) => {
+                    let bound = remaining().min(AUTHORITY_OBSERVE_TIMEOUT);
+                    tokio::time::timeout(bound, authority.outstanding_work(&self.agent_id))
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or_else(|| before.clone())
+                }
+                None => before.clone(),
+            };
+            self.record_work_outcome(authority.as_ref(), &mut report, &before, &observed, false)
+                .await;
+            report.authority_confirmed = false;
+            report.refused_unfinished = true;
+            // Name the work, not just its size: the caller has to tell the user
+            // which Chat and Turn or Task is in the way.
+            report.blocking_work = before.units.clone();
+            report.cleanup_completed =
+                report.failed_components.is_empty() && report.timed_out_components.is_empty();
+            report.finished_within_timeout = tokio::time::Instant::now() <= deadline;
+            return report;
         }
 
         if cancelled {
@@ -877,6 +936,8 @@ impl WorkspaceRuntime {
         report.queued_inputs_discarded = before.queued_inputs.saturating_sub(after.queued_inputs);
         report.turns_unresolved = turns_after;
         report.tasks_unresolved = tasks_after;
+        report.pending_approvals_unresolved = after.pending_approvals;
+        report.unanswered_prompts_unresolved = after.unanswered_prompts;
 
         if !cancelled || before.units.is_empty() {
             // A drain reports its own outcome; nothing was retired by this call.

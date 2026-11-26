@@ -35,7 +35,6 @@ async fn prepared(
             agent_id: AGENT.into(),
             address: f.address.clone(),
             authority_epoch: f.epoch,
-            configuration_epoch: f.config_epoch.clone(),
             turn_id: "turn-1".into(),
             tool_call_id: "tool-1".into(),
             confirmation: None,

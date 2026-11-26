@@ -101,6 +101,30 @@ pub async fn create_agent(app: &Router, id: &str, name: &str) {
     assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
 }
 
+/// Waits until the Chat holds no executing Turn.
+///
+/// Agent deletion is admitted only when the Agent holds no unfinished work, so a
+/// fixture that submits a Turn and then deletes its Agent has to let that Turn
+/// reach a terminal state first — exactly as a user would.
+pub async fn wait_for_chat_idle(state: &AppState, chat_id: &str) {
+    let address = rua_core::ChatAddress::new(chat_id);
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            if state
+                .conversation_authority
+                .active_turn(&address)
+                .await
+                .is_none()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("Chat Turn did not reach a terminal state");
+}
+
 pub async fn delete_agent(app: &Router, id: &str) {
     let resp = request(
         app,
@@ -115,7 +139,7 @@ pub async fn delete_agent(app: &Router, id: &str) {
     assert_eq!(
         status,
         axum::http::StatusCode::OK,
-        "Agent cleanup failed: {body}"
+        "Agent cleanup failed for {id}: {body}"
     );
 }
 
@@ -176,7 +200,10 @@ pub async fn seed_materialized_chat(test: &TestApp, agent_id: &str, name: &str) 
     // projection silently reverts the seeded user identity.
     let user_id = format!("user-{name}");
     header.user_id.clone_from(&user_id);
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
     let mut index = rua_session::chat_index::get(&runtime.chat_workspace_dir(), id)
         .await
         .unwrap()
@@ -249,7 +276,12 @@ pub async fn seed_materialized_chat(test: &TestApp, agent_id: &str, name: &str) 
         "hook_configuration".into(),
         serde_json::to_value(configuration).unwrap(),
     );
-    store.save_chat_header(&header).await.unwrap();
+    // Establishing the Chat's configuration is its own explicit step; an
+    // ordinary header save keeps whatever configuration is already stored.
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
     let header = store.load_chat_header(id).await.unwrap().unwrap();
     draft["meta"] = serde_json::to_value(header.extra).unwrap();
     draft

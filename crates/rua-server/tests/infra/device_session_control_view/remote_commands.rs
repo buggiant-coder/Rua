@@ -34,7 +34,7 @@ impl CommandFixture {
         let arguments = json!({"device_id":pair.source.device_id,"cwd":cwd,"command":command});
         let call = ToolCall::new("target-command", "bash", arguments.clone());
         let release = Arc::new(Notify::new());
-        let (address, turn, configuration_epoch, _) =
+        let (address, turn, _) =
             prepare_running_file_calls(&pair, std::slice::from_ref(&call), &release).await;
         pair.source_state
             .security
@@ -62,7 +62,6 @@ impl CommandFixture {
                 agent_id: "default".into(),
                 address,
                 authority_epoch: turn.authority_epoch,
-                configuration_epoch,
                 turn_id: turn.turn_id,
                 tool_call_id: call.id,
                 confirmation: None,
@@ -334,10 +333,18 @@ async fn adopted_command_survives_lost_receipt_foreground_cancel_and_connection_
     let store = WorkspaceSessionStore::new(f.pair.source_state.chat_workspace().as_path());
     let chat_id = f.context.call.address.chat_id().as_str();
     let mut changed_configuration = store
-        .load_configuration_snapshot(chat_id, &f.context.call.configuration_epoch)
+        .load_chat_header(chat_id)
         .await
         .unwrap()
-        .unwrap();
+        .unwrap()
+        .extra["hook_configuration"]
+        .clone();
+    // The Chat record carries the configuration in force; the command carries
+    // only the Authority epoch that admitted the Turn.
+    let current_epoch = changed_configuration["epoch"]
+        .as_str()
+        .expect("Chat configuration epoch")
+        .to_owned();
     changed_configuration["epoch"] = json!("changed-agent-configuration");
     changed_configuration["selected_agent_id"] = json!("changed-agent");
     changed_configuration["agent_assignment"]["agent_id"] = json!("changed-agent");
@@ -345,7 +352,7 @@ async fn adopted_command_survives_lost_receipt_foreground_cancel_and_connection_
         .commit_chat_agent_switch(
             chat_id,
             "default",
-            Some(&f.context.call.configuration_epoch),
+            Some(&current_epoch),
             "changed-agent",
             json!({"previous_agent_id":"default", "selected_agent_id":"changed-agent"}),
             &changed_configuration,
@@ -409,9 +416,7 @@ async fn adopted_command_survives_lost_receipt_foreground_cancel_and_connection_
         "desktop",
         f.pair.source_state.sync_device.clone(),
     );
-    let retry_authorization = rua_task::TaskAttemptAuthorization::new("changed-agent")
-        .unwrap()
-        .with_configuration_epoch("retry-current-configuration".into());
+    let retry_authorization = rua_task::TaskAttemptAuthorization::new("changed-agent").unwrap();
     let retry_position = rua_task::TaskAuthorityResolver::accept_attempt(
         &resolver,
         &task.spec,
@@ -435,7 +440,6 @@ async fn adopted_command_survives_lost_receipt_foreground_cancel_and_connection_
             &task.task_id,
             rua_task::TaskAttemptAuthorization::new("changed-agent")
                 .unwrap()
-                .with_configuration_epoch("retry-current-configuration".into())
                 .with_origin(rua_task::TaskOrigin {
                     turn_id: Some("retry-turn".into()),
                     tool_call_id: Some("retry-call".into()),
@@ -524,9 +528,10 @@ async fn invalid_preparations_never_spawn_and_cancel_releases_the_target_connect
     .await
     .is_err());
     std::fs::create_dir(&f.cwd).unwrap();
+    // A Turn admitted under another Chat Agent can no longer prepare a command:
+    // the target now reads the Chat's current configuration for the Agent it selects.
     let mut stale = f.command(ChatCommandAction::Prepare);
-    stale.context.execution_id = "stale-configuration".into();
-    stale.context.call.configuration_epoch = "stale-configuration".into();
+    stale.context.call.agent_id = "other-agent".into();
     assert_eq!(
         deliver_chat_command_via_channel(&f.channel, &stale, Duration::from_secs(5))
             .await

@@ -62,8 +62,7 @@ and ACP conversation kinds are removed; metadata cannot select hidden executors.
 ### D4 - Attempt is the unit of execution
 
 Each execution of the immutable Task Spec creates the next positive Attempt
-number. The Attempt records authorization provenance, captured effective Chat
-configuration epoch, execution Device provenance,
+number. The Attempt records authorization provenance, the execution Device provenance,
 start and terminal times, state, error, bounded result, artifacts, and result
 references.
 
@@ -75,10 +74,14 @@ requires a new Task.
 
 Failed, cancelled, or interrupted Tasks may be retried explicitly. Retry keeps
 the same Task ID and Spec, increments the Attempt number, and uses the retrying
-Turn's effective Chat authorization snapshot for the new Attempt. Execution
-Agent identity is provenance, not permission to reload mutable Agent defaults.
-Inherited configuration admission applies to new Attempts; running Attempts
-retain their captured configuration.
+Turn's effective Chat authorization for the new Attempt. Execution Agent
+identity is provenance, not permission to reload mutable Agent defaults.
+Inherited configuration admission applies to new Attempts. Every Attempt — new
+or already waiting — executes under the Chat's current configuration: the Tool
+policy, security configuration, and Agent assignment the Chat allows at the
+moment the Tool actually runs, never a version pinned when the Attempt was
+created. The Attempt keeps only its own execution provenance: the authorization
+Agent that issued it, the execution Device, and the recorded directory.
 
 There is no automatic retry after process loss or ambiguous failure because the
 prior Attempt may already have produced side effects. Retry re-evaluates
@@ -179,7 +182,7 @@ prohibit implicit replay; callers may inspect and explicitly retry.
 **ADR-0053 amendment gap:** current code still exposes Get/Await/Watch/Unwatch
 and Agent/Subagent/ACP Runner adapters. Replace these with the six-Tool contract
 and Chat collaboration; preserve dependency scheduling and explicit Retry.
-Authorization must consume effective Chat snapshots. Existing adapter tests
+Authorization must consume the Chat's effective configuration at execution. Existing adapter tests
 are retirement coverage, not evidence that the amended contract is implemented.
 
 Current implementation anchors include:

@@ -2537,11 +2537,6 @@ async fn transfer_running_tool_to_background(
             task_id: task_id.clone(),
             owner: task_owner,
             authorization_agent_id: tool_ctx.agent_id.clone(),
-            configuration_epoch: tool_ctx
-                .metadata
-                .get("chat_configuration_epoch")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string),
             origin_turn_id,
             origin_tool_call_id: origin_tool_call_id.clone(),
             tool_name: call.name.clone(),

@@ -140,7 +140,10 @@ async fn capture_fixture_configuration(state: &AppState, chat_id: &str) {
         "hook_configuration".into(),
         serde_json::to_value(configuration).unwrap(),
     );
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -631,33 +634,47 @@ async fn intake_generated_chat_persists_default_model() {
 
 #[tokio::test]
 async fn incomplete_replica_submit_never_materializes_local_authority() {
-    for partial in ["configuration_head.json", "configurations/remote.json"] {
-        let temp = TempDir::new().expect("tempdir");
-        let state = AppState::from_tempdir(temp.path().to_path_buf(), ServerProfile::Test);
-        let runtime = state
-            .registry
-            .get_or_create("default")
-            .await
-            .expect("workspace");
-        let store = WorkspaceSessionStore::new(runtime.chat_workspace_dir());
-        let path = store.chat_dir(CHAT_ID).join(partial);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"{}\n").unwrap();
-        let outcome = intake(&state)
-            .submit_delivery("default", request(CHAT_ID, "hello"))
-            .await;
-        assert!(
-            matches!(outcome, ConversationInputDeliveryOutcome::Rejected { ref detail, .. } if detail.contains("not ready")),
-            "{outcome:?}"
-        );
-        assert!(store.load_chat_header(CHAT_ID).await.unwrap().is_none());
-        assert_eq!(std::fs::read(path).unwrap(), b"{}\n");
-        assert!(state
-            .conversation_authority
-            .active_turn(&chat_address())
-            .await
-            .is_none());
-    }
+    // A replica that has a Chat record but no Conversation Authority placement
+    // must not be promoted into this Device's authority by a submission.
+    let temp = TempDir::new().expect("tempdir");
+    let state = AppState::from_tempdir(temp.path().to_path_buf(), ServerProfile::Test);
+    let runtime = state
+        .registry
+        .get_or_create("default")
+        .await
+        .expect("workspace");
+    let store = WorkspaceSessionStore::new(runtime.chat_workspace_dir());
+    let header = ChatSessionHeader::new(ChatMetadata {
+        chat_id: CHAT_ID.into(),
+        agent_id: "default".into(),
+        title: "Unplaced replica".into(),
+        created_at: "2026-11-25T00:00:00Z".into(),
+        last_activity_at: "2026-11-25T00:00:00Z".into(),
+        pinned: false,
+        archived: false,
+        preview: None,
+    });
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
+    let before = store.load_chat_header(CHAT_ID).await.unwrap().unwrap();
+    let outcome = intake(&state)
+        .submit_delivery("default", request(CHAT_ID, "hello"))
+        .await;
+    assert!(
+        matches!(outcome, ConversationInputDeliveryOutcome::Rejected { ref detail, .. } if detail.contains("not ready")),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        store.load_chat_header(CHAT_ID).await.unwrap().unwrap(),
+        before
+    );
+    assert!(state
+        .conversation_authority
+        .active_turn(&chat_address())
+        .await
+        .is_none());
 }
 
 #[tokio::test]
@@ -1035,7 +1052,7 @@ async fn intake_accepts_session_authority_without_chat_index() {
         }),
     );
     WorkspaceSessionStore::new(&workspace)
-        .save_chat_header(&header)
+        .save_chat_header_with_configuration(&header)
         .await
         .expect("seed draft header");
     capture_fixture_configuration(&state, CHAT_ID).await;
@@ -1194,7 +1211,10 @@ async fn local_submit_uses_authority_header_model_and_ignores_request_metadata()
             "model": "deepseek-v4-flash-free"
         }),
     );
-    store.save_chat_header(&header).await.expect("save header");
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .expect("save header");
 
     let mut submit = request(CHAT_ID, "hello model slot");
     capture_fixture_configuration(&state, CHAT_ID).await;
@@ -3049,7 +3069,10 @@ async fn remote_task_references_preserve_unknown_work_and_only_waiting_approval_
     );
     let mut header = store.load_chat_header(CHAT_ID).await.unwrap().unwrap();
     header.metadata.agent_id = "another-agent".into();
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
     let work = state
         .conversation_authority
         .background_work_view(&chat_address())

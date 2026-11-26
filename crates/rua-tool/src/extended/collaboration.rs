@@ -14,7 +14,6 @@ pub struct CollaborationInvocation {
     pub source: rua_core::ChatAddress,
     pub turn_id: String,
     pub tool_call_id: String,
-    pub configuration_epoch: String,
     pub working_dir: PathBuf,
 }
 
@@ -197,7 +196,6 @@ impl CollaborationTool {
             source: serde_json::from_value(source).map_err(|error| error.to_string())?,
             turn_id: field("turn_id")?,
             tool_call_id: field("tool_call_id")?,
-            configuration_epoch: field("chat_configuration_epoch")?,
             working_dir: context.working_dir.clone(),
         })
     }

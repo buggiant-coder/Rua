@@ -28,7 +28,10 @@ async fn configuration_compare_and_swap_rejects_stale_epoch_without_mutation() {
         "hook_configuration".into(),
         json!({"epoch": "one", "future": true}),
     );
-    store.save_chat_header(&initial).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&initial)
+        .await
+        .unwrap();
     let second = json!({"epoch": "two", "future": {"enabled": true}});
     store
         .replace_chat_configuration("config-cas", "one", second.clone())
@@ -40,16 +43,34 @@ async fn configuration_compare_and_swap_rejects_stale_epoch_without_mutation() {
         .is_err());
     let restored = store.load_chat_header("config-cas").await.unwrap().unwrap();
     assert_eq!(restored.extra["hook_configuration"], second);
+    // An ordinary header write keeps the stored configuration instead of
+    // publishing whatever the caller last read.
+    let mut stale_configuration = restored.clone();
+    stale_configuration.extra.insert(
+        "hook_configuration".into(),
+        json!({"epoch": "one", "future": true}),
+    );
+    store.save_chat_header(&stale_configuration).await.unwrap();
     assert_eq!(
         store
-            .load_configuration_snapshot("config-cas", "one")
+            .load_chat_header("config-cas")
             .await
-            .unwrap(),
-        Some(json!({"epoch": "one", "future": true}))
+            .unwrap()
+            .unwrap()
+            .extra["hook_configuration"],
+        second
     );
-    let mut invalid = restored.clone();
-    invalid.extra["hook_configuration"]["future"] = json!(false);
-    assert!(store.save_chat_header(&invalid).await.is_err());
+    // Only a complete Agent switch may change the selection and configuration
+    // together; a configuration whose Agent disagrees with the Chat is rejected
+    // by the explicit configuration path.
+    assert!(store
+        .replace_chat_configuration(
+            "config-cas",
+            "two",
+            json!({"epoch": "three", "selected_agent_id": "another-agent"}),
+        )
+        .await
+        .is_err());
     assert_eq!(
         store
             .load_chat_header("config-cas")
@@ -85,7 +106,10 @@ fn message(message_id: &str, role: &str, text: &str) -> NewConversationMessage {
 async fn typed_runtime_note_is_durable_message_log_conversation_state() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = WorkspaceSessionStore::new(dir.path());
-    store.save_chat_header(&header("chat-1")).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header("chat-1"))
+        .await
+        .unwrap();
     store
         .append_conversation_turn(
             "chat-1",

@@ -509,7 +509,7 @@ async fn invalid_captured_model_policy_is_rejected_before_provider_call() {
 }
 
 #[tokio::test]
-async fn captured_chat_without_security_snapshot_never_calls_provider() {
+async fn captured_security_snapshot_requires_enforcement_runtime_never_calls_provider() {
     let workspace = tempfile::tempdir().unwrap();
     let (runtime, requests) = runtime_with_sequences_and_toolkit_recording(
         vec![text_round("must not run")],
@@ -518,10 +518,19 @@ async fn captured_chat_without_security_snapshot_never_calls_provider() {
     .await;
     let mut input = request(workspace.path().to_path_buf());
     input.metadata.insert(
-        "chat_configuration_epoch".into(),
-        serde_json::json!("epoch"),
+        rua_security::models::EFFECTIVE_SECURITY_CONFIG_METADATA_KEY.into(),
+        serde_json::to_value(rua_config::types::security::SecurityConfig::default()).unwrap(),
     );
-    assert!(runtime.stream(input).await.is_err());
+    let error = match runtime.stream(input).await {
+        Ok(_) => panic!("A captured security snapshot needs the enforcement runtime"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("requires its security snapshot and enforcement runtime"),
+        "{error}"
+    );
     assert!(requests.lock().unwrap().is_empty());
 }
 
@@ -573,10 +582,6 @@ async fn captured_security_deny_prevents_real_tool_executor() {
     input.metadata.insert(
         rua_agent::runtime::CHAT_CAPABILITY_CONFIGURATION_METADATA_KEY.into(),
         serde_json::to_value(configuration).unwrap(),
-    );
-    input.metadata.insert(
-        "chat_configuration_epoch".into(),
-        serde_json::json!("captured"),
     );
     input.metadata.insert(
         rua_security::models::EFFECTIVE_SECURITY_CONFIG_METADATA_KEY.into(),
@@ -2052,8 +2057,6 @@ async fn browser_chat_acceptance(with_computer: bool) {
             .map(|(_, name, _)| tool_name(name))
             .collect::<Vec<_>>()),
     );
-    req.metadata
-        .insert("chat_configuration_epoch".into(), serde_json::json!(1));
     let events: Vec<_> = runtime.stream(req).await.unwrap().collect().await;
     let results: Vec<_> = events
         .into_iter()
@@ -2273,8 +2276,6 @@ async fn bundled_computer_normal_chat_consumes_observation_and_projects_action_i
         rua_security::models::EFFECTIVE_SECURITY_CONFIG_METADATA_KEY.into(),
         serde_json::to_value(rua_config::types::security::SecurityConfig::default()).unwrap(),
     );
-    req.metadata
-        .insert("chat_configuration_epoch".into(), json!(1));
     let mut running = rua_config::AgentsRunningConfig {
         max_iters: 4,
         ..Default::default()
@@ -2344,7 +2345,7 @@ async fn bundled_computer_normal_chat_consumes_observation_and_projects_action_i
 }
 
 #[tokio::test]
-async fn captured_chat_requires_capability_configuration_before_provider_call() {
+async fn malformed_captured_capability_configuration_is_rejected_before_provider_call() {
     let workspace = tempfile::tempdir().unwrap();
     let (runtime, requests) = runtime_with_sequences_and_toolkit_recording(
         vec![text_round("must not run")],
@@ -2359,21 +2360,21 @@ async fn captured_chat_requires_capability_configuration_before_provider_call() 
     )));
     let mut input = request(workspace.path().into());
     input.metadata.insert(
-        "chat_configuration_epoch".into(),
-        serde_json::json!("captured"),
+        rua_agent::runtime::CHAT_CAPABILITY_CONFIGURATION_METADATA_KEY.into(),
+        serde_json::json!({"selection_policy": "not-a-policy"}),
     );
     input.metadata.insert(
         rua_security::models::EFFECTIVE_SECURITY_CONFIG_METADATA_KEY.into(),
         serde_json::to_value(rua_config::types::security::SecurityConfig::default()).unwrap(),
     );
     let error = match runtime.stream(input).await {
-        Ok(_) => panic!("Captured Chat requires its configuration"),
+        Ok(_) => panic!("A malformed captured capability configuration must not run"),
         Err(error) => error,
     };
     assert!(
         error
             .to_string()
-            .contains("capability configuration is required"),
+            .contains("invalid Chat capability configuration"),
         "{error}"
     );
     assert!(requests.lock().unwrap().is_empty());

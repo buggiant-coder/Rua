@@ -453,8 +453,8 @@ async fn missing_snapshot_and_malformed_permission_rules_fail_closed() {
     let module = make_module(tmp.path());
     let mut ctx = ToolCallContext::new("agent", "chat", "read", serde_json::json!({}));
     ctx.metadata.insert(
-        "chat_configuration_epoch".into(),
-        serde_json::json!("epoch"),
+        rua_security::models::EFFECTIVE_SECURITY_CONFIG_METADATA_KEY.into(),
+        serde_json::json!({"tool_guard": {}}),
     );
     assert!(matches!(
         module.enforce(&ctx, &[]).await,

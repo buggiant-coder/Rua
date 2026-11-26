@@ -1159,7 +1159,7 @@ async fn seed_authority_placement_at_epoch(
         seed_configuration(&mut header, device_id);
     }
     store
-        .save_chat_header(&header)
+        .save_chat_header_with_configuration(&header)
         .await
         .expect("seed Session authority placement");
 }
@@ -1187,7 +1187,7 @@ async fn seed_chat_header(workspace_dir: &std::path::Path, chat_id: &str, device
     );
     seed_configuration(&mut header, device_id);
     WorkspaceSessionStore::new(workspace_dir)
-        .save_chat_header(&header)
+        .save_chat_header_with_configuration(&header)
         .await
         .expect("seed chat header");
 }
@@ -1285,7 +1285,7 @@ async fn seed_project_chat_state(
         }),
     );
     WorkspaceSessionStore::new(scope_root)
-        .save_chat_header(&header)
+        .save_chat_header_with_configuration(&header)
         .await
         .expect("seed Project Chat header");
 }
@@ -1516,7 +1516,7 @@ async fn seed_adoptable_empty_chat(
         .await
         .unwrap();
     store
-        .save_chat_header(&header)
+        .save_chat_header_with_configuration(&header)
         .await
         .expect("save adoptable chat model");
 }
@@ -3455,14 +3455,13 @@ async fn collaboration_device_command_is_idempotent_epoch_gated_and_rebuilds_pro
         serde_json::to_value(&configuration).unwrap(),
     );
     WorkspaceSessionStore::new(target_scope.root())
-        .save_chat_header(&header)
+        .save_chat_header_with_configuration(&header)
         .await
         .unwrap();
     target_state
         .product_hooks
         .adopt_chat_configuration(&address, configuration.clone())
         .await;
-    let configuration_epoch = configuration.epoch;
     let placement =
         rua_server::services::conversation_authority_target::load_chat_authority_placement_target(
             target_scope.root(),
@@ -3486,7 +3485,6 @@ async fn collaboration_device_command_is_idempotent_epoch_gated_and_rebuilds_pro
         address: address.clone(),
         turn_id: "source-turn".into(),
         tool_call_id: "remote-create-call".into(),
-        configuration_epoch,
         working_dir: PathBuf::from("/controller/path/must/not/be-used"),
     };
     let command = CollaborationDeviceCommand {
@@ -11323,7 +11321,6 @@ async fn prepare_running_file_calls(
 ) -> (
     ChatAddress,
     rua_server::services::conversation_authority::ConversationActiveTurn,
-    String,
     AgentRequest,
 ) {
     use rua_server::services::conversation_authority::ConversationActiveTurnPhase;
@@ -11371,34 +11368,31 @@ async fn prepare_running_file_calls(
     rua_session::chat_index::upsert(replica.chat_workspace().as_path(), index)
         .await
         .unwrap();
-    // Header publication also installs its immutable configuration snapshot.
-    let epoch = header.extra["hook_configuration"]["epoch"]
-        .as_str()
-        .unwrap();
-    let original_snapshot = WorkspaceSessionStore::new(owner.chat_workspace().as_path())
-        .load_configuration_snapshot(&fixture.chat_id, epoch)
+    // The Chat record carries its configuration, so the two devices agree on it.
+    let original_configuration = WorkspaceSessionStore::new(owner.chat_workspace().as_path())
+        .load_chat_header(&fixture.chat_id)
         .await
         .unwrap()
-        .unwrap();
-    let replicated_snapshot = WorkspaceSessionStore::new(replica.chat_workspace().as_path())
-        .load_configuration_snapshot(&fixture.chat_id, epoch)
+        .unwrap()
+        .extra["hook_configuration"]
+        .clone();
+    let replicated_configuration = WorkspaceSessionStore::new(replica.chat_workspace().as_path())
+        .load_chat_header(&fixture.chat_id)
         .await
         .unwrap()
-        .unwrap();
-    assert_eq!(original_snapshot, replicated_snapshot);
+        .unwrap()
+        .extra["hook_configuration"]
+        .clone();
+    assert_eq!(original_configuration, replicated_configuration);
+    assert_eq!(
+        original_configuration["epoch"],
+        header.extra["hook_configuration"]["epoch"]
+    );
     install_connectable_peer(&fixture.target, &fixture.source);
     *replica.sync_transfer_session_manager.write().unwrap() =
         Some(fixture.source.runtime.session_manager().clone());
     let request = captured.requests.lock().await[0].clone();
-    (
-        address,
-        turn,
-        header.extra["hook_configuration"]["epoch"]
-            .as_str()
-            .unwrap()
-            .to_owned(),
-        request,
-    )
+    (address, turn, request)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -11438,7 +11432,7 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
     .map(|id| ToolCall::new(id, "read", args.clone()));
     calls[7].arguments["file_path"] = serde_json::json!(second_path);
     calls[9].arguments["file_path"] = serde_json::json!(fourth_path);
-    let (address, turn, epoch, _) = prepare_running_file_calls(&fixture, &calls, &release).await;
+    let (address, turn, _) = prepare_running_file_calls(&fixture, &calls, &release).await;
     let ordinary = phone.security.config_store().load("default").unwrap();
     let mut ask = ordinary.clone();
     ask.tool_guard.approval_mode = "ask_first".into();
@@ -11484,7 +11478,6 @@ async fn target_only_file_confirmation_waits_in_the_original_chat() {
                 serde_json::json!(address),
             ),
             ("turn_id".into(), serde_json::json!(turn.turn_id)),
-            ("chat_configuration_epoch".into(), serde_json::json!(epoch)),
         ]
         .into(),
         ..Default::default()
@@ -11767,7 +11760,7 @@ async fn read_approval_claim_is_bound_to_the_running_turn_requesting_device_and_
         ToolCall::new("ended", "read", arguments.clone()),
         ToolCall::new("policy-check", "read", arguments.clone()),
     ];
-    let (address, turn, epoch, _) = prepare_running_file_calls(&fixture, &calls, &release).await;
+    let (address, turn, _) = prepare_running_file_calls(&fixture, &calls, &release).await;
     let replica = &fixture.source_state;
     let mut check = DeviceReadCheckRequest {
         tool_name: "read".into(),
@@ -11776,7 +11769,6 @@ async fn read_approval_claim_is_bound_to_the_running_turn_requesting_device_and_
         address: address.clone(),
         agent_id: "default".into(),
         authority_epoch: turn.authority_epoch,
-        configuration_epoch: epoch,
         turn_id: turn.turn_id.clone(),
         tool_call_id: "policy-check".into(),
         arguments: arguments.clone(),

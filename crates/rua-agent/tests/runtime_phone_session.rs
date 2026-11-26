@@ -60,7 +60,6 @@ fn session_context() -> rua_core::phone_use::PhoneSessionContext {
             ),
             ("turn_id".into(), json!("phone-turn")),
             ("authority_epoch".into(), json!("authority-epoch")),
-            ("chat_configuration_epoch".into(), json!("config-epoch")),
         ]),
     )
     .unwrap()
@@ -159,10 +158,6 @@ async fn failed_cancelled_and_timed_out_turns_release_the_captured_session() {
         assert_eq!(
             request["params"]["invocation"]["authority_epoch"],
             "authority-epoch"
-        );
-        assert_eq!(
-            request["params"]["invocation"]["chat_configuration_epoch"],
-            "config-epoch"
         );
         assert!(requests.try_recv().is_err());
         server.abort();

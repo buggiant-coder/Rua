@@ -31,7 +31,7 @@ requirements.
 
 ADR 0018 includes Agent or Project Scope in Chat identity and storage resolution.
 ADR 0019 binds all Project resource directories and Chat execution to one Device.
-ADR 0028 gives each Chat complete configuration snapshots and records Agent
+ADR 0028 gives each Chat one complete current configuration and records Agent
 assignment for claimed Turns. Those existing mechanisms are the starting point;
 unifying identity does not imply replacing Message Log or Turn semantics.
 
@@ -403,12 +403,16 @@ no active foreground Turn, queued input, or unresolved approval. Approvals
 originating from background Tasks count toward this gate. A running background
 Task by itself does not block these changes.
 
-An accepted Task keeps its original Agent/configuration provenance and captured
-execution configuration; switching the Chat's Agent neither reconfigures nor
-restarts it. Subsequent result-processing Turns use the Chat's then-selected
-Agent while preserving the Task's original provenance. For example, Agent A can
-start a phone scan and Agent B can later process that scan's result in the same
-Chat after an admitted Agent switch.
+An accepted Task keeps its execution provenance: the authorization Agent that
+issued it, its execution Device, and its original resolved working directory.
+Switching the Chat's Agent neither reconfigures nor restarts it. The Tool itself
+runs under the Chat's current configuration — the Tool policy, security
+configuration and Agent assignment the Chat allows at the moment the Tool
+actually runs — rather than a configuration frozen when the Task was submitted.
+Subsequent result-processing Turns use the Chat's then-selected Agent while
+preserving the Task's original provenance. For example, Agent A can start a
+phone scan and Agent B can later process that scan's result in the same Chat
+after an admitted Agent switch.
 
 This concerns Tool Tasks owned by the Chat. It does not change separate
 collaboration-Chat executor or driver constraints, nor define new rules for
@@ -1134,8 +1138,11 @@ Source deletion retains the existing last-materialized-configuration rule.
 
 This revises the execution-position portion of those ADRs' environment
 propagation rule in the target model. It does not remove other established
-configuration/security inheritance or broaden permissions. Configuration epoch,
-managed-directory reference retention and independent authority routing are
+configuration/security inheritance or broaden permissions. The authority epoch
+identifies Conversation Authority placement moves only; Chat configuration
+itself keeps a single current copy rather than a replicated head plus immutable
+snapshots, and Turn authorization does not carry a configuration epoch.
+Managed-directory reference retention and independent authority routing are
 technical integration work; no new cross-Chat position-change queue is required.
 
 ## Technical design candidates - Device-targeted resource operations

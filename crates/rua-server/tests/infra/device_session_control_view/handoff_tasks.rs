@@ -31,12 +31,11 @@ async fn record_at(
             let latest = actual.attempts.last().unwrap();
             let snapshot = peer
                 .store()
-                .load_configuration_snapshot(
-                    owner.chat_id(),
-                    latest.configuration_epoch.as_deref().unwrap_or_default(),
-                )
+                .load_chat_header(owner.chat_id())
                 .await
-                .unwrap();
+                .ok()
+                .flatten()
+                .and_then(|header| header.extra.get("hook_configuration").cloned());
             let authority = peer.state.security.approval_authority();
             panic!("Task {id} did not reach attempt {attempt} {state:?}: {error}; actual state={:?}, attempt={:?}, snapshot={:?}, approvals={:?}, live Chat rules={:?}",
                 actual.state, latest,
@@ -144,16 +143,6 @@ async fn handed_off_chat_controls_original_remote_task_and_retries_with_current_
         .submit(&chat, "manage the Task on the other Device")
         .await;
     executor.synchronize(&source).await;
-    let header = executor
-        .store()
-        .load_chat_header(&chat)
-        .await
-        .unwrap()
-        .unwrap();
-    let epoch = header.extra["hook_configuration"]["epoch"]
-        .as_str()
-        .unwrap()
-        .to_owned();
     let origin = TaskOrigin {
         turn_id: Some(
             source.store().read_turn_range(&chat, 1, 1).await.unwrap()[0]
@@ -180,7 +169,6 @@ async fn handed_off_chat_controls_original_remote_task_and_retries_with_current_
             },
             TaskAttemptAuthorization::new("default")
                 .unwrap()
-                .with_configuration_epoch(epoch)
                 .with_origin(origin.clone()),
         )
         .await
@@ -415,10 +403,6 @@ async fn handed_off_chat_controls_original_remote_task_and_retries_with_current_
     );
     assert!(!current_cwd.join("starts").exists());
     assert_eq!(waiting.attempts[1].authorization_agent_id, next_agent);
-    assert_eq!(
-        waiting.attempts[1].configuration_epoch.as_deref(),
-        Some(current_epoch.as_str())
-    );
     assert_eq!(
         waiting.attempts[1].device.device_id,
         first.attempts[0].device.device_id

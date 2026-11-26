@@ -72,6 +72,8 @@ struct StubAuthority {
     /// Turns that vanish on cancel without any terminal fact.
     vanish_on_cancel: AtomicBool,
     fail: AtomicBool,
+    pending_approvals: AtomicUsize,
+    unanswered_prompts: AtomicUsize,
 }
 
 impl StubAuthority {
@@ -85,6 +87,8 @@ impl StubAuthority {
             terminate_on_cancel: AtomicBool::new(false),
             vanish_on_cancel: AtomicBool::new(false),
             fail: AtomicBool::new(false),
+            pending_approvals: AtomicUsize::new(0),
+            unanswered_prompts: AtomicUsize::new(0),
         }
     }
 
@@ -127,6 +131,8 @@ impl AgentWorkAuthority for StubAuthority {
                 self.tasks.load(Ordering::SeqCst),
             ),
             queued_inputs: 0,
+            pending_approvals: self.pending_approvals.load(Ordering::SeqCst),
+            unanswered_prompts: self.unanswered_prompts.load(Ordering::SeqCst),
         })
     }
 
@@ -156,6 +162,8 @@ impl AgentWorkAuthority for StubAuthority {
                 self.tasks.load(Ordering::SeqCst),
             ),
             queued_inputs: 0,
+            pending_approvals: self.pending_approvals.load(Ordering::SeqCst),
+            unanswered_prompts: self.unanswered_prompts.load(Ordering::SeqCst),
         })
     }
 

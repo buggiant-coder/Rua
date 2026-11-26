@@ -63,7 +63,6 @@ fn task_record_for_turn(
         finished_at: Some(now),
         result: Some(result.clone()),
         attempts: vec![TaskAttempt {
-            configuration_epoch: None,
             attempt_no,
             state,
             authorization_agent_id: "agent-1".to_string(),
@@ -420,20 +419,12 @@ async fn task_terminal_note_uses_current_attempt_actual_location_not_retry_chat_
     let store = WorkspaceSessionStore::new(root.path());
     let mut record = task_record("chat-location", 2, TaskState::Completed, "done on phone");
     let current = &mut record.attempts[0];
-    current.configuration_epoch = Some("retry-config".into());
     current.device.device_id = Some("phone".into());
     current.device.public_cwd = Some("/root/original-photos".into());
     let mut previous = current.clone();
     previous.attempt_no = 1;
     previous.device.public_cwd = Some("/not-the-current-attempt".into());
     record.attempts.insert(0, previous);
-    let path = store
-        .configuration_snapshot_path("chat-location", "retry-config")
-        .unwrap();
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    rua_config::atomic_write(&path, &serde_json::to_vec(&serde_json::json!({
-        "capability_configuration":{"execution_directory":{"device_id":"desktop","path":"/new/chat/location","managed":true}}
-    })).unwrap()).unwrap();
     let note = rua_agent::task_runtime_notes::task_terminal_note(&record, &store)
         .await
         .unwrap();
@@ -453,13 +444,7 @@ async fn task_terminal_note_uses_current_attempt_actual_location_not_retry_chat_
 async fn task_terminal_note_does_not_invent_missing_actual_location_from_configuration() {
     let root = tempfile::tempdir().unwrap();
     let store = WorkspaceSessionStore::new(root.path());
-    let mut record = task_record("chat-location", 1, TaskState::Completed, "done");
-    record.attempts[0].configuration_epoch = Some("unreadable-config".into());
-    let path = store
-        .configuration_snapshot_path("chat-location", "unreadable-config")
-        .unwrap();
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    rua_config::atomic_write(&path, b"invalid configuration must not be consulted").unwrap();
+    let record = task_record("chat-location", 1, TaskState::Completed, "done");
     let note = rua_agent::task_runtime_notes::task_terminal_note(&record, &store)
         .await
         .unwrap();

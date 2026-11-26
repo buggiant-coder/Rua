@@ -500,6 +500,7 @@ async fn stage_project_chat_header(
     placement: &ConversationAuthorityPlacement,
     snapshot: ProjectChatMaterializationSnapshot,
 ) -> Result<(), String> {
+    snapshot.configuration.validate()?;
     let chat = crate::services::chat_metadata_store::new_targeted_chat_metadata(
         address,
         title,
@@ -517,7 +518,7 @@ async fn stage_project_chat_header(
         serde_json::to_value(snapshot.configuration).map_err(|error| error.to_string())?,
     );
     store
-        .save_chat_header(&header)
+        .save_chat_header_with_configuration(&header)
         .await
         .map_err(|error| error.to_string())
 }

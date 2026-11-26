@@ -28,7 +28,6 @@ pub struct DeviceReadCheckRequest {
     pub agent_id: String,
     pub address: ChatAddress,
     pub authority_epoch: ConversationAuthorityEpoch,
-    pub configuration_epoch: String,
     pub turn_id: String,
     pub tool_call_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -99,7 +98,6 @@ impl DeviceReadAccess for ForegroundReadAccess {
                 .metadata
                 .contains_key(rua_agent::hooks::SECURITY_CHAT_ADDRESS_METADATA_KEY)
             && ctx.metadata.contains_key("turn_id")
-            && ctx.metadata.contains_key("chat_configuration_epoch")
             && matches!(tool, "read" | "edit" | "grep" | "glob" | "sync_send")
     }
 
@@ -122,12 +120,11 @@ impl DeviceReadAccess for ForegroundReadAccess {
             return Ok(unavailable("the device service is unavailable"));
         };
         let field = |name: &str| ctx.metadata.get(name).and_then(Value::as_str);
-        let (Some(local), Some(device), Some(turn), Some(call), Some(epoch)) = (
+        let (Some(local), Some(device), Some(turn), Some(call)) = (
             ctx.local_device_id.as_deref(),
             args.get("device_id").and_then(Value::as_str),
             field("turn_id"),
             field("tool_call_id"),
-            field("chat_configuration_epoch"),
         ) else {
             return Ok(unavailable("no active Chat invocation was identified"));
         };
@@ -212,7 +209,6 @@ impl DeviceReadAccess for ForegroundReadAccess {
             agent_id: ctx.agent_id.clone(),
             address,
             authority_epoch: active.authority_epoch,
-            configuration_epoch: epoch.into(),
             turn_id: turn.into(),
             tool_call_id: call.into(),
             confirmation: confirmed
@@ -406,7 +402,6 @@ impl DeviceReadCheckRequest {
             agent_id: &self.agent_id,
             authority_device_id: &self.source_device_id,
             authority_epoch: self.authority_epoch,
-            configuration_epoch: &self.configuration_epoch,
             turn_id: &self.turn_id,
             tool_call_id: &self.tool_call_id,
             tool_name: &self.tool_name,

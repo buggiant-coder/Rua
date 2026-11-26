@@ -162,16 +162,26 @@ async fn late_activated_receipt_preserves_the_new_writer_configuration_and_allow
         .request(Method::GET, &chat, "/configuration", Value::Null)
         .await;
     assert_eq!(status, StatusCode::OK, "{preview}");
+    // The new writer's Session File is the only record of its configuration.
+    let activated = target
+        .store()
+        .load_chat_header(&chat)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         preview["current"]["epoch"],
-        active.candidate_configuration_epoch
+        activated.extra["hook_configuration"]["epoch"]
     );
     assert_eq!(
         preview["candidate"]["security_config"]["tool_guard"]["approval_mode"],
         "ask_first"
     );
     let latest = preview["candidate"].clone();
-    assert_ne!(latest["epoch"], active.candidate_configuration_epoch);
+    assert_ne!(
+        latest["epoch"],
+        activated.extra["hook_configuration"]["epoch"]
+    );
     let (status, applied) = target
         .request(
             Method::PUT,
@@ -303,7 +313,7 @@ async fn late_activated_receipt_preserves_the_new_writer_configuration_and_allow
     );
     assert_ne!(
         restored.extra["hook_configuration"]["epoch"],
-        active.candidate_configuration_epoch
+        activated.extra["hook_configuration"]["epoch"]
     );
     source.submit(&chat, "returned writer").await;
     assert_eq!(source.captured.requests.lock().await.len(), 2);

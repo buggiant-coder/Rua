@@ -360,7 +360,6 @@ struct DispatchedTask {
     attempt_no: u32,
     authorization_agent_id: String,
     authorization_origin: crate::model::TaskOrigin,
-    configuration_epoch: Option<String>,
     spec: TaskSpec,
     device: TaskDeviceContext,
 }
@@ -1502,7 +1501,6 @@ impl TaskRuntime {
         let device = attempt.device.clone();
         let authorization_agent_id = attempt.authorization_agent_id.clone();
         let authorization_origin = attempt.authorization_origin.clone();
-        let configuration_epoch = attempt.configuration_epoch.clone();
         let session = TaskRunnerSession::bound(record.task_id.clone(), record.attempt_no);
         let execution =
             TaskExecutionHandle::new(record.spec.owner.clone(), record.attempt_no, session);
@@ -1516,7 +1514,6 @@ impl TaskRuntime {
                         attempt_no: record.attempt_no,
                         authorization_agent_id,
                         authorization_origin,
-                        configuration_epoch,
                         spec: record.spec,
                         device,
                     },
@@ -2040,7 +2037,6 @@ impl TaskRuntime {
             attempt_no,
             authorization_agent_id,
             authorization_origin,
-            configuration_epoch,
             spec,
             device,
         } = task;
@@ -2134,7 +2130,6 @@ impl TaskRuntime {
             attempt_no,
             authorization_agent_id,
             authorization_origin,
-            configuration_epoch,
             spec: spec.clone(),
             task_dir: task_dir.clone(),
             device: device.clone(),

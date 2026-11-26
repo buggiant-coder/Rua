@@ -76,7 +76,7 @@ impl TaskAuthorityResolver for ServerTaskAuthorityResolver {
     async fn accept_attempt(
         &self,
         spec: &TaskSpec,
-        authorization: &TaskAttemptAuthorization,
+        _authorization: &TaskAttemptAuthorization,
         prior: Option<&TaskDeviceContext>,
     ) -> Result<TaskDeviceContext, TaskAuthorityError> {
         let (device, local_device_id) = self.local_device()?;
@@ -112,23 +112,6 @@ impl TaskAuthorityResolver for ServerTaskAuthorityResolver {
         let configuration = header.extra.get("hook_configuration").ok_or_else(|| {
             TaskAuthorityError::Unavailable("Task Chat configuration is unavailable".into())
         })?;
-        // An authorization that names a configuration epoch must still be the
-        // Chat's current one. Without a claimed epoch the Attempt relies on the
-        // captured directory alone, which is all a direct Task creation has.
-        if authorization
-            .configuration_epoch
-            .as_deref()
-            .is_some_and(|claimed| {
-                Some(claimed)
-                    != configuration
-                        .get("epoch")
-                        .and_then(serde_json::Value::as_str)
-            })
-        {
-            return Err(TaskAuthorityError::Rejected(
-                "Task Attempt authorization configuration is stale".into(),
-            ));
-        }
         let captured: rua_session::ChatExecutionDirectory = serde_json::from_value(
             configuration
                 .get("capability_configuration")
@@ -212,17 +195,12 @@ impl TaskAuthorityResolver for ServerTaskAuthorityResolver {
         // accepted: resolving it again would rewrite the user's own spelling
         // (for example through a `/var` -> `/private/var` symlink) and lose the
         // fact that Rua manages the directory.
-        let captured_verbatim = prior.is_none()
-            && captured.device_id == local_device_id
-            && requested == captured.path;
+        let captured_verbatim =
+            prior.is_none() && captured.device_id == local_device_id && requested == captured.path;
         let public_cwd = if captured_verbatim {
-            captured
-                .path
-                .to_str()
-                .map(str::to_owned)
-                .ok_or_else(|| {
-                    TaskAuthorityError::Unavailable("Task directory has no public path".into())
-                })?
+            captured.path.to_str().map(str::to_owned).ok_or_else(|| {
+                TaskAuthorityError::Unavailable("Task directory has no public path".into())
+            })?
         } else {
             // An Attempt that already recorded its directory keeps that exact
             // spelling as long as it still names this directory: retrying a Task

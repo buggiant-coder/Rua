@@ -620,10 +620,9 @@ impl ChatCommandService {
             depends_on: Vec::new(),
             origin: origin.clone(),
         };
-        let mut authorization = rua_task::TaskAttemptAuthorization::new(&context.call.agent_id)
+        let authorization = rua_task::TaskAttemptAuthorization::new(&context.call.agent_id)
             .map_err(|error| error.to_string())?
             .with_origin(origin);
-        authorization.configuration_epoch = Some(context.call.configuration_epoch.clone());
         let collecting = execution.clone();
         let execution_id = context.execution_id.clone();
         let device_id = self.local_device_id.clone();

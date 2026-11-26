@@ -594,14 +594,13 @@ async fn full_export_v4_appends_opaque_changes_for_portable_domains() {
         "Bearer shared-mcp-auth-marker"
     );
 
-    let media = find_change(
-        &changes,
-        "media",
-        "00000000-0000-4000-8000-000000000501",
-    );
+    let media = find_change(&changes, "media", "00000000-0000-4000-8000-000000000501");
     assert_eq!(media.kind, "upsert");
     // Media travels as metadata only: bytes stay on the Device and are read on demand.
-    assert_eq!(media.payload["media_ref"], "media/00000000-0000-4000-8000-000000000501");
+    assert_eq!(
+        media.payload["media_ref"],
+        "media/00000000-0000-4000-8000-000000000501"
+    );
     assert_eq!(media.payload["byte_size"], 25);
     assert_eq!(
         media.payload["chat_ids"],
@@ -609,7 +608,8 @@ async fn full_export_v4_appends_opaque_changes_for_portable_domains() {
         "the Chat Media manifest keeps its authorized Chat references"
     );
     assert!(
-        media.payload.get("bytes").is_none() && media.payload.get("inline_ciphertext_b64").is_none(),
+        media.payload.get("bytes").is_none()
+            && media.payload.get("inline_ciphertext_b64").is_none(),
         "full export must not inline media bytes; they are fetched on demand"
     );
 

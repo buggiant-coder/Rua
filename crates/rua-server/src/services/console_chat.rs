@@ -4106,10 +4106,6 @@ impl ConsoleChatService {
                     serde_json::to_value(&configuration.security_config)
                         .expect("security configuration serializes"),
                 );
-                metadata.insert(
-                    "chat_configuration_epoch".to_string(),
-                    serde_json::json!(configuration.epoch),
-                );
             }
             let runtime_tool_configs = load_tool_configs_for_runtime(
                 tool_config_cells,

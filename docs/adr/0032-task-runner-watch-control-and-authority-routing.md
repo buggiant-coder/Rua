@@ -22,13 +22,13 @@ routing through the server.
 ### D1 - Task Runner is a typed execution adapter
 
 `TaskRunner` accepts a `TaskRunRequest` containing Task ID, Attempt number,
-immutable Spec, captured Chat authorization/configuration provenance, owning Device context, dependencies,
-cancellation token, Task directory, and Runner Session. It returns one bounded
-`TaskRunOutput` or a typed Runner error.
+immutable Spec, the Attempt's authorization provenance, owning Device context,
+dependencies, cancellation token, Task directory, and Runner Session. It returns
+one bounded `TaskRunOutput` or a typed Runner error.
 
 The Tool Runner validates the real Tool name and arguments. Generic dispatch
-must not bypass available Tools or captured Chat authorization. Agent and ACP
-collaboration have no Task Runner adapter in the target design.
+must not bypass available Tools or the Chat's current authorization. Agent and
+ACP collaboration have no Task Runner adapter in the target design.
 
 ### D2 - Runner Session owns live execution interaction
 
@@ -232,7 +232,7 @@ larger than the read budget, cursor replay, and stale cursors after Retry.
 
 ADR-0053 changes are not yet implemented: replace Get/Await and model Watch
 Tools; retire Agent/Subagent/ACP Task adapters; add Read/result delivery
-coordination and effective Chat snapshot authorization. Historical Watch tests
+coordination and effective current Chat configuration authorization. Historical Watch tests
 below describe code to replace, not the amended product contract.
 
 D7 is not yet implemented for Agent-Scoped Tasks:

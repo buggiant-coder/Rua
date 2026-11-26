@@ -470,9 +470,9 @@ pub fn get_sync(workspace_dir: &Path, chat_id: &str) -> Result<Option<ChatIndexR
         .map_err(|error| format!("read Chat Index record: {error}"))
 }
 
-/// Stage the filter change before publishing the authoritative Session configuration head.
-/// SQLite rolls the unpublished row back if the head write fails. Startup reconstructs the
-/// row from the head if the process stops between the filesystem and SQLite commits.
+/// Stage the filter change before publishing the authoritative Session record.
+/// SQLite rolls the unpublished row back if the record write fails. Startup reconstructs the
+/// row from the Session record if the process stops between the filesystem and SQLite commits.
 pub(crate) fn publish_agent_switch(
     workspace: &Path,
     chat_id: &str,

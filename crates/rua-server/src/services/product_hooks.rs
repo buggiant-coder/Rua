@@ -199,6 +199,28 @@ impl ChatHookConfiguration {
         Ok(configuration)
     }
 
+    /// The part of a Chat configuration that actually authorizes work: which
+    /// Agent runs, what that Agent may do, and how its actions are gated.
+    ///
+    /// A configuration epoch changes for any edit, including a model or
+    /// temperature change that widens no permission. Authority checks compare
+    /// this fingerprint instead, so an unrelated edit cannot invalidate an
+    /// approval that still means the same thing.
+    pub fn authorization_fingerprint(&self) -> String {
+        let material = serde_json::json!({
+            "selected_agent_id": self.selected_agent_id,
+            "agent_assignment": self.agent_assignment,
+            "security_config": self.security_config,
+            "capability_configuration": self.capability_configuration,
+            "effective_hooks": self.effective_hooks,
+            "execution_requirements": self.execution_requirements,
+            "collaboration_mode": self.collaboration_mode,
+        });
+        let encoded = serde_json::to_vec(&material).expect("authorization material serializes");
+        use sha2::{Digest, Sha256};
+        format!("sha256:{:x}", Sha256::digest(&encoded))
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.epoch.trim().is_empty() {
             return Err("Chat configuration epoch is empty".to_string());

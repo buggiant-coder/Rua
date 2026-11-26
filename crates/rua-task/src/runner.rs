@@ -112,7 +112,6 @@ pub struct TaskRunRequest {
     pub attempt_no: u32,
     pub authorization_agent_id: String,
     pub authorization_origin: crate::model::TaskOrigin,
-    pub configuration_epoch: Option<String>,
     pub spec: TaskSpec,
     pub task_dir: PathBuf,
     pub device: TaskDeviceContext,

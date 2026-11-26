@@ -580,7 +580,10 @@ async fn enabling_feature_backfills_existing_authority_owned_history() {
         "hook_configuration".into(),
         serde_json::to_value(configuration).unwrap(),
     );
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
     store
         .append_conversation_turn(
             "chat-backfill",

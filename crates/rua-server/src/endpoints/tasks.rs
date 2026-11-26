@@ -310,15 +310,7 @@ async fn retry_task(
         Err(error) => return ApiError::from(error).into_response(),
     };
     let authorization = match rua_task::TaskAttemptAuthorization::new(header.agent_id) {
-        Ok(mut authorization) => {
-            authorization.configuration_epoch = header
-                .extra
-                .get("hook_configuration")
-                .and_then(|value| value.get("epoch"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned);
-            authorization
-        }
+        Ok(authorization) => authorization,
         Err(error) => return ApiError::BadRequest(error).into_response(),
     };
     let placement =
@@ -380,7 +372,6 @@ async fn retry_task(
                     attempt.attempt_no == record.attempt_no
                         && attempt.authorization_origin == expected_authorization.origin
                         && attempt.authorization_agent_id == expected_authorization.agent_id
-                        && attempt.configuration_epoch == expected_authorization.configuration_epoch
                 })
             {
                 return response(Ok(ChatTaskResponse::Record { record, reference }));

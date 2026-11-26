@@ -33,7 +33,6 @@ CREATE TABLE IF NOT EXISTS task_attempts (
     state TEXT NOT NULL,
     authorization_agent_id TEXT NOT NULL DEFAULT '',
     authorization_origin_json TEXT NOT NULL DEFAULT '{}',
-    configuration_epoch TEXT,
     device_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -258,7 +257,6 @@ impl TaskStore {
                 state: record.state,
                 authorization_agent_id: authorization.agent_id,
                 authorization_origin: authorization.origin,
-                configuration_epoch: authorization.configuration_epoch,
                 device,
                 created_at: record.created_at,
                 updated_at: record.updated_at,
@@ -379,7 +377,6 @@ impl TaskStore {
                     state: TaskState::Accepted,
                     authorization_agent_id: authorization.agent_id,
                     authorization_origin: authorization.origin,
-                    configuration_epoch: authorization.configuration_epoch,
                     device,
                     created_at: now,
                     updated_at: now,
@@ -1041,8 +1038,8 @@ fn insert_attempt(
     tx.execute(
         "INSERT INTO task_attempts (
              task_id, attempt_no, state, authorization_agent_id, device_json, created_at, updated_at,
-             started_at, finished_at, result_json, configuration_epoch, authorization_origin_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             started_at, finished_at, result_json, authorization_origin_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             task_id,
             attempt.attempt_no,
@@ -1059,7 +1056,6 @@ fn insert_attempt(
                 .map(serde_json::to_string)
                 .transpose()
                 .map_err(TaskError::serialize)?,
-            attempt.configuration_epoch,
             serde_json::to_string(&attempt.authorization_origin).map_err(TaskError::serialize)?,
         ],
     )
@@ -1329,7 +1325,7 @@ fn load_attempts(connection: &Connection, task_id: &str) -> Result<Vec<TaskAttem
     let mut statement = connection
         .prepare(
             "SELECT attempt_no, state, authorization_agent_id, device_json, created_at, updated_at,
-                    started_at, finished_at, result_json, configuration_epoch, authorization_origin_json
+                    started_at, finished_at, result_json, authorization_origin_json
              FROM task_attempts
              WHERE task_id = ?1
              ORDER BY attempt_no ASC",
@@ -1344,8 +1340,7 @@ fn load_attempts(connection: &Connection, task_id: &str) -> Result<Vec<TaskAttem
                 attempt_no: row.get::<_, i64>(0)? as u32,
                 state: parse_json(&state, 1)?,
                 authorization_agent_id: row.get(2)?,
-                authorization_origin: parse_json(&row.get::<_, String>(10)?, 10)?,
-                configuration_epoch: row.get(9)?,
+                authorization_origin: parse_json(&row.get::<_, String>(9)?, 9)?,
                 device: parse_json(&device, 3)?,
                 created_at: parse_time(row.get(4)?, 4)?,
                 updated_at: parse_time(row.get(5)?, 5)?,

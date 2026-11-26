@@ -28,20 +28,17 @@ internal data class PhoneInvocation(
     val chatAddress: PhoneChatAddress,
     val turnId: String,
     val authorityEpoch: String,
-    val configurationEpoch: String,
 ) {
     init {
         identity(owner, "owner", 128)
         identity(turnId, "Turn ID")
         identity(authorityEpoch, "authority epoch")
-        identity(configurationEpoch, "configuration epoch")
     }
 
     fun toJson(): JSONObject = JSONObject().put("owner", owner)
         .put("chat_address", JSONObject().put("chat_id", chatAddress.chatId))
         .put("turn_id", turnId)
         .put("authority_epoch", authorityEpoch)
-        .put("chat_configuration_epoch", configurationEpoch)
 
     companion object {
         fun fromParams(params: JSONObject): PhoneInvocation {
@@ -49,7 +46,6 @@ internal data class PhoneInvocation(
             return PhoneInvocation(
                 value.getString("owner"), PhoneChatAddress.fromJson(value.getJSONObject("chat_address")),
                 value.getString("turn_id"), value.getString("authority_epoch"),
-                value.getString("chat_configuration_epoch"),
             )
         }
     }

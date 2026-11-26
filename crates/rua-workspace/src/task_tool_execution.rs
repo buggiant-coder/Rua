@@ -148,15 +148,26 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
         let scope =
             rua_core::ChatStore::resolve(&runtime.rua_root(), request.owner.chat_address.clone());
         let store = rua_session::WorkspaceSessionStore::new(scope.root());
-        let epoch = request
-            .configuration_epoch
-            .as_deref()
-            .ok_or("Task has no captured Chat configuration epoch")?;
-        let snapshot = store
-            .load_configuration_snapshot(&chat_id, epoch)
+        // A Chat keeps one current configuration in its header. Background Tool
+        // work reads that live configuration rather than replaying the one that
+        // existed when it was submitted: what actually gates a Tool execution is
+        // the Agent's current Tool policy and security configuration, not the
+        // Chat configuration epoch a caller happened to observe.
+        let header = store
+            .load_chat_header(&chat_id)
             .await
             .map_err(|error| error.to_string())?
-            .ok_or("Task configuration snapshot is unavailable")?;
+            .ok_or("Task owning Chat is unavailable")?;
+        let snapshot = header
+            .extra
+            .get("hook_configuration")
+            .cloned()
+            .ok_or("Task configuration is unavailable")?;
+        // The Attempt's authorization Agent stays the Task's provenance — it owns
+        // the approval and names the work — but it does not pin a configuration.
+        // A Chat that switched Agents or edited its policy in the meantime runs
+        // the waiting work under what the Chat allows now, and the Task keeps only
+        // its own recorded execution Device and directory.
         let assignment: rua_chat::TurnAgentAssignment = serde_json::from_value(
             snapshot
                 .get("agent_assignment")
@@ -164,9 +175,6 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
                 .ok_or("Task configuration has no Agent assignment")?,
         )
         .map_err(|error| format!("invalid Task Agent assignment: {error}"))?;
-        if assignment.agent_id != execution_agent_id {
-            return Err("Task Agent does not match the captured Chat configuration".into());
-        }
         let configuration: rua_agent::runtime::ChatCapabilityConfiguration =
             serde_json::from_value(
                 snapshot
@@ -175,11 +183,6 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
                     .ok_or("Task configuration has no Tool selection policy")?,
             )
             .map_err(|error| format!("invalid Task capability configuration: {error}"))?;
-        let header = store
-            .load_chat_header(&chat_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or("Task owning Chat is unavailable")?;
         let execution_device = request
             .device
             .device_id
@@ -373,12 +376,6 @@ impl ToolTaskExecution for WorkspaceToolTaskExecution {
             rua_security::models::EFFECTIVE_SECURITY_CONFIG_METADATA_KEY.to_string(),
             serde_json::to_value(security_snapshot.as_ref()).map_err(|error| error.to_string())?,
         );
-        if let Some(epoch) = request.configuration_epoch {
-            metadata.insert(
-                "chat_configuration_epoch".to_string(),
-                serde_json::json!(epoch),
-            );
-        }
         if !request.dependencies.is_empty() {
             metadata.insert(
                 "task_dependencies".to_string(),

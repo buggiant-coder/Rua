@@ -49,13 +49,11 @@ async fn history_waits_for_new_placement_and_old_epoch_cannot_win_with_a_later_c
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
     header(a.path(), "computer", 1, "Initial");
-    for relative in ["turn_index", "configuration_head"] {
-        rua_config::atomic_write_json(
-            &directory(a.path()).join(format!("{relative}.json")),
-            &json!({"epoch":"one","turns":["original"]}),
-        )
-        .unwrap();
-    }
+    rua_config::atomic_write_json(
+        &directory(a.path()).join("turn_index.json"),
+        &json!({"epoch":"one","turns":["original"]}),
+    )
+    .unwrap();
     let adapter = EvergreenChatSyncAdapter::new(a.path().into(), "computer");
     let first = adapter.export_records().await.unwrap();
     let mut registry = SyncRegistry::new();
@@ -94,10 +92,6 @@ async fn history_waits_for_new_placement_and_old_epoch_cannot_win_with_a_later_c
         .await
         .unwrap();
     registry.apply_change(&first_history, &merge).await.unwrap();
-    registry
-        .apply_change(&record(&first, "configuration_head", 900), &merge)
-        .await
-        .unwrap();
 
     let mut forged = record(&first, "turn_index", 1000);
     forged.op_id = "forged".into();
@@ -108,13 +102,11 @@ async fn history_waits_for_new_placement_and_old_epoch_cannot_win_with_a_later_c
     ));
 
     header(a.path(), "phone", 2, "Old list title");
-    for relative in ["turn_index", "configuration_head"] {
-        rua_config::atomic_write_json(
-            &directory(a.path()).join(format!("{relative}.json")),
-            &json!({"epoch":"two","turns":["original","task-result"]}),
-        )
-        .unwrap();
-    }
+    rua_config::atomic_write_json(
+        &directory(a.path()).join("turn_index.json"),
+        &json!({"epoch":"two","turns":["original","task-result"]}),
+    )
+    .unwrap();
     let next = EvergreenChatSyncAdapter::new(a.path().into(), "phone")
         .export_records()
         .await
@@ -136,15 +128,10 @@ async fn history_waits_for_new_placement_and_old_epoch_cannot_win_with_a_later_c
         .apply_change(&second_history, &merge)
         .await
         .unwrap();
-    registry
-        .apply_change(&record(&next, "configuration_head", 100), &merge)
-        .await
-        .unwrap();
     assert_eq!(
         load(b.path(), "turn_index.json")["turns"],
         json!(["original", "task-result"])
     );
-    assert_eq!(load(b.path(), "configuration_head.json")["epoch"], "two");
     let mut late = first_history;
     late.op_id = "old-epoch-late".into();
     late.hlc = hlc(2000);
@@ -284,7 +271,7 @@ async fn replica_listing_clock_does_not_block_the_authoritys_runtime_header() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn history_rechecks_placement_after_waiting_for_the_chat_writer() {
-    for relative in ["turn_index", "configuration_head"] {
+    for relative in ["turn_index"] {
         let source = tempfile::tempdir().unwrap();
         let target = tempfile::tempdir().unwrap();
         header(source.path(), "computer", 1, "Original");

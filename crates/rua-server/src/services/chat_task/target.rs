@@ -198,8 +198,6 @@ impl ChatTaskService {
                             == preparation.invocation.authorization.origin
                         && latest.authorization_agent_id
                             == preparation.invocation.authorization.agent_id
-                        && latest.configuration_epoch
-                            == preparation.invocation.authorization.configuration_epoch
                     {
                         return self.record_response(owner, &preparation.task_id).await;
                     }
@@ -435,10 +433,6 @@ impl ChatTaskService {
             agent_id: &authorization.agent_id,
             authority_device_id: &invocation.authority_device_id,
             authority_epoch: invocation.authority_epoch,
-            configuration_epoch: authorization
-                .configuration_epoch
-                .as_deref()
-                .ok_or("Task has no current configuration")?,
             turn_id: authorization.origin.turn_id.as_deref().unwrap_or_default(),
             tool_call_id: authorization
                 .origin

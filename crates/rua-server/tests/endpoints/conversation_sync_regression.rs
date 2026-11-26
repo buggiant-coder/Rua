@@ -411,7 +411,11 @@ async fn list_chats_sync_disabled() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_chat_sync_disabled() {
     let (app, _tmp) = build_app();
-    let req = json_req(Method::POST, "/chats", Some(r#"{"name":"Test Chat","agent_id":"default"}"#));
+    let req = json_req(
+        Method::POST,
+        "/chats",
+        Some(r#"{"name":"Test Chat","agent_id":"default"}"#),
+    );
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
@@ -443,9 +447,9 @@ async fn create_chat_emits_chat_index_v4_when_sync_enabled() {
     accept_first_input(&app, chat_id, "Sync Runtime Chat").await;
 
     let changes = await_stable_first_input_publication(&state, chat_id).await;
-    let chat_change = changes.iter().find(|change| {
-        change.domain == "chat" && change.record_id == format!("chats/{chat_id}")
-    });
+    let chat_change = changes
+        .iter()
+        .find(|change| change.domain == "chat" && change.record_id == format!("chats/{chat_id}"));
     assert!(
         chat_change.is_some_and(|change| {
             change.kind == "index_upsert"
@@ -577,7 +581,10 @@ async fn console_submit_updates_chat_device_activity_metadata_when_sync_enabled(
         "hook_configuration".into(),
         serde_json::to_value(configuration).unwrap(),
     );
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
 
     let events: Vec<_> = state
         .chat_service
@@ -1040,7 +1047,10 @@ async fn runtime_failure_terminal_fact_emits_evergreen_v4_when_sync_enabled() {
         "hook_configuration".into(),
         serde_json::to_value(configuration).unwrap(),
     );
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
 
     let events: Vec<_> = state
         .chat_service
@@ -1396,8 +1406,7 @@ async fn completed_turn_save_emits_stable_evergreen_v4_when_sync_enabled() {
     assert!(
         changes.iter().any(|change| {
             change.domain == "evergreen_chat"
-                && change.record_id
-                    == format!("chats/{chat_id}/messages/000000000000.jsonl")
+                && change.record_id == format!("chats/{chat_id}/messages/000000000000.jsonl")
                 && change.payload.to_string().contains("hi")
         }),
         "completed turns must emit stable message chunk snapshot; got {changes:#?}"
@@ -1408,7 +1417,11 @@ async fn completed_turn_save_emits_stable_evergreen_v4_when_sync_enabled() {
 async fn create_and_list_chat_sync_disabled() {
     let (app, _tmp) = build_app();
 
-    let req = json_req(Method::POST, "/chats", Some(r#"{"name":"My Chat","agent_id":"default"}"#));
+    let req = json_req(
+        Method::POST,
+        "/chats",
+        Some(r#"{"name":"My Chat","agent_id":"default"}"#),
+    );
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
@@ -1430,7 +1443,11 @@ async fn create_and_list_chat_sync_disabled() {
 async fn delete_chat_sync_disabled() {
     let (app, tmp) = build_app();
 
-    let req = json_req(Method::POST, "/chats", Some(r#"{"name":"To Delete","agent_id":"default"}"#));
+    let req = json_req(
+        Method::POST,
+        "/chats",
+        Some(r#"{"name":"To Delete","agent_id":"default"}"#),
+    );
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = axum::body::to_bytes(resp.into_body(), 1024 * 64)
@@ -1466,7 +1483,11 @@ async fn delete_chat_sync_disabled() {
 async fn delete_chat_fails_closed_when_intent_cannot_be_persisted() {
     let (app, tmp) = build_app();
 
-    let req = json_req(Method::POST, "/chats", Some(r#"{"name":"Keep Me","agent_id":"default"}"#));
+    let req = json_req(
+        Method::POST,
+        "/chats",
+        Some(r#"{"name":"Keep Me","agent_id":"default"}"#),
+    );
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = axum::body::to_bytes(resp.into_body(), 1024 * 64)
@@ -1500,7 +1521,11 @@ async fn delete_chat_fails_closed_when_intent_cannot_be_persisted() {
 async fn delete_chat_rejects_pinned_chat_without_creating_intent() {
     let (app, tmp) = build_app();
 
-    let req = json_req(Method::POST, "/chats", Some(r#"{"name":"Pinned","agent_id":"default"}"#));
+    let req = json_req(
+        Method::POST,
+        "/chats",
+        Some(r#"{"name":"Pinned","agent_id":"default"}"#),
+    );
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = axum::body::to_bytes(resp.into_body(), 1024 * 64)

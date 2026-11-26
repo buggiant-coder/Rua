@@ -4,11 +4,7 @@ use serde_json::Value;
 pub(super) fn owns_record(relative: &str) -> bool {
     matches!(
         relative,
-        "turn_index"
-            | "turn_index.json"
-            | "configuration_head"
-            | "projection_exclusions"
-            | "projection_exclusions.json"
+        "turn_index" | "turn_index.json" | "projection_exclusions" | "projection_exclusions.json"
     ) || ["messages/", "checkpoints/", "history_replacements/"]
         .iter()
         .any(|prefix| relative.starts_with(prefix))
@@ -59,14 +55,13 @@ pub(super) async fn apply(
     let store = rua_session::WorkspaceSessionStore::new(adapter.scope_root(address));
     store
         .apply_replicated_chat_state(address.chat_id().as_str(), || {
-            apply_locked(adapter, &store, address, relative, change, merge)
+            apply_locked(adapter, address, relative, change, merge)
         })
         .await
 }
 
 fn apply_locked(
     adapter: &EvergreenChatSyncAdapter,
-    store: &rua_session::WorkspaceSessionStore,
     address: &ChatAddress,
     relative: &str,
     change: &SyncChange,
@@ -153,11 +148,6 @@ fn apply_locked(
         rua_session::validate_history_replacement_record(address, record_id, &record).map_err(
             |error| SyncError::InvalidPayload(format!("Invalid history replacement: {error}")),
         )?;
-    }
-    if relative == "configuration_head" {
-        store
-            .validate_replicated_configuration_head(address.chat_id().as_str(), content)
-            .map_err(|error| SyncError::InvalidPayload(error.to_string()))?;
     }
     if relative.starts_with("messages/") {
         write_message_log_payload(&path, content)?;

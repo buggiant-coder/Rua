@@ -166,7 +166,6 @@ async fn scoped_round_trip_preserves_unified_chat_fields_and_compact_assignment(
             "future_field".to_string(),
             serde_json::json!({"preserve": true}),
         );
-        store.save_chat_header(&header).await.unwrap();
         let running_config = rua_config::ChatRunningConfig {
             max_iters: if project_id.is_some() { 41 } else { 31 },
             ..Default::default()
@@ -175,7 +174,10 @@ async fn scoped_round_trip_preserves_unified_chat_fields_and_compact_assignment(
             "hook_configuration".into(),
             serde_json::json!({"epoch":"config-one", "running_config":running_config}),
         );
-        store.save_chat_header(&header).await.unwrap();
+        store
+            .save_chat_header_with_configuration(&header)
+            .await
+            .unwrap();
         let assignment = rua_chat::TurnAgentAssignment {
             agent_id: "agent-a".to_string(),
             agent_name: "Agent A".to_string(),
@@ -230,9 +232,6 @@ async fn scoped_round_trip_preserves_unified_chat_fields_and_compact_assignment(
         assert!(changes
             .iter()
             .any(|change| change.record_id == file_record_id(address, "session")));
-        assert!(changes
-            .iter()
-            .any(|change| change.record_id == file_record_id(address, "configuration_head")));
     }
 
     let merge_dir = tempfile::tempdir().unwrap();
@@ -316,7 +315,10 @@ async fn complete_chat_configuration_roundtrip_preserves_head_and_snapshot() {
     header
         .extra
         .insert("authority_placement".into(), placement("source"));
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
     let changes = EvergreenChatSyncAdapter::new(source.path().to_path_buf(), "source")
         .export_records()
         .await
@@ -335,24 +337,16 @@ async fn complete_chat_configuration_roundtrip_preserves_head_and_snapshot() {
     }
     let scope = rua_core::ChatStore::resolve(target.path(), address.clone());
     let restored = WorkspaceSessionStore::new(scope.root());
+    // The configuration travels inside the Chat record, so it arrives complete.
     assert_eq!(
         restored
-            .load_configuration_snapshot(address.chat_id().as_str(), "config-one")
+            .load_chat_header(address.chat_id().as_str())
             .await
-            .unwrap(),
-        Some(configuration.clone())
+            .unwrap()
+            .unwrap()
+            .extra["hook_configuration"],
+        configuration
     );
-    let mut conflicting = changes
-        .iter()
-        .find(|change| change.record_id.ends_with("configurations/config-one.json"))
-        .unwrap()
-        .clone();
-    conflicting.hlc.wall_ms += 1;
-    conflicting.payload["future_section"] = serde_json::json!({"value": false});
-    assert!(registry
-        .apply_change(&conflicting, &merge_store)
-        .await
-        .is_err());
     assert_eq!(
         restored
             .load_chat_header(address.chat_id().as_str())
@@ -374,7 +368,7 @@ async fn complete_chat_configuration_roundtrip_preserves_head_and_snapshot() {
 }
 
 #[tokio::test]
-async fn receiving_an_agent_switch_before_its_snapshot_keeps_one_consistent_selection() {
+async fn receiving_an_agent_switch_keeps_one_consistent_selection() {
     let target = tempfile::tempdir().unwrap();
     let id = "photo-chat";
     let address = ChatAddress::new(id);
@@ -394,9 +388,16 @@ async fn receiving_an_agent_switch_before_its_snapshot_keeps_one_consistent_sele
         "hook_configuration".into(),
         serde_json::json!({"epoch":"first-epoch","selected_agent_id":"first"}),
     );
-    store.save_chat_header(&header).await.unwrap();
+    // The replica already holds the current Authority placement, so the incoming
+    // header from that Authority is authorized to publish its own selection.
+    header
+        .extra
+        .insert("authority_placement".into(), placement("source"));
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
     let mut registry = SyncRegistry::new();
-    seed_placement(scope.root(), id, "source");
     registry
         .register(Arc::new(EvergreenChatSyncAdapter::new(
             target.path().to_owned(),
@@ -405,40 +406,29 @@ async fn receiving_an_agent_switch_before_its_snapshot_keeps_one_consistent_sele
         .unwrap();
     let cursor = tempfile::tempdir().unwrap();
     let merge = MergeStore::open(cursor.path()).unwrap();
-    let change = |id: &str, record: &str, value: serde_json::Value, time| {
-        let value = if record == "configuration_head" {
-            history_payload(value)
-        } else {
-            value
-        };
-        EvergreenChatSyncAdapter::file_change(id, &address, record, value, "source", hlc(time))
-    };
     let audit = serde_json::json!([{"previous_agent_id":"first","selected_agent_id":"second","revision":2}]);
-    let head = change(
-        "switch",
-        "configuration_head",
-        serde_json::json!({"epoch":"second-epoch","agent_id":"second","agent_switch_events":audit}),
-        20,
-    );
-    registry.apply_change(&head, &merge).await.unwrap();
-    assert!(store.load_chat_header(id).await.is_err());
-    let projected = store.load_stored_chat_header(id).await.unwrap().unwrap();
-    assert_eq!(projected.agent_id, "second");
-    assert_eq!(projected.extra[rua_session::AGENT_SWITCH_EVENTS_KEY], audit);
-    let late = change(
-        "late-header",
-        "session",
-        serde_json::to_value(&header).unwrap(),
-        30,
-    );
-    registry.apply_change(&late, &merge).await.unwrap();
-    let next = change(
-        "config",
-        "configurations/second-epoch.json",
+    // One Chat record carries the selection, its configuration and the audit
+    // trail together, so no reader can observe a selection without its
+    // configuration.
+    let mut switched = header.clone();
+    switched.agent_id = "second".into();
+    switched.metadata.agent_id = "second".into();
+    switched.extra.insert(
+        "hook_configuration".into(),
         serde_json::json!({"epoch":"second-epoch","selected_agent_id":"second"}),
-        10,
     );
-    registry.apply_change(&next, &merge).await.unwrap();
+    switched
+        .extra
+        .insert(rua_session::AGENT_SWITCH_EVENTS_KEY.into(), audit.clone());
+    let change = EvergreenChatSyncAdapter::file_change(
+        "switch",
+        &address,
+        "session",
+        serde_json::to_value(&switched).unwrap(),
+        "source",
+        hlc(20),
+    );
+    registry.apply_change(&change, &merge).await.unwrap();
     let visible = store.load_chat_header(id).await.unwrap().unwrap();
     assert_eq!(visible.agent_id, "second");
     assert_eq!(
@@ -649,11 +639,6 @@ async fn export_reads_directory_backed_evergreen_chat_files() {
     )
     .unwrap();
     rua_config::atomic_write_json(
-        &chat_dir.join("configuration_head.json"),
-        &serde_json::json!({"epoch":"config-one"}),
-    )
-    .unwrap();
-    rua_config::atomic_write_json(
         &chat_dir.join("projection_exclusions.json"),
         &serde_json::json!({
             "format_version": 1,
@@ -703,7 +688,6 @@ async fn export_reads_directory_backed_evergreen_chat_files() {
         .collect();
 
     assert!(ids.contains(&"chats/chat-a/session"));
-    assert!(ids.contains(&"chats/chat-a/configuration_head"));
     assert!(ids.contains(&"chats/chat-a/projection_exclusions"));
     assert!(ids.contains(&"chats/chat-a/turn_index"));
     assert!(ids.contains(&"chats/chat-a/messages/000000000000.jsonl"));

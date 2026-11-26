@@ -31,7 +31,7 @@ async fn seed_materialized_chat(workspace: &std::path::Path) {
         preview: None,
     });
     WorkspaceSessionStore::new(workspace)
-        .save_chat_header(&header)
+        .save_chat_header_with_configuration(&header)
         .await
         .expect("seed materialized Chat");
 }
@@ -302,7 +302,10 @@ async fn confirmed_authority_replacement_bypasses_stale_acp_lock_without_sync_pu
     // The local projection is refreshed in place; only the placement changes and
     // the still-active ACP binding plus its transient columns are preserved.
     assert_eq!(indexed_after.created_at, indexed_before.created_at);
-    assert_eq!(indexed_after.meta[CHAT_ACP_BINDING_META_KEY], indexed_before.meta[CHAT_ACP_BINDING_META_KEY]);
+    assert_eq!(
+        indexed_after.meta[CHAT_ACP_BINDING_META_KEY],
+        indexed_before.meta[CHAT_ACP_BINDING_META_KEY]
+    );
     assert_eq!(
         indexed_after.meta[CHAT_AUTHORITY_PLACEMENT_META_KEY],
         serde_json::to_value(&replacement).expect("serialize placement")

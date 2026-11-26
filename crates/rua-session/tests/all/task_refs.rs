@@ -6,9 +6,10 @@ fn reference() -> ChatTaskRef {
     serde_json::from_value(json!({
         "task_id":"task-one", "owner":{"chat_address":{"chat_id":"chat-one"}},
         "execution":{"device_id":"phone","public_cwd":"/photos","future_location":true},
-        "origin":{"turn_id":"turn-one","tool_call_id":"call-one","agent_id":"original-agent","configuration_epoch":"original-epoch"},
+        "origin":{"turn_id":"turn-one","tool_call_id":"call-one","agent_id":"original-agent"},
         "last_target_evidence":null,"future_reference":{"preserved":true}
-    })).unwrap()
+    }))
+    .unwrap()
 }
 
 fn record(attempt: u32, state: TaskState) -> TaskRecord {
@@ -19,7 +20,7 @@ fn record(attempt: u32, state: TaskState) -> TaskRecord {
             "context_refs":[],"depends_on":[],"origin":{"turn_id":"turn-one","tool_call_id":"call-one"}
         },"state":state,"attempt_no":attempt,"created_at":"2026-11-21T00:00:00Z","updated_at":"2026-11-21T00:00:00Z",
         "attempts":[{"attempt_no":attempt,"state":state,"authorization_agent_id":format!("agent-{attempt}"),
-            "configuration_epoch":format!("epoch-{attempt}"),"authorization_origin":{"turn_id":format!("turn-{attempt}")},
+            "authorization_origin":{"turn_id":format!("turn-{attempt}")},
             "device":{"device_id":"phone","public_cwd":"/photos"},
             "created_at":"2026-11-21T00:00:00Z","updated_at":"2026-11-21T00:00:00Z"}]
     })).unwrap()
@@ -106,10 +107,6 @@ fn target_revisions_persist_across_capture_reopen_and_retry_without_replacing_or
     assert_eq!(
         evidence.record.attempts[0].authorization_agent_id,
         "agent-2"
-    );
-    assert_eq!(
-        evidence.record.attempts[0].configuration_epoch.as_deref(),
-        Some("epoch-2")
     );
     assert_eq!(next.origin, reference().origin);
     assert_eq!(
@@ -352,4 +349,59 @@ fn waiting_approval_projection_preserves_the_runtimes_running_attempt() {
         invalid
     )
     .is_err());
+}
+
+/// A capture reads TaskRuntime and only then allocates its evidence revision.
+/// Two captures of the same Attempt can therefore persist out of the order they
+/// observed: a stale `Accepted` snapshot can land after `Running` and, because
+/// both are non-terminal, was previously allowed to rewind the projection. That
+/// made a ready Chat look unready and intermittently failed handoff readiness.
+#[test]
+fn a_later_revision_cannot_rewind_a_non_terminal_attempt_state() {
+    let root = tempfile::tempdir().unwrap();
+    reference().register(root.path(), "chat-one").unwrap();
+    // The Accepted snapshot was read before the Attempt started; the Running
+    // snapshot was read afterwards, so it carries the later observation time.
+    let mut running_record = record(1, TaskState::Running);
+    running_record.updated_at += chrono::Duration::seconds(5);
+    running_record.attempts[0].updated_at += chrono::Duration::seconds(5);
+    let running = ChatTaskRef::capture_target_evidence(
+        root.path(),
+        "chat-one",
+        "task-one",
+        "phone",
+        running_record,
+    )
+    .unwrap();
+    assert_eq!(
+        running.last_target_evidence.as_ref().unwrap().record.state,
+        TaskState::Running
+    );
+
+    // Same Attempt, observed before it started, persisted afterwards under a
+    // newer revision. It must not overwrite the newer observed state.
+    let stale = ChatTaskRef::capture_target_evidence(
+        root.path(),
+        "chat-one",
+        "task-one",
+        "phone",
+        record(1, TaskState::Accepted),
+    )
+    .unwrap();
+    assert_eq!(
+        stale.last_target_evidence.as_ref().unwrap().record.state,
+        TaskState::Running,
+        "a stale non-terminal snapshot must not rewind the Attempt's projected state"
+    );
+    assert_eq!(
+        ChatTaskRef::load(root.path(), "chat-one", "task-one")
+            .unwrap()
+            .unwrap()
+            .last_target_evidence
+            .as_ref()
+            .unwrap()
+            .record
+            .state,
+        TaskState::Running
+    );
 }

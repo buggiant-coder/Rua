@@ -19,7 +19,7 @@ import org.robolectric.shadows.ShadowSettings
 @LooperMode(LooperMode.Mode.PAUSED)
 class PhoneDeviceControlTest {
     @Test fun aLateOperationCancellationCannotReleaseTheSessionOrCancelItsNextOperation() {
-        val invocation = PhoneInvocation("owner", PhoneChatAddress("chat"), "turn", "authority", "configuration")
+        val invocation = PhoneInvocation("owner", PhoneChatAddress("chat"), "turn", "authority")
         ShadowSettings.setCanDrawOverlays(true)
         PhoneDeviceControl.initialize(RuntimeEnvironment.getApplication(), "generation") {}
         try {
@@ -40,7 +40,7 @@ class PhoneDeviceControlTest {
     }
 
     @Test fun surfaceShowsTheCurrentActionThenWaitsAndIgnoresLateCompletion() {
-        val invocation = PhoneInvocation("owner", PhoneChatAddress("chat"), "turn", "authority", "configuration")
+        val invocation = PhoneInvocation("owner", PhoneChatAddress("chat"), "turn", "authority")
         ShadowSettings.setCanDrawOverlays(true)
         PhoneDeviceControl.initialize(RuntimeEnvironment.getApplication(), "generation") {}
         try {
@@ -101,7 +101,7 @@ class PhoneDeviceControlTest {
                 PhoneChatAddress("chat-one"),
                 PhoneChatAddress("chat +/?"),
             )) {
-                val invocation = PhoneInvocation("owner", address, "turn", "authority", "configuration")
+                val invocation = PhoneInvocation("owner", address, "turn", "authority")
                 PhoneDeviceControl.sessions.activate(invocation)
                 val operation = PhoneDeviceControl.state.begin(invocation, "observe", "observe")
                 PhoneDeviceControl.state.finish(operation)
@@ -132,7 +132,7 @@ class PhoneDeviceControlTest {
         val app = RuntimeEnvironment.getApplication()
         val launches = shadowOf(app)
         ShadowSettings.setCanDrawOverlays(true)
-        val invocation = PhoneInvocation("owner", PhoneChatAddress("chat"), "turn", "authority", "configuration")
+        val invocation = PhoneInvocation("owner", PhoneChatAddress("chat"), "turn", "authority")
         PhoneDeviceControl.initialize(app, "generation") {}
         try {
             val lease = PhoneDeviceControl.sessions.activate(invocation)

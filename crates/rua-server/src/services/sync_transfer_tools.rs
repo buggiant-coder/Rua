@@ -81,7 +81,6 @@ impl SyncTransferToolService {
         let field = |name: &str| ctx.metadata.get(name).and_then(Value::as_str);
         let turn = field("turn_id").ok_or("No active Chat Turn")?;
         let call = field("tool_call_id").ok_or("No active tool call")?;
-        let epoch = field("chat_configuration_epoch").ok_or("No Chat configuration")?;
         let address: rua_core::ChatAddress = serde_json::from_value(
             ctx.metadata
                 .get(rua_agent::hooks::SECURITY_CHAT_ADDRESS_METADATA_KEY)
@@ -125,7 +124,6 @@ impl SyncTransferToolService {
                 agent_id: ctx.agent_id.clone(),
                 address,
                 authority_epoch: active.authority_epoch,
-                configuration_epoch: epoch.into(),
                 turn_id: turn.into(),
                 tool_call_id: call.into(),
                 confirmation: None,

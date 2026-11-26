@@ -13,7 +13,7 @@ mod recovery_backlog;
 async fn task_watch_routes_to_current_authority_and_repeated_receipts_do_not_repeat_turns() {
     let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
     let release = Arc::new(Notify::new());
-    let (address, turn, _, _) = prepare_running_file_calls(
+    let (address, turn, _) = prepare_running_file_calls(
         &fixture,
         &[ToolCall::new(
             "watch-origin",
@@ -178,7 +178,7 @@ async fn task_terminal_delivery_uses_legal_stable_wire_identity_and_durable_rece
     use rua_task::TaskNotificationSink;
     let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
     let release = Arc::new(Notify::new());
-    let (address, turn, _, _) = prepare_running_file_calls(
+    let (address, turn, _) = prepare_running_file_calls(
         &fixture,
         &[ToolCall::new(
             "terminal-origin",

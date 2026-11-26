@@ -37,11 +37,7 @@ fn context(runtime: Arc<dyn SyncTransferRuntime>) -> ToolContext {
         session_id: "original-chat".into(),
         local_device_id: Some("desktop".into()),
         working_dir: "/unrelated-chat-cwd".into(),
-        metadata: [
-            ("turn_id".into(), json!("original-turn")),
-            ("chat_configuration_epoch".into(), json!("captured-config")),
-        ]
-        .into(),
+        metadata: [("turn_id".into(), json!("original-turn"))].into(),
         sync_transfer_runtime: Some(Arc::new(SyncTransferRuntimeHandle::new(runtime))),
         ..Default::default()
     }
@@ -99,7 +95,6 @@ async fn explicit_device_paths_context_and_conflict_intent_reach_the_runtime_unc
         assert_eq!(ctx.session_id, "original-chat");
         assert_eq!(ctx.local_device_id.as_deref(), Some("desktop"));
         assert_eq!(ctx.metadata["turn_id"], "original-turn");
-        assert_eq!(ctx.metadata["chat_configuration_epoch"], "captured-config");
     }
     let schema = SyncTransferTool.schema();
     assert_eq!(

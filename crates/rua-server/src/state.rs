@@ -927,6 +927,7 @@ impl AppState {
                 Arc::clone(&conversation_authority),
                 Arc::clone(&streams),
                 Arc::clone(&task_runtime),
+                Arc::clone(security_module.approval_authority()),
                 workspace_root.clone(),
             ),
         );
@@ -1918,12 +1919,17 @@ impl AppState {
 
         if sync_enabled_flag {
             let state_for_runtime = state.clone();
+            // Capture the suspend epoch at request time: this task is detached,
+            // so if the host suspends before it is first polled, that newer
+            // decision must not be undone by this startup resume.
+            let startup_epoch = state_for_runtime.sync_runtime.suspend_epoch();
             tokio::spawn(async move {
                 if let Err(e) = state_for_runtime
                     .sync_runtime
-                    .resume_foreground(|| async {
-                        state_for_runtime.build_sync_runtime_parts().await
-                    })
+                    .resume_foreground_since(
+                        || async { state_for_runtime.build_sync_runtime_parts().await },
+                        startup_epoch,
+                    )
                     .await
                 {
                     tracing::warn!(

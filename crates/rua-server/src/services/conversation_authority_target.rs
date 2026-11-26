@@ -303,7 +303,6 @@ pub async fn validate_chat_submit_materialization(
         }
     }
     let store = rua_session::WorkspaceSessionStore::new(workspace_dir);
-    let chat_dir = store.chat_dir(chat_id);
     let has_state = store
         .load_chat_header(chat_id)
         .await
@@ -312,9 +311,7 @@ pub async fn validate_chat_submit_materialization(
         || crate::services::chat_index::get(workspace_dir, chat_id)
             .await
             .map_err(|e| e.to_string())?
-            .is_some()
-        || store.configuration_head_path(chat_id).exists()
-        || chat_dir.join("configurations").exists();
+            .is_some();
     if expected_epoch.is_some() || has_state {
         return Err("Chat state is not ready: Conversation Authority Placement has not arrived; retry after synchronization".to_string());
     }

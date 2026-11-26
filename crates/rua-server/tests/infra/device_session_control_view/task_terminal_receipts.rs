@@ -67,7 +67,7 @@ async fn wait_queued(fixture: &RemoteInputConfirmationFixture, address: &ChatAdd
 async fn terminal_outbox_waits_for_durable_note_but_not_for_model_completion() {
     let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
     let release = Arc::new(Notify::new());
-    let (address, turn, _, _) = prepare_running_file_calls(
+    let (address, turn, _) = prepare_running_file_calls(
         &fixture,
         &[ToolCall::new(
             "receipt-origin",
@@ -183,7 +183,7 @@ async fn terminal_outbox_waits_for_durable_note_but_not_for_model_completion() {
 async fn failed_terminal_materialization_retains_outbox_and_retry_persists_once() {
     let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
     let release = Arc::new(Notify::new());
-    let (address, turn, _, _) = prepare_running_file_calls(
+    let (address, turn, _) = prepare_running_file_calls(
         &fixture,
         &[ToolCall::new(
             "failed-receipt-origin",
@@ -277,7 +277,7 @@ async fn failed_terminal_materialization_retains_outbox_and_retry_persists_once(
 async fn discarded_terminal_observations_fail_their_receipts_and_can_be_requeued() {
     let fixture = RemoteInputConfirmationFixture::new(Duration::ZERO, false).await;
     let release = Arc::new(Notify::new());
-    let (address, turn, _, _) = prepare_running_file_calls(
+    let (address, turn, _) = prepare_running_file_calls(
         &fixture,
         &[ToolCall::new(
             "discard-origin",

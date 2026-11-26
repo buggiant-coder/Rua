@@ -13,7 +13,7 @@ class PhoneCameraTest {
         assertNull(PhoneCamera.claim("forged"))
     }
     @Test fun photoFailsWithoutSeparateCameraPermission() {
-        val invocation = PhoneInvocation("test-owner", PhoneChatAddress("chat"), "turn", "authority", "configuration")
+        val invocation = PhoneInvocation("test-owner", PhoneChatAddress("chat"), "turn", "authority")
         val result=runCatching {PhoneCamera.take(RuntimeEnvironment.getApplication(),invocation,"test-call","0","generation")}
         assertTrue(result.isFailure)
         assertTrue(result.exceptionOrNull()!!.message!!.contains("camera permission"))

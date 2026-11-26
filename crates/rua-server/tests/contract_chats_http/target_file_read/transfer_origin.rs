@@ -84,10 +84,6 @@ impl Origin {
                 ),
                 ("turn_id".into(), json!(turn.turn_id)),
                 ("tool_call_id".into(), json!("first-copy")),
-                (
-                    "chat_configuration_epoch".into(),
-                    chat["meta"]["hook_configuration"]["epoch"].clone(),
-                ),
             ]
             .into(),
             sync_transfer_runtime: Some(Arc::new(SyncTransferRuntimeHandle::new(Arc::new(

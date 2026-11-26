@@ -3,10 +3,7 @@
 
 use std::sync::Mutex;
 
-use super::{
-    chat_write_lock_for_path, write_bytes_atomic_sync, ChatConfigurationHead, ChatSessionHeader,
-    WorkspaceSessionStore,
-};
+use super::{write_bytes_atomic_sync, ChatSessionHeader, WorkspaceSessionStore};
 use rua_core::{Result, RuaError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,8 +27,15 @@ pub struct ChatHandoffRecord {
     pub chat_id: String,
     pub old_placement: Value,
     pub new_placement: Value,
-    pub expected_configuration_epoch: String,
-    pub candidate_configuration_epoch: String,
+    /// The configuration in force when the handoff began. Placement is the only
+    /// thing a handoff changes; the configuration only needs to still match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<Value>,
+    /// The configuration this handoff installs on the new writer. A handoff is a
+    /// prepared intent, so its candidate travels with the intent instead of an
+    /// immutable snapshot that a reader could observe before it is applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_configuration: Option<Value>,
     pub requirements: Value,
     pub phase: ChatHandoffPhase,
     #[serde(default, flatten)]
@@ -39,24 +43,9 @@ pub struct ChatHandoffRecord {
 }
 
 impl ChatHandoffRecord {
-    fn same_operation(&self, other: &Self) -> bool {
-        self.handoff_id == other.handoff_id
-            && self.chat_id == other.chat_id
-            && self.old_placement == other.old_placement
-            && self.new_placement == other.new_placement
-            && self.expected_configuration_epoch == other.expected_configuration_epoch
-            && self.candidate_configuration_epoch == other.candidate_configuration_epoch
-            && self.extra == other.extra
-    }
-
     fn validate(&self) -> Result<()> {
-        if self.handoff_id.trim().is_empty()
-            || self.chat_id.trim().is_empty()
-            || self.expected_configuration_epoch == self.candidate_configuration_epoch
-        {
-            return Err(invalid(
-                "Invalid Chat handoff identity/configuration epochs",
-            ));
+        if self.handoff_id.trim().is_empty() || self.chat_id.trim().is_empty() {
+            return Err(invalid("Invalid Chat handoff identity"));
         }
         for placement in [&self.old_placement, &self.new_placement] {
             for key in ["device_id", "authority_epoch", "base_manifest_hash"] {
@@ -167,18 +156,19 @@ impl WorkspaceSessionStore {
         {
             return Err(invalid("Chat Authority placement changed during handoff"));
         }
-        let head: Option<ChatConfigurationHead> =
-            read_json(&self.configuration_head_path(&record.chat_id))?;
-        let epoch = head.as_ref().map(|head| head.epoch.as_str()).or_else(|| {
-            header
-                .extra
-                .get("hook_configuration")?
-                .get("epoch")?
-                .as_str()
-        });
-        if epoch != Some(record.expected_configuration_epoch.as_str())
-            && !(allow_candidate && epoch == Some(record.candidate_configuration_epoch.as_str()))
-        {
+        // The configuration itself must still be the one this handoff was
+        // prepared against. Without version stamps, contents are the evidence.
+        let configuration = header.extra.get("hook_configuration");
+        let unchanged = match record.configuration.as_ref() {
+            Some(expected) => configuration == Some(expected),
+            None => configuration.is_some(),
+        };
+        let installed = allow_candidate
+            && match record.candidate_configuration.as_ref() {
+                Some(candidate) => configuration == Some(candidate),
+                None => false,
+            };
+        if !unchanged && !installed {
             return Err(invalid("Chat configuration changed during handoff"));
         }
         Ok(())
@@ -192,29 +182,50 @@ impl WorkspaceSessionStore {
         candidate: Option<&Value>,
     ) -> Result<ChatHandoffRecord> {
         record.validate()?;
-        self.configuration_snapshot_path(&record.chat_id, &record.expected_configuration_epoch)?;
-        self.configuration_snapshot_path(&record.chat_id, &record.candidate_configuration_epoch)?;
         if record.phase != ChatHandoffPhase::Prepared {
             return Err(invalid("New Chat handoff must be Prepared"));
         }
+        let mut record = record.clone();
         let _chat = self.lock_chat_storage(&record.chat_id).await;
-        let head_lock = chat_write_lock_for_path(self.configuration_head_path(&record.chat_id));
-        let _head = head_lock.lock().await;
-        if let Some(candidate) = candidate {
-            if candidate["epoch"].as_str() != Some(record.candidate_configuration_epoch.as_str()) {
-                return Err(invalid("Chat handoff candidate epoch does not match"));
-            }
-            self.save_configuration_snapshot(&record.chat_id, candidate)
-                .await?;
-        }
         let _journal = JOURNAL_COMMIT
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(existing) = self.read_handoff(&record.chat_id)? {
+        // Restating the same intent neither clears a candidate that was resolved
+        // later nor replaces one that was already captured.
+        let existing = self.read_handoff(&record.chat_id)?;
+        if record.candidate_configuration.is_none() {
+            record.candidate_configuration = existing
+                .as_ref()
+                .filter(|existing| existing.handoff_id == record.handoff_id)
+                .and_then(|existing| existing.candidate_configuration.clone());
+        }
+        if let Some(candidate) = candidate {
+            record.candidate_configuration = Some(candidate.clone());
+        }
+        let record = &record;
+        if let Some(existing) = existing {
             if existing.handoff_id == record.handoff_id {
-                if !existing.same_operation(record) || existing.requirements != record.requirements
-                {
+                // Resolving the candidate of an intent frozen before its directory
+                // was known completes the same operation. Any other difference, or
+                // replacing an already captured candidate, is a different operation.
+                let facts_changed = existing.handoff_id != record.handoff_id
+                    || existing.chat_id != record.chat_id
+                    || existing.old_placement != record.old_placement
+                    || existing.new_placement != record.new_placement
+                    || existing.configuration != record.configuration
+                    || existing.extra != record.extra
+                    || existing.requirements != record.requirements
+                    || existing
+                        .candidate_configuration
+                        .as_ref()
+                        .zip(record.candidate_configuration.as_ref())
+                        .is_some_and(|(existing, requested)| existing != requested);
+                if facts_changed {
                     return Err(invalid("Chat handoff operation facts changed"));
+                }
+                if existing.candidate_configuration != record.candidate_configuration {
+                    save_json(&self.chat_handoff_path(&record.chat_id), record)?;
+                    return Ok(record.clone());
                 }
                 return Ok(existing);
             }
@@ -267,11 +278,7 @@ impl WorkspaceSessionStore {
             ChatHandoffPhase::Prepared => {}
         }
         self.validate_handoff_head(&record, false)?;
-        if read_json::<Value>(
-            &self.configuration_snapshot_path(chat_id, &record.candidate_configuration_epoch)?,
-        )?
-        .is_none()
-        {
+        if record.candidate_configuration.is_none() {
             return Err(invalid(
                 "Chat handoff candidate configuration is unavailable",
             ));
@@ -308,8 +315,6 @@ impl WorkspaceSessionStore {
         handoff_id: &str,
     ) -> Result<ChatHandoffRecord> {
         let _chat = self.lock_chat_storage(chat_id).await;
-        let head_lock = chat_write_lock_for_path(self.configuration_head_path(chat_id));
-        let _head = head_lock.lock().await;
         let _journal = JOURNAL_COMMIT
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -324,33 +329,28 @@ impl WorkspaceSessionStore {
         if observed.extra.get("authority_placement") == Some(&record.new_placement) {
             // The new writer may publish a later configuration before its
             // activation acknowledgement reaches A. Its exact placement plus a
-            // complete authoritative head proves installation; only finish the
-            // local journal, without restoring the older handoff candidate.
-            let head: ChatConfigurationHead = read_json(&self.configuration_head_path(chat_id))?
-                .ok_or_else(|| invalid("Activated Chat configuration head is unavailable"))?;
-            let configuration: Value = read_json(
-                &self.configuration_snapshot_path(chat_id, &head.epoch)?,
-            )?
-            .ok_or_else(|| invalid("Activated Chat configuration snapshot is unavailable"))?;
-            if configuration["epoch"].as_str() != Some(head.epoch.as_str()) {
-                return Err(invalid(
-                    "Activated Chat configuration epoch does not match its head",
-                ));
-            }
-            head.validate_configuration(&configuration)?;
+            // complete configuration proves installation; only finish the local
+            // journal, without restoring the older handoff candidate.
             let directory: crate::ChatExecutionDirectory = serde_json::from_value(
-                configuration["capability_configuration"][crate::EXECUTION_DIRECTORY_KEY].clone(),
+                observed
+                    .extra
+                    .get("hook_configuration")
+                    .and_then(|configuration| {
+                        configuration
+                            .get("capability_configuration")?
+                            .get(crate::EXECUTION_DIRECTORY_KEY)
+                    })
+                    .cloned()
+                    .ok_or_else(|| invalid("Activated Chat execution directory is unavailable"))?,
             )
             .map_err(|error| {
                 invalid(format!(
                     "Activated Chat execution directory is invalid: {error}"
                 ))
             })?;
-            if head.execution_directory.as_ref() != Some(&directory)
-                || Some(directory.device_id.as_str()) != record.new_placement["device_id"].as_str()
-            {
+            if Some(directory.device_id.as_str()) != record.new_placement["device_id"].as_str() {
                 return Err(invalid(
-                    "Activated Chat execution directory does not match its head",
+                    "Activated Chat execution directory does not belong to the new writer",
                 ));
             }
             record.phase = ChatHandoffPhase::Activated;
@@ -358,17 +358,12 @@ impl WorkspaceSessionStore {
             return Ok(record);
         }
         self.validate_handoff_head(&record, true)?;
-        let candidate: Value = read_json(
-            &self.configuration_snapshot_path(chat_id, &record.candidate_configuration_epoch)?,
-        )?
-        .ok_or_else(|| invalid("Chat handoff candidate configuration is unavailable"))?;
+        let candidate: Value = record
+            .candidate_configuration
+            .clone()
+            .ok_or_else(|| invalid("Chat handoff candidate configuration is unavailable"))?;
         let mut header: ChatSessionHeader = read_json(&self.chat_header_path(chat_id))?
             .ok_or_else(|| invalid("Chat handoff header is unavailable"))?;
-        let mut head: ChatConfigurationHead =
-            read_json(&self.configuration_head_path(chat_id))?.unwrap_or(
-                ChatConfigurationHead::from_header(&record.expected_configuration_epoch, &header)?,
-            );
-        head.validate_configuration(&candidate)?;
         let directory: crate::ChatExecutionDirectory = serde_json::from_value(
             candidate["capability_configuration"][crate::EXECUTION_DIRECTORY_KEY].clone(),
         )
@@ -380,10 +375,16 @@ impl WorkspaceSessionStore {
         if Some(directory.device_id.as_str()) != record.new_placement["device_id"].as_str() {
             return Err(invalid("Chat handoff directory belongs to another Device"));
         }
-        head.epoch.clone_from(&record.candidate_configuration_epoch);
-        head.execution_directory = Some(directory);
-        save_json(&self.configuration_head_path(chat_id), &head)?;
-        head.apply_selection(&mut header);
+        if let Some(agent_id) = candidate.get("selected_agent_id").and_then(Value::as_str) {
+            header.agent_id = agent_id.to_owned();
+            header.metadata.agent_id = agent_id.to_owned();
+        }
+        // The configuration carries the execution position, so the header's own
+        // directory record has to move with it in the same write.
+        header.extra.insert(
+            crate::EXECUTION_DIRECTORY_KEY.into(),
+            serde_json::json!(directory),
+        );
         header.extra.insert("hook_configuration".into(), candidate);
         header
             .extra

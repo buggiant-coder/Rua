@@ -169,19 +169,13 @@ async fn transfer_read_and_write_denials_are_checked_even_after_confirmation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn transfer_requires_current_chat_authority_configuration_and_selected_tool() {
+async fn transfer_requires_current_chat_authority_and_selected_tool() {
     let f = Fixture::materialize(build_agent().await).await;
     let (source, _, args) = paths(&f);
-    for invalid in [
-        TargetChatRead {
-            authority_device_id: "obsolete-device",
-            ..request(&f, &args)
-        },
-        TargetChatRead {
-            configuration_epoch: "obsolete-config",
-            ..request(&f, &args)
-        },
-    ] {
+    for invalid in [TargetChatRead {
+        authority_device_id: "obsolete-device",
+        ..request(&f, &args)
+    }] {
         assert_eq!(
             f.context
                 .inspect_transfer_source(

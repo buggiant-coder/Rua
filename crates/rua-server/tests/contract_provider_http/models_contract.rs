@@ -925,12 +925,11 @@ async fn store_default_model_with_chat_id_requires_confirmation_when_projection_
         body,
         "default edits must not change existing Chat preflight"
     );
-    let header =
-        WorkspaceSessionStore::new(test.tmp.path().join("chats"))
-            .load_chat_header("chat-preflight")
-            .await
-            .unwrap()
-            .unwrap();
+    let header = WorkspaceSessionStore::new(test.tmp.path().join("chats"))
+        .load_chat_header("chat-preflight")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         rua_chat::model_slot_from_header(&header).unwrap()["model"],
         "frozen-model"
@@ -1571,7 +1570,10 @@ async fn seed_long_evergreen_chat(tmp: &tempfile::TempDir, chat_id: &str) {
         "hook_configuration".into(),
         serde_json::to_value(configuration).unwrap(),
     );
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
 
     for turn in 1..=6 {
         let content = if turn < 6 {

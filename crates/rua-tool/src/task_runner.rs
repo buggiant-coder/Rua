@@ -20,7 +20,6 @@ pub struct ToolTaskExecutionRequest {
     pub authorization_agent_id: String,
     pub authorization_origin: TaskOrigin,
     pub device: rua_task::TaskDeviceContext,
-    pub configuration_epoch: Option<String>,
     pub origin_turn_id: Option<String>,
     pub tool_name: String,
     pub arguments: serde_json::Value,
@@ -44,7 +43,6 @@ pub struct AdoptRunningToolRequest {
     pub task_id: TaskId,
     pub owner: TaskOwner,
     pub authorization_agent_id: String,
-    pub configuration_epoch: Option<String>,
     pub origin_turn_id: Option<String>,
     pub origin_tool_call_id: String,
     pub tool_name: String,
@@ -63,7 +61,6 @@ pub async fn adopt_running_tool(
         task_id,
         owner,
         authorization_agent_id,
-        configuration_epoch,
         origin_turn_id,
         origin_tool_call_id,
         tool_name,
@@ -93,7 +90,6 @@ pub async fn adopt_running_tool(
     }
     let mut authorization = rua_task::TaskAttemptAuthorization::new(authorization_agent_id)
         .map_err(TaskError::Invalid)?;
-    authorization.configuration_epoch = configuration_epoch;
     authorization.origin = TaskOrigin {
         turn_id: origin_turn_id.clone(),
         tool_call_id: Some(origin_tool_call_id.clone()),
@@ -166,7 +162,6 @@ impl TaskRunner for ToolTaskRunner {
                 authorization_agent_id: request.authorization_agent_id,
                 authorization_origin: request.authorization_origin,
                 device: request.device.clone(),
-                configuration_epoch: request.configuration_epoch,
                 origin_turn_id: request.spec.origin.turn_id.clone(),
                 tool_name: tool_name.clone(),
                 arguments,

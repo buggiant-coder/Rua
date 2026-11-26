@@ -2269,7 +2269,9 @@ impl AgentRuntime for ReactAgentRuntime {
                 message: format!("invalid effective security snapshot: {error}"),
             })?
             .map(Arc::new);
-        if req.metadata.contains_key("chat_configuration_epoch")
+        if req
+            .metadata
+            .contains_key(rua_security::models::EFFECTIVE_SECURITY_CONFIG_METADATA_KEY)
             && (security_snapshot.is_none() || self.security.is_none())
         {
             return Err(RuaError::Security {
@@ -2578,11 +2580,6 @@ impl AgentRuntime for ReactAgentRuntime {
             .map_err(|error| RuaError::Validation {
                 message: format!("invalid Chat capability configuration: {error}"),
             })?;
-        if configuration.is_none() && req.metadata.contains_key("chat_configuration_epoch") {
-            return Err(RuaError::Validation {
-                message: "Captured Chat capability configuration is required".into(),
-            });
-        }
         if configuration.is_none() {
             if let Some((agent_id, agent_cells, workspace_dir)) = &self.agent_tool_configuration {
                 let mut captured = self

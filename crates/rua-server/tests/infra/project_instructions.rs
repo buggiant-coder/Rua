@@ -35,7 +35,6 @@ struct Fixture {
     address: ChatAddress,
     device: String,
     epoch: ConversationAuthorityEpoch,
-    config_epoch: String,
     cwd: PathBuf,
     loader: Arc<RuntimeAgentsInstructionLoader>,
 }
@@ -50,10 +49,6 @@ impl Fixture {
         let epoch = parse_conversation_authority_placement(&chat["meta"])
             .unwrap()
             .authority_epoch;
-        let config_epoch = chat["meta"]["hook_configuration"]["epoch"]
-            .as_str()
-            .unwrap()
-            .to_owned();
         let cwd = app
             .state
             .registry
@@ -85,7 +80,6 @@ impl Fixture {
             address,
             device,
             epoch,
-            config_epoch,
             cwd,
             loader,
         }
@@ -117,7 +111,6 @@ impl Fixture {
                     json!(self.address),
                 ),
                 ("turn_id".into(), json!(turn.turn_id)),
-                ("chat_configuration_epoch".into(), json!(self.config_epoch)),
             ]),
             ..Default::default()
         }
@@ -302,7 +295,7 @@ async fn stopping_finished_and_replaced_turns_cannot_load_local_instructions() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn missing_or_stale_chat_context_skips_local_instructions_without_approval() {
+async fn missing_chat_context_skips_local_instructions_without_approval() {
     let f = Fixture::new().await;
     std::fs::write(f.cwd.join("AGENTS.md"), "CURRENT_CONTEXT_ONLY").unwrap();
     let ctx = f.start_turn().await;
@@ -314,16 +307,13 @@ async fn missing_or_stale_chat_context_skips_local_instructions_without_approval
     missing_address
         .metadata
         .remove(rua_agent::hooks::SECURITY_CHAT_ADDRESS_METADATA_KEY);
-    let mut stale_configuration = ctx.clone();
-    stale_configuration
-        .metadata
-        .insert("chat_configuration_epoch".into(), json!("obsolete"));
+    // Instruction discovery claims only the Chat, the Turn and the Chat's
+    // current Authority; it no longer keys on a configuration version.
     for context in [
         ToolContext::default(),
         missing_device,
         missing_turn,
         missing_address,
-        stale_configuration,
     ] {
         let result = f
             .loader

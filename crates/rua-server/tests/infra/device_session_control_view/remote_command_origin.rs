@@ -31,7 +31,7 @@ struct Origin {
 impl Origin {
     async fn new(fixture: RemoteInputConfirmationFixture, calls: &[ToolCall]) -> Self {
         let release = Arc::new(Notify::new());
-        let (address, turn, epoch, _) = prepare_running_file_calls(&fixture, calls, &release).await;
+        let (address, turn, _) = prepare_running_file_calls(&fixture, calls, &release).await;
         let owner = &fixture.target_state;
         owner.sync_enabled.store(true, Ordering::SeqCst);
         for call in calls {
@@ -117,7 +117,6 @@ impl Origin {
                     json!(address),
                 ),
                 ("turn_id".into(), json!(turn.turn_id)),
-                ("chat_configuration_epoch".into(), json!(epoch)),
             ]
             .into(),
             ..Default::default()

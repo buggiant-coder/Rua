@@ -568,12 +568,20 @@ async fn configuration_persistence_failure_does_not_adopt_or_publish_and_can_be_
         .subscribe_control_events(&address)
         .await;
 
-    // Block only the new immutable snapshot. The current configuration stays
-    // readable, so failure happens during persistence, after preview validation.
-    let blocked_path = store
-        .configuration_snapshot_path(chat_id, candidate_epoch)
-        .unwrap();
-    std::fs::create_dir(&blocked_path).unwrap();
+    // The Chat keeps one durable record, so the failure has to be injected at the
+    // write while the record stays readable: an atomic write needs to create its
+    // temporary sibling, so a read-only directory fails the commit and nothing
+    // else. Replacing the record with a directory would fail the reads the test
+    // then uses to prove the previous configuration survived.
+    let record_dir = store
+        .chat_header_path(chat_id)
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let original_mode = std::fs::metadata(&record_dir).unwrap().permissions();
+    let mut read_only = original_mode.clone();
+    read_only.set_readonly(true);
+    std::fs::set_permissions(&record_dir, read_only).unwrap();
     assert!(intake
         .chat_configuration_control(
             &address,
@@ -601,7 +609,7 @@ async fn configuration_persistence_failure_does_not_adopt_or_publish_and_can_be_
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
 
-    std::fs::remove_dir(blocked_path).unwrap();
+    std::fs::set_permissions(&record_dir, original_mode).unwrap();
     let applied = intake
         .chat_configuration_control(
             &address,
@@ -660,7 +668,10 @@ async fn configuration_preview_preserves_unset_choices_in_a_complete_snapshot() 
         .replace_chat_configuration(chat_id, &previous_epoch, configuration)
         .await
         .unwrap();
-    store.save_chat_header(&header).await.unwrap();
+    store
+        .save_chat_header_with_configuration(&header)
+        .await
+        .unwrap();
     let preview = test
         .state
         .conversation_input_intake

@@ -67,14 +67,6 @@ async fn command_start_rechecks_live_selection_and_captured_authority() {
             .await,
         Ok(FileReadAdmission::Allowed)
     );
-    let mut stale = request(&f, &args);
-    stale.configuration_epoch = "stale";
-    assert_eq!(
-        f.context
-            .inspect_command(&stale, cwd.to_str().unwrap(), true)
-            .await,
-        Err(TargetReadRejection::Unavailable)
-    );
     let store = &f.app.state.tool_config_store;
     let mut selection = ToolSelectionPolicy::default_enabled();
     selection.set_tool_enabled(ToolIdentity::builtin("bash"), false);

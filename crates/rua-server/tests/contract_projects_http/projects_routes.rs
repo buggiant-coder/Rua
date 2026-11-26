@@ -7,7 +7,8 @@ use rua_security::{
     ApprovalDecision, ApprovalRequestInput, ApprovalReuseMatcher, ApprovalTrigger, ToolCallSnapshot,
 };
 use rua_server::services::conversation_authority::{
-    ConversationActiveTurnStart, ConversationDriverKind, ConversationInputPayload,
+    ConversationActiveTurnPhase, ConversationActiveTurnStart, ConversationDriverKind,
+    ConversationInputPayload,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -1038,12 +1039,30 @@ async fn local_project_chat_first_submit_materializes_history_by_chat_id() {
         blocked_history["meta"]["chat_agent_state"]["blockers"],
         json!(["active_turn"])
     );
-    let authority = std::sync::Arc::clone(&test.state.conversation_authority);
-    let finish_address = delete_address.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        authority.finish_active_turn(&finish_address).await;
-    });
+    // Resolving the blocker first, then retrying the deletion, is the only path
+    // that admits it: a deletion racing a running Turn must be refused, not wait
+    // for the Turn to stop on its own.
+    let refused = request(&test.app, Method::DELETE, "/api/agents/code", None).await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert!(
+        response_json(refused).await["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unfinished work"),
+        "the refusal must name the unfinished work"
+    );
+    assert!(
+        test.state
+            .conversation_authority
+            .active_turn(&delete_address)
+            .await
+            .is_some(),
+        "a refused deletion must not stop the Turn"
+    );
+    test.state
+        .conversation_authority
+        .finish_active_turn(&delete_address)
+        .await;
     let delete_agent = request(&test.app, Method::DELETE, "/api/agents/code", None).await;
     assert_eq!(delete_agent.status(), StatusCode::OK);
     assert!(test
@@ -1072,6 +1091,25 @@ async fn local_project_chat_first_submit_materializes_history_by_chat_id() {
         .as_array()
         .unwrap()
         .is_empty());
+    // The Chat is retained but not executable: nothing may silently stand in for
+    // the deleted Agent, so new input is refused instead of substituted.
+    let after_delete_submit = request(
+        &test.app,
+        Method::POST,
+        &format!("/api/chats/{chat_id}/console/submit"),
+        Some(json!({ "project_id": first_id,
+            "agent_id": "code",
+            "chat_id": chat_id,
+            "message": "Do not substitute the deleted Agent",
+        })),
+    )
+    .await;
+    assert_eq!(after_delete_submit.status(), StatusCode::OK);
+    let after_delete_submit = response_json(after_delete_submit).await;
+    assert_eq!(
+        after_delete_submit["mode"], "rejected",
+        "a Chat whose selected Agent was deleted must refuse new input, got {after_delete_submit}"
+    );
 
     std::fs::remove_dir_all(&first_repo).unwrap();
     let offline_history = request(
@@ -1672,7 +1710,24 @@ async fn project_chat_list_update_delete_and_busy_isolation_contract() {
     let authority = std::sync::Arc::clone(&test.state.conversation_authority);
     let finish_first = first_address.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // The forced delete records its busy verdict before it asks the turn to
+        // stop, so finishing only once the turn reached `Stopping` keeps the
+        // `was_busy` result a fact about the delete instead of a race against a
+        // fixed sleep.
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let stopping = authority
+                    .active_turn(&finish_first)
+                    .await
+                    .is_some_and(|turn| turn.phase == ConversationActiveTurnPhase::Stopping);
+                if stopping {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the forced delete must ask the active turn to stop");
         authority.finish_active_turn(&finish_first).await;
     });
     let force_delete = request(
@@ -4333,11 +4388,8 @@ async fn legacy_project_chat_listing_updates_do_not_require_runtime_configuratio
     let store = rua_session::WorkspaceSessionStore::new(scope.root());
     let mut header = store.load_chat_header(chat_id).await.unwrap().unwrap();
     header.extra.remove("hook_configuration");
-    // Reproduce a pre-snapshot Chat while retaining its original history/identity.
-    let head = store.configuration_head_path(chat_id);
-    if head.exists() {
-        std::fs::remove_file(head).unwrap();
-    }
+    // Reproduce a Chat with no stored configuration while retaining its original
+    // history and identity.
     rua_config::atomic_write(
         &store.chat_header_path(chat_id),
         &serde_json::to_vec(&header).unwrap(),

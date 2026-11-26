@@ -31,10 +31,6 @@ async fn prepare() -> (RemoteInputConfirmationFixture, AgentsInstructionCommand)
             agent_id: "default".into(),
             address: ChatAddress::new(fixture.chat_id.clone()),
             authority_epoch: placement.authority_epoch,
-            configuration_epoch: header.extra["hook_configuration"]["epoch"]
-                .as_str()
-                .unwrap()
-                .into(),
             turn_id: String::new(),
             tool_call_id: String::new(),
             tool_name: String::new(),
@@ -163,9 +159,11 @@ async fn discovery_rejects_unauthenticated_or_mismatched_device_routes_and_stale
             "case {case}: {reply:?}"
         );
     }
+    // A Turn from a Chat whose selected Agent has since changed can no longer
+    // claim the target's instructions.
     let stale = AgentsInstructionCommand {
         context: DeviceReadCheckRequest {
-            configuration_epoch: "obsolete".into(),
+            agent_id: "another-agent".into(),
             ..command.context.clone()
         },
         ..command

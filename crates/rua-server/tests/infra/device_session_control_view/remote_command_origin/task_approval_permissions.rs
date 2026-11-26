@@ -140,11 +140,8 @@ async fn remote_task_chat_permission_commits_at_authority_before_target_release(
             "authority_epoch": rua_server::services::conversation_authority_placement::ConversationAuthorityEpoch::next_for_device(&f.fixture.source.device_id, Some(epoch)),
             "base_manifest_hash": header.extra["authority_placement"]["base_manifest_hash"],
         }),
-        expected_configuration_epoch: header.extra["hook_configuration"]["epoch"]
-            .as_str()
-            .unwrap()
-            .into(),
-        candidate_configuration_epoch: "approval-handoff-candidate".into(),
+        configuration: Some(header.extra["hook_configuration"].clone()),
+        candidate_configuration: None,
         requirements: json!({}),
         phase: rua_session::chat_handoff::ChatHandoffPhase::Prepared,
         extra: Default::default(),

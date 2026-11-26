@@ -1769,9 +1769,7 @@ async fn retry_preserves_attempt_history_and_immutable_specification() {
     let task_id = runtime
         .create(
             original_spec.clone(),
-            authorization("agent-a")
-                .with_configuration_epoch("epoch-one".to_string())
-                .with_origin(first_origin.clone()),
+            authorization("agent-a").with_origin(first_origin.clone()),
         )
         .await
         .unwrap();
@@ -1788,9 +1786,7 @@ async fn retry_preserves_attempt_history_and_immutable_specification() {
         .retry(
             &owner,
             &task_id,
-            authorization("agent-b")
-                .with_configuration_epoch("epoch-two".to_string())
-                .with_origin(retry_origin.clone()),
+            authorization("agent-b").with_origin(retry_origin.clone()),
         )
         .await
         .unwrap();
@@ -1808,14 +1804,6 @@ async fn retry_preserves_attempt_history_and_immutable_specification() {
     assert_eq!(completed.spec.owner, owner);
     assert_eq!(completed.attempts[0].authorization_agent_id, "agent-a");
     assert_eq!(completed.attempts[1].authorization_agent_id, "agent-b");
-    assert_eq!(
-        completed.attempts[0].configuration_epoch.as_deref(),
-        Some("epoch-one")
-    );
-    assert_eq!(
-        completed.attempts[1].configuration_epoch.as_deref(),
-        Some("epoch-two")
-    );
     assert_eq!(
         runner.authorization_agents.lock().await.as_slice(),
         ["agent-a", "agent-b"]

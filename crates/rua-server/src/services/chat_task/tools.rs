@@ -163,8 +163,6 @@ impl ChatTaskService {
         let call_id = metadata("tool_call_id")
             .or_else(|| metadata("tool_use_id"))
             .ok_or("Task acceptance requires the originating tool call")?;
-        let epoch = metadata("chat_configuration_epoch")
-            .ok_or("Task acceptance requires the Chat configuration")?;
         let active = self
             .authority
             .active_turn(&owner.chat_address)
@@ -182,12 +180,12 @@ impl ChatTaskService {
             })
             .ok_or("The originating Chat invocation is no longer active")?;
         Ok(ChatTaskInvocation {
-            authorization: TaskAttemptAuthorization::new(ctx.agent_id.clone())?
-                .with_origin(TaskOrigin {
+            authorization: TaskAttemptAuthorization::new(ctx.agent_id.clone())?.with_origin(
+                TaskOrigin {
                     turn_id: Some(turn_id.into()),
                     tool_call_id: Some(call_id.into()),
-                })
-                .with_configuration_epoch(epoch.to_string()),
+                },
+            ),
             authority_device_id: active.authority_device_id,
             authority_epoch: active.authority_epoch,
             extra: Default::default(),
@@ -290,11 +288,6 @@ impl ChatTaskService {
                     turn_id: preparation.spec.origin.turn_id.clone(),
                     tool_call_id: preparation.spec.origin.tool_call_id.clone(),
                     agent_id: preparation.invocation.authorization.agent_id.clone(),
-                    configuration_epoch: preparation
-                        .invocation
-                        .authorization
-                        .configuration_epoch
-                        .clone(),
                     extra: Default::default(),
                 },
                 last_target_evidence: None,
@@ -527,8 +520,6 @@ fn accepted_record(record: &TaskRecord, preparation: &ChatTaskPreparation, devic
                 && attempt.device.public_cwd == preparation.device.public_cwd
                 && attempt.authorization_origin == preparation.invocation.authorization.origin
                 && attempt.authorization_agent_id == preparation.invocation.authorization.agent_id
-                && attempt.configuration_epoch
-                    == preparation.invocation.authorization.configuration_epoch
         })
 }
 fn compact_projection(value: &Value) -> Value {

@@ -132,8 +132,9 @@ evidence; a previously completed provider call does not receive a second result.
 chat_read progress is a bounded on-demand cached summary of public activity,
 never paginated child Tool history. task_read output retains deterministic
 truncation and references rather than using the Agent summary model.
-Projection consumes the claimed complete Chat configuration epoch, not mutable
-Agent defaults; late results cannot mutate an already issued provider request.
+Projection consumes the complete Chat configuration captured at claim time, not
+mutable Agent defaults; late results cannot mutate an already issued provider
+request.
 
 ### D7 - Inspection observes the actual request boundary
 

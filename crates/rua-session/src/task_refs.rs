@@ -24,7 +24,6 @@ pub struct ChatTaskOrigin {
     pub turn_id: Option<String>,
     pub tool_call_id: Option<String>,
     pub agent_id: String,
-    pub configuration_epoch: Option<String>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -75,14 +74,10 @@ impl ChatTaskRef {
             || !rua_core::execution_directory::is_device_absolute_path(&self.execution.public_cwd)
             || self.execution.public_cwd.chars().any(char::is_control)
             || !identifier(&self.origin.agent_id)
-            || [
-                &self.origin.turn_id,
-                &self.origin.tool_call_id,
-                &self.origin.configuration_epoch,
-            ]
-            .into_iter()
-            .flatten()
-            .any(|value| !identifier(value))
+            || [&self.origin.turn_id, &self.origin.tool_call_id]
+                .into_iter()
+                .flatten()
+                .any(|value| !identifier(value))
         {
             return Err(invalid("Incomplete Task reference identity"));
         }
@@ -204,8 +199,6 @@ impl ChatTaskRef {
                     let previous_attempt = &previous.record.attempts[0];
                     if incoming_attempt.authorization_agent_id
                         != previous_attempt.authorization_agent_id
-                        || incoming_attempt.configuration_epoch
-                            != previous_attempt.configuration_epoch
                         || incoming_attempt.authorization_origin
                             != previous_attempt.authorization_origin
                         || incoming_attempt.device != previous_attempt.device
@@ -220,6 +213,16 @@ impl ChatTaskRef {
                     && incoming.record.state != previous.record.state
                 {
                     return Err(invalid("A terminal Task Attempt cannot change state"));
+                }
+                // Evidence revisions record persistence order, not observation
+                // order: a capture reads TaskRuntime first and allocates its
+                // revision only afterwards, so two captures of one Attempt can
+                // persist out of order. Keep the newer observation instead of
+                // letting a stale non-terminal snapshot rewind the projection.
+                if incoming.record.attempt_no == previous.record.attempt_no
+                    && incoming.record.updated_at < previous.record.updated_at
+                {
+                    return Ok(retained);
                 }
             }
             _ => {}

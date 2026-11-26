@@ -4035,6 +4035,16 @@ impl ConversationInputIntake {
         Ok(affected)
     }
 
+    /// Drops the process-local ACP runtime handle an Agent owned.
+    ///
+    /// This is process cleanup after an admitted deletion, not history: the
+    /// Chats, ACP binding records and results the Agent produced stay readable.
+    pub fn release_agent_acp_runtime(&self, agent_id: &str) {
+        if let Some(registry) = self.acp_chat_registry.as_ref() {
+            registry.remove(agent_id);
+        }
+    }
+
     pub async fn request_local_stop(&self, _agent_id: &str, chat_id: &str) -> bool {
         let address = ChatAddress::new(chat_id);
         self.request_local_stop_for(&address).await
