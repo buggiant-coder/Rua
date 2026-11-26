@@ -170,6 +170,45 @@ elif Path(sys.argv[0]).name == 'gradlew':
                                        env=self.env, timeout=5)
             self.assertEqual(completed.returncode, status)
 
+    @unittest.skipIf(os.name == "nt", "Android packaging runs on Unix hosts")
+    def test_native_runtime_links_against_the_declared_platform(self):
+        # cargo-ndk's -P defaults to 21 and is injected as a linker environment
+        # variable, which outranks the linker in .cargo/config.toml. Omitting it
+        # therefore lowers the recorded platform below the declared minimum
+        # without failing the build, so the flag must always be passed.
+        for name, text in (
+            ("scripts/android/build-android-native-runtime.sh",
+             (ROOT / "scripts/android/build-android-native-runtime.sh").read_text()),
+            ("scripts/package-mobile-apk.sh", (ROOT / "scripts/package-mobile-apk.sh").read_text()),
+        ):
+            shutil.copy2(ROOT / name, self.root / name)
+        mobile = self.root / "mobile/mobile-shell"
+        mobile.mkdir(parents=True)
+        (mobile / "gradle.properties").write_text("ndkVersion=test\nminSdkVersion=26\n")
+        self.script("bin/cargo-ndk", "#!/bin/sh\nexit 0\n")
+        self.script("bin/rustup", "#!/bin/sh\necho aarch64-linux-android\n")
+        # Record the arguments cargo-ndk receives, then produce the artifact the
+        # script inspects so the run reaches its platform report.
+        self.script("bin/cargo", """#!/bin/sh
+printf '%s\n' "$@" >> "$RUA_SCRIPT_TEST_ROOT/cargo-args.txt"
+out="$RUA_SCRIPT_TEST_ROOT/target/aarch64-linux-android/debug"
+mkdir -p "$out" && : > "$out/rua"
+""")
+        # The script honours CARGO_TARGET_DIR, so drop any inherited value and
+        # let it place the artifact inside the sandbox instead of the developer's
+        # real build directory.
+        env = {**self.env, "ANDROID_NDK_HOME": str(self.root / "ndk"),
+               "RUA_SCRIPT_TEST_ROOT": str(self.root)}
+        env.pop("CARGO_TARGET_DIR", None)
+        result = subprocess.run(
+            ["bash", str(self.root / "scripts/android/build-android-native-runtime.sh"), "--debug"],
+            cwd=self.root, env=env, text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        args = (self.root / "cargo-args.txt").read_text().split()
+        self.assertIn("-P", args, f"cargo ndk called without -P: {args}")
+        self.assertEqual(args[args.index("-P") + 1], "26",
+                         "platform must follow minSdkVersion, not cargo-ndk's default 21")
+
     def test_native_packaging_shell_entrypoints_parse(self):
         for name in ('scripts/package-mobile-apk.sh', 'scripts/android/build-android-native-runtime.sh',
                      'scripts/tests/release-gate.sh'):

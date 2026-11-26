@@ -97,11 +97,24 @@ wrapper 默认写入 `$HOME/.local/bin`，可用 `ANDROID_HOST_TOOLS` 改到别�
 `CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER` 之类的环境变量注入，优先级高于
 `.cargo/config.toml` 里按三元组配置的 `linker`。因此不显式传 `-P` 时，
 cargo-ndk 会选 `aarch64-linux-android21-clang`，产物 `.note.android.ident`
-记录 API 21——即使 `minSdkVersion=26`、config.toml 写的是 26。本仓库的
-`build-android-native-runtime.sh` 目前未传 `-P`，属既有行为而非新引入问题；
-要得到与 `minSdkVersion` 一致的产物，需显式 `-P 26`（或设
-`CARGO_NDK_PLATFORM=26`）。可用
-`llvm-readelf -x .note.android.ident <binary>` 核对，desc 首 4 字节小端即 API。
+记录 API 21——即使 `minSdkVersion=26`、config.toml 写的是 26。这种降级**不会
+让构建失败**，只会让 ELF 注记与 APK manifest 声明不一致。
+
+为避免这个问题，`build-android-native-runtime.sh` 总是显式传 `-P`，取值顺序为：
+
+1. `-P/--platform` 命令行参数；
+2. `CARGO_NDK_PLATFORM` 环境变量；
+3. `mobile/mobile-shell/gradle.properties` 的 `minSdkVersion`；
+4. 兜底常量 26。
+
+`package-mobile-apk.sh` 用同名参数透传，CI 从 `gradle.properties` 读出后传入，
+因此 `minSdkVersion` 变更时链路自动跟随，无需改 workflow。构建结束会回读
+`.note.android.ident` 打印实际 API，不一致时告警。手动核对：
+
+```bash
+llvm-readelf -n <binary> | sed -n '/note.android.ident/,/description data/p'
+# description data 的前 4 字节是小端 uint32，例如 "1a 00 00 00" = 26
+```
 
 **3）验证交叉编译**
 

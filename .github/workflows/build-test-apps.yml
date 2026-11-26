@@ -120,7 +120,12 @@ jobs:
           sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
           cargo install cargo-ndk --locked
       - name: Build development-signed APK
-        run: scripts/package-mobile-apk.sh --debug --clean
+        run: |
+          # Link the native runtime against the declared minimum platform.
+          # cargo-ndk defaults to API 21, which would record a platform below
+          # what the manifest advertises.
+          API=$(sed -n 's/^minSdkVersion=//p' mobile/mobile-shell/gradle.properties)
+          scripts/package-mobile-apk.sh --debug --clean -P "$API"
       - name: Package Android dependency and native sources
         run: |
           python3 scripts/release/package-notices.py --target aarch64-linux-android \

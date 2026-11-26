@@ -10,6 +10,7 @@ BUILD_CONSOLE=1
 CLEAN=0
 INSTALL=0
 INSTALL_ALL=0
+PLATFORM=""
 OUT_DIR="$REPO_ROOT/target/mobile-apk"
 PORT="${RUA_MOBILE_PORT:-0}"
 SERIALS=()
@@ -19,6 +20,8 @@ Usage: scripts/package-mobile-apk.sh [options]
   --debug | --release       APK build type (default debug).
   --skip-runtime-build      Reuse the matching Android rua build.
   --skip-console-build      Reuse console/dist.
+  -P, --platform API        Android API level for the native runtime (default:
+                            minSdkVersion from gradle.properties, else 26).
   --clean                   Clean Gradle outputs before packaging.
   --out-dir PATH            Output APK and payload report directory.
   --port PORT               In-app server port (default 0: OS-assigned available port).
@@ -55,6 +58,7 @@ while [[ $# -gt 0 ]]; do
         --skip-runtime-build) BUILD_RUNTIME=0; shift ;;
         --skip-console-build) BUILD_CONSOLE=0; shift ;;
         --clean) CLEAN=1; shift ;;
+        -P|--platform) PLATFORM="${2:?missing API level}"; shift 2 ;;
         --out-dir) OUT_DIR="${2:?missing output directory}"; shift 2 ;;
         --port) PORT="${2:?missing port}"; shift 2 ;;
         --install) INSTALL=1; shift ;;
@@ -64,6 +68,9 @@ while [[ $# -gt 0 ]]; do
         *) die "unknown option: $1" ;;
     esac
 done
+if [[ -n "$PLATFORM" && ! "$PLATFORM" =~ ^[0-9]+$ ]]; then
+    die 'invalid API level'
+fi
 if [[ ! "$PORT" =~ ^[0-9]+$ ]] || ((10#$PORT < 0 || 10#$PORT > 65535)); then
     die 'invalid port'
 fi
@@ -75,7 +82,11 @@ NDK_VERSION=$(sed -n 's/^ndkVersion=//p' mobile/mobile-shell/gradle.properties)
 export ANDROID_HOME
 export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/$NDK_VERSION}"
 export RUA_MOBILE_PORT="$PORT"
-if ((BUILD_RUNTIME)); then scripts/android/build-android-native-runtime.sh "--$BUILD_TYPE"; fi
+if ((BUILD_RUNTIME)); then
+    runtime_args=("--$BUILD_TYPE")
+    [[ -n "$PLATFORM" ]] && runtime_args+=(-P "$PLATFORM")
+    scripts/android/build-android-native-runtime.sh "${runtime_args[@]}"
+fi
 # Rust can build alongside Desktop; shared Console work and APK staging cannot.
 if [[ "${RUA_CONSOLE_BUILD_LOCK:-}" != "$REPO_ROOT/target/console-build.lock" ]]; then
     exec python3 "$REPO_ROOT/scripts/with-console-build-lock.py" bash "$0" "${ORIGINAL_ARGS[@]}" --skip-runtime-build

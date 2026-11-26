@@ -45,11 +45,14 @@ jobs:
       - name: Build native APK and device acceptance probe
         run: |
           python3 scripts/tests/check-android-release-contract.py
-          scripts/package-mobile-apk.sh --debug --clean
+          # Link the native runtime against the declared minimum platform, so
+          # the ELF note matches the manifest instead of cargo-ndk's default 21.
+          API=$(sed -n 's/^minSdkVersion=//p' mobile/mobile-shell/gradle.properties)
+          scripts/package-mobile-apk.sh --debug --clean -P "$API"
           mobile/mobile-shell/gradlew -p mobile/mobile-shell :app:testDebugUnitTest
-          cargo ndk -t arm64-v8a build -p rua-tool --example native_runtime_probe
+          cargo ndk -t arm64-v8a -P "$API" build -p rua-tool --example native_runtime_probe
           mobile/mobile-shell/gradlew -p mobile/mobile-shell :app:assembleDebugAndroidTest
-          cargo ndk -t x86_64 check -p rua-cli --features mobile-default
+          cargo ndk -t x86_64 -P "$API" check -p rua-cli --features mobile-default
           python3 scripts/android/prepare-runtime-offline.py
           python3 scripts/tests/prepare-android-webview.py
       - uses: actions/upload-artifact@v6
