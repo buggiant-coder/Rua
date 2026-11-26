@@ -68,7 +68,11 @@ scripts/android/prepare-aarch64-host.sh           # 应用
 ```
 
 脚本是幂等的，且在非 aarch64 主机上直接退出（x86-64 上 NDK 自带驱动可用，
-`cargo-ndk` 也会生成同名 wrapper）。它做四件事：
+`cargo-ndk` 也会生成同名 wrapper）。幂等指**按内容校正**，不只是"文件已存在
+就跳过"：每个 wrapper 都内嵌绝对路径，SDK 换了位置（例如把工具链在应用数据与
+guest rootfs 之间搬迁，或换了 `ANDROID_HOME`）后，旧 wrapper 仍能执行却指向已
+不存在的目录，症状是头文件或运行库「找不到」而错误信息里没有任何路径线索。
+因此 `--check` 会对内容不符的项报 `needs update`，重跑即就地改写。它做四件事：
 
 - 为 `sysroot` 内**每个** API 目录补 `libunwind.a`（`rustc` 的 android target
   链接时带 `-lunwind`，而 NDK 把它放在 clang 运行时旁边而非 sysroot 里）；
@@ -78,12 +82,26 @@ scripts/android/prepare-aarch64-host.sh           # 应用
 - 生成 `aarch64-linux-android<API>-clang` 与**无 API 后缀**的
   `aarch64-linux-android-clang` wrapper。无后缀那个不是冗余：`aws-lc-sys` 经
   `cc` crate 按三元组查找编译器，缺它会报 `failed to execute compile`；
-- 把 NDK 内 x86-64 的 `clang`、`llvm-strip`、`ld.lld` 等驱动替换为发行版原生
-  版本（原件备份为 `*.orig-x86`），使 `stage-native-payload.py` 这类从 NDK
-  目录调用工具的路径可直接工作。
+- 把 NDK 内 x86-64 的 `clang`、`llvm-strip`、`llvm-ar`、`ld.lld` 等驱动替换为
+  发行版原生版本（原件备份为 `*.orig-x86`），使 `stage-native-payload.py` 这类
+  从 NDK 目录调用工具的路径可直接工作。NDK 把这些工具中的若干组织为指向同目录
+  兄弟文件的符号链接（`llvm-strip -> llvm-objcopy`、`llvm-ranlib -> llvm-ar`、
+  `llvm-readelf -> llvm-readobj`），替换时必须先 `unlink` 再写，否则会透过链接
+  覆盖掉被指向的那个工具，表现为 `ar` 报 `unable to load 'cq'`、`strip` 变成
+  `objcopy` 之类难以归因的失败。
 
 wrapper 默认写入 `$HOME/.local/bin`，可用 `ANDROID_HOST_TOOLS` 改到别处，需确保
 该目录在 `PATH` 上。
+
+注意 `cargo ndk` 的 `-P/--platform` **默认为 21**，且以
+`CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER` 之类的环境变量注入，优先级高于
+`.cargo/config.toml` 里按三元组配置的 `linker`。因此不显式传 `-P` 时，
+cargo-ndk 会选 `aarch64-linux-android21-clang`，产物 `.note.android.ident`
+记录 API 21——即使 `minSdkVersion=26`、config.toml 写的是 26。本仓库的
+`build-android-native-runtime.sh` 目前未传 `-P`，属既有行为而非新引入问题；
+要得到与 `minSdkVersion` 一致的产物，需显式 `-P 26`（或设
+`CARGO_NDK_PLATFORM=26`）。可用
+`llvm-readelf -x .note.android.ident <binary>` 核对，desc 首 4 字节小端即 API。
 
 **3）验证交叉编译**
 

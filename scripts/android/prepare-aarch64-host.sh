@@ -89,7 +89,64 @@ target_bin="${ANDROID_HOST_TOOLS:-$HOME/.local/bin}"
 changed=0
 pending() {
     changed=$((changed + 1))
-    log "  missing: $*"
+    log "  needs update: $*"
+}
+
+is_elf() {
+    [[ -f "$1" ]] && [[ "$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" == 7f454c46 ]]
+}
+
+# Keep the shipped x86-64 binary once, so a rollback does not need a reinstall.
+backup_x86() { # $1 = path inside the NDK bin directory
+    local path="$1" resolved
+    if [[ -e "$path.orig-x86" ]]; then return 0; fi
+    resolved="$(readlink -f "$path")"
+    if ! is_elf "$resolved"; then return 0; fi
+    if ((CHECK_ONLY)); then return 0; fi
+    cp -a "$resolved" "$path.orig-x86"
+    log "  backed up: $(basename "$path").orig-x86"
+}
+
+# Write a generated file when its content differs from what is on disk.
+#
+# Existence alone is not enough to decide: every wrapper embeds absolute paths,
+# so relocating the NDK (moving the store between app data and the guest rootfs,
+# or a different ANDROID_HOME) leaves a wrapper that runs but points at a
+# directory that is gone. Comparing content also lets --check report that drift
+# instead of declaring the host ready.
+sync_script() { # $1 = path, $2 = label for messages, $3 = desired content
+    local path="$1" label="$2" content="$3"
+    # Compare only against a plain script. A regular file here is either our
+    # previous output or the NDK's x86-64 ELF, and cat(1) on the latter both
+    # warns about null bytes and cannot match $content anyway.
+    if [[ -f "$path" && ! -L "$path" && -x "$path" ]]; then
+        if ! is_elf "$path" && [[ "$(cat "$path" 2>/dev/null)" == "$content" ]]; then
+            return 0
+        fi
+    fi
+    if ((CHECK_ONLY)); then
+        pending "$label"
+        return 0
+    fi
+    mkdir -p "$(dirname "$path")"
+    # Remove first: the NDK ships several tools as symlinks into a sibling
+    # (llvm-strip -> llvm-objcopy, llvm-ranlib -> llvm-ar, ld.lld -> lld), and
+    # writing through one of those silently overwrites the other.
+    rm -f "$path"
+    printf '%s\n' "$content" > "$path"
+    chmod +x "$path"
+    log "  wrote: $label"
+}
+
+relink() { # $1 = symlink path, $2 = link target
+    if [[ -L "$1" && "$(readlink "$1")" == "$2" ]]; then return 0; fi
+    if ((CHECK_ONLY)); then
+        pending "symlink $(basename "$1") -> $2"
+        return 0
+    fi
+    rm -f "$1"
+    ln -s "$2" "$1"
+    log "  relinked: $(basename "$1") -> $2"
 }
 
 log "Host: $host_arch  NDK: $ANDROID_NDK_HOME  clang: $clang_bin"
@@ -98,7 +155,7 @@ log "Host: $host_arch  NDK: $ANDROID_NDK_HOME  clang: $clang_bin"
 # runtimes rather than in the sysroot's per-API library directories.
 for api in $api_levels; do
     target="$SYSROOT/usr/lib/aarch64-linux-android/$api/libunwind.a"
-    [[ -f "$target" ]] && continue
+    [[ -f "$target" && ! -L "$target" ]] && continue
     if ((CHECK_ONLY)); then pending "libunwind.a for API $api"; else
         cp "$unwind_src" "$target"
         log "  added: libunwind.a for API $api"
@@ -122,73 +179,61 @@ done
 # The unsuffixed name matters: aws-lc-sys builds through the `cc` crate, which
 # resolves the compiler from the target triple without an API suffix.
 for api in $api_levels; do
-    for name in "aarch64-linux-android${api}-clang"; do
-        path="$target_bin/$name"
-        [[ -f "$path" ]] && continue
-        if ((CHECK_ONLY)); then pending "linker wrapper $name"; else
-            mkdir -p "$target_bin"
-            cat > "$path" <<WRAPPER
-#!/bin/sh
-exec "$clang_bin" --target=aarch64-linux-android${api} --sysroot="$SYSROOT" -rtlib=compiler-rt "\$@"
-WRAPPER
-            chmod +x "$path"
-            log "  added: $name"
-        fi
-    done
+    sync_script "$target_bin/aarch64-linux-android${api}-clang" \
+        "linker wrapper aarch64-linux-android${api}-clang" \
+        "#!/bin/sh
+exec \"$clang_bin\" --target=aarch64-linux-android${api} --sysroot=\"$SYSROOT\" -rtlib=compiler-rt \"\$@\""
 done
 
 for name in aarch64-linux-android-clang aarch64-linux-android-gcc; do
-    path="$target_bin/$name"
-    [[ -f "$path" ]] && continue
-    if ((CHECK_ONLY)); then pending "linker alias $name"; else
-        mkdir -p "$target_bin"
-        cat > "$path" <<WRAPPER
-#!/bin/sh
-exec "$clang_bin" --target=aarch64-linux-android26 --sysroot="$SYSROOT" -rtlib=compiler-rt "\$@"
-WRAPPER
-        chmod +x "$path"
-        log "  added: $name"
-    fi
+    sync_script "$target_bin/$name" "linker alias $name" \
+        "#!/bin/sh
+exec \"$clang_bin\" --target=aarch64-linux-android26 --sysroot=\"$SYSROOT\" -rtlib=compiler-rt \"\$@\""
 done
 
 ar_bin="$(llvm_tool llvm-ar || true)"
-if [[ -n "$ar_bin" && ! -f "$target_bin/aarch64-linux-android-ar" ]]; then
-    if ((CHECK_ONLY)); then pending 'archiver alias aarch64-linux-android-ar'; else
-        mkdir -p "$target_bin"
-        printf '#!/bin/sh\nexec "%s" "$@"\n' "$ar_bin" > "$target_bin/aarch64-linux-android-ar"
-        chmod +x "$target_bin/aarch64-linux-android-ar"
-        log '  added: aarch64-linux-android-ar'
-    fi
+if [[ -n "$ar_bin" ]]; then
+    sync_script "$target_bin/aarch64-linux-android-ar" 'archiver alias aarch64-linux-android-ar' \
+        "#!/bin/sh
+exec \"$ar_bin\" \"\$@\""
 fi
 
 # Tooling that runs out of the NDK directory must not execute x86-64 binaries;
 # stage-native-payload.py uses bin/llvm-strip from there.
-for tool in llvm-strip llvm-objcopy llvm-nm llvm-ar llvm-ranlib ld.lld llvm-readelf llvm-objdump; do
+#
+# The NDK ships several of these as symlinks into a sibling (llvm-strip ->
+# llvm-objcopy, llvm-ranlib -> llvm-ar, llvm-readelf -> llvm-readobj). Each one
+# is replaced by its own script, and sync_script unlinks first so a replacement
+# cannot be written through the link into the sibling it points at.
+for tool in llvm-strip llvm-objcopy llvm-nm llvm-ar llvm-ranlib ld.lld lld llvm-readelf llvm-readobj llvm-objdump; do
     path="$NDK_PREBUILT/bin/$tool"
-    [[ -e "$path" ]] || continue
-    [[ -f "$path.orig-x86" ]] && continue
-    [[ "$(head -c 2 "$path" 2>/dev/null)" == '#!' ]] && continue
+    [[ -e "$path" || -L "$path" ]] || continue
     native="$(llvm_tool "$tool" || true)"
     [[ -n "$native" ]] || continue
-    if ((CHECK_ONLY)); then pending "NDK bin/$tool replacement"; else
-        cp -a "$(readlink -f "$path")" "$path.orig-x86"
-        printf '#!/bin/sh\nexec "%s" "$@"\n' "$native" > "$path"
-        chmod +x "$path"
-        log "  redirected: NDK bin/$tool"
-    fi
+    backup_x86 "$path"
+    sync_script "$path" "NDK bin/$tool" "#!/bin/sh
+exec \"$native\" \"\$@\""
 done
 
-if [[ "$(head -c 4 "$NDK_PREBUILT/bin/clang" 2>/dev/null | od -An -tx1 | tr -d ' \n')" != '23212f62' ]]; then
-    if ((CHECK_ONLY)); then pending 'NDK bin/clang replacement'; else
-        cp -a "$(readlink -f "$NDK_PREBUILT/bin/clang")" "$NDK_PREBUILT/bin/clang.orig-x86"
-        cat > "$NDK_PREBUILT/bin/clang" <<WRAPPER
-#!/bin/sh
-exec "$clang_bin" --sysroot="$SYSROOT" -rtlib=compiler-rt "\$@"
-WRAPPER
-        chmod +x "$NDK_PREBUILT/bin/clang"
-        log '  redirected: NDK bin/clang'
-    fi
+# The driver itself. The NDK lays this out as `clang -> clang-<major>` with
+# `clang++ -> clang`, and the per-API wrappers exec `$bin_dir/clang`, so the
+# versioned file is what actually runs. Replace that file and leave the
+# symlinks alone; writing through `clang` would land on the same inode anyway,
+# but only the versioned name survives an NDK update that retargets the link.
+clang_real="$NDK_PREBUILT/bin/$(basename "$(readlink -f "$NDK_PREBUILT/bin/clang")")"
+backup_x86 "$clang_real"
+sync_script "$clang_real" "NDK bin/$(basename "$clang_real")" "#!/bin/sh
+exec \"$clang_bin\" --sysroot=\"$SYSROOT\" -rtlib=compiler-rt \"\$@\""
+
+# Keep the documented short names pointing at whatever runs.
+#
+# Skip when the driver *is* bin/clang: with the symlink already replaced by a
+# script, readlink -f resolves to itself and relinking would build a self-loop
+# (`clang -> clang`) that no longer runs.
+if [[ "$(basename "$clang_real")" != clang ]]; then
+    relink "$NDK_PREBUILT/bin/clang" "$(basename "$clang_real")"
 fi
+relink "$NDK_PREBUILT/bin/clang++" clang
 
 if ((CHECK_ONLY)); then
     if ((changed)); then
