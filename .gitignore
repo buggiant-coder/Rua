@@ -97,6 +97,7 @@ android-signing.properties
 /scripts/android/*
 !/scripts/android/build-android-native-runtime.sh
 !/scripts/android/prepare-runtime-offline.py
+!/scripts/android/prepare-aarch64-host.sh
 !/scripts/android/report-native-apk.py
 !/scripts/android/stage-native-payload.py
 !/scripts/ci/

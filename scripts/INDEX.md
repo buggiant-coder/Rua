@@ -21,7 +21,7 @@ See [Android packaging](../docs/android-packaging.md) and
 
 | Location | Purpose |
 |---|---|
-| `android/` | Build the native runtime, stage and verify APK payloads, and prepare optional offline runtime materials. |
+| `android/` | Build the native runtime, stage and verify APK payloads, prepare optional offline runtime materials, and configure aarch64 hosts to cross-compile with native clang. |
 | `ci/` | Prepare desktop sidecars and bundled automation tools, then build release artifacts. |
 | `release/` | Desktop signing checks, updater manifests, and Windows signing/installer/update integration. |
 | `with-console-build-lock.py` | Serialize shared Console staging during desktop and APK builds. |

@@ -55,43 +55,44 @@ android.aapt2FromMavenOverride=/absolute/path/to/android-host-tools/aapt2
 
 AGP 以 daemon 模式通过 stdin/stdout 与 aapt2 通信，qemu 转发透明，开销可忽略。
 
-**2）NDK：只取 sysroot，不用它的编译器**
+**2）Rust 侧一次性准备：`scripts/android/prepare-aarch64-host.sh`**
 
 NDK 官方仅发布 `linux-x86_64` 宿主包，但**宿主二进制是 x86-64，`sysroot` 内的库
 是目标架构 aarch64**。因此用发行版原生 clang 接 NDK sysroot 即可交叉编译，无需
-模拟执行：
+模拟执行。这一步的准备工作由脚本完成：
 
 ```bash
-SYSROOT="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-clang --target=aarch64-linux-android26 --sysroot="$SYSROOT" \
-      -rtlib=compiler-rt -fPIE -pie probe.c -llog -o probe
+export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
+scripts/android/prepare-aarch64-host.sh --check   # 只报告缺失项
+scripts/android/prepare-aarch64-host.sh           # 应用
 ```
 
-发行版 clang 不含 Android 运行时，需从 NDK 补两处：
+脚本是幂等的，且在非 aarch64 主机上直接退出（x86-64 上 NDK 自带驱动可用，
+`cargo-ndk` 也会生成同名 wrapper）。它做四件事：
 
-- `libclang_rt.builtins.a` → `<clang 资源目录>/lib/aarch64-unknown-linux-android26/`
-  （`rustc` 的 android target 默认要 `-lgcc`，`-rtlib=compiler-rt` 后找此文件）；
-- `libunwind.a`（NDK 内 `lib/clang/*/lib/linux/aarch64/`）→
-  `$SYSROOT/usr/lib/aarch64-linux-android/26/`（`rustc` 链接 android 时带 `-lunwind`）。
+- 为 `sysroot` 内**每个** API 目录补 `libunwind.a`（`rustc` 的 android target
+  链接时带 `-lunwind`，而 NDK 把它放在 clang 运行时旁边而非 sysroot 里）；
+- 为每个 API 补 `libclang_rt.builtins.a` 到 clang 资源目录的
+  `aarch64-unknown-linux-android<API>/`（`rustc` 默认要 `-lgcc`，改用
+  `-rtlib=compiler-rt` 后找这个文件）；
+- 生成 `aarch64-linux-android<API>-clang` 与**无 API 后缀**的
+  `aarch64-linux-android-clang` wrapper。无后缀那个不是冗余：`aws-lc-sys` 经
+  `cc` crate 按三元组查找编译器，缺它会报 `failed to execute compile`；
+- 把 NDK 内 x86-64 的 `clang`、`llvm-strip`、`ld.lld` 等驱动替换为发行版原生
+  版本（原件备份为 `*.orig-x86`），使 `stage-native-payload.py` 这类从 NDK
+  目录调用工具的路径可直接工作。
 
-同时把 NDK 内 x86-64 的 `clang`、`llvm-strip`、`ld.lld`、`llvm-ar` 等驱动替换为
-发行版原生版本，使 `stage-native-payload.py` 等脚本调用的路径可直接工作。
+wrapper 默认写入 `$HOME/.local/bin`，可用 `ANDROID_HOST_TOOLS` 改到别处，需确保
+该目录在 `PATH` 上。
 
-**3）Rust 交叉编译**
-
-不需要 `cargo-ndk`。`.cargo/config.toml` 声明的 linker 是
-`aarch64-linux-android26-clang`，只要在 `PATH` 上提供指向原生 clang 的 wrapper：
+**3）验证交叉编译**
 
 ```bash
-printf '#!/bin/bash\nexec clang --target=aarch64-linux-android26 --sysroot=%s -rtlib=compiler-rt "$@"\n' \
-    "$SYSROOT" > /usr/local/bin/aarch64-linux-android26-clang
-chmod +x /usr/local/bin/aarch64-linux-android26-clang
+cargo build -p rua-cli --target aarch64-linux-android --features mobile-default
 ```
 
-另需一个**无 API 后缀**的 `aarch64-linux-android-clang` 别名：`aws-lc-sys` 经
-`cc` crate 按该名查找编译器，缺失时报 `failed to execute compile`。之后
-`cargo build -p rua-cli --target aarch64-linux-android --features mobile-default`
-直接可用。
+产物应只 NEEDED `libdl`/`libm`/`libc`，且 LOAD 段按 16 KB 对齐，满足
+Android 15+ 设备要求。
 
 **4）build 目录不能放在 FUSE 文件系统**
 
