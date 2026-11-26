@@ -4,7 +4,7 @@ Rua APK 直接启动 Android/Bionic `rua` 可执行程序。PRoot 只承载 Debi
 
 ## 构建
 
-需要 JDK 17、Android SDK（platform 36、build-tools 36）、NDK 29.0.14206865、Rust Android targets、cargo-ndk、Node/npm、Python 3、patchelf 和 protoc。SDK 路径通过 `ANDROID_HOME` 指定。仓库 Cargo 配置使用 sccache，需安装并可执行。
+需要 JDK 17 或更高、Android SDK（platform 36、build-tools 35）、NDK 29.0.14206865、Rust Android targets、cargo-ndk、Node/npm、Python 3、patchelf 和 protoc。SDK 路径通过 `ANDROID_HOME` 指定。仓库 Cargo 配置使用 sccache，需安装并可执行。
 
 ```bash
 export ANDROID_HOME="$HOME/Library/Android/sdk"
@@ -21,6 +21,124 @@ scripts/package-mobile-apk.sh --debug
 当前 APK 仅 ARM64；min SDK 26、target SDK 28、compile SDK 36。x86_64 Rust target 检查不代表提供 x86_64 APK。支持范围以本次设备矩阵实际结果为准；旧 Android 镜像不可用或未测时不得记为通过。
 
 构建并安装到指定设备时，使用 `scripts/package-mobile-apk.sh --debug --install -s SERIAL`；正式构建改用 `--release`。打包过程会先校验 APK 载荷再安装。安装已有 APK 时，先运行 `python3 scripts/android/report-native-apk.py --apk PATH --out target/apk-payload.json` 校验，再用 `adb -s SERIAL install -r PATH` 覆盖安装。
+
+### arm64 主机（Linux / Android PRoot Debian）
+
+上述流程默认 x86-64 主机。arm64 主机（含在 Android 上用 PRoot 跑 Debian 的场景）
+只需替换少数原生工具，**不需要重写打包流程，也不需要 x86-64 机器或 CI**。
+
+关键前提：**Gradle 与 AGP 是纯 Java 程序，与宿主架构无关**。真正只有 x86-64
+发布物的，仅是 AGP 会 fork 出去调用的个别命令行工具。因此正确做法是保留真实
+AGP，只替换那几个工具——绕开 Gradle 自行拼装 APK 需要重新实现 AAR 资源合并、
+Manifest 合并与 R.id 分配，代价远高于此。
+
+**1）`aapt2`（唯一的架构缺口）**
+
+`aapt2` 各版本均只提供 x86-64 ELF，不存在 `-linux-aarch64` 产物。若内核无
+`binfmt_misc`（PRoot 内不可用），x86-64 ELF 直接执行会 SIGILL，必须显式包装：
+
+```bash
+# 取 AGP 自身依赖的那一份，保证 proto 版本与 AGP 匹配
+AAPT2_SRC=$(find ~/.gradle/caches -path '*aapt2-*-linux/aapt2' -type f | head -1)
+mkdir -p "$HOME/android-host-tools"
+cp "$AAPT2_SRC" "$HOME/android-host-tools/aapt2-x86_64"
+printf '#!/bin/sh\nexec qemu-x86_64-static %s "$@"\n' \
+    "$HOME/android-host-tools/aapt2-x86_64" > "$HOME/android-host-tools/aapt2"
+chmod +x "$HOME/android-host-tools/aapt2"
+```
+
+再让 AGP 使用它（写入 `~/.gradle/gradle.properties`）：
+
+```properties
+android.aapt2FromMavenOverride=/absolute/path/to/android-host-tools/aapt2
+```
+
+AGP 以 daemon 模式通过 stdin/stdout 与 aapt2 通信，qemu 转发透明，开销可忽略。
+
+**2）NDK：只取 sysroot，不用它的编译器**
+
+NDK 官方仅发布 `linux-x86_64` 宿主包，但**宿主二进制是 x86-64，`sysroot` 内的库
+是目标架构 aarch64**。因此用发行版原生 clang 接 NDK sysroot 即可交叉编译，无需
+模拟执行：
+
+```bash
+SYSROOT="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+clang --target=aarch64-linux-android26 --sysroot="$SYSROOT" \
+      -rtlib=compiler-rt -fPIE -pie probe.c -llog -o probe
+```
+
+发行版 clang 不含 Android 运行时，需从 NDK 补两处：
+
+- `libclang_rt.builtins.a` → `<clang 资源目录>/lib/aarch64-unknown-linux-android26/`
+  （`rustc` 的 android target 默认要 `-lgcc`，`-rtlib=compiler-rt` 后找此文件）；
+- `libunwind.a`（NDK 内 `lib/clang/*/lib/linux/aarch64/`）→
+  `$SYSROOT/usr/lib/aarch64-linux-android/26/`（`rustc` 链接 android 时带 `-lunwind`）。
+
+同时把 NDK 内 x86-64 的 `clang`、`llvm-strip`、`ld.lld`、`llvm-ar` 等驱动替换为
+发行版原生版本，使 `stage-native-payload.py` 等脚本调用的路径可直接工作。
+
+**3）Rust 交叉编译**
+
+不需要 `cargo-ndk`。`.cargo/config.toml` 声明的 linker 是
+`aarch64-linux-android26-clang`，只要在 `PATH` 上提供指向原生 clang 的 wrapper：
+
+```bash
+printf '#!/bin/bash\nexec clang --target=aarch64-linux-android26 --sysroot=%s -rtlib=compiler-rt "$@"\n' \
+    "$SYSROOT" > /usr/local/bin/aarch64-linux-android26-clang
+chmod +x /usr/local/bin/aarch64-linux-android26-clang
+```
+
+另需一个**无 API 后缀**的 `aarch64-linux-android-clang` 别名：`aws-lc-sys` 经
+`cc` crate 按该名查找编译器，缺失时报 `failed to execute compile`。之后
+`cargo build -p rua-cli --target aarch64-linux-android --features mobile-default`
+直接可用。
+
+**4）build 目录不能放在 FUSE 文件系统**
+
+Gradle/AGP 依赖可靠的 POSIX 文件锁。若仓库位于 FUSE 挂载（如 Android
+`/storage/emulated`），构建会长时间停在
+`Waiting to acquire exclusive lock`，或不再产出 `intermediates`。用 init 脚本把
+build 目录重定向到本地文件系统：
+
+```groovy
+// ~/.gradle/init.d/redirect-builddir.gradle
+def outRoot = new File(System.getenv('HOME'), 'android-build')
+gradle.allprojects { p ->
+    p.layout.buildDirectory.set(p == p.rootProject
+        ? new File(outRoot, 'root')
+        : new File(outRoot, p.path.replace(':', '/')))
+}
+```
+
+**副作用**：`scripts/package-mobile-apk.sh` 的产物路径按仓库内
+`mobile/mobile-shell/app/build/...` 计算。脚本已改为向 Gradle 查询 `buildDir`，
+因此在重定向后仍能取到 APK。Rust 产物若不在仓库 `target/` 下，用
+`RUA_ANDROID_BINARY` 指定（`app/build.gradle` 支持的覆盖点）：
+
+```bash
+export ANDROID_HOME=/path/to/android-sdk GRADLE_USER_HOME="$HOME/.gradle"
+export RUA_ANDROID_BINARY=/path/to/target/aarch64-linux-android/debug/rua
+export RUA_GRADLE=/path/to/gradle        # 优先使用已安装的 Gradle，跳过 wrapper 下载
+scripts/package-mobile-apk.sh --debug
+```
+
+`RUA_GRADLE` 未设置时，脚本优先使用 `PATH` 上的 `gradle`，否则回退到仓库自带的
+`gradlew`。
+
+**5）其它注意点**
+
+- AGP 8.13.2 请求 **build-tools 35**，不是 36；首次构建会自动下载，需先接受
+  SDK 许可证（`licenses/` 下写入 `android-sdk-license`）。
+- 包名 `lib*.so` 之外的条目须 16 KB 页对齐。发行版打包的 `zipalign` 版本较旧、
+  不支持 `-P`，应使用 SDK `build-tools` 内的 `zipalign -c -P 16` 校验。
+- `stage-native-payload.py` 需要 `patchelf`，打包前置检查会显式验证。
+- 若仓库位于 noexec 挂载，脚本没有执行位，必须用 `bash scripts/...` 调用。
+- FUSE 类文件系统不支持 `fcntl.flock`（返回 `ENOSYS`）。Console 构建锁在这种
+  情况下会降级为不加锁执行并打印一次提示，而不是中断打包。
+- 需要 `build-tools` 的脚本应按"已安装的最高版本"探测，不要硬编码版本号：
+  AGP 请求的版本与手工安装的未必一致。
+- 全程仅 `aapt2` 经 qemu 执行，C 编译与 Rust 链接均为原生，构建时间与 x86-64
+  主机同数量级。
 
 ## APK 与独立环境
 

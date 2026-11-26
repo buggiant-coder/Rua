@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import urllib.request
@@ -38,8 +39,13 @@ def main():
         if sdk not in ("26", "28"):
             raise SystemExit("This provider fixture is restricted to API 26/28 AOSP default images")
     sdk_root = Path(os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT") or str(Path.home() / "Library/Android/sdk"))
-    signer = sdk_root / "build-tools/36.0.0/apksigner"
-    if not signer.is_file(): raise SystemExit("Install Android build-tools;36.0.0")
+    # Accept any installed build-tools revision: APK signing is stable across
+    # them, and the Gradle plugin does not always request the newest one.
+    versions = sorted((sdk_root / "build-tools").glob("*"),
+                      key=lambda path: [int(part) for part in re.findall(r"\d+", path.name)])
+    signer = versions[-1] / "apksigner" if versions else None
+    if signer is None or not signer.is_file():
+        raise SystemExit("Install Android build-tools (none found under %s)" % (sdk_root / "build-tools"))
     spec = importlib.util.spec_from_file_location("stage", ROOT / "scripts/android/stage-native-payload.py")
     stage = importlib.util.module_from_spec(spec); spec.loader.exec_module(stage)
     cache = ROOT / "target/android-system-images"

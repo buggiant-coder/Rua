@@ -63,7 +63,8 @@ sys.exit(int(os.environ.get('RUA_SCRIPT_TEST_VERIFY_EXIT', '0')))
 
     def test_apk_rejects_termux_classes_including_renamed_documents_provider(self):
         inspect = runpy.run_path(str(ROOT / 'scripts/android/report-native-apk.py'))['inspect']
-        (self.root / 'sdk/build-tools/36.0.0').mkdir(parents=True)
+        # Any build-tools revision satisfies the report's tool lookup.
+        (self.root / 'sdk/build-tools/35.0.0').mkdir(parents=True)
         for marker in (b'Lcom/termux/app/TermuxService;', b'Lcom/rua/mobile/RuaDocumentsProvider;'):
             with self.subTest(marker=marker):
                 apk = self.root / 'retained-termux.apk'
@@ -132,7 +133,11 @@ with path.open('a+b') as lock:
         held = True
 with open(os.environ['RUA_SCRIPT_TEST_LOG'], 'a') as log:
     log.write(json.dumps(['console-lock', Path(sys.argv[0]).name, sys.argv[1:], held]) + '\\n')
-if Path(sys.argv[0]).name == 'gradlew':
+if Path(sys.argv[0]).name == 'gradlew' and any('properties' in arg for arg in sys.argv):
+    # The packaging entry point queries the app build directory instead of
+    # assuming the default location, so report the same layout it produces below.
+    print('buildDir: ' + str(root / 'mobile/mobile-shell/app/build'))
+elif Path(sys.argv[0]).name == 'gradlew':
     apk = root / 'mobile/mobile-shell/app/build/outputs/apk/release/rua-release-arm64-v8a.apk'
     apk.parent.mkdir(parents=True, exist_ok=True)
     apk.write_bytes(b'fixture APK')
@@ -147,7 +152,10 @@ if Path(sys.argv[0]).name == 'gradlew':
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = self.calls("console-lock")
-        self.assertEqual([call[1] for call in calls], ["npm", "npm", "gradlew"])
+        # The last two Gradle invocations resolve the build directory and package.
+        self.assertEqual([call[1] for call in calls], ["npm", "npm", "gradlew", "gradlew"])
+        self.assertTrue(any("properties" in arg for arg in calls[-2][2]))
+        self.assertFalse(any("properties" in arg for arg in calls[-1][2]))
         self.assertTrue(all(call[3] for call in calls), calls)
         self.assertTrue((self.root / "APK output/rua-release-arm64-v8a.apk").is_file())
         # Child failures propagate, and the OS lock is released for another build.

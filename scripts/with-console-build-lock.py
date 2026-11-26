@@ -10,6 +10,12 @@ import time
 
 LOCK_PATH = Path(__file__).resolve().parents[1] / "target" / "console-build.lock"
 LOCK_ENV = "RUA_CONSOLE_BUILD_LOCK"
+# File systems without advisory lock support (for example Android's FUSE
+# /storage/emulated mount, which reports ENOSYS for flock) cannot serialize
+# builds across processes. Packaging still works, so fall back to running the
+# command unlocked instead of failing the build.
+UNSUPPORTED_LOCK = {errno.ENOSYS, getattr(errno, "ENOTSUP", errno.ENOSYS),
+                    getattr(errno, "EOPNOTSUPP", errno.ENOSYS)}
 
 
 def main():
@@ -36,6 +42,10 @@ def main():
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except OSError as error:
+                if error.errno in UNSUPPORTED_LOCK:
+                    print(f"[console-build] advisory locking unavailable on {LOCK_PATH.parent}; "
+                          "building without cross-process serialization", flush=True)
+                    return subprocess.call(command, env={**os.environ, LOCK_ENV: str(LOCK_PATH)})
                 if error.errno not in (errno.EACCES, errno.EAGAIN):
                     raise
                 if not waiting:
