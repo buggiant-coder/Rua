@@ -363,20 +363,26 @@ fn openai_instruction_sections_merge_into_one_leading_system_message() {
     })
     .unwrap();
 
-    for (body, key) in [
-        (openai_provider().build_request_body(&request), "messages"),
-        (responses.build_request_body(&request), "input"),
-    ] {
-        assert_eq!(
-            body[key],
-            json!([
-                {"role": "system", "content": "Core instructions\n\nAdditional core instructions\n\nProject instructions\n\nExecution environment\n\nCollaboration mode"},
-                {"role": "user", "content": "First question"},
-                {"role": "assistant", "content": "Answer"},
-                {"role": "user", "content": "Follow-up"},
-            ])
-        );
-    }
+    // chat/completions accepts a bare string for single-part text messages.
+    assert_eq!(
+        openai_provider().build_request_body(&request)["messages"],
+        json!([
+            {"role": "system", "content": "Core instructions\n\nAdditional core instructions\n\nProject instructions\n\nExecution environment\n\nCollaboration mode"},
+            {"role": "user", "content": "First question"},
+            {"role": "assistant", "content": "Answer"},
+            {"role": "user", "content": "Follow-up"},
+        ])
+    );
+    // The Responses API requires typed content parts on every message item.
+    assert_eq!(
+        responses.build_request_body(&request)["input"],
+        json!([
+            {"role": "system", "content": [{"type": "input_text", "text": "Core instructions\n\nAdditional core instructions\n\nProject instructions\n\nExecution environment\n\nCollaboration mode"}]},
+            {"role": "user", "content": [{"type": "input_text", "text": "First question"}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "Answer"}]},
+            {"role": "user", "content": [{"type": "input_text", "text": "Follow-up"}]},
+        ])
+    );
     assert_eq!(request.messages, original);
 }
 

@@ -507,6 +507,30 @@ fn responses_reasoning_converts_raw_effort_and_respects_off_metadata() {
 }
 
 #[test]
+fn responses_reasoning_string_option_is_coerced_to_object() {
+    // A bare-string `reasoning` reaches DashScope as a str and breaks its
+    // `.get()`-based option parsing with an opaque HTTP 500.
+    let provider = responses_provider_with_id_and_kwargs(
+        "dashscope",
+        json!({"reasoning": "medium"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    let request = ChatRequest::new(vec![user_message("hello")]).with_model("qwen3.8-max");
+    let body = provider.build_request_body(&request);
+
+    assert_eq!(body["reasoning"], json!({"effort":"medium"}));
+
+    let unsupported = responses_provider_with_id_and_kwargs(
+        "dashscope",
+        json!({"reasoning": "none"}).as_object().unwrap().clone(),
+    );
+    let body = unsupported.build_request_body(&request);
+    assert!(body.get("reasoning").is_none());
+}
+
+#[test]
 fn openai_request_merges_model_thinking_kwargs_with_request_overrides() {
     let mut model_kwargs = serde_json::Map::new();
     model_kwargs.insert("enable_thinking".into(), json!(true));
@@ -911,7 +935,10 @@ fn openai_responses_request_uses_responses_content_part_types() {
     assert_eq!(body["input"][0]["role"], "system");
     assert_eq!(
         body["input"][0]["content"],
-        "First instruction.\n\nSecond instruction."
+        json!([{
+            "type": "input_text",
+            "text": "First instruction.\n\nSecond instruction.",
+        }])
     );
     assert_eq!(body["input"][1]["content"][0]["type"], "output_text");
     assert_eq!(body["input"][1]["content"][1]["type"], "output_text");
@@ -921,6 +948,61 @@ fn openai_responses_request_uses_responses_content_part_types() {
         body["input"][2]["content"][1]["image_url"],
         "https://example.test/image.png"
     );
+}
+
+#[test]
+fn openai_responses_never_sends_string_content_alongside_media() {
+    // A single text part projects to a bare string from the chat/completions
+    // builder. DashScope walks every part with `.get()` whenever the request
+    // carries media, so a string content in the same payload surfaces as an
+    // opaque HTTP 500 (`'str' object has no attribute 'get'`).
+    let provider = responses_provider_with_id_and_kwargs("dashscope", serde_json::Map::new());
+    let mut image = user_message("");
+    image.content = vec![
+        ContentPart::Image {
+            url: "https://example.test/image.png".into(),
+            media_type: Some("image/png".into()),
+            alt: None,
+        },
+        ContentPart::Text {
+            text: "inspect".into(),
+        },
+    ];
+    let request = ChatRequest::new(vec![
+        user_message("system-free prompt"),
+        image,
+        ModelDialogueItem::text(Role::Assistant, "回答"),
+        user_message("继续"),
+    ])
+    .with_model("qwen3.8-max");
+
+    let body = provider.build_request_body(&request);
+    let input = body["input"].as_array().expect("Responses input array");
+
+    for item in input {
+        if item.get("type").is_some() {
+            // function_call / function_call_output carry no content.
+            continue;
+        }
+        let content = item.get("content").expect("message content");
+        assert!(
+            content.is_array(),
+            "message content must be a parts array, got {content}"
+        );
+        let expected = if item["role"] == "assistant" {
+            "output_text"
+        } else {
+            "input_text"
+        };
+        for part in content.as_array().unwrap() {
+            assert_ne!(
+                part.get("type").and_then(|value| value.as_str()),
+                Some("text"),
+                "text parts must be retyped for the Responses API"
+            );
+        }
+        assert_eq!(content[content.as_array().unwrap().len() - 1]["type"], expected);
+    }
 }
 
 #[test]
@@ -1479,7 +1561,7 @@ fn responses_phase_round_trip_preserves_each_assistant_message_boundary() {
         ("final_answer", "Done."),
     ]) {
         assert_eq!(item["phase"], phase);
-        assert_eq!(item["content"], text);
+        assert_eq!(item["content"], json!([{ "type": "output_text", "text": text }]));
     }
     let chat = provider_with_kwargs(Default::default()).build_request_body(&request);
     assert!(chat["messages"]

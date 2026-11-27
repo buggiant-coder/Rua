@@ -411,7 +411,7 @@ async fn expired_dashscope_response_session_replays_full_history_after_retries()
 
 fn dashscope_session_request(response_id: &str) -> ChatRequest {
     let first_user = ModelDialogueItem::text(Role::User, "first");
-    let input = json!([{"role":"user","content":"first"}]);
+    let input = json!([{"role":"user","content":[{"type":"input_text","text":"first"}]}]);
     let input_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&input).unwrap()));
     let mut assistant = ModelDialogueItem::text(Role::Assistant, "answer");
     assistant.metadata.insert(

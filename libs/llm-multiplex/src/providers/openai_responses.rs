@@ -437,12 +437,35 @@ fn media_presence_by_boundary(messages: &[ModelDialogueItem]) -> Vec<bool> {
 fn normalize_responses_options(options: &mut serde_json::Map<String, serde_json::Value>) {
     super::reasoning::flatten_extra_body(options);
     super::reasoning::normalize_output_limit(options, "max_output_tokens");
+    coerce_reasoning_object(options);
     if let Some(effort) = options.remove("reasoning_effort") {
         let reasoning = options
             .entry("reasoning")
             .or_insert_with(|| serde_json::json!({}));
         if let Some(reasoning) = reasoning.as_object_mut() {
             reasoning.entry("effort").or_insert(effort);
+        }
+    }
+}
+
+/// Providers and user configuration sometimes express reasoning as a bare
+/// string (`"reasoning": "medium"`). The Responses API requires an object, and
+/// DashScope answers a string with an opaque HTTP 500 (`'str' object has no
+/// attribute 'get'`). Promote recognised strings to `{"effort": ...}` and drop
+/// shapes that cannot be represented.
+fn coerce_reasoning_object(options: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(reasoning) = options.get("reasoning").cloned() else {
+        return;
+    };
+    if reasoning.is_object() {
+        return;
+    }
+    match reasoning.as_str().map(str::trim) {
+        Some(effort) if !matches!(effort, "" | "none" | "off") => {
+            options.insert("reasoning".into(), serde_json::json!({ "effort": effort }));
+        }
+        _ => {
+            options.remove("reasoning");
         }
     }
 }
@@ -467,8 +490,12 @@ fn apply_responses_reasoning(
             return;
         }
         if let Some(effort) = body.remove("reasoning_effort") {
-            body.entry("reasoning")
-                .or_insert(serde_json::json!({"effort": effort}));
+            let reasoning = body
+                .entry("reasoning")
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(reasoning) = reasoning.as_object_mut() {
+                reasoning.entry("effort").or_insert(effort);
+            }
         }
         return;
     };
@@ -533,6 +560,26 @@ fn normalize_responses_input(messages: serde_json::Value) -> serde_json::Value {
 
         let assistant_role =
             message.get("role").and_then(serde_json::Value::as_str) == Some("assistant");
+        // The chat/completions projection collapses a single text part into a
+        // bare string (`{"content": "..."}`). The Responses API expects an
+        // array of typed parts on every message item, and DashScope's media
+        // handling walks each part with `.get()`, so a string content anywhere
+        // in a request that also carries media fails with an opaque HTTP 500
+        // (`'str' object has no attribute 'get'`). Normalize to parts here.
+        if let Some(message) = message.as_object_mut() {
+            if let Some(serde_json::Value::String(text)) = message.get("content") {
+                let text_type = if assistant_role {
+                    "output_text"
+                } else {
+                    "input_text"
+                };
+                let text = text.clone();
+                message.insert(
+                    "content".into(),
+                    serde_json::json!([{ "type": text_type, "text": text }]),
+                );
+            }
+        }
         if let Some(serde_json::Value::Array(parts)) = message.get_mut("content") {
             for part in parts {
                 let serde_json::Value::Object(part) = part else {
