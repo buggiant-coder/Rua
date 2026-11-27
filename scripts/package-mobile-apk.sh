@@ -85,8 +85,19 @@ export RUA_MOBILE_PORT="$PORT"
 if ((BUILD_RUNTIME)); then
     runtime_args=("--$BUILD_TYPE")
     [[ -n "$PLATFORM" ]] && runtime_args+=(-P "$PLATFORM")
-    scripts/android/build-android-native-runtime.sh "${runtime_args[@]}"
+    # Invoke through bash: on a noexec mount (for example the Android PRoot
+    # environment, where the repository lives under /sdcard) the script has no
+    # usable execute bit, and calling it directly fails with status 126.
+    bash scripts/android/build-android-native-runtime.sh "${runtime_args[@]}"
 fi
+# Gradle defaults to repoRoot/target, but the runtime builder honours
+# CARGO_TARGET_DIR. Without this the APK build looks for the binary in a
+# directory the build never wrote to and fails with "input file does not exist".
+NATIVE_PROFILE=debug
+[[ "$BUILD_TYPE" == release ]] && NATIVE_PROFILE=release-android
+NATIVE_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
+export RUA_ANDROID_BINARY="${RUA_ANDROID_BINARY:-$NATIVE_TARGET_DIR/aarch64-linux-android/$NATIVE_PROFILE/rua}"
+[[ -f "$RUA_ANDROID_BINARY" ]] || die "Native binary missing: $RUA_ANDROID_BINARY"
 # Rust can build alongside Desktop; shared Console work and APK staging cannot.
 if [[ "${RUA_CONSOLE_BUILD_LOCK:-}" != "$REPO_ROOT/target/console-build.lock" ]]; then
     exec python3 "$REPO_ROOT/scripts/with-console-build-lock.py" bash "$0" "${ORIGINAL_ARGS[@]}" --skip-runtime-build
