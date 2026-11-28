@@ -12,7 +12,6 @@ pub struct TestApp {
     pub app: Router,
     data_dir: PathBuf,
     _tmp: TempDir,
-    _auth_env: EnvGuard,
 }
 
 impl TestApp {
@@ -21,29 +20,7 @@ impl TestApp {
     }
 }
 
-struct EnvGuard {
-    previous: Option<String>,
-}
-
-impl EnvGuard {
-    fn disable_auth() -> Self {
-        let previous = std::env::var("RUA_AUTH_ENABLED").ok();
-        std::env::remove_var("RUA_AUTH_ENABLED");
-        Self { previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(value) => std::env::set_var("RUA_AUTH_ENABLED", value),
-            None => std::env::remove_var("RUA_AUTH_ENABLED"),
-        }
-    }
-}
-
 pub fn build_app() -> TestApp {
-    let auth_env = EnvGuard::disable_auth();
     let tmp = TempDir::new().expect("tempdir");
     let data_dir = tmp.path().to_path_buf();
     let state =
@@ -53,7 +30,6 @@ pub fn build_app() -> TestApp {
         app,
         data_dir,
         _tmp: tmp,
-        _auth_env: auth_env,
     }
 }
 

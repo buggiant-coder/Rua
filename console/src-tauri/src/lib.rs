@@ -22,6 +22,118 @@ use tauri_plugin_dialog::DialogExt;
 #[derive(Default)]
 struct DesktopShellState {
     bootstrap_url: Mutex<Option<tauri::Url>>,
+    /// Per-launch credential shared between this Shell and its owned Runtime.
+    /// Generated once per app launch so a Runtime restart keeps working, and
+    /// never persisted, so no browser tab or other process can read it.
+    session_token: Mutex<Option<String>>,
+}
+
+/// Return the Shell's per-launch WebView credential, creating it on first use.
+///
+/// The token is 256 bits of entropy from the OS RNG. It is deliberately held in
+/// process memory only: writing it next to `desktop-endpoint.json` would let any
+/// local process — including a browser helper — read it and defeat the point.
+pub fn desktop_session_token(app: &tauri::AppHandle) -> Result<String, String> {
+    let state = app.state::<DesktopShellState>();
+    let mut guard = state
+        .session_token
+        .lock()
+        .map_err(|_| "Desktop Shell session state is poisoned".to_string())?;
+    if let Some(token) = guard.as_ref() {
+        return Ok(token.clone());
+    }
+    let token = random_session_token();
+    *guard = Some(token.clone());
+    Ok(token)
+}
+
+fn random_session_token() -> String {
+    // 32 bytes -> 64 hex chars, so the resident's 32-byte minimum holds.
+    let mut bytes = [0u8; 32];
+    getrandom_fill(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn getrandom_fill(bytes: &mut [u8]) {
+    use std::io::Read;
+    // `/dev/urandom` exists on every desktop target Rua ships; a failure here is
+    // unrecoverable, so surface it instead of silently weakening the token.
+    let mut file = std::fs::File::open("/dev/urandom")
+        .or_else(|_| std::fs::File::open("/dev/random"))
+        .expect("no OS entropy source for the Desktop Shell session token");
+    file.read_exact(bytes)
+        .expect("failed to read OS entropy for the Desktop Shell session token");
+}
+
+/// Build the single application window.
+///
+/// The window is created in code instead of `tauri.conf.json` so an
+/// initialization script can be registered on it. That script runs on every
+/// document *before* page script, which is what lets the console find its
+/// credential without a flash of the login page.
+fn create_main_window(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let token = desktop_session_token(app.handle()).map_err(io_error)?;
+    let init_script = session_bootstrap_script(&token);
+
+    let window = tauri::WebviewWindowBuilder::new(
+        app,
+        "main",
+        tauri::WebviewUrl::App("desktop-bootstrap.html".into()),
+    )
+    .title("Rua")
+    .inner_size(1280.0, 800.0)
+    .min_inner_size(960.0, 600.0)
+    .resizable(true)
+    .fullscreen(false)
+    // Preserves the former `"dragDropEnabled": false` window config. The builder
+    // has no `drag_drop_enabled` method: that config field maps to
+    // `disable_drag_drop_handler`, not to `WindowBuilder::drag_and_drop`.
+    .disable_drag_drop_handler()
+    .initialization_script(&init_script)
+    .build()?;
+
+    app.state::<DesktopShellState>()
+        .bootstrap_url
+        .lock()
+        .map_err(|_| io_error("Desktop Shell state poisoned"))?
+        .replace(window.url()?);
+    Ok(())
+}
+
+fn io_error(message: String) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, message)
+}
+
+/// Seed the console credential on the runtime origin.
+///
+/// `localStorage` is partitioned per origin, so writing the token from the
+/// bootstrap document would target the wrong partition. That is why this runs as
+/// an initialization script: it executes on every top-level document *before*
+/// any page script, so the token is already in place when the console calls
+/// `getApiToken()`.
+///
+/// The guard matters as much as the write. The Runtime serves the console from
+/// loopback over HTTP, so only those documents get a token; the Shell's own
+/// `tauri://localhost` document must not, and neither must any other origin this
+/// script happens to run on.
+fn session_bootstrap_script(token: &str) -> String {
+    format!(
+        r#"(function () {{
+  try {{
+    var key = "rua_auth_token";
+    var token = "{token}";
+    var location = window.location;
+    var http = location.protocol === "http:" || location.protocol === "https:";
+    var host = location.hostname;
+    var loopback =
+      host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+    if (http && loopback) {{
+      window.localStorage.setItem(key, token);
+    }}
+  }} catch (error) {{ /* storage may be unavailable; the console then fails closed */ }}
+}})();"#,
+        token = token
+    )
 }
 
 #[derive(Serialize)]
@@ -118,13 +230,7 @@ pub fn run() {
             user_notification::show_user_notification
         ])
         .setup(|app| {
-            if let Some(window) = app.get_webview_window("main") {
-                app.state::<DesktopShellState>()
-                    .bootstrap_url
-                    .lock()
-                    .expect("Desktop Shell state poisoned")
-                    .replace(window.url()?);
-            }
+            create_main_window(app)?;
             tray::setup(app)?;
             let app = app.handle().clone();
             tauri::async_runtime::spawn(async move {

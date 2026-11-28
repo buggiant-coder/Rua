@@ -10,10 +10,18 @@ use rua_server::{router, AppState, ServerProfile};
 
 fn build_app() -> (axum::Router, AppState, TempDir) {
     let tmp = TempDir::new().expect("tempdir");
-    let state = AppState::from_tempdir(tmp.path().to_path_buf(), ServerProfile::Test);
+    let mut state = AppState::from_tempdir(tmp.path().to_path_buf(), ServerProfile::Test);
+    // `/api/health` reports workspace and session accounting, so it is an
+    // authenticated surface like the rest of `/api`. The fixture carries a
+    // credential instead of relying on an unauthenticated profile.
+    state.auth = std::sync::Arc::new(rua_server::auth::AuthService::new_with_token(
+        HEALTH_TOKEN.to_string(),
+    ));
     let app = router::build_app(state.clone(), None);
     (app, state, tmp)
 }
+
+const HEALTH_TOKEN: &str = "startup-contract-health-token";
 
 async fn request(app: &axum::Router, method: Method, uri: &str) -> axum::response::Response {
     app.clone()
@@ -21,6 +29,7 @@ async fn request(app: &axum::Router, method: Method, uri: &str) -> axum::respons
             Request::builder()
                 .method(method)
                 .uri(uri)
+                .header("authorization", format!("Bearer {HEALTH_TOKEN}"))
                 .body(Body::empty())
                 .expect("request"),
         )

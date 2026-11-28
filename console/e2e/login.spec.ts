@@ -23,12 +23,7 @@ async function expectStoredToken(page: Page) {
 test.describe("login", () => {
   test("protected routes redirect unauthenticated users to login", async ({
     page,
-    request,
-    baseURL,
   }) => {
-    const status = await authStatus(request, baseURL);
-    test.skip(!status.enabled, "login e2e requires RUA_AUTH_ENABLED=true");
-
     await page.goto("/debug", { waitUntil: "domcontentloaded" });
     await expect(page).toHaveURL(/\/login\?redirect=%2Fdebug$/);
     await expect
@@ -40,12 +35,7 @@ test.describe("login", () => {
 
   test("login form validates required credentials before submit", async ({
     page,
-    request,
-    baseURL,
   }) => {
-    const status = await authStatus(request, baseURL);
-    test.skip(!status.enabled, "login e2e requires RUA_AUTH_ENABLED=true");
-
     await page.goto("/login?redirect=/chat", { waitUntil: "domcontentloaded" });
     await page
       .getByRole("button", { name: /Register|注册|Login|登录/ })
@@ -68,7 +58,6 @@ test.describe("login", () => {
     baseURL,
   }) => {
     const status = await authStatus(request, baseURL);
-    test.skip(!status.enabled, "login e2e requires RUA_AUTH_ENABLED=true");
     test.skip(
       status.has_users,
       "login e2e expects an isolated auth store with no existing users",

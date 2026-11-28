@@ -12,8 +12,8 @@ mitigation, owner, tests, and release gate in the same change.
 - The browser and Android WebView are untrusted API clients.
 - The Desktop Shell WebView and any foreign browser origin remain untrusted;
   Tauri capability grants are command-specific and do not replace HTTP policy.
-- Loopback does not imply authorization; host allowlists and tokens remain
-  explicit policy.
+- Loopback does not imply authorization. Every profile authenticates; the only
+  question a handler asks is *which* credential applies.
 - Agent, tool, MCP, plugin, skill, channel, and Device inputs are untrusted.
 - Synced Devices authenticate as paired members, but business authority checks
   still apply to every command.
@@ -24,13 +24,50 @@ mitigation, owner, tests, and release gate in the same change.
 **Threat:** A process or WebView on the local machine calls a loopback API that
 was assumed to be private and bypasses authentication.
 
-**Mitigation:** Authentication middleware protects API routes after bootstrap;
-`allow_no_auth_hosts` is explicit, normalized, device-local policy rather than
-an implicit loopback bypass.
+**Mitigation:** Credential enforcement is structural rather than switchable.
+`AuthService::is_enabled` no longer consults the environment. Authentication is on
+unless the operator passes the explicit `--no-auth` flag, and `mobile-apk` refuses
+that flag outright. The `RUA_AUTH_ENABLED` environment variable that previously
+gated this is gone, so an unset variable can no longer mean "off".
+
+Each client class presents exactly one kind of credential:
+
+| Client | Credential |
+| --- | --- |
+| Desktop Shell WebView | Per-launch 256-bit session token, injected into the document by `initialization_script`, held in Shell memory only, never written to disk |
+| Browser tab | None. It may load the console *bundle*, but every data request (`/api`, `/ws`) returns 401 |
+| CLI and local scripts | JWT from `rua auth login`, stored at `<secret root>/cli_credential.json` (0600) |
+| Smoke probes | `/healthz`, `/readyz`, `/api/version` only |
+
+The document/data split is deliberate. The console is a static SPA bundle whose
+entry document is opened with `window.location.replace`, and a document
+navigation cannot carry an `Authorization` header. Gating `/console/` therefore
+401s the Shell's own WebView and leaves the desktop app showing raw JSON, so the
+bundle is served without a credential and carries no user data. Everything that
+returns user data still requires one, which is what keeps a browser tab from
+reading anything through the shell it can now open.
+
+Four properties keep this from degrading:
+
+1. The Shell credential is checked before `allow_no_auth_hosts` and is decisive,
+   so the allowlist cannot short-circuit it.
+2. Client IP resolution uses only the transport peer address from `ConnectInfo`.
+   `x-forwarded-for` and `x-real-ip` are no longer consulted, because the server
+   never previously received the true peer address and the allowlist was
+   therefore caller-controlled.
+3. Credentials travel only in the `Authorization` header. The `?token=` fallback
+   is removed, so tokens cannot reach browser history, access logs, or `Referer`.
+4. `/voice/*` sits outside the Shell credential deliberately: those handlers
+   validate a Twilio request signature, and a bearer gate in front of them would
+   reject every compliant inbound call.
+
+`allow_no_auth_hosts` still exists for explicit non-browser clients but defaults
+to an empty list; loopback is no longer implicitly exempt.
 
 **Owner:** `rua-server` auth and security endpoints.
 
-**Tests / fixtures:** `crates/rua-server/tests/contract_auth_http/` and
+**Tests / fixtures:** `crates/rua-server/tests/contract_auth_http/`,
+`crates/rua-server/tests/contract_startup_http/desktop_shell_access.rs`, and
 `crates/rua-server/tests/contract_security_http/security_config.rs`.
 
 **Release gate:** Rust contract tests plus

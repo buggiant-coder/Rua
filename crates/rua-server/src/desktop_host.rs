@@ -18,23 +18,49 @@ use crate::state::AppState;
 pub const DESKTOP_SHUTDOWN_TOKEN_ENV: &str = "RUA_DESKTOP_SHUTDOWN_TOKEN";
 pub const DESKTOP_SHUTDOWN_TOKEN_HEADER: &str = "x-rua-desktop-shutdown-token";
 pub const DESKTOP_SHUTDOWN_PATH: &str = "/api/desktop/shutdown";
+/// Per-launch credential the Desktop Shell injects into its own WebView. It is
+/// never written to disk, so a browser tab cannot obtain it.
+pub const DESKTOP_SESSION_TOKEN_ENV: &str = "RUA_DESKTOP_SESSION_TOKEN";
 
 #[derive(Clone)]
 pub struct DesktopHostConfig {
     shutdown_token: Arc<[u8]>,
+    session_token: Option<Arc<[u8]>>,
 }
 
 impl DesktopHostConfig {
     pub fn from_shutdown_token(token: String) -> Option<Self> {
         (!token.is_empty()).then(|| Self {
             shutdown_token: Arc::from(token.into_bytes()),
+            session_token: None,
         })
+    }
+
+    /// Attach the WebView session token. Tokens shorter than 32 bytes are
+    /// rejected so a misconfigured launch cannot silently weaken the shell.
+    pub fn with_session_token(mut self, token: Option<String>) -> Self {
+        self.session_token = token
+            .filter(|token| token.len() >= 32)
+            .map(|token| Arc::from(token.into_bytes()));
+        self
     }
 
     pub fn from_environment() -> Option<Self> {
         std::env::var(DESKTOP_SHUTDOWN_TOKEN_ENV)
             .ok()
             .and_then(Self::from_shutdown_token)
+            .map(|config| config.with_session_token(std::env::var(DESKTOP_SESSION_TOKEN_ENV).ok()))
+    }
+
+    /// Constant-time check of a candidate WebView session token.
+    pub fn matches_session_token(&self, candidate: &[u8]) -> bool {
+        self.session_token
+            .as_deref()
+            .is_some_and(|expected| constant_time_token_matches(expected, candidate))
+    }
+
+    pub fn requires_session_token(&self) -> bool {
+        self.session_token.is_some()
     }
 }
 

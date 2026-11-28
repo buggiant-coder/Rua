@@ -36,13 +36,13 @@ fn fresh_root_with_unset_security_uses_process_defaults() {
     rua_config::save_config(&rua_config::RootConfig::default(), &store.config_path()).unwrap();
     assert_eq!(
         store.get_allow_no_auth_hosts().unwrap(),
-        vec!["127.0.0.1", "::1"]
+        Vec::<String>::new()
     );
     assert!(store.get_skill_scanner().unwrap().whitelist.is_empty());
     rua_config::atomic_write_json(&store.config_path(), &json!({"security": null})).unwrap();
     assert_eq!(
         store.get_allow_no_auth_hosts().unwrap(),
-        vec!["127.0.0.1", "::1"]
+        Vec::<String>::new()
     );
     store
         .update_allow_no_auth_hosts(vec!["::1".into()])

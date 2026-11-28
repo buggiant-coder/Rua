@@ -82,10 +82,7 @@ async fn allow_no_auth_hosts_roundtrip_normalizes_and_rejects_invalid_ip_literal
     )
     .await;
     assert_eq!(initial.status(), StatusCode::OK);
-    assert_eq!(
-        read_json(initial).await,
-        json!({"hosts": ["127.0.0.1", "::1"]})
-    );
+    assert_eq!(read_json(initial).await, json!({ "hosts": [] }));
 
     let update = request(
         &app.app,

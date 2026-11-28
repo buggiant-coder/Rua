@@ -215,4 +215,25 @@ describe("Console shared transport", () => {
     await vi.advanceTimersByTimeAsync(60000);
     expect(Socket.instances).toHaveLength(1);
   });
+
+  it("treats server-sent event endpoints as subscriptions, not bounded reads", async () => {
+    // `/events` is how the Runtime publishes user notifications. It has no
+    // natural end, so the bounded-read deadline must not apply: otherwise the
+    // page tears the subscription down 40s after it opens and notifications
+    // silently stop arriving.
+    const pending = transport
+      .fetch("/platform/user-notifications/events")
+      .catch(() => undefined);
+    const socket = Socket.instances[0];
+    socket.authenticate();
+    socket.emit({ type: "head", id: "1", status: 200 });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(
+      socket.frames.filter(
+        (frame) => frame.type === "cancel" && frame.id === "1",
+      ),
+    ).toEqual([]);
+    transport.close();
+    await pending;
+  });
 });

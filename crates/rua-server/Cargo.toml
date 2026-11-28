@@ -271,6 +271,14 @@ metrics = ["rua-observability/metrics"]
 name = "contract_desktop_automation"
 path = "tests/contract_desktop_automation.rs"
 
+[[test]]
+name = "contract_security_http"
+path = "tests/contract_security_http.rs"
+
+[[test]]
+name = "contract_startup_http"
+path = "tests/contract_startup_http.rs"
+
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 cua-driver-core = { git = "https://github.com/trycua/cua", rev = "85e2b1318bd77ccf3cfa88ccdf875a4bb7eaed19", default-features = false }
 cua-driver-contract = { git = "https://github.com/trycua/cua", rev = "85e2b1318bd77ccf3cfa88ccdf875a4bb7eaed19" }

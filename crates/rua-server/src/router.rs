@@ -23,6 +23,11 @@ pub fn build_app_with_desktop_host(
     desktop_host: Option<crate::desktop_host::DesktopHostConfig>,
 ) -> Router {
     let desktop_security_enabled = desktop_host.is_some();
+    // Cloned up front: `desktop_host` is moved into the shutdown router below.
+    let desktop_shell = desktop_host
+        .as_ref()
+        .filter(|shell| shell.requires_session_token())
+        .cloned();
 
     let agent_scoped_api = api_routes(&state).route_layer(axum::middleware::from_fn_with_state(
         state.clone(),
@@ -31,7 +36,7 @@ pub fn build_app_with_desktop_host(
     let admin_api = endpoints::workspace_admin::register_workspace_admin_routes()
         .merge(endpoints::health::router())
         .merge(endpoints::commands_discovery::router());
-    let api_router = agent_scoped_api
+    let mut api_router = agent_scoped_api
         .merge(admin_api)
         .layer(axum::Extension(
             endpoints::desktop_control::DesktopControlService::from_environment(),
@@ -51,6 +56,13 @@ pub fn build_app_with_desktop_host(
             },
         ))
         .with_state(state.clone());
+
+    // The Desktop Shell credential must be visible to the auth middleware, so
+    // the config rides along as an extension instead of being threaded through
+    // `AppState` (which has hundreds of construction sites).
+    if let Some(ref shell) = desktop_host {
+        api_router = api_router.layer(axum::Extension(shell.clone()));
+    }
 
     let static_dir_clone = static_dir.clone();
     let static_dir_for_fallback = static_dir.clone();
@@ -92,6 +104,7 @@ pub fn build_app_with_desktop_host(
         Router::new()
             .nest("/api", api_router)
             .with_state(state.clone()),
+        desktop_host.clone(),
     ));
     app = app.merge(crate::desktop_host::router(state.clone(), desktop_host));
 
@@ -140,6 +153,18 @@ pub fn build_app_with_desktop_host(
         middleware::DEFAULT_BODY_LIMIT,
     ));
     app = app.layer(axum::extract::DefaultBodyLimit::disable());
+
+    // Enforce the Desktop Shell credential across the whole surface, not just
+    // `/api`. Without this the SPA fallback and `/ws` stay reachable, so a
+    // browser tab could still render the console shell.
+    if let Some(shell) = desktop_shell {
+        app = app.layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let shell = shell.clone();
+                async move { auth::require_desktop_shell(shell, req, next).await }
+            },
+        ));
+    }
 
     if desktop_security_enabled {
         app = app.layer(axum::middleware::from_fn(

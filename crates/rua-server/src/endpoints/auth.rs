@@ -38,15 +38,6 @@ async fn login(State(state): State<AppState>, Json(body): Json<dto::LoginRequest
         )
         .into_response();
     }
-    if !state.auth.is_active() && state.profile != crate::profiles::ServerProfile::MobileApk {
-        let resp = dto::LoginResponse {
-            token: String::new(),
-            username: body.username,
-            extra: serde_json::Map::new(),
-        };
-        return (StatusCode::OK, Json(resp)).into_response();
-    }
-
     if body.username.is_empty() {
         return ApiError::BadRequest("Username is required".into()).into_response();
     }
@@ -128,19 +119,28 @@ async fn status(State(state): State<AppState>) -> Response {
     (StatusCode::OK, Json(resp)).into_response()
 }
 
-async fn verify(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if !state.auth.is_enabled() && state.profile != crate::profiles::ServerProfile::MobileApk {
-        return (
-            StatusCode::OK,
-            Json(serde_json::json!({"valid": true, "username": ""})),
-        )
-            .into_response();
-    }
-
+async fn verify(
+    State(state): State<AppState>,
+    shell: Option<axum::Extension<crate::desktop_host::DesktopHostConfig>>,
+    headers: HeaderMap,
+) -> Response {
     let token = match extract_bearer(&headers) {
         Some(t) => t,
         None => return ApiError::Unauthorized("No token provided".into()).into_response(),
     };
+
+    // The Desktop Shell's WebView presents its per-launch credential here during
+    // startup. It is not a JWT, so without this branch the console would treat a
+    // fully authorized Shell as signed out and bounce it to the login page.
+    if let Some(shell) = shell.as_ref().map(|s| &s.0) {
+        if shell.requires_session_token() && shell.matches_session_token(token.as_bytes()) {
+            return (
+                StatusCode::OK,
+                Json(serde_json::json!({"valid": true, "username": "desktop-shell"})),
+            )
+                .into_response();
+        }
+    }
 
     match state.auth.verify_token(&token) {
         Some(username) => (

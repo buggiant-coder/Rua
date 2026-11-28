@@ -2,7 +2,7 @@ use crate::serde_helpers::deserialize_null_default;
 use serde::{Deserialize, Serialize};
 
 fn default_allow_no_auth_hosts() -> Vec<String> {
-    vec!["127.0.0.1".to_string(), "::1".to_string()]
+    Vec::new()
 }
 
 /// Process settings; executable Tool/File Guard policy belongs to each Agent.

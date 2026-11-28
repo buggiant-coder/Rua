@@ -1,7 +1,8 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import { getApiUrl } from "../api/config";
+import { subscribeConsoleResponse } from "../api/consoleSubscription";
+import { readSseChunks } from "../pages/Chat/owned/sse";
 import { selectUserNotificationAdapter } from "./adapters";
 import { startChatViewerCoordinator } from "./chatViewer";
 import { activateRuaUri } from "./ruaUri";
@@ -19,19 +20,26 @@ interface UserNotificationActivationEvent extends Event {
 export function startUserNotificationRuntime(): () => void {
   const adapter = selectUserNotificationAdapter();
   const chatViewer = startChatViewerCoordinator();
-  const source = new EventSource(
-    getApiUrl("/platform/user-notifications/events"),
+  // `EventSource` cannot attach the console's bearer credential, so the Runtime
+  // would answer 401 and notifications would silently stop. The Console
+  // Transport carries the credential and still delivers server-sent events.
+  const subscription = subscribeConsoleResponse(
+    "/platform/user-notifications/events",
+    async (response, _reconnected, signal) => {
+      for await (const chunk of readSseChunks(
+        response.body?.pipeThrough(new TransformStream(), { signal }) ?? null,
+      )) {
+        if (signal.aborted) break;
+        if (chunk.event !== "user_notification") continue;
+        try {
+          const request = JSON.parse(chunk.data) as UserNotificationRequest;
+          void chatViewer.shouldPresent(request).then((shouldPresent) => {
+            if (shouldPresent) void adapter.present(request);
+          });
+        } catch {}
+      }
+    },
   );
-  source.addEventListener("user_notification", (event) => {
-    try {
-      const request = JSON.parse(
-        (event as MessageEvent<string>).data,
-      ) as UserNotificationRequest;
-      void chatViewer.shouldPresent(request).then((shouldPresent) => {
-        if (shouldPresent) void adapter.present(request);
-      });
-    } catch {}
-  });
 
   const onAndroidActivation = (event: Event) => {
     const uri = (event as UserNotificationActivationEvent).detail?.uri;
@@ -56,7 +64,7 @@ export function startUserNotificationRuntime(): () => void {
 
   return () => {
     chatViewer.stop();
-    source.close();
+    subscription.stop();
     window.removeEventListener(
       USER_NOTIFICATION_ACTIVATED_EVENT,
       onAndroidActivation,

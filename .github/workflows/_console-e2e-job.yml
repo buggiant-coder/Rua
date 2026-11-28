@@ -16,7 +16,7 @@ on:
         type: string
         default: "console-e2e-artifacts"
       auth_enabled:
-        description: "Run rua-server with RUA_AUTH_ENABLED=true instead of --no-auth"
+        description: "Run rua-server with authentication enforced (default) instead of --no-auth"
         type: boolean
         default: false
       seed_token_usage:
@@ -137,9 +137,9 @@ jobs:
           fi
 
           AUTH_ARGS=()
-          if [ "${{ inputs.auth_enabled }}" = "true" ]; then
-            export RUA_AUTH_ENABLED=true
-          else
+          # Authentication is the default now; there is nothing to opt into.
+          # Only this explicit flag turns it off.
+          if [ "${{ inputs.auth_enabled }}" != "true" ]; then
             AUTH_ARGS+=(--no-auth)
           fi
 

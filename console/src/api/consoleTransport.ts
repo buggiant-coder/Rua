@@ -205,8 +205,12 @@ export class ConsoleTransport {
       const abort = () =>
         this.finish(id, new DOMException("Aborted", "AbortError"));
       // Deadline covers socket admission as well as the remote operation.
+      // Must stay in step with `is_persistent_stream` in
+      // `crates/rua-server/src/console_transport.rs`: a subscription the server
+      // treats as long-lived but the page treats as bounded is killed by the
+      // page timer, and the reverse masks a genuinely stuck read.
       const persistent =
-        /\/(?:activity|conversation-activity|live)(?:\?|$)/.test(path);
+        /\/(?:activity|conversation-activity|live|events)(?:\?|$)/.test(path);
       const deadline = persistent
         ? undefined
         : setTimeout(

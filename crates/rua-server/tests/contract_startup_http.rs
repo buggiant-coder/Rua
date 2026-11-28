@@ -8,3 +8,5 @@ mod error_shape;
 mod health;
 #[path = "contract_startup_http/version_and_readiness.rs"]
 mod version_and_readiness;
+#[path = "contract_startup_http/desktop_shell_access.rs"]
+mod desktop_shell_access;

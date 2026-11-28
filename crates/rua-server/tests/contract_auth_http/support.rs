@@ -11,53 +11,24 @@ use tower::ServiceExt;
 pub struct TestApp {
     pub app: Router,
     _tmp: TempDir,
-    _auth_env: EnvGuard,
-}
-
-struct EnvGuard {
-    previous: Option<String>,
-}
-
-impl EnvGuard {
-    fn enable_auth() -> Self {
-        let previous = std::env::var("RUA_AUTH_ENABLED").ok();
-        std::env::set_var("RUA_AUTH_ENABLED", "true");
-        Self { previous }
-    }
-
-    fn disable_auth() -> Self {
-        let previous = std::env::var("RUA_AUTH_ENABLED").ok();
-        std::env::remove_var("RUA_AUTH_ENABLED");
-        Self { previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(value) => std::env::set_var("RUA_AUTH_ENABLED", value),
-            None => std::env::remove_var("RUA_AUTH_ENABLED"),
-        }
-    }
 }
 
 pub fn build_app() -> TestApp {
-    let auth_env = EnvGuard::enable_auth();
     let tmp = TempDir::new().expect("tempdir");
     let state = rua_server::AppState::from_tempdir(
         tmp.path().to_path_buf(),
         rua_server::ServerProfile::Test,
     );
     let app = rua_server::router::build_app(state, None);
-    TestApp {
-        app,
-        _tmp: tmp,
-        _auth_env: auth_env,
-    }
+    TestApp { app, _tmp: tmp }
 }
 
+/// A router whose `AuthService` was explicitly disabled.
+///
+/// This mirrors `--no-auth`, the only thing that may turn authentication off.
+/// An unset `RUA_AUTH_ENABLED` no longer reaches this state; these fixtures
+/// exist to pin what an explicitly disabled service does and does not allow.
 pub fn build_inactive_auth_app() -> TestApp {
-    let auth_env = EnvGuard::disable_auth();
     let tmp = TempDir::new().expect("tempdir");
     let mut state = rua_server::AppState::from_tempdir(
         tmp.path().to_path_buf(),
@@ -67,15 +38,10 @@ pub fn build_inactive_auth_app() -> TestApp {
     let app = Router::new()
         .nest("/api/auth", rua_server::endpoints::auth::router())
         .with_state(state);
-    TestApp {
-        app,
-        _tmp: tmp,
-        _auth_env: auth_env,
-    }
+    TestApp { app, _tmp: tmp }
 }
 
 pub fn build_full_no_auth_app() -> TestApp {
-    let auth_env = EnvGuard::disable_auth();
     let tmp = TempDir::new().expect("tempdir");
     let mut state = rua_server::AppState::from_tempdir(
         tmp.path().to_path_buf(),
@@ -83,11 +49,7 @@ pub fn build_full_no_auth_app() -> TestApp {
     );
     state.auth = Arc::new(rua_server::auth::AuthService::new_disabled());
     let app = rua_server::router::build_app(state, None);
-    TestApp {
-        app,
-        _tmp: tmp,
-        _auth_env: auth_env,
-    }
+    TestApp { app, _tmp: tmp }
 }
 
 pub async fn request(app: &Router, method: Method, uri: &str, body: Option<Value>) -> Response {

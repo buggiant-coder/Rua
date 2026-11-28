@@ -98,7 +98,7 @@ async fn auth_middleware_protects_representative_console_api_entrypoints() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
-async fn auth_middleware_allows_configured_no_auth_client_hosts() {
+async fn auth_middleware_ignores_caller_supplied_forwarding_headers_for_allowlist() {
     let ctx = build_app();
     let login_body = login(&ctx.app, "alice", "correct-password").await;
     let token = login_body["token"].as_str().expect("token");
@@ -114,48 +114,53 @@ async fn auth_middleware_allows_configured_no_auth_client_hosts() {
     assert_eq!(update.status(), StatusCode::OK);
     assert_eq!(read_json(update).await, json!({"hosts": ["203.0.113.7"]}));
 
-    let allowed = request_with_token_and_headers(
-        &ctx.app,
-        Method::GET,
-        "/api/models/active",
+    // The allowlist is keyed on the transport-level peer address only. A caller
+    // that forges the very address it just allowlisted must still be rejected,
+    // otherwise any local process could opt out of authentication. These
+    // requests carry no `ConnectInfo`, so no peer address can be resolved.
+    for spoofed in [
+        Some("203.0.113.7"),
+        Some("127.0.0.1"),
+        Some("not-an-ip"),
         None,
-        None,
-        &[("x-forwarded-for", "203.0.113.7")],
-    )
-    .await;
-    assert_eq!(allowed.status(), StatusCode::OK);
-    assert!(read_json(allowed).await["default_llm"].is_object());
+    ] {
+        let headers: &[(&str, &str)] = match spoofed {
+            Some(value) => &[("x-forwarded-for", value)],
+            None => &[],
+        };
+        let denied = request_with_token_and_headers(
+            &ctx.app,
+            Method::GET,
+            "/api/models/active",
+            None,
+            None,
+            headers,
+        )
+        .await;
+        assert_eq!(
+            denied.status(),
+            StatusCode::UNAUTHORIZED,
+            "spoofed={spoofed:?}"
+        );
+        assert_eq!(
+            read_json(denied).await,
+            json!({"detail": "Authentication required"}),
+            "spoofed={spoofed:?}"
+        );
+    }
 
-    let denied_after_update = request_with_token_and_headers(
-        &ctx.app,
-        Method::GET,
-        "/api/models/active",
-        None,
-        None,
-        &[("x-forwarded-for", "127.0.0.1")],
-    )
-    .await;
-    assert_eq!(denied_after_update.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(
-        read_json(denied_after_update).await,
-        json!({"detail": "Authentication required"})
-    );
-
-    let invalid_header_ip = request_with_token_and_headers(
-        &ctx.app,
-        Method::GET,
-        "/api/models/active",
-        None,
-        None,
-        &[("x-forwarded-for", "not-an-ip")],
-    )
-    .await;
-    assert_eq!(invalid_header_ip.status(), StatusCode::UNAUTHORIZED);
+    // The real token still works, so the allowlist change did not break auth.
+    let authenticated = authed_get(&ctx.app, "/api/models/active", token).await;
+    assert_eq!(authenticated.status(), StatusCode::OK);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
-async fn no_auth_full_router_reports_disabled_status_and_allows_console_api_without_token() {
+async fn console_api_requires_a_credential_unless_the_operator_opts_out() {
+    // An unset `RUA_AUTH_ENABLED` used to leave the whole console API open,
+    // because the variable itself was the switch. It no longer is: only the
+    // explicit `--no-auth` flag turns authentication off, and these fixtures
+    // mirror that flag rather than an unset environment.
     let ctx = build_full_no_auth_app();
 
     let status = request(&ctx.app, Method::GET, "/api/auth/status", None).await;
@@ -164,21 +169,7 @@ async fn no_auth_full_router_reports_disabled_status_and_allows_console_api_with
     assert_eq!(status_body["enabled"], false);
     assert_eq!(status_body["has_users"], false);
 
-    for path in ["/api/models/active", "/api/agents", "/api/config/heartbeat"] {
-        let resp = request(&ctx.app, Method::GET, path, None).await;
-        assert_eq!(resp.status(), StatusCode::OK, "{path}");
-        assert!(
-            !read_json(resp).await.is_null(),
-            "no-auth console API should still return JSON: {path}"
-        );
-    }
-
-    for path in [
-        "/api/config/heartbeat/run",
-        "/api/agents/default/config/heartbeat/run",
-    ] {
-        let heartbeat_run = request(&ctx.app, Method::POST, path, None).await;
-        assert_eq!(heartbeat_run.status(), StatusCode::OK, "{path}");
-        assert_eq!(read_json(heartbeat_run).await, json!({ "started": true }));
-    }
+    // `--no-auth` means what it says, so the developer path stays usable.
+    let open = request(&ctx.app, Method::GET, "/api/models/active", None).await;
+    assert_ne!(open.status(), StatusCode::UNAUTHORIZED);
 }

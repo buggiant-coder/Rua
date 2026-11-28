@@ -105,6 +105,13 @@ pub struct AuthService {
     static_token: Option<String>,
 
     force_enabled: bool,
+
+    /// Set only by an explicit operator opt-out (`--no-auth`).
+    ///
+    /// This is deliberately *not* derived from the environment. An absent
+    /// `RUA_AUTH_ENABLED` must never mean "off"; only a flag the operator typed
+    /// may do that, and `mobile-apk` refuses the flag outright.
+    disabled: bool,
 }
 
 impl AuthService {
@@ -114,6 +121,7 @@ impl AuthService {
             auth_file: None,
             static_token: None,
             force_enabled: false,
+            disabled: true,
         }
     }
 
@@ -134,6 +142,7 @@ impl AuthService {
             auth_file: None,
             static_token: Some(token),
             force_enabled: true,
+            disabled: false,
         }
     }
 
@@ -145,6 +154,7 @@ impl AuthService {
             auth_file: Some(auth_file),
             static_token: None,
             force_enabled: false,
+            disabled: false,
         }
     }
 
@@ -236,12 +246,15 @@ impl AuthService {
         self.force_enabled || self.auth_file.is_some() || self.is_enabled()
     }
 
+    /// Whether this runtime checks credentials at all.
+    ///
+    /// This is driven by an explicit `--no-auth` opt-out only. It used to hinge
+    /// on a `RUA_AUTH_ENABLED` environment variable that no production caller
+    /// set, so the safety property depended on an operator remembering a
+    /// variable. Now every profile authenticates by default and only a flag the
+    /// operator typed can turn it off; `mobile-apk` rejects that flag outright.
     pub fn is_enabled(&self) -> bool {
-        if self.force_enabled {
-            return true;
-        }
-        let val = std::env::var("RUA_AUTH_ENABLED").unwrap_or_default();
-        matches!(val.trim().to_lowercase().as_str(), "true" | "1" | "yes")
+        !self.disabled
     }
 
     pub fn has_registered_users(&self) -> bool {
@@ -564,32 +577,98 @@ pub fn extract_token(req: &Request<Body>) -> Option<String> {
         }
     }
 
-    if let Some(query) = req.uri().query() {
-        for pair in query.split('&') {
-            if let Some(token) = pair.strip_prefix("token=") {
-                let token = token.trim();
-                if !token.is_empty() {
-                    return Some(token.to_string());
-                }
-            }
-        }
-    }
-
+    // Credentials are accepted from the `Authorization` header only. A `?token=`
+    // fallback used to exist for desktop; it leaked credentials into browser
+    // history, access logs, and `Referer` headers, so it is gone.
     None
 }
 
 pub async fn auth_middleware(
     axum::extract::State(state): axum::extract::State<AppState>,
+    shell: Option<axum::Extension<crate::desktop_host::DesktopHostConfig>>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    match authentication_error(&state, &req) {
+    match authentication_error_with_shell(&state, &req, shell.as_ref().map(|s| &s.0)) {
         Some(error) => error,
         None => next.run(req).await,
     }
 }
 
-pub(crate) fn authentication_error(state: &AppState, req: &Request<Body>) -> Option<Response> {
+/// Reject traffic that lacks the Desktop Shell credential on the *data* surface.
+///
+/// Documents stay public on purpose. The console is a static SPA bundle whose
+/// entry document is opened with `window.location.replace`, and a document
+/// navigation cannot carry an `Authorization` header, so gating `/console/`
+/// here would 401 the Shell's own WebView and show raw JSON instead of the app.
+/// Everything that returns user data — `/api` and `/ws` — still needs a
+/// credential, so a browser tab can render the empty shell but cannot read
+/// anything through it.
+pub async fn require_desktop_shell(
+    shell: crate::desktop_host::DesktopHostConfig,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let path = req.uri().path();
+    if !requires_shell_credential(path) {
+        return next.run(req).await;
+    }
+
+    let candidate = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+
+    if candidate.is_some_and(|token| shell.matches_session_token(token.as_bytes())) {
+        next.run(req).await
+    } else {
+        tracing::debug!(%path, "rejected non-shell request");
+        json_error(StatusCode::UNAUTHORIZED, "Authentication required")
+    }
+}
+
+/// Whether a path carries user data and therefore needs a credential.
+///
+/// The protected surface is the API and the websocket channel. Static
+/// documents, hashed assets, and root images are excluded so the Shell can
+/// render; they contain no user data, only the packaged console bundle.
+/// `/voice/*` is deliberately excluded: those handlers validate a Twilio
+/// request signature, and demanding a Shell bearer header there would reject
+/// every compliant webhook.
+///
+/// Three paths inside `/api` are deliberately exempt because they authenticate
+/// themselves or carry no data: the Console Transport verifies a token in its
+/// bounded first frame (a WebSocket handshake cannot carry a bearer header), the
+/// shutdown route enforces its own per-launch token, and the public auth
+/// bootstrap endpoints exist precisely to mint a first credential.
+pub(crate) fn requires_shell_credential(path: &str) -> bool {
+    if path == crate::console_transport::TRANSPORT_PATH
+        || path == crate::desktop_host::DESKTOP_SHUTDOWN_PATH
+    {
+        return false;
+    }
+    if path == "/ws" {
+        return true;
+    }
+    path.starts_with("/api/") && !is_public_api_path(path)
+}
+
+/// Authentication entry point that also honors the Desktop Shell's per-launch
+/// WebView credential.
+///
+/// The shell credential is checked first and is decisive: when a shell token is
+/// configured, the endpoint no longer falls back to `RUA_AUTH_ENABLED`, the
+/// `allow_no_auth_hosts` allowlist, or the unauthenticated `no-auth` shape. That
+/// ordering is what makes a browser tab unable to reach the runtime even though
+/// it shares the same loopback address.
+pub(crate) fn authentication_error_with_shell(
+    state: &AppState,
+    req: &Request<Body>,
+    shell: Option<&crate::desktop_host::DesktopHostConfig>,
+) -> Option<Response> {
     let path = req.uri().path().to_string();
 
     let mobile = state.profile == crate::profiles::ServerProfile::MobileApk;
@@ -606,6 +685,28 @@ pub(crate) fn authentication_error(state: &AppState, req: &Request<Body>) -> Opt
         || (!mobile && is_public_api_path(&path))
     {
         return None;
+    }
+
+    if let Some(shell) = shell.filter(|shell| shell.requires_session_token()) {
+        // Bearer only: the shell never puts credentials in the URL, so a token
+        // cannot leak through history, logs, or a `Referer` header.
+        let token = req
+            .headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok())
+            .and_then(|h| h.strip_prefix("Bearer "))
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        return match token {
+            Some(token) if shell.matches_session_token(token.as_bytes()) => None,
+            _ => {
+                tracing::debug!(%path, "auth rejected: desktop shell token required");
+                Some(json_error(
+                    StatusCode::UNAUTHORIZED,
+                    "Authentication required",
+                ))
+            }
+        };
     }
 
     if !mobile && !state.auth.is_active() {
@@ -677,24 +778,9 @@ fn is_allow_no_auth_host(state: &AppState, req: &Request<Body>) -> bool {
 }
 
 fn resolve_client_ip(req: &Request<Body>) -> Option<IpAddr> {
-    if let Some(forwarded_for) = req.headers().get("x-forwarded-for") {
-        if let Ok(value) = forwarded_for.to_str() {
-            if let Some(first) = value.split(',').next().map(str::trim) {
-                if let Ok(ip) = first.parse::<IpAddr>() {
-                    return Some(ip);
-                }
-            }
-        }
-    }
-
-    if let Some(real_ip) = req.headers().get("x-real-ip") {
-        if let Ok(value) = real_ip.to_str() {
-            if let Ok(ip) = value.trim().parse::<IpAddr>() {
-                return Some(ip);
-            }
-        }
-    }
-
+    // Only the transport-level peer address is authoritative. Caller-supplied
+    // `x-forwarded-for` / `x-real-ip` headers previously short-circuited the
+    // allowlist, which let any local caller opt out of authentication.
     req.extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ConnectInfo(addr)| addr.ip())

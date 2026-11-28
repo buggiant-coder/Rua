@@ -19,6 +19,7 @@ pub const DESKTOP_READY_PREFIX: &str = "RUA_BACKEND_READY ";
 const DESKTOP_SHUTDOWN_PATH: &str = "/api/desktop/shutdown";
 const DESKTOP_SHUTDOWN_TOKEN_ENV: &str = "RUA_DESKTOP_SHUTDOWN_TOKEN";
 const DESKTOP_SHUTDOWN_TOKEN_HEADER: &str = "x-rua-desktop-shutdown-token";
+const DESKTOP_SESSION_TOKEN_ENV: &str = "RUA_DESKTOP_SESSION_TOKEN";
 const READY_VERSION: u8 = 1;
 const MAX_CAPTURED_STDERR_CHARS: usize = 4000;
 const SHUTDOWN_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
@@ -469,6 +470,7 @@ pub(crate) async fn start_owned(app: &AppHandle) -> Result<(), String> {
     let cua_binary = bundled_driver_path(&launch.binary, "cua-driver");
     let control_endpoint = crate::control::environment_value(app).await?;
     let shutdown_token = Uuid::new_v4().to_string();
+    let session_token = crate::desktop_session_token(app)?;
     let mut command = app
         .shell()
         .command(&launch.binary)
@@ -479,6 +481,7 @@ pub(crate) async fn start_owned(app: &AppHandle) -> Result<(), String> {
             key != "RUA_DESKTOP_AUTOMATION_ERROR" && key != "RUA_CUA_CONNECTION_FILE"
         }))
         .env(DESKTOP_SHUTDOWN_TOKEN_ENV, &shutdown_token)
+        .env(DESKTOP_SESSION_TOKEN_ENV, &session_token)
         .env(rua_core::desktop_control::ENDPOINT_ENV, control_endpoint)
         .env(
             "RUA_BUNDLED_AGENT_BROWSER",

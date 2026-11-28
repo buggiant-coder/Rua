@@ -24,7 +24,7 @@ on:
         required: false
         default: "e2e/baseline.spec.ts"
       auth_enabled:
-        description: "Run server with authentication enabled"
+        description: "Run server with authentication enforced (the default; unchecking passes --no-auth)"
         type: boolean
         required: false
         default: false

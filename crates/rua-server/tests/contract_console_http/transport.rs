@@ -15,6 +15,11 @@ use tokio_tungstenite::{
 };
 use tokio_util::sync::CancellationToken;
 
+/// Credential these transport tests present. The transport is an authenticated
+/// surface for every profile, so the fixture uses a real static-token
+/// `AuthService` instead of pretending authentication can be switched off.
+const TRANSPORT_TOKEN: &str = "console-transport-contract-token";
+
 struct Fixture {
     address: std::net::SocketAddr,
     stop: CancellationToken,
@@ -41,7 +46,9 @@ impl Fixture {
             root.path().to_path_buf(),
             rua_server::ServerProfile::Test,
         );
-        state.auth = Arc::new(rua_server::auth::AuthService::new_disabled());
+        state.auth = Arc::new(rua_server::auth::AuthService::new_with_token(
+            TRANSPORT_TOKEN.to_string(),
+        ));
         if mobile {
             state.profile = rua_server::ServerProfile::MobileApk;
         }
@@ -94,7 +101,7 @@ impl Fixture {
                     )]))
                 }),
             );
-        let app = rua_server::console_transport::router(state.clone(), api)
+        let app = rua_server::console_transport::router(state.clone(), api, None)
             .route("/api/projects", get(|| async { Json(json!([])) }))
             .with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -145,7 +152,7 @@ async fn receive(socket: &mut WebSocketStream<MaybeTlsStream<tokio::net::TcpStre
 async fn blocked_remote_channel_does_not_block_other_channels_or_local_reads() {
     let fixture = Fixture::new(false).await;
     let mut socket = fixture.socket().await;
-    send(&mut socket, json!({"type":"auth", "version":1, "token":""})).await;
+    send(&mut socket, json!({"type":"auth", "version":1, "token": TRANSPORT_TOKEN})).await;
     assert_eq!(receive(&mut socket).await["type"], "ready");
     send(&mut socket, json!({"type":"open","id":"slow","method":"GET","path":"/agents/a/chats/slow/acp/permissions"})).await;
     for i in 0..4 {
@@ -202,7 +209,7 @@ async fn blocked_remote_channel_does_not_block_other_channels_or_local_reads() {
 }
 
 #[tokio::test]
-async fn transport_rejects_foreign_origin_unauthenticated_mobile_and_mutation_replay() {
+async fn transport_rejects_foreign_origin_unauthenticated_and_mutation_replay() {
     let fixture = Fixture::new(false).await;
     let mut request = format!("ws://{}/api/console/transport", fixture.address)
         .into_client_request()
@@ -216,11 +223,22 @@ async fn transport_rejects_foreign_origin_unauthenticated_mobile_and_mutation_re
     assert!(
         matches!(error, tokio_tungstenite::tungstenite::Error::Http(response) if response.status() == 403)
     );
+
+    // No credential at all: the transport rejects before admitting a channel.
     let mut socket = fixture.socket().await;
     send(&mut socket, json!({"type":"auth", "version":1})).await;
+    assert_eq!(receive(&mut socket).await["type"], "fatal");
+
+    // Mutation replay stays out of the closed allowlist even when authenticated.
+    let mut socket = fixture.socket().await;
+    send(&mut socket, json!({"type":"auth", "version":1, "token": TRANSPORT_TOKEN})).await;
     assert_eq!(receive(&mut socket).await["type"], "ready");
     send(&mut socket, json!({"type":"open","id":"mutation","method":"POST","path":"/agents/a/chats/c/console/stop"})).await;
     assert_eq!(receive(&mut socket).await["type"], "error");
+}
+
+#[tokio::test]
+async fn mobile_transport_requires_a_credential() {
     let mobile = Fixture::new(true).await;
     let mut socket = mobile.socket().await;
     send(&mut socket, json!({"type":"auth", "version":1})).await;
@@ -241,7 +259,7 @@ async fn unsupported_version_fails_explicitly_before_channel_admission() {
 async fn server_backlog_is_reported_as_server_side_loss_not_client_buffer_pressure() {
     let fixture = Fixture::new(false).await;
     let mut socket = fixture.socket().await;
-    send(&mut socket, json!({"type":"auth", "version":1, "token":""})).await;
+    send(&mut socket, json!({"type":"auth", "version":1, "token": TRANSPORT_TOKEN})).await;
     assert_eq!(receive(&mut socket).await["type"], "ready");
     send(
         &mut socket,
@@ -305,7 +323,7 @@ async fn a_single_maximum_payload_is_delivered_completely_to_a_draining_client()
     // reads continuously.
     let fixture = Fixture::new(false).await;
     let mut socket = fixture.socket().await;
-    send(&mut socket, json!({"type":"auth", "version":1, "token":""})).await;
+    send(&mut socket, json!({"type":"auth", "version":1, "token": TRANSPORT_TOKEN})).await;
     assert_eq!(receive(&mut socket).await["type"], "ready");
     send(
         &mut socket,
@@ -337,4 +355,37 @@ async fn a_single_maximum_payload_is_delivered_completely_to_a_draining_client()
         "the whole payload must arrive instead of being truncated by a backlog"
     );
     assert!(body.iter().all(|byte| *byte == b'y'));
+}
+
+/// Every allowlisted subscription must be classified as long-lived, or the
+/// transport's 30s bounded-read deadline tears it down on a timer.
+///
+/// `/events` is how the Runtime publishes user notifications, and it reached the
+/// allowlist without reaching this classification — which would have made
+/// notifications stop silently 30s after the console started.
+#[test]
+fn allowlisted_sse_endpoints_are_classified_as_persistent_streams() {
+    for path in [
+        "/platform/user-notifications/events",
+        "/platform/conversation-activity",
+        "/sync/devices/activity",
+        "/terminal/sessions/abc/activity",
+        "/agents/a/chats/c/console/activity",
+    ] {
+        assert!(
+            rua_server::console_transport::is_persistent_stream(path),
+            "{path} must not be killed by the bounded-read deadline"
+        );
+    }
+
+    // Bounded reads still expire, otherwise a stuck snapshot pins a channel.
+    for path in [
+        "/agents/a/approvals/snapshot",
+        "/agents/a/chats/c/acp/permissions",
+    ] {
+        assert!(
+            !rua_server::console_transport::is_persistent_stream(path),
+            "{path} is a bounded read and must keep its deadline"
+        );
+    }
 }

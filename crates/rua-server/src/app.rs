@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -407,7 +407,13 @@ pub async fn serve(options: ServerOptions) -> anyhow::Result<()> {
     let shutdown_usage_stats = state.usage_stats.clone();
     let shutdown_pid_file = Some(state.rua_root.join("server.pid"));
 
-    axum::serve(listener, app)
+    // Inject the real peer address so authentication decisions never depend on
+    // caller-supplied forwarding headers. Without `ConnectInfo`, the auth
+    // middleware cannot resolve a client IP and falls back to header values.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
         .with_graceful_shutdown(async move {
             crate::shutdown::shutdown_signal(shutdown_rx).await;
             crate::shutdown::arm_force_exit_watchdog(std::time::Duration::from_secs(8));

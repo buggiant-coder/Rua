@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::StatusCode;
 use std::fmt;
 use std::io::{Read, Write};
@@ -50,14 +51,27 @@ impl ApiClient {
         &self.agent_id
     }
     pub fn new(base_url: &str, agent_id: &str) -> Self {
-        let client = if should_bypass_proxy_for_base_url(base_url) {
-            rua_http::build_client_or_default(reqwest::Client::builder().no_proxy(), "rua-cli")
+        let base_url = base_url.trim_end_matches('/').to_string();
+        // Credentials ride on the client's default headers so every verb picks
+        // them up; the Runtime now authenticates all profiles, and a stored
+        // credential minted for a different Runtime is ignored rather than sent.
+        let headers = credential_headers(&base_url);
+        let client = if should_bypass_proxy_for_base_url(&base_url) {
+            rua_http::build_client_or_default(
+                reqwest::Client::builder()
+                    .no_proxy()
+                    .default_headers(headers.clone()),
+                "rua-cli",
+            )
         } else {
-            rua_http::default_client_or_default("rua-cli")
+            rua_http::build_client_or_default(
+                reqwest::Client::builder().default_headers(headers),
+                "rua-cli",
+            )
         };
 
         Self {
-            base_url: base_url.trim_end_matches('/').to_string(),
+            base_url,
             agent_id: agent_id.to_string(),
             client,
         }
@@ -281,6 +295,19 @@ pub fn format_http_error(method: &str, url: &str, status: StatusCode, body: &str
     }
 
     format!("{method} {url} returned {status}: {body}")
+}
+
+/// Authorization header for a stored CLI credential, if one matches this
+/// Runtime. An absent or foreign credential yields empty headers so the request
+/// fails with a clear 401 instead of silently sending a stale token.
+fn credential_headers(base_url: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if let Some(token) = crate::auth::load_credential_for(base_url) {
+        if let Ok(value) = HeaderValue::from_str(&format!("Bearer {token}")) {
+            headers.insert(AUTHORIZATION, value);
+        }
+    }
+    headers
 }
 
 pub fn resolve_base_url(base_url: Option<&str>) -> String {

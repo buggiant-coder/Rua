@@ -51,14 +51,27 @@ const _: () = assert!(
 struct ConsoleTransport {
     pub state: AppState,
     pub api: Router,
+    pub shell: Option<crate::desktop_host::DesktopHostConfig>,
 }
 
 /// Mount the multiplexed adapter over the canonical, authenticated API router.
-pub fn router(state: AppState, api: Router) -> Router<AppState> {
+pub fn router(
+    state: AppState,
+    api: Router,
+    shell: Option<crate::desktop_host::DesktopHostConfig>,
+) -> Router<AppState> {
     Router::new()
-        .route("/api/console/transport", axum::routing::get(upgrade))
-        .with_state(ConsoleTransport { state, api })
+        .route(TRANSPORT_PATH, axum::routing::get(upgrade))
+        .with_state(ConsoleTransport { state, api, shell })
 }
+
+/// WebSocket upgrade path for the Console Transport.
+///
+/// This path authenticates in its bounded first frame rather than at the HTTP
+/// layer, because browsers cannot attach an `Authorization` header to a
+/// WebSocket handshake. `auth::requires_shell_credential` refers to this
+/// constant so the Desktop Shell layer and the transport cannot drift apart.
+pub const TRANSPORT_PATH: &str = "/api/console/transport";
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -128,7 +141,7 @@ async fn send(socket: &mut WebSocket, frame: Value) -> bool {
 
 fn request_context(parts: &axum::http::request::Parts, token: &str) -> Request<Body> {
     let mut request = Request::new(Body::empty());
-    *request.uri_mut() = "/api/console/transport".parse().expect("static URI");
+    *request.uri_mut() = TRANSPORT_PATH.parse().expect("static URI");
     *request.headers_mut() = parts.headers.clone();
     *request.extensions_mut() = parts.extensions.clone();
     request.headers_mut().remove(header::AUTHORIZATION);
@@ -159,6 +172,7 @@ fn allowed(method: &str, path: &str) -> bool {
         (
             "GET",
             ["platform", "conversation-activity"]
+                | ["platform", "user-notifications", "events"]
                 | ["sync", "devices", "activity"]
                 | ["terminal", "sessions", _, "activity"],
         ) | ("GET", ["agents", _, "approvals", "snapshot"])
@@ -205,6 +219,23 @@ fn enqueue(tx: &mpsc::Sender<Value>, frame: Value, id: &str, path: &str) -> bool
         return false;
     }
     tx.try_send(frame).is_ok()
+}
+
+/// Whether an allowlisted path is a long-lived subscription rather than a
+/// bounded read.
+///
+/// Bounded reads get a 30s server deadline so a stuck operation cannot pin a
+/// channel forever. Subscriptions have no natural end, so applying that same
+/// deadline would kill them on a timer. This must stay in step with the client
+/// rule in `console/src/api/consoleTransport.ts`: an SSE endpoint classified as
+/// bounded here is torn down after 30s, and one classified as a stream there
+/// masks a genuinely stuck read.
+pub fn is_persistent_stream(path: &str) -> bool {
+    let path = path.split('?').next().unwrap_or(path);
+    path.ends_with("/activity")
+        || path.ends_with("/conversation-activity")
+        || path.ends_with("/live")
+        || path.ends_with("/events")
 }
 
 /// The server-initiated deadline signal. Exposed so the transport contract test
@@ -290,7 +321,7 @@ async fn run(
         return;
     }
     let auth_request = request_context(&parts, &token);
-    if auth::authentication_error(&transport.state, &auth_request).is_some() {
+    if auth::authentication_error_with_shell(&transport.state, &auth_request, transport.shell.as_ref()).is_some() {
         send(
             &mut socket,
             json!({"type":"fatal", "detail":"Authentication required or expired"}),
@@ -311,7 +342,7 @@ async fn run(
         tokio::select! {
             _ = shutdown.changed() => break,
             _ = auth_check.tick() => {
-                if auth::authentication_error(&transport.state, &auth_request).is_some() {
+                if auth::authentication_error_with_shell(&transport.state, &auth_request, transport.shell.as_ref()).is_some() {
                     send(&mut socket, json!({"type":"fatal", "detail":"Authentication revoked or expired"})).await;
                     break;
                 }
@@ -337,7 +368,7 @@ async fn run(
                     ClientFrame::Auth { .. } => break,
                     ClientFrame::Cancel { id, .. } => { if let Some(token) = channels.remove(&id) { token.cancel(); } },
                     ClientFrame::Open { id, method, path, body, agent_id, .. } => {
-                        if auth::authentication_error(&transport.state, &auth_request).is_some() { break; }
+                        if auth::authentication_error_with_shell(&transport.state, &auth_request, transport.shell.as_ref()).is_some() { break; }
                         if id.is_empty() || id.len() > 64 || channels.contains_key(&id) { break; }
                         if channels.len() >= MAX_CHANNELS || body.len() > 128 * 1024 || !allowed(&method, &path) {
                             if !send(&mut socket, json!({"type":"error", "id":id, "detail":"Console operation not admitted"})).await { break; }
@@ -356,7 +387,7 @@ async fn run(
                             request.headers_mut().insert("x-agent-id", value);
                         }
                         *request.body_mut() = Body::from(body);
-                        let is_stream = path.split('?').next().is_some_and(|p| p.ends_with("/activity") || p.ends_with("/conversation-activity") || p.ends_with("/live"));
+                        let is_stream = is_persistent_stream(&path);
                         let (tx, rx) = mpsc::channel(CHANNEL_QUEUE_FRAMES);
                         frames.push(futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|frame| (frame, rx)) }).boxed());
                         let token = cancellation.child_token();
