@@ -100,8 +100,8 @@ fn create_main_window(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-fn io_error(message: String) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, message)
+fn io_error(message: impl Into<String>) -> std::io::Error {
+    std::io::Error::other(message.into())
 }
 
 /// Seed the console credential on the runtime origin.
