@@ -10,6 +10,43 @@ scope-specific guidance here or in ordinary docs linked from here.
 
 ## Build & verify
 
+### On this device: always use `rua-dev`
+
+This checkout lives on `/sdcard`, a FUSE mount with no `exec`, no symlinks, and no
+reliable POSIX locks. `rua-dev` fixes that every time you call it: it bind-mounts
+`console/node_modules` and `console/dist` from f2fs and sources `/etc/rua-dev.env`.
+**Prefix every build, test, `npm`, `cargo`, and `gradle` command with `rua-dev`.**
+
+```bash
+rua-dev bash -c 'bash scripts/package-mobile-apk.sh --debug -P 26'
+rua-dev bash -c 'cargo test -p rua-project --test unit_project git'
+rua-dev bash -c 'cd console && npm run typecheck'
+```
+
+It is idempotent. It already sets `ANDROID_HOME`, `ANDROID_NDK_HOME`,
+`GRADLE_USER_HOME`, `CARGO_TARGET_DIR`, and puts `gradle` on `PATH`, so no manual
+`export` is needed. Cargo output goes to `CARGO_TARGET_DIR`, not `./target`.
+
+**These symptoms mean "you forgot `rua-dev`", and are already solved — do not
+diagnose them further:**
+
+| Symptom | Wrong response |
+|---|---|
+| `console/node_modules` is empty / has 0 packages | Running `npm ci`, or copying dependencies in |
+| `npm ci` fails `EACCES: permission denied, symlink` | Installing to `/sdcard` directly |
+| `esbuild` fails `No such file or directory` or `Permission denied` | Manually `mount --bind`, `chmod +x`, or copying `node_modules` |
+| Gradle hangs on `Waiting to acquire exclusive lock` | Building inside `/sdcard` |
+| Build output missing under `./target/` | Looking for artifacts outside `CARGO_TARGET_DIR` |
+
+Do not hand-copy dependencies, mount manually, or rewrite packaging scripts to
+work around these. If `rua-dev` itself fails, then investigate.
+
+Machine state — exact directory layout, the `aapt2`/qemu wrapper, cross-compile
+linkers, incremental build timings, and APK verification results — is in
+[`docs/device-local-build-environment.md`](docs/device-local-build-environment.md)
+(maintainer-local, git-ignored, exists only on this device). That file is a
+reference for details, not a prerequisite: everything above is enough to build.
+
 ```bash
 scripts/tests/clippy-touched.sh              # clippy only on changed crates
 scripts/tests/clippy-touched.sh --test        # + nextest on changed crates
@@ -47,7 +84,9 @@ destructive/unwanted work. Poll it later and report the result.
 
 For desktop + Android emulator E2E, build debug artifacts with
 `cargo build -p rua-cli` and `scripts/package-mobile-apk.sh --debug`.
-Start the server with `target/debug/rua server start`; install the APK with
+Start the server from `$CARGO_TARGET_DIR/debug/rua` (note: on this device Cargo
+output is redirected away from `./target/`, so `./target/debug/rua` does not exist);
+install the APK with
 `adb -s <serial> install -r target/mobile-apk/rua-debug-arm64-v8a.apk`. Do not build
 `release-android`/thin-LTO artifacts unless the test specifically validates a
 release build. Start the desktop build and APK build concurrently because they
@@ -60,6 +99,12 @@ and incremental artifacts can interfere across branches. `console/node_modules`
 may symlink to main only when `console/package.json` and `package-lock.json`
 match; otherwise use local dependencies installed with `npm ci`. Initialize
 CodeGraph in each worktree with `codegraph init` when the CLI is available.
+
+On this device the paragraph above does not apply: `/sdcard` cannot create
+symlinks or host executables, so a worktree's `console/node_modules` must be a
+bind mount like the main checkout. `rua-dev` handles this for
+`/sdcard/MyProjects/Rua`; for a second worktree create its own binding rather
+than running `npm ci`.
 
 CI (`.github/workflows/release.yml`): fmt → clippy → check → test on PR/push (Rust 1.91). Artifact builds on `v*` tags. Release-gate runs on PRs and main pushes.
 
