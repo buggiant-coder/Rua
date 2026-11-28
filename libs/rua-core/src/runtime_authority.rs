@@ -245,7 +245,7 @@ impl RuntimeAuthority {
         toolchain_intent: ToolchainIntent,
         request: RuntimeLaunchRequest,
     ) -> RuntimeLaunchPlan {
-        let runtime_kind = self.runtime_kind_for();
+        let runtime_kind = self.runtime_kind();
         let mut diagnostics = Vec::new();
         let (process, host_resource_limits) = match runtime_kind {
             RuntimeKind::Native => (
@@ -280,7 +280,11 @@ impl RuntimeAuthority {
         }
     }
 
-    fn runtime_kind_for(&self) -> RuntimeKind {
+    /// Runtime that external toolchains resolve to for this process.
+    ///
+    /// Launch callers use it to decide whether the plan's environment replaces the
+    /// process environment (Linux Compatibility) or is layered on top of it (native).
+    pub fn runtime_kind(&self) -> RuntimeKind {
         if self.layout.host_profile.is_mobile() || self.layout.os_family == "android" {
             RuntimeKind::LinuxCompat
         } else {

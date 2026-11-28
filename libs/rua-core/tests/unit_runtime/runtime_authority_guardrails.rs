@@ -24,6 +24,7 @@ fn migrated_subprocess_surfaces_consume_runtime_authority() {
         "crates/rua-skills/src/android_runtime.rs",
         "crates/rua-tool/src/builtin/execute_python_code.rs",
         "crates/rua-tool/src/executor/runtime.rs",
+        "crates/rua-project/src/git.rs",
     ] {
         let src = source(path);
         assert!(
@@ -43,6 +44,7 @@ fn migrated_launch_surfaces_do_not_reintroduce_direct_runtime_discovery() {
         "crates/rua-plugin/src/installer.rs",
         "crates/rua-tool/src/builtin/execute_python_code.rs",
         "crates/rua-tool/src/executor/runtime.rs",
+        "crates/rua-project/src/git.rs",
     ];
     let forbidden = [
         "std::env::var_os(\"PATH\")",
@@ -57,6 +59,7 @@ fn migrated_launch_surfaces_do_not_reintroduce_direct_runtime_discovery() {
         "proot-distro",
         "proot_path",
         "cmd.exe",
+        "Command::new(\"git\")",
     ];
 
     for path in guarded {

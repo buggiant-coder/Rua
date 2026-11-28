@@ -5,7 +5,8 @@ mod resources;
 mod store;
 
 pub use git::{
-    inspect_project_git, inspect_project_git_history, ProjectGitChange, ProjectGitCommit,
+    inspect_project_git, inspect_project_git_history, inspect_project_git_history_with,
+    inspect_project_git_with, project_git_launch_plan, ProjectGitChange, ProjectGitCommit,
     ProjectGitHead, ProjectGitHistoryPage, ProjectGitStatus,
 };
 pub use model::{

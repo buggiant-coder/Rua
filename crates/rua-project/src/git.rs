@@ -1,7 +1,13 @@
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
+use rua_core::runtime_authority::{
+    ProcessShape, RuntimeAuthority, RuntimeLaunchRequest, ToolchainIntent,
+};
+use rua_core::runtime_layout::{ProcessLaunchPlan, RuntimeKind};
 use serde::{Deserialize, Serialize};
+
+const GIT: &str = "git";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectGitStatus {
@@ -38,6 +44,110 @@ pub struct ProjectGitCommit {
     pub refs: Vec<String>,
 }
 
+/// Runtime-selected `git` runner.
+///
+/// The resident Android server is a native process whose PATH has no `git`; the Linux
+/// Compatibility Runtime holds it. Planning the launch here keeps that boundary explicit
+/// instead of spawning a bare `git` that does not exist on the host.
+struct GitRuntime<'a> {
+    authority: &'a RuntimeAuthority,
+    linux_compat: bool,
+}
+
+impl<'a> GitRuntime<'a> {
+    fn new(authority: &'a RuntimeAuthority) -> Self {
+        Self {
+            authority,
+            linux_compat: authority.runtime_kind() == RuntimeKind::LinuxCompat,
+        }
+    }
+
+    fn plan(
+        &self,
+        root: &Path,
+        label: &str,
+        args: Vec<String>,
+    ) -> Result<ProcessLaunchPlan, String> {
+        let mut planned_args = vec!["-C".to_string(), root.to_string_lossy().into_owned()];
+        if self.linux_compat {
+            // PRoot maps the host uid to root, so git rejects the repository as "dubious
+            // ownership". The guest path is not stable enough to name a single directory.
+            planned_args.push("-c".to_string());
+            planned_args.push("safe.directory=*".to_string());
+        }
+        planned_args.extend(args);
+
+        self.authority
+            .plan(
+                ProcessShape::Direct,
+                ToolchainIntent::GenericCommand {
+                    command: GIT.to_string(),
+                },
+                RuntimeLaunchRequest {
+                    args: planned_args,
+                    ..Default::default()
+                },
+            )
+            .into_process()
+            .map_err(|error| format!("{label}: {error}"))
+    }
+
+    fn run(&self, root: &Path, label: &str, args: &[String]) -> Result<Output, String> {
+        let process = self.plan(root, label, args.to_vec())?;
+        let mut command = Command::new(&process.command);
+        command.args(&process.args);
+        if self.linux_compat {
+            // The launch plan carries the complete guest environment.
+            command.env_clear();
+        }
+        command.envs(&process.env);
+        command
+            .output()
+            .map_err(|error| format!("{label}: {error}"))
+    }
+}
+
+fn authority_for(root: &Path) -> RuntimeAuthority {
+    RuntimeAuthority::from_current_process(
+        None,
+        root,
+        std::env::temp_dir().join("rua-runtime-cache"),
+    )
+}
+
+/// Exposes the launch plan for the `git` command this crate would run.
+///
+/// Lets device-less tests assert the Runtime Authority boundary without spawning PRoot.
+#[doc(hidden)]
+pub fn project_git_launch_plan(
+    authority: &RuntimeAuthority,
+    root: &Path,
+) -> Result<ProcessLaunchPlan, String> {
+    GitRuntime::new(authority).plan(root, "plan git", Vec::new())
+}
+
+/// Runtime Authority injected form of [`inspect_project_git`].
+#[doc(hidden)]
+pub fn inspect_project_git_with(
+    authority: &RuntimeAuthority,
+    root: &Path,
+) -> Result<ProjectGitStatus, String> {
+    let git = GitRuntime::new(authority);
+    inspect_git_with(&git, root)
+}
+
+/// Runtime Authority injected form of [`inspect_project_git_history`].
+#[doc(hidden)]
+pub fn inspect_project_git_history_with(
+    authority: &RuntimeAuthority,
+    root: &Path,
+    offset: usize,
+    limit: usize,
+) -> Result<ProjectGitHistoryPage, String> {
+    let git = GitRuntime::new(authority);
+    inspect_git_history_with(&git, root, offset, limit)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectGitHistoryPage {
     pub items: Vec<ProjectGitCommit>,
@@ -47,22 +157,26 @@ pub struct ProjectGitHistoryPage {
 }
 
 pub fn inspect_project_git(root: &Path) -> Result<ProjectGitStatus, String> {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args([
-            "-c",
-            "status.relativePaths=true",
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--branch",
-            "--untracked-files=all",
-            "--",
-            ".",
-        ])
-        .output()
-        .map_err(|error| format!("run git status: {error}"))?;
+    let authority = authority_for(root);
+    inspect_project_git_with(&authority, root)
+}
+
+fn inspect_git_with(git: &GitRuntime<'_>, root: &Path) -> Result<ProjectGitStatus, String> {
+    let status = git.run(
+        root,
+        "run git status",
+        &[
+            "-c".to_string(),
+            "status.relativePaths=true".to_string(),
+            "status".to_string(),
+            "--porcelain=v1".to_string(),
+            "-z".to_string(),
+            "--branch".to_string(),
+            "--untracked-files=all".to_string(),
+            "--".to_string(),
+            ".".to_string(),
+        ],
+    )?;
     if !status.status.success() {
         return Ok(ProjectGitStatus {
             repository: false,
@@ -135,7 +249,7 @@ pub fn inspect_project_git(root: &Path) -> Result<ProjectGitStatus, String> {
         index += 1;
     }
 
-    let head = inspect_head(root);
+    let head = inspect_head(git, root);
     Ok(ProjectGitStatus {
         repository: true,
         branch,
@@ -152,12 +266,25 @@ pub fn inspect_project_git_history(
     offset: usize,
     limit: usize,
 ) -> Result<ProjectGitHistoryPage, String> {
-    let count = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-list", "--all", "--count"])
-        .output()
-        .map_err(|error| format!("count git history: {error}"))?;
+    let authority = authority_for(root);
+    inspect_project_git_history_with(&authority, root, offset, limit)
+}
+
+fn inspect_git_history_with(
+    git: &GitRuntime<'_>,
+    root: &Path,
+    offset: usize,
+    limit: usize,
+) -> Result<ProjectGitHistoryPage, String> {
+    let count = git.run(
+        root,
+        "count git history",
+        &[
+            "rev-list".to_string(),
+            "--all".to_string(),
+            "--count".to_string(),
+        ],
+    )?;
     if !count.status.success() {
         return Ok(ProjectGitHistoryPage {
             items: Vec::new(),
@@ -170,19 +297,18 @@ pub fn inspect_project_git_history(
         .trim()
         .parse()
         .map_err(|error| format!("parse git history count: {error}"))?;
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args([
-            "log",
-            "--all",
-            "--topo-order",
-            &format!("--skip={offset}"),
-            &format!("--max-count={limit}"),
-            "--format=%H%x00%P%x00%s%x00%aI%x00%D%x1e",
-        ])
-        .output()
-        .map_err(|error| format!("read git history: {error}"))?;
+    let output = git.run(
+        root,
+        "read git history",
+        &[
+            "log".to_string(),
+            "--all".to_string(),
+            "--topo-order".to_string(),
+            format!("--skip={offset}"),
+            format!("--max-count={limit}"),
+            "--format=%H%x00%P%x00%s%x00%aI%x00%D%x1e".to_string(),
+        ],
+    )?;
     if !output.status.success() {
         return Err(format!(
             "read git history: {}",
@@ -233,12 +359,17 @@ fn parse_tracking_count(header: &str, prefix: &str) -> u32 {
         .unwrap_or(0)
 }
 
-fn inspect_head(root: &Path) -> Option<ProjectGitHead> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["log", "-1", "--format=%H%x00%s%x00%aI"])
-        .output()
+fn inspect_head(git: &GitRuntime<'_>, root: &Path) -> Option<ProjectGitHead> {
+    let output = git
+        .run(
+            root,
+            "read git head",
+            &[
+                "log".to_string(),
+                "-1".to_string(),
+                "--format=%H%x00%s%x00%aI".to_string(),
+            ],
+        )
         .ok()?;
     if !output.status.success() {
         return None;

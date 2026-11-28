@@ -1,6 +1,43 @@
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use rua_project::{inspect_project_git, inspect_project_git_history};
+use rua_core::runtime_authority::{RuntimeAuthority, RuntimeAuthorityConfig};
+use rua_core::runtime_layout::{HostProfile, RuntimeKind, RuntimeLayout};
+use rua_project::{
+    inspect_project_git_history_with, inspect_project_git_with, project_git_launch_plan,
+};
+
+/// Deterministic desktop Runtime Authority, independent of the host test environment.
+fn desktop_authority(root: &Path) -> RuntimeAuthority {
+    RuntimeAuthority::from_layout_with_probe(
+        RuntimeLayout {
+            host_profile: HostProfile::Desktop,
+            os_family: std::env::consts::OS.to_string(),
+            linux_compat: None,
+        },
+        RuntimeAuthorityConfig {
+            workspace_dir: root.to_path_buf(),
+            cache_dir: root.join(".cache"),
+            path_entries: std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                .collect::<Vec<PathBuf>>(),
+            pathext: Vec::new(),
+            windows_shell_preference: None,
+        },
+        |path| path.is_file(),
+    )
+}
+
+fn inspect_git(root: &Path) -> Result<rua_project::ProjectGitStatus, String> {
+    inspect_project_git_with(&desktop_authority(root), root)
+}
+
+fn inspect_git_history(
+    root: &Path,
+    offset: usize,
+    limit: usize,
+) -> Result<rua_project::ProjectGitHistoryPage, String> {
+    inspect_project_git_history_with(&desktop_authority(root), root, offset, limit)
+}
 
 #[test]
 fn git_status_reports_branch_head_and_root_confined_changes() {
@@ -14,7 +51,7 @@ fn git_status_reports_branch_head_and_root_confined_changes() {
     std::fs::write(root.path().join("tracked.txt"), "changed\n").unwrap();
     std::fs::write(root.path().join("new.txt"), "new\n").unwrap();
 
-    let status = inspect_project_git(root.path()).unwrap();
+    let status = inspect_git(root.path()).unwrap();
 
     assert!(status.repository);
     assert_eq!(status.branch.as_deref(), Some("main"));
@@ -32,7 +69,7 @@ fn git_status_reports_branch_head_and_root_confined_changes() {
 #[test]
 fn non_repository_returns_empty_status() {
     let root = tempfile::tempdir().unwrap();
-    let status = inspect_project_git(root.path()).unwrap();
+    let status = inspect_git(root.path()).unwrap();
     assert!(!status.repository);
     assert!(status.changes.is_empty());
 }
@@ -49,7 +86,7 @@ fn git_history_returns_the_requested_page_and_total() {
         run_git(root.path(), &["commit", "-m", &format!("commit {index}")]);
     }
 
-    let page = inspect_project_git_history(root.path(), 1, 1).unwrap();
+    let page = inspect_git_history(root.path(), 1, 1).unwrap();
 
     assert_eq!(page.offset, 1);
     assert_eq!(page.limit, 1);
@@ -81,7 +118,7 @@ fn git_history_includes_all_branch_topology_and_refs() {
         &["merge", "--no-ff", "feature", "-m", "merge feature"],
     );
 
-    let page = inspect_project_git_history(root.path(), 0, 20).unwrap();
+    let page = inspect_git_history(root.path(), 0, 20).unwrap();
 
     assert_eq!(page.total, 4);
     let merge = page
@@ -108,4 +145,77 @@ fn run_git(root: &std::path::Path, args: &[&str]) {
         .status()
         .unwrap();
     assert!(status.success(), "git command failed: {args:?}");
+}
+
+#[test]
+fn desktop_git_plan_keeps_the_native_process_environment() {
+    let root = tempfile::tempdir().unwrap();
+    let authority = desktop_authority(root.path());
+
+    let plan = project_git_launch_plan(&authority, root.path()).unwrap();
+
+    // Native hosts must not inherit the guest environment or the PRoot override.
+    assert!(!plan.args.contains(&"-c".to_string()));
+    assert!(!plan.args.iter().any(|arg| arg == "safe.directory=*"));
+    assert!(plan.env.is_empty());
+}
+
+#[test]
+fn mobile_git_plan_runs_inside_the_linux_compat_runtime() {
+    let root = tempfile::tempdir().unwrap();
+    let native = root.path().join("native");
+    std::fs::create_dir_all(&native).unwrap();
+    std::fs::write(native.join("libproot.so"), b"").unwrap();
+    let data_dir = root.path().join("files");
+    let rootfs = data_dir.join("runtime/debian");
+    std::fs::create_dir_all(rootfs.join("usr/bin")).unwrap();
+    std::fs::write(rootfs.join("usr/bin/env"), b"").unwrap();
+    std::fs::write(rootfs.join("usr/bin/git"), b"").unwrap();
+
+    let authority = RuntimeAuthority::from_layout_with_probe(
+        RuntimeLayout {
+            host_profile: HostProfile::MobileApk,
+            os_family: "android".to_string(),
+            linux_compat: Some(rua_core::runtime_layout::LinuxCompatLayout::android(
+                &native,
+                &data_dir,
+                root.path(),
+            )),
+        },
+        RuntimeAuthorityConfig {
+            workspace_dir: root.path().join("workspace"),
+            cache_dir: root.path().join("cache"),
+            path_entries: Vec::new(),
+            pathext: Vec::new(),
+            windows_shell_preference: None,
+        },
+        |path| path.is_file(),
+    );
+    assert_eq!(authority.runtime_kind(), RuntimeKind::LinuxCompat);
+
+    let plan = project_git_launch_plan(&authority, root.path()).unwrap();
+
+    // git must be reached through the runtime gate into PRoot, never through the host PATH.
+    assert_eq!(
+        plan.command.file_name().unwrap(),
+        std::ffi::OsStr::new("librua-runtime-gate.so")
+    );
+    let proot_index = plan
+        .args
+        .iter()
+        .position(|arg| arg.ends_with("libproot.so"))
+        .expect("the gate must launch PRoot");
+    assert!(
+        plan.args[proot_index..].iter().any(|arg| arg == "git"),
+        "git must be the guest program after PRoot arguments"
+    );
+    assert!(plan
+        .args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "safe.directory=*"));
+    assert_eq!(
+        plan.env.get("HOME").map(String::as_str),
+        Some("/root"),
+        "the guest environment must come from the Linux Compatibility layout"
+    );
 }
