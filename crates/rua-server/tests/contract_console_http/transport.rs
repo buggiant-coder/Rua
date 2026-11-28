@@ -80,14 +80,20 @@ impl Fixture {
                     )
                 }),
             )
-            // A body far larger than the socket buffer plus the per-channel
-            // queue, so a client that stops reading forces server-side backlog.
+            // An unbounded body. A finite one only forces server-side backlog if
+            // it happens to be bigger than the kernel socket buffer, which makes
+            // the assertion depend on host tuning instead of on the behaviour
+            // under test. The channel is cancelled as soon as the server reports
+            // loss, so this never streams forever in practice.
             .route(
                 "/api/agents/a/chats/big/console/activity",
                 get(|| async {
-                    Body::from_stream(futures::stream::iter((0..2048).map(|_| {
-                        Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![b'x'; 16 * 1024]))
-                    })))
+                    Body::from_stream(futures::stream::unfold((), |()| async {
+                        Some((
+                            Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![b'x'; 16 * 1024])),
+                            (),
+                        ))
+                    }))
                 }),
             )
             // Exactly one maximum-size Console payload (256 KiB), delivered as a
@@ -266,10 +272,15 @@ async fn server_backlog_is_reported_as_server_side_loss_not_client_buffer_pressu
         json!({"type":"open","id":"big","method":"GET","path":"/agents/a/chats/big/console/activity"}),
     )
     .await;
-    // Stop reading so the WebSocket writer and the 8-slot channel queue fill up.
+    // Backpressure has to be forced, not raced for. Draining the socket while
+    // polling would let the client keep pace with the producer, so whether the
+    // server ever reports loss would depend on the relative throughput of two
+    // tasks on a loaded host. Not reading at all for a fixed settle period
+    // instead guarantees the kernel socket buffer and then the per-channel
+    // queue fill, so `enqueue` always takes the loss path.
+    tokio::time::sleep(Duration::from_secs(2)).await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     let gap = loop {
-        tokio::time::sleep(Duration::from_millis(250)).await;
         let mut found = None;
         while let Ok(Some(Ok(Message::Text(text)))) =
             tokio::time::timeout(Duration::from_millis(100), socket.next())
@@ -288,6 +299,7 @@ async fn server_backlog_is_reported_as_server_side_loss_not_client_buffer_pressu
             tokio::time::Instant::now() < deadline,
             "server must report backlog for a channel the client stopped draining"
         );
+        tokio::time::sleep(Duration::from_millis(50)).await;
     };
     assert_eq!(gap["code"], "server_channel_backlog");
     let detail = gap["detail"].as_str().unwrap();
